@@ -1,0 +1,37 @@
+[package]
+name = "ui-dom"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arrayvec = "0.7.6"
+bevy = { version = "0.18.1", default-features = false, features = [
+  "bevy_asset",
+  "bevy_color",
+  "bevy_image",
+  "bevy_render",
+  "bevy_sprite",
+  "bevy_sprite_render",
+] }
+bytemuck = { version = "1.24.0", features = ["derive"] }
+collections = { path = "../collections" }
+cosmic-text = { version = "0.18.2", features = ["shape-run-cache"] }
+num-traits = "0.2.19"
+parking_lot = "0.12.5"
+serde.workspace = true
+serde_json.workspace = true
+smallvec = "1.15.1"
+slotmap = "1.0.7"
+tracing.workspace = true
+ui-icons = { path = "../ui-icons" }
+wgpu.workspace = true
+
+[dev-dependencies]
+naga = { version = "27.0.3", features = ["wgsl-in"] }
+serde_json.workspace = true
+stats_alloc = "0.1.10"

@@ -1,0 +1,209 @@
+{
+  "retained_density_name": "x4",
+  "retained_density_scale": 4,
+  "design_box_size_px": 96,
+  "atlas_width_px": 480,
+  "atlas_height_px": 480,
+  "icons": [
+    {
+      "ui_icon_id": 0,
+      "debug_stem": "scene",
+      "packed_rect_px": {
+        "min_x_px": 0,
+        "min_y_px": 0,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 1,
+      "debug_stem": "media",
+      "packed_rect_px": {
+        "min_x_px": 96,
+        "min_y_px": 0,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 2,
+      "debug_stem": "control",
+      "packed_rect_px": {
+        "min_x_px": 192,
+        "min_y_px": 0,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 3,
+      "debug_stem": "transport",
+      "packed_rect_px": {
+        "min_x_px": 288,
+        "min_y_px": 0,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 4,
+      "debug_stem": "persistence",
+      "packed_rect_px": {
+        "min_x_px": 384,
+        "min_y_px": 0,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 5,
+      "debug_stem": "diagnostics",
+      "packed_rect_px": {
+        "min_x_px": 0,
+        "min_y_px": 96,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 6,
+      "debug_stem": "avatar",
+      "packed_rect_px": {
+        "min_x_px": 96,
+        "min_y_px": 96,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 7,
+      "debug_stem": "tracking",
+      "packed_rect_px": {
+        "min_x_px": 192,
+        "min_y_px": 96,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 8,
+      "debug_stem": "shader",
+      "packed_rect_px": {
+        "min_x_px": 288,
+        "min_y_px": 96,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 9,
+      "debug_stem": "shared",
+      "packed_rect_px": {
+        "min_x_px": 384,
+        "min_y_px": 96,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 10,
+      "debug_stem": "pubsub",
+      "packed_rect_px": {
+        "min_x_px": 0,
+        "min_y_px": 192,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 11,
+      "debug_stem": "hamburger",
+      "packed_rect_px": {
+        "min_x_px": 96,
+        "min_y_px": 192,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 12,
+      "debug_stem": "audio",
+      "packed_rect_px": {
+        "min_x_px": 192,
+        "min_y_px": 192,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 13,
+      "debug_stem": "capture-unavailable",
+      "packed_rect_px": {
+        "min_x_px": 288,
+        "min_y_px": 192,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 14,
+      "debug_stem": "generic",
+      "packed_rect_px": {
+        "min_x_px": 384,
+        "min_y_px": 192,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 15,
+      "debug_stem": "plus",
+      "packed_rect_px": {
+        "min_x_px": 0,
+        "min_y_px": 288,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 16,
+      "debug_stem": "minus",
+      "packed_rect_px": {
+        "min_x_px": 96,
+        "min_y_px": 288,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 17,
+      "debug_stem": "camera",
+      "packed_rect_px": {
+        "min_x_px": 192,
+        "min_y_px": 288,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 18,
+      "debug_stem": "close",
+      "packed_rect_px": {
+        "min_x_px": 288,
+        "min_y_px": 288,
+        "width_px": 96,
+        "height_px": 96
+      }
+    },
+    {
+      "ui_icon_id": 19,
+      "debug_stem": "ellipsis",
+      "packed_rect_px": {
+        "min_x_px": 384,
+        "min_y_px": 288,
+        "width_px": 96,
+        "height_px": 96
+      }
+    }
+  ]
+}

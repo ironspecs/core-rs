@@ -1,0 +1,43 @@
+[workspace]
+members = [
+  "crates/collections",
+  "crates/ui-dom",
+  "crates/ui-icons",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+authors = ["Dane"]
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+bevy = "0.18.1"
+bevy_mesh = "0.18.1"
+bytes = "1.10.1"
+clap = { version = "4.5.39", features = ["derive"] }
+cpal = "0.16.0"
+ctrlc = "3.4.7"
+libloading = "0.8.8"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_cbor = "0.11.2"
+serde_json = "1.0.140"
+thingbuf = "0.1"
+thiserror = "2.0.12"
+toml = "0.8.20"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tungstenite = "0.26.2"
+url = "2.5.4"
+wgpu = "27.0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
