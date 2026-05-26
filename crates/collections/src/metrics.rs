@@ -49,6 +49,11 @@ impl<Name: MetricName, const N: usize> MetricSnapshot<Name, N> {
         self.counts[name.index()]
     }
 
+    #[must_use]
+    pub fn raw_counts(&self) -> [u64; N] {
+        self.counts
+    }
+
     fn increment(&mut self, name: Name) {
         let count = self
             .counts
