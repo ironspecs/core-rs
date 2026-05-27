@@ -41,3 +41,10 @@ pedantic = { level = "deny", priority = -1 }
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+[profile.dev]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

@@ -40,6 +40,25 @@ The workspace is not for:
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `cargo test --workspace`
 
+## Release
+
+`core-rs` is Tier 3 cold storage. Release from this repo only when the
+workspace is intentionally stable and all three crates are meant to move
+together at one version.
+
+Release procedure for `0.1.0` and later:
+
+1. Confirm the workspace version in `Cargo.toml`.
+2. Run the quality gates.
+3. Commit the release changes.
+4. Create an annotated repo tag such as `v0.1.0`.
+5. Push the commit and tag with `git push origin main --follow-tags`.
+
+Consumer repos should depend on tagged git revisions from
+`git@github.com:ironspecs/core-rs.git` and use consumer-side Cargo profile
+overrides when they need Tier 2 dev builds with release-grade optimization for
+selected `core-rs` crates.
+
 ## Layout
 
 - `crates/` contains shared foundation crates
