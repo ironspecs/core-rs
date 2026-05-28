@@ -41,10 +41,10 @@
 use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom};
 
 use crate::layout_proofs::support::{
-    assert_append_div_to, assert_append_text_to, assert_close, assert_load_root_stylesheet,
-    assert_node_border_box_screen_left_px, assert_node_border_box_screen_top_px,
-    assert_node_layout, assert_root_dom_update, assert_set_attr_str,
-    attached_gpu_root_dom_default_viewport_setup, theme_stylesheet_origin,
+    assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
+    assert_load_root_stylesheet, assert_node_border_box_screen_left_px,
+    assert_node_border_box_screen_top_px, assert_node_layout, assert_root_dom_update,
+    assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup, theme_stylesheet_origin,
 };
 
 const TITLEBAR_ICON_WIDTH_PX: f32 = 16.0;
@@ -3591,6 +3591,374 @@ fn stylesheet_justify_content_space_between_and_column_gap_persist_after_recompu
 }
 
 #[test]
+// CSS Flexbox 9.2 line collection and CSS Align 3 gap handling should keep
+// adjacent auto-sized block flex items on the same row when the container has
+// definite inline size and positive free space remains. This uses a nested
+// block wrapper around one `display:flex` row with `gap: 12px` and two block
+// columns containing text rows. Gecko/Blink reach this through
+// nsFlexContainerFrame line construction and Blink's flex line breaker plus
+// line flexer phases.
+fn stylesheet_nested_two_column_row_keeps_auto_sized_flex_items() {
+    let scenario = build_nested_two_column_row_scenario(
+        TwoColumnRowStyleMode::Stylesheet { gap_px: Some(12.0) },
+        TwoColumnRowWidthMode::Auto,
+    );
+
+    assert_two_auto_sized_flex_columns(scenario);
+}
+
+#[test]
+// This variant removes stylesheet recompute from the equation. If it fails the
+// same way, the bug is in core flex item measurement/placement rather than
+// class-driven style application.
+fn direct_attr_nested_two_column_row_keeps_auto_sized_flex_items() {
+    let scenario = build_nested_two_column_row_scenario(
+        TwoColumnRowStyleMode::DirectAttrs { gap_px: Some(12.0) },
+        TwoColumnRowWidthMode::Auto,
+    );
+
+    assert_two_auto_sized_flex_columns(scenario);
+}
+
+#[test]
+// This keeps the nested two-column row subtree and auto-sized columns but removes `gap` so
+// the only requirement is that the second auto-sized flex item remain present
+// and start after the first.
+fn stylesheet_nested_two_column_row_keeps_auto_sized_flex_items_without_gap() {
+    let scenario = build_nested_two_column_row_scenario(
+        TwoColumnRowStyleMode::Stylesheet { gap_px: None },
+        TwoColumnRowWidthMode::Auto,
+    );
+
+    assert_two_auto_sized_flex_columns(scenario);
+}
+
+#[test]
+// This variant pins whether the collapse is specific to auto-sized flex items.
+// If explicit widths survive while auto widths collapse, the bug boundary is in
+// the browser flex base-size / hypothetical main-size path for block flex
+// items, not generic line placement.
+fn stylesheet_nested_two_column_row_applies_gap_between_explicit_width_items() {
+    let mut scenario = build_nested_two_column_row_scenario(
+        TwoColumnRowStyleMode::Stylesheet { gap_px: Some(12.0) },
+        TwoColumnRowWidthMode::Explicit {
+            left_width: "96px",
+            right_width: "104px",
+        },
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.left_column),
+        0.0,
+        "explicit nested row left column left",
+    );
+    assert_close(
+        assert_node_layout(&scenario.root, scenario.left_column).width_px,
+        96.0,
+        "explicit nested row left column width",
+    );
+    assert_close(
+        assert_node_layout(&scenario.root, scenario.right_column).width_px,
+        104.0,
+        "explicit nested row right column width",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        108.0,
+        "explicit nested row right column left",
+    );
+}
+
+#[test]
+// This keeps explicit widths but removes the authored gap. If this passes while
+// the gap variant fails, the explicit-width path is reaching sibling placement
+// but skipping gap insertion.
+fn stylesheet_nested_two_column_row_places_explicit_width_items_without_gap() {
+    let mut scenario = build_nested_two_column_row_scenario(
+        TwoColumnRowStyleMode::Stylesheet { gap_px: None },
+        TwoColumnRowWidthMode::Explicit {
+            left_width: "96px",
+            right_width: "104px",
+        },
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.left_column),
+        0.0,
+        "explicit no-gap nested row left column left",
+    );
+    assert_close(
+        assert_node_layout(&scenario.root, scenario.left_column).width_px,
+        96.0,
+        "explicit no-gap nested row left column width",
+    );
+    assert_close(
+        assert_node_layout(&scenario.root, scenario.right_column).width_px,
+        104.0,
+        "explicit no-gap nested row right column width",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        96.0,
+        "explicit no-gap nested row right column left",
+    );
+}
+
+#[test]
+// This confirms whether the explicit-width + gap miss is independent of
+// stylesheet application.
+fn direct_attr_nested_two_column_row_applies_gap_between_explicit_width_items() {
+    let mut scenario = build_nested_two_column_row_scenario(
+        TwoColumnRowStyleMode::DirectAttrs { gap_px: Some(12.0) },
+        TwoColumnRowWidthMode::Explicit {
+            left_width: "96px",
+            right_width: "104px",
+        },
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert_close(
+        assert_node_layout(&scenario.root, scenario.left_column).width_px,
+        96.0,
+        "direct explicit nested row left column width",
+    );
+    assert_close(
+        assert_node_layout(&scenario.root, scenario.right_column).width_px,
+        104.0,
+        "direct explicit nested row right column width",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        108.0,
+        "direct explicit nested row right column left",
+    );
+}
+
+#[test]
+// This is the direct-attr control that matches the passing stylesheet no-gap
+// case. It confirms the nested two-column row subtree can place two explicit-width
+// flex items adjacently when no gap insertion is required.
+fn direct_attr_nested_two_column_row_places_explicit_width_items_without_gap() {
+    let mut scenario = build_nested_two_column_row_scenario(
+        TwoColumnRowStyleMode::DirectAttrs { gap_px: None },
+        TwoColumnRowWidthMode::Explicit {
+            left_width: "96px",
+            right_width: "104px",
+        },
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        96.0,
+        "direct explicit no-gap nested row right column left",
+    );
+}
+
+#[test]
+// This swaps the shorthand out for `column-gap` in the same nested subtree. If
+// it fails the same way as `gap`, the issue is in horizontal gap insertion at
+// placement time, not in shorthand parsing.
+fn direct_attr_nested_two_column_row_applies_column_gap_between_explicit_width_items() {
+    let mut scenario = build_nested_two_column_row_scenario_with_gap_attr(
+        GapAttrMode::ColumnGap(12.0),
+        TwoColumnRowWidthMode::Explicit {
+            left_width: "96px",
+            right_width: "104px",
+        },
+        TwoColumnRowContentMode::Rows,
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        108.0,
+        "direct explicit column-gap nested row right column left",
+    );
+}
+
+#[test]
+// This removes the descendant block rows from both flex items but keeps the
+// same nested ancestor wrappers, explicit widths, and gap. If it still
+// fails, the gap bug is ancestor/subtree-scoped rather than child-content
+// scoped.
+fn direct_attr_nested_two_column_row_applies_gap_between_empty_explicit_width_items() {
+    let mut scenario = build_nested_two_column_row_scenario_with_gap_attr(
+        GapAttrMode::Gap(12.0),
+        TwoColumnRowWidthMode::Explicit {
+            left_width: "96px",
+            right_width: "104px",
+        },
+        TwoColumnRowContentMode::Empty,
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        108.0,
+        "direct explicit empty-column nested row right column left",
+    );
+}
+
+#[test]
+// This keeps auto widths but replaces the block-row subtree with direct text
+// children inside each flex item. If this passes, the auto-width collapse is
+// tied to block descendants inside the flex items rather than all intrinsic
+// inline content.
+fn direct_attr_nested_two_column_row_keeps_auto_width_items_with_direct_text() {
+    let mut scenario = build_nested_two_column_row_scenario_with_gap_attr(
+        GapAttrMode::Gap(12.0),
+        TwoColumnRowWidthMode::Auto,
+        TwoColumnRowContentMode::DirectText,
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert!(
+        assert_node_layout(&scenario.root, scenario.left_column).width_px > 0.0,
+        "direct-text nested row left column should keep non-zero auto width"
+    );
+    assert!(
+        assert_node_layout(&scenario.root, scenario.right_column).width_px > 0.0,
+        "direct-text nested row right column should keep non-zero auto width"
+    );
+}
+
+#[test]
+// This flattens the same explicit-width + gap case to a top-level flex
+// container. If this passes while the nested wrapper subtree fails, the gap bug is
+// tied to the nested block-wrapper path rather than generic sibling placement.
+fn direct_attr_flat_two_column_row_applies_gap_between_explicit_width_items() {
+    let mut scenario = build_flat_two_column_row_scenario(
+        GapAttrMode::Gap(12.0),
+        TwoColumnRowWidthMode::Explicit {
+            left_width: "96px",
+            right_width: "104px",
+        },
+        TwoColumnRowContentMode::Rows,
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        108.0,
+        "flat explicit two-column row right column left",
+    );
+}
+
+#[test]
+// This is the flat control for the auto-width case. It uses direct text inside
+// each flex item so the measurement path does not have to aggregate descendant
+// block rows. If this still collapses, the auto-width bug is broader than the
+// nested wrapper subtree.
+fn direct_attr_flat_two_column_row_keeps_auto_width_items_with_direct_text() {
+    let mut scenario = build_flat_two_column_row_scenario(
+        GapAttrMode::Gap(12.0),
+        TwoColumnRowWidthMode::Auto,
+        TwoColumnRowContentMode::DirectText,
+    );
+
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    assert!(
+        assert_node_layout(&scenario.root, scenario.left_column).width_px > 0.0,
+        "flat direct-text left column should keep non-zero auto width"
+    );
+    assert!(
+        assert_node_layout(&scenario.root, scenario.right_column).width_px > 0.0,
+        "flat direct-text right column should keep non-zero auto width"
+    );
+}
+
+#[test]
+// Existing generic gap proofs use flex-basis-sized items. This flat control
+// keeps the same two-column structure but sizes the items through flex-basis
+// instead of width. If it passes while the width-sized variant fails, the gap
+// boundary is specifically the width/content-sized item path.
+fn direct_attr_flat_two_column_row_applies_gap_between_flex_basis_sized_items() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let columns = assert_append_div_to(&mut root, document_root);
+    let left_column = assert_append_div_to(&mut root, columns);
+    let right_column = assert_append_div_to(&mut root, columns);
+
+    assert_set_attr_str(&mut root, columns, "display", "flex");
+    assert_set_attr_str(&mut root, columns, "width", "320px");
+    assert_set_attr_str(&mut root, columns, "height", "200px");
+    assert_set_attr_str(&mut root, columns, "gap", "12px");
+    assert_set_attr_str(&mut root, left_column, "display", "block");
+    assert_set_attr_str(&mut root, right_column, "display", "block");
+    assert_set_attr_str(&mut root, left_column, "flex-basis", "96px");
+    assert_set_attr_str(&mut root, right_column, "flex-basis", "104px");
+    assert_set_attr_str(&mut root, left_column, "flex-grow", "0");
+    assert_set_attr_str(&mut root, left_column, "flex-shrink", "0");
+    assert_set_attr_str(&mut root, right_column, "flex-grow", "0");
+    assert_set_attr_str(&mut root, right_column, "flex-shrink", "0");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, right_column),
+        108.0,
+        "flat flex-basis right column left",
+    );
+}
+
+#[test]
 // Stylesheet coverage should also prove that switching to a conflicting class
 // on the same node really changes the packing mode instead of leaving the old
 // cached layout in place.
@@ -3654,6 +4022,383 @@ fn switching_stylesheet_justify_content_class_changes_packing_mode() {
         assert_node_border_box_screen_left_px(&root, third),
         80.0,
         "third item left after switching to flex-end class",
+    );
+}
+
+fn append_two_column_row_measurement_rows(
+    root: &mut RootDom,
+    column: DomNodeSlotKey,
+    rows: &[(&str, &str)],
+) {
+    for (label, value) in rows {
+        append_two_column_row_measurement_row(root, column, label, value);
+    }
+}
+
+fn append_two_column_row_measurement_row(
+    root: &mut RootDom,
+    column: DomNodeSlotKey,
+    label: &str,
+    value: &str,
+) {
+    let row = assert_append_div_to(root, column);
+    let label_node = assert_append_span_to(root, row);
+    let value_node = assert_append_span_to(root, row);
+    assert_append_text_to(root, label_node, label);
+    assert_append_text_to(root, value_node, value);
+    assert_set_attr_str(root, row, "class", "two-column-measure-row");
+    assert_set_attr_str(root, label_node, "class", "two-column-measure-label");
+    assert_set_attr_str(root, value_node, "class", "two-column-measure-value");
+}
+
+enum TwoColumnRowStyleMode {
+    Stylesheet { gap_px: Option<f32> },
+    DirectAttrs { gap_px: Option<f32> },
+}
+
+enum TwoColumnRowWidthMode<'a> {
+    Auto,
+    Explicit {
+        left_width: &'a str,
+        right_width: &'a str,
+    },
+}
+
+enum TwoColumnRowContentMode {
+    Rows,
+    Empty,
+    DirectText,
+}
+
+enum GapAttrMode {
+    Gap(f32),
+    ColumnGap(f32),
+}
+
+struct TwoColumnRowScenario {
+    world: bevy::prelude::World,
+    root: RootDom,
+    left_column: DomNodeSlotKey,
+    right_column: DomNodeSlotKey,
+    gap_px: f32,
+}
+
+fn build_nested_two_column_row_scenario(
+    style_mode: TwoColumnRowStyleMode,
+    width_mode: TwoColumnRowWidthMode<'_>,
+) -> TwoColumnRowScenario {
+    build_nested_two_column_row_scenario_inner(
+        style_mode,
+        width_mode,
+        TwoColumnRowContentMode::Rows,
+    )
+}
+
+fn build_nested_two_column_row_scenario_with_gap_attr(
+    gap_attr_mode: GapAttrMode,
+    width_mode: TwoColumnRowWidthMode<'_>,
+    content_mode: TwoColumnRowContentMode,
+) -> TwoColumnRowScenario {
+    let gap_px = gap_attr_mode_value(&gap_attr_mode);
+    let style_mode = TwoColumnRowStyleMode::DirectAttrs { gap_px: None };
+    let mut scenario =
+        build_nested_two_column_row_scenario_inner(style_mode, width_mode, content_mode);
+    apply_gap_attr_mode(
+        &mut scenario.root,
+        scenario.left_column,
+        scenario.right_column,
+        gap_attr_mode,
+    );
+    scenario.gap_px = gap_px;
+    scenario
+}
+
+fn build_flat_two_column_row_scenario(
+    gap_attr_mode: GapAttrMode,
+    width_mode: TwoColumnRowWidthMode<'_>,
+    content_mode: TwoColumnRowContentMode,
+) -> TwoColumnRowScenario {
+    let (world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let columns = assert_append_div_to(&mut root, document_root);
+    let left_column = assert_append_div_to(&mut root, columns);
+    let right_column = assert_append_div_to(&mut root, columns);
+    let gap_px = gap_attr_mode_value(&gap_attr_mode);
+
+    assert_set_attr_str(&mut root, columns, "display", "flex");
+    assert_set_attr_str(&mut root, columns, "width", "320px");
+    assert_set_attr_str(&mut root, columns, "height", "200px");
+    match gap_attr_mode {
+        GapAttrMode::Gap(value) => {
+            assert_set_attr_str(&mut root, columns, "gap", &format!("{value}px"));
+        }
+        GapAttrMode::ColumnGap(value) => {
+            assert_set_attr_str(&mut root, columns, "column-gap", &format!("{value}px"));
+        }
+    }
+    assert_set_attr_str(&mut root, left_column, "display", "block");
+    assert_set_attr_str(&mut root, right_column, "display", "block");
+    apply_two_column_row_width_mode(&mut root, left_column, right_column, width_mode);
+    append_two_column_row_content(&mut root, left_column, right_column, content_mode);
+
+    TwoColumnRowScenario {
+        world,
+        root,
+        left_column,
+        right_column,
+        gap_px,
+    }
+}
+
+fn build_nested_two_column_row_scenario_inner(
+    style_mode: TwoColumnRowStyleMode,
+    width_mode: TwoColumnRowWidthMode<'_>,
+    content_mode: TwoColumnRowContentMode,
+) -> TwoColumnRowScenario {
+    let (world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let right = assert_append_div_to(&mut root, document_root);
+    let detail = assert_append_div_to(&mut root, right);
+    let points = assert_append_div_to(&mut root, detail);
+    let columns = assert_append_div_to(&mut root, points);
+    let left_column = assert_append_div_to(&mut root, columns);
+    let right_column = assert_append_div_to(&mut root, columns);
+    let gap_px = style_mode_gap_px(&style_mode);
+
+    apply_two_column_row_style_mode(
+        &mut root,
+        right,
+        detail,
+        points,
+        columns,
+        left_column,
+        right_column,
+        &style_mode,
+    );
+    apply_two_column_row_width_mode(&mut root, left_column, right_column, width_mode);
+    append_two_column_row_content(&mut root, left_column, right_column, content_mode);
+
+    TwoColumnRowScenario {
+        world,
+        root,
+        left_column,
+        right_column,
+        gap_px,
+    }
+}
+
+fn apply_two_column_row_style_mode(
+    root: &mut RootDom,
+    right: DomNodeSlotKey,
+    detail: DomNodeSlotKey,
+    points: DomNodeSlotKey,
+    columns: DomNodeSlotKey,
+    left_column: DomNodeSlotKey,
+    right_column: DomNodeSlotKey,
+    style_mode: &TwoColumnRowStyleMode,
+) {
+    match style_mode {
+        TwoColumnRowStyleMode::Stylesheet { gap_px } => {
+            assert_load_root_stylesheet(
+                root,
+                theme_stylesheet_origin(),
+                &two_column_row_stylesheet_css(*gap_px),
+            );
+            assert_set_attr_str(root, right, "class", "two-column-host");
+            assert_set_attr_str(root, detail, "class", "two-column-detail");
+            assert_set_attr_str(root, points, "class", "two-column-block");
+            assert_set_attr_str(root, columns, "class", "two-column-row");
+            assert_set_attr_str(root, left_column, "class", "two-column-item");
+            assert_set_attr_str(root, right_column, "class", "two-column-item");
+        }
+        TwoColumnRowStyleMode::DirectAttrs { gap_px } => {
+            assert_set_attr_str(root, right, "display", "block");
+            assert_set_attr_str(root, right, "width", "320px");
+            assert_set_attr_str(root, right, "height", "200px");
+            assert_set_attr_str(root, right, "overflow", "scroll");
+            assert_set_attr_str(root, detail, "display", "block");
+            assert_set_attr_str(root, points, "display", "block");
+            assert_set_attr_str(root, columns, "display", "flex");
+            if let Some(gap_px) = gap_px {
+                assert_set_attr_str(root, columns, "gap", &format!("{gap_px}px"));
+            }
+            assert_set_attr_str(root, left_column, "display", "block");
+            assert_set_attr_str(root, right_column, "display", "block");
+        }
+    }
+}
+
+fn append_two_column_row_content(
+    root: &mut RootDom,
+    left_column: DomNodeSlotKey,
+    right_column: DomNodeSlotKey,
+    content_mode: TwoColumnRowContentMode,
+) {
+    match content_mode {
+        TwoColumnRowContentMode::Rows => {
+            append_two_column_row_measurement_rows(
+                root,
+                left_column,
+                &[
+                    ("Mood", "100"),
+                    ("Social", "95"),
+                    ("Recreation", "90"),
+                    ("Hunger", "85"),
+                    ("Thirst", "80"),
+                    ("Restroom", "75"),
+                    ("Exhaustion", "70"),
+                    ("Sleep", "65"),
+                ],
+            );
+            append_two_column_row_measurement_rows(
+                root,
+                right_column,
+                &[
+                    ("Cleanliness", "60"),
+                    ("Oxygen", "55"),
+                    ("Temperature", "50"),
+                    ("Radiation", "45"),
+                ],
+            );
+        }
+        TwoColumnRowContentMode::Empty => {}
+        TwoColumnRowContentMode::DirectText => {
+            assert_append_text_to(root, left_column, "Mood 100 Social 95");
+            assert_append_text_to(root, right_column, "Cleanliness 60 Oxygen 55");
+        }
+    }
+}
+
+fn apply_gap_attr_mode(
+    root: &mut RootDom,
+    left_column: DomNodeSlotKey,
+    right_column: DomNodeSlotKey,
+    gap_attr_mode: GapAttrMode,
+) {
+    let columns = root
+        .node(left_column)
+        .expect("left column should stay live")
+        .parent_key()
+        .expect("left column should keep columns parent");
+    let right_parent = root
+        .node(right_column)
+        .expect("right column should stay live")
+        .parent_key()
+        .expect("right column should keep columns parent");
+    assert_eq!(
+        columns, right_parent,
+        "two-column row siblings should share one parent"
+    );
+    match gap_attr_mode {
+        GapAttrMode::Gap(value) => {
+            assert_set_attr_str(root, columns, "gap", &format!("{value}px"));
+        }
+        GapAttrMode::ColumnGap(value) => {
+            assert_set_attr_str(root, columns, "column-gap", &format!("{value}px"));
+        }
+    }
+}
+
+fn gap_attr_mode_value(gap_attr_mode: &GapAttrMode) -> f32 {
+    match gap_attr_mode {
+        GapAttrMode::Gap(value) | GapAttrMode::ColumnGap(value) => *value,
+    }
+}
+
+fn apply_two_column_row_width_mode(
+    root: &mut RootDom,
+    left_column: DomNodeSlotKey,
+    right_column: DomNodeSlotKey,
+    width_mode: TwoColumnRowWidthMode<'_>,
+) {
+    if let TwoColumnRowWidthMode::Explicit {
+        left_width,
+        right_width,
+    } = width_mode
+    {
+        assert_set_attr_str(root, left_column, "width", left_width);
+        assert_set_attr_str(root, right_column, "width", right_width);
+    }
+}
+
+fn two_column_row_stylesheet_css(gap_px: Option<f32>) -> String {
+    let gap_rule = gap_px
+        .map(|value| format!("gap: {value}px;"))
+        .unwrap_or_default();
+    format!(
+        r"
+            .two-column-host {{
+                display: block;
+                width: 320px;
+                height: 200px;
+                overflow: scroll;
+            }}
+            .two-column-detail {{
+                display: block;
+                color: #f2f2f2;
+            }}
+            .two-column-block {{
+                display: block;
+            }}
+            .two-column-row {{
+                display: flex;
+                {gap_rule}
+            }}
+            .two-column-item {{
+                display: block;
+                padding-left: 0px;
+                padding-right: 0px;
+            }}
+            .two-column-measure-row {{
+                display: block;
+                margin-bottom: 8px;
+            }}
+            .two-column-measure-label {{
+                color: #9fb1c3;
+            }}
+            .two-column-measure-value {{
+                margin-left: 10px;
+                color: #f2f2f2;
+            }}
+        "
+    )
+}
+
+fn style_mode_gap_px(style_mode: &TwoColumnRowStyleMode) -> f32 {
+    match style_mode {
+        TwoColumnRowStyleMode::Stylesheet { gap_px }
+        | TwoColumnRowStyleMode::DirectAttrs { gap_px } => gap_px.unwrap_or(0.0),
+    }
+}
+
+fn assert_two_auto_sized_flex_columns(mut scenario: TwoColumnRowScenario) {
+    assert_root_dom_update(
+        &mut scenario.world,
+        &mut scenario.root,
+        0.0,
+        DomPointerUpdate::Unchanged,
+    );
+
+    let left_column_left_px =
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.left_column);
+    let right_column_left_px =
+        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column);
+    let left_column_width_px = assert_node_layout(&scenario.root, scenario.left_column).width_px;
+    let right_column_width_px = assert_node_layout(&scenario.root, scenario.right_column).width_px;
+
+    assert_close(left_column_left_px, 0.0, "two-column row left item left");
+    assert!(
+        left_column_width_px > 0.0,
+        "two-column row left item should keep non-zero auto width"
+    );
+    assert!(
+        right_column_width_px > 0.0,
+        "two-column row right item should keep non-zero auto width"
+    );
+    assert!(
+        right_column_left_px >= left_column_left_px + left_column_width_px + scenario.gap_px,
+        "two-column row right item should appear to the right of the first item with the authored gap; left={left_column_left_px} width={left_column_width_px} right={right_column_left_px} gap={}",
+        scenario.gap_px,
     );
 }
 

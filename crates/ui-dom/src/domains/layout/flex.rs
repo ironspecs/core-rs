@@ -1636,14 +1636,14 @@ fn staged_align_items(node: &DomNode) -> FlexCrossAxisAlignment {
         return align_items_from_str(value)
             .unwrap_or_else(|| panic!("staged align-items is unsupported: {value}"));
     }
-    staged_place_items_align(node).unwrap_or(FlexCrossAxisAlignment::FlexStart)
+    staged_place_items_align(node).unwrap_or(FlexCrossAxisAlignment::Stretch)
 }
 
 fn supported_align_items(node: &DomNode) -> Option<FlexCrossAxisAlignment> {
     if let Some(value) = presented_string_attr(node, &DomAttribute::AlignItems) {
         return align_items_from_str(value);
     }
-    Some(supported_place_items_align(node).unwrap_or(FlexCrossAxisAlignment::FlexStart))
+    Some(supported_place_items_align(node).unwrap_or(FlexCrossAxisAlignment::Stretch))
 }
 
 fn align_items_from_str(value: &str) -> Option<FlexCrossAxisAlignment> {
@@ -3898,6 +3898,9 @@ fn active_flex_item_has_supported_content_based_auto_min(
     container_style: FlexContainerStyle,
     child_inherited_style: &InheritedStyleContext,
 ) -> Result<bool, DomError> {
+    if style_has_definite_main_axis_size(child_style, container_style.main_axis) {
+        return Ok(true);
+    }
     if container_style.main_axis == FlexAxis::Vertical {
         return Ok(true);
     }
@@ -3930,9 +3933,6 @@ fn horizontal_content_based_auto_min_is_supported(
             inherited_style,
         )?
     {
-        return Ok(false);
-    }
-    if matches!(node.intrinsic(), DomIntrinsic::NotMeasured) {
         return Ok(false);
     }
     let mut child_key = first_child_key(root_dom, key)?;
@@ -5382,6 +5382,32 @@ mod tests {
     }
 
     #[test]
+    fn active_flex_gate_uses_browser_default_stretch_for_auto_cross_size_items() {
+        let (mut root, container, _) = flex_container_with_context();
+        let child = append_div(&mut root, container);
+        root.set_attr_str(container, "width", "60px")
+            .expect("width should set");
+        root.set_attr_str(container, "height", "50px")
+            .expect("height should set");
+        root.set_attr_str(child, "flex-basis", "10px")
+            .expect("basis should set");
+        root.set_attr_str(child, "flex-grow", "0")
+            .expect("grow should set");
+        root.set_attr_str(child, "flex-shrink", "0")
+            .expect("shrink should set");
+
+        let (style, inherited_style) =
+            resolved_node_style(&root, container, &InheritedStyleContext::default())
+                .expect("container style");
+
+        assert!(
+            active_flex_subset_is_supported(&root, container, style, &inherited_style)
+                .expect("gate should evaluate"),
+            "active flex subset should use the browser default align-items:stretch when the container omits align-items",
+        );
+    }
+
+    #[test]
     fn active_flex_gate_admits_align_self_stretch_override_for_auto_cross_size_item() {
         let (mut root, container, _) = flex_container_with_context();
         let first = append_div(&mut root, container);
@@ -5409,6 +5435,35 @@ mod tests {
             active_flex_subset_is_supported(&root, container, style, &inherited_style)
                 .expect("gate should evaluate"),
             "active flex subset should admit one auto cross-size item stretched by align-self when the sibling cross sizes are already supported",
+        );
+    }
+
+    #[test]
+    fn active_flex_gate_admits_visible_overflow_item_with_definite_main_size() {
+        let (mut root, container, _) = flex_container_with_context();
+        let child = append_div(&mut root, container);
+        let nested = append_div(&mut root, child);
+        let nested_text = append_text(&mut root, nested, "Visible overflow content width");
+        root.set_attr_str(container, "width", "120px")
+            .expect("width should set");
+        root.set_attr_str(container, "height", "40px")
+            .expect("height should set");
+        root.set_attr_str(child, "width", "60px")
+            .expect("width should set");
+        root.set_attr_str(child, "overflow", "visible")
+            .expect("overflow should set");
+        root.set_attr_str(nested, "display", "block")
+            .expect("display should set");
+        let _ = nested_text;
+
+        let (style, inherited_style) =
+            resolved_node_style(&root, container, &InheritedStyleContext::default())
+                .expect("container style");
+
+        assert!(
+            active_flex_subset_is_supported(&root, container, style, &inherited_style)
+                .expect("gate should evaluate"),
+            "active flex subset should admit a visible-overflow item with a definite main size without requiring content-based auto-min subtree support",
         );
     }
 
