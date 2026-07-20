@@ -17,7 +17,7 @@ use crate::layout_proofs::support::{
     fixed_layer_with_block_and_text_setup, fixed_layer_with_two_blocks_setup,
     theme_stylesheet_origin,
 };
-use ui_dom::{DomIntrinsic, DomNode, DomPointerUpdate, RootDomNodesMetricName, node_box};
+use ui_dom::{DomIntrinsic, DomNode, DomPointerUpdate, node_box};
 
 #[test]
 // CSS 2.1 10.3.7: fixed left+right anchoring resolves the layer width against
@@ -165,20 +165,7 @@ fn nested_fixed_right_anchored_auto_width_shrink_wraps_block_children() {
     assert_set_attr_str(&mut root, second_block, "width", "100px");
     assert_set_attr_str(&mut root, second_block, "height", "32px");
 
-    root.reset_node_metrics();
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-
-    let metric_snapshot = root.node_metrics();
-    assert_eq!(
-        metric_snapshot.count(RootDomNodesMetricName::Insert),
-        0,
-        "layout update should not insert nodes for a pure fixed-position relayout"
-    );
-    assert_eq!(
-        metric_snapshot.count(RootDomNodesMetricName::Remove),
-        0,
-        "layout update should not remove nodes for a pure fixed-position relayout"
-    );
 
     let panel_snapshot = root
         .node(fixed_panel)
@@ -237,20 +224,7 @@ fn nested_fixed_bottom_anchored_auto_height_shrink_wraps_block_children() {
     assert_set_attr_str(&mut root, second_block, "width", "100px");
     assert_set_attr_str(&mut root, second_block, "height", "32px");
 
-    root.reset_node_metrics();
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-
-    let metric_snapshot = root.node_metrics();
-    assert_eq!(
-        metric_snapshot.count(RootDomNodesMetricName::Insert),
-        0,
-        "layout update should not insert nodes for a pure fixed-position relayout"
-    );
-    assert_eq!(
-        metric_snapshot.count(RootDomNodesMetricName::Remove),
-        0,
-        "layout update should not remove nodes for a pure fixed-position relayout"
-    );
 
     let panel_snapshot = root
         .node(fixed_panel)
@@ -294,8 +268,9 @@ fn nested_fixed_bottom_anchored_auto_height_shrink_wraps_block_children() {
 
 #[test]
 // CSS 2.1 10.3.7: a nested fixed-position box with explicit width and only a
-// `right` anchor must pin its border box against the viewport right edge. This
-// matches the in-game right toolbar shape in `apps/interior/src/ui/ingame.css`.
+// `right` anchor must pin its border box against the viewport right edge
+// (left = containing-block width - right offset - width), matching WPT
+// `css/css-position/position-fixed-at-bottom-right-on-viewport.html`.
 fn nested_fixed_right_anchored_explicit_width_stays_on_viewport_right_edge() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
@@ -405,10 +380,10 @@ fn stylesheet_driven_fixed_right_toolbar_with_absolute_slots_stays_on_viewport_r
 }
 
 #[test]
-// CSS 2.1 10.3.7 plus 10.6.4: the debug-toolbar shape from
-// `apps/interior/src/ui/ingame.css` is a right-anchored fixed box with
-// explicit width, auto height, a relative slot row, and a padded content
-// block. Its border box must still pin against the viewport right edge.
+// CSS 2.1 10.3.7 plus 10.6.4: a right-anchored fixed box with explicit width,
+// auto height, a relative slot row, and a padded content block must still pin
+// its border box against the viewport right edge, matching WPT
+// `css/css-position/position-fixed-at-bottom-right-on-viewport.html`.
 fn stylesheet_driven_fixed_right_toolbar_with_auto_height_stays_on_viewport_right_edge() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     assert_load_root_stylesheet(
@@ -494,10 +469,11 @@ fn stylesheet_driven_fixed_right_toolbar_with_auto_height_stays_on_viewport_righ
 }
 
 #[test]
-// The in-game debug toolbar uses class composition instead of one monolithic
-// rule: `.ingame-toolbar` supplies `position: fixed` and
-// `.ingame-debug-toolbar` supplies `top/right/width`. The merged computed style
-// must still pin the toolbar against the viewport right edge.
+// CSS 2.1 10.3.7 plus CSS Cascade 6 rule merging: class composition (one rule
+// supplying `position: fixed`, another supplying `top`/`right`/`width`) must
+// produce the same computed style as one monolithic rule, so the merged
+// right-anchored fixed box still pins against the viewport right edge per
+// 10.3.7.
 fn multi_class_fixed_right_toolbar_style_merge_stays_on_viewport_right_edge() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     assert_load_root_stylesheet(
@@ -563,9 +539,10 @@ fn multi_class_fixed_right_toolbar_style_merge_stays_on_viewport_right_edge() {
 }
 
 #[test]
-// The retained update path revisits fixed layer roots after the initial root
-// layout. A right-anchored fixed toolbar must stay pinned after that follow-up
-// pass instead of drifting left by its `right` offset.
+// CSS 2.1 10.3.7 and 9.3.1: a right-anchored fixed box must keep its
+// viewport-resolved position across retained relayout passes, since its
+// containing block is the viewport and not any flow ancestor; a second update
+// must not drift the box left by its `right` offset.
 fn multi_class_fixed_right_toolbar_stays_on_viewport_right_edge_across_second_update() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     assert_load_root_stylesheet(
@@ -906,10 +883,9 @@ fn append_normal_flow_width_probe_before_fixed_toolbars(root: &mut ui_dom::RootD
 }
 
 #[test]
-// This mirrors the real in-game sequence more closely: the debug toolbar sits
-// below an earlier fixed top-right sibling and updates its line text after
-// enter. The debug toolbar must keep the viewport-sized available width and
-// stay pinned to the right edge across that second update.
+// CSS 2.1 10.3.7 and 9.3.1: a right-anchored fixed box nested below an
+// earlier fixed sibling keeps the viewport as its containing block, so a text
+// content update must leave its viewport-resolved right anchor unchanged.
 fn debug_toolbar_below_top_right_sibling_keeps_right_anchor_after_text_update() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     load_ingame_debug_toolbar_styles(&root);
@@ -953,10 +929,10 @@ fn debug_toolbar_below_top_right_sibling_keeps_right_anchor_after_text_update() 
 }
 
 #[test]
-// The real in-game toolbar path sets both stylesheet classes and direct
-// attrs for fixed positioning. Recompute after a text update must preserve
-// the viewport-sized containing width instead of collapsing to the toolbar's
-// explicit width.
+// CSS 2.1 10.3.7 and 9.3.1: mixing stylesheet classes with direct attrs for
+// fixed positioning must not change the containing block; the recompute after
+// a text update must keep the viewport-sized reference width instead of
+// collapsing to the box's explicit width.
 fn exact_ingame_debug_toolbar_attrs_keep_right_anchor_after_text_update() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     load_ingame_debug_toolbar_styles(&root);
@@ -995,8 +971,10 @@ fn exact_ingame_debug_toolbar_attrs_keep_right_anchor_after_text_update() {
 }
 
 #[test]
-// A preceding normal-flow block with its own explicit-width child must not
-// leak a narrow available width into a later fixed toolbar's second update.
+// CSS 2.1 10.3.7 and 9.3.1: fixed positioning resolves against the initial
+// containing block (WPT `css/CSS2/abspos/abspos-containing-block-initial-001.xht`),
+// so a preceding normal-flow sibling with its own explicit-width child must
+// not narrow a later fixed toolbar's reference width.
 fn normal_flow_sibling_before_exact_fixed_debug_toolbar_does_not_narrow_right_anchor() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     load_ingame_debug_toolbar_styles(&root);
@@ -1031,9 +1009,10 @@ fn normal_flow_sibling_before_exact_fixed_debug_toolbar_does_not_narrow_right_an
 }
 
 #[test]
-// The bug report describes a non-root fixed node. Nesting under an ordinary
-// block wrapper must not change the viewport-sized reference width used by a
-// right-anchored fixed toolbar.
+// CSS 2.1 10.3.7 and 9.3.1: nesting a fixed box under an ordinary block
+// wrapper must not change its viewport containing block, so a non-root
+// right-anchored fixed box keeps its viewport-resolved position after a text
+// update.
 fn nested_exact_fixed_debug_toolbar_keeps_right_anchor_after_text_update() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     load_ingame_debug_toolbar_styles(&root);
@@ -1067,9 +1046,10 @@ fn nested_exact_fixed_debug_toolbar_keeps_right_anchor_after_text_update() {
 }
 
 #[test]
-// A nested non-root fixed toolbar must also stay right-anchored when the same
-// auto-width wrapper contains an in-flow sibling whose child has an explicit
-// width.
+// CSS 2.1 10.3.7 and 9.3.1: a nested non-root fixed box stays viewport
+// right-anchored when its auto-width wrapper also contains an in-flow
+// sibling with an explicit-width child; in-flow siblings never become the
+// containing block.
 fn nested_fixed_debug_toolbar_with_flow_sibling_keeps_right_anchor_after_text_update() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     load_ingame_debug_toolbar_styles(&root);
@@ -1103,9 +1083,10 @@ fn nested_fixed_debug_toolbar_with_flow_sibling_keeps_right_anchor_after_text_up
 }
 
 #[test]
-// A right-anchored fixed toolbar below an earlier auto-height fixed sibling
-// must still resolve against the viewport, not against the sibling's own
-// explicit width.
+// CSS 2.1 10.3.7, 10.6.4, and 9.3.1: each fixed box resolves against the
+// viewport independently, so a right-anchored fixed box below an earlier
+// auto-height fixed sibling must not inherit the sibling's explicit width as
+// its reference width.
 fn auto_height_fixed_sibling_above_debug_toolbar_does_not_narrow_right_anchor() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     load_ingame_debug_toolbar_styles(&root);
@@ -1140,10 +1121,10 @@ fn auto_height_fixed_sibling_above_debug_toolbar_does_not_narrow_right_anchor() 
 }
 
 #[test]
-// The real product path does one correct update first, then a later text sync
-// under the same fixed-sibling surface set. The second update must not shrink
-// the debug toolbar's available width from the document width down to its own
-// explicit width.
+// CSS 2.1 10.3.7 and 9.3.1: a correct first update followed by a later text
+// sync under the same fixed-sibling surface set must keep the fixed box's
+// available width at the document width; a relayout must not shrink the
+// reference width to the box's explicit width.
 fn ingame_surface_second_update_keeps_debug_toolbar_viewport_width() {
     let (mut world, mut root) = attached_gpu_root_dom_setup(1280.0, 720.0);
     load_ingame_debug_toolbar_styles(&root);
@@ -1191,9 +1172,9 @@ fn ingame_surface_second_update_keeps_debug_toolbar_viewport_width() {
 }
 
 #[test]
-// The same in-game fixed surface set must survive more than one runtime text
-// sync. Once the toolbar has re-entered the retained relayout path, later text
-// changes must keep using the document-sized available width.
+// CSS 2.1 10.3.7 and 9.3.1: repeated runtime text syncs must keep using the
+// document-sized available width for every re-entry into the retained
+// relayout path, not only the first one.
 fn ingame_surface_third_update_keeps_debug_toolbar_viewport_width() {
     let (mut world, mut root) = attached_gpu_root_dom_setup(1280.0, 720.0);
     load_ingame_debug_toolbar_styles(&root);

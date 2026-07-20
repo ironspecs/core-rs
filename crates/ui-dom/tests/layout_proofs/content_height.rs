@@ -49,7 +49,8 @@ fn auto_height_sums_in_flow_block_children_during_root_update() {
 }
 
 #[test]
-// CSS 2.1 9.2.2: display:none removes a child from layout participation.
+// CSS 2.1 9.2.4 (the 'display' property): display:none removes a child from
+// layout participation entirely, unlike visibility:hidden.
 fn display_none_child_does_not_change_parent_retained_height() {
     let (mut world, mut root, container, empty_parent, hidden_parent) =
         container_with_two_parents_setup();

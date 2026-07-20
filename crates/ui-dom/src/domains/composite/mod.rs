@@ -1181,9 +1181,14 @@ fn sync_root_presentation_and_publish_retained_order(
     }
     ordered_surface_entities.extend(raised_surface_entities);
     let parent_z_order = attached_root_parent_z_order_or_zero(world, attached_root_parent.id())?;
+    // The render job queue is crate-owned state that `UiDomRenderPlugin`
+    // installs for full Bevy apps; minimal host worlds (tests, embedded
+    // drivers) get the same empty queue lazily, matching every other queue
+    // access site in this crate. The host cannot install it itself because
+    // the type is crate-private, so this path must not fail on its absence.
+    world.init_resource::<LayerPoolRenderJobQueue>();
     world
-        .get_resource_mut::<LayerPoolRenderJobQueue>()
-        .expect("ui-dom ordered surface updates require LayerPoolRenderJobQueue")
+        .resource_mut::<LayerPoolRenderJobQueue>()
         .replace_root_surface_order(
             attached_root_parent,
             parent_z_order,

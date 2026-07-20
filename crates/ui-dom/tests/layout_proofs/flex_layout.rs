@@ -33,10 +33,10 @@
 //! - Blink line data model:
 //!   <https://chromium.googlesource.com/chromium/src/+/c50f75313342e085919cf7525192f45f2ab649d1/third_party/blink/renderer/core/layout/flex/flex_line.h>
 //!
-//! These proofs are activated batch-by-batch as `ui-dom`'s staged flex solver
-//! matches the researched browser contract. Remaining ignored proofs pin the
-//! external contract ahead of implementation; active proofs lock the admitted
-//! batch behavior in place.
+//! These proofs lock the admitted active-solver behavior in place; the
+//! subset the active solver does not yet admit falls back to the placeholder
+//! solver and is pinned by the `active_flex_gate_*` unit tests in
+//! `src/domains/layout/flex.rs`.
 
 use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom};
 
@@ -402,11 +402,12 @@ fn column_direction_uses_vertical_main_axis_for_item_progression() {
 }
 
 #[test]
-// CSS Flexbox 5.2 and WPT flex-wrap-005.html: wrap-reverse keeps each line's
-// item order intact while reversing the cross-axis stacking order of flex
-// lines. Gecko models this as a reversed cross axis in nsFlexContainerFrame.cpp
-// and Blink applies it as reversed line order plus flipped cross-axis placement
-// in flex_layout_algorithm.cc and ng_flex_layout_algorithm.cc.
+// CSS Flexbox 5.2 and WPT flexbox-flex-wrap-wrap-reverse.htm: wrap-reverse
+// keeps each line's item order intact while reversing the cross-axis stacking
+// order of flex lines (left-to-right items, bottom-to-top lines in
+// horizontal-tb/ltr). Gecko models this as a reversed cross axis in
+// nsFlexContainerFrame.cpp and Blink applies it as reversed line order plus
+// flipped cross-axis placement in flex_layout_algorithm.cc.
 fn wrap_reverse_stacks_wrapped_rows_from_the_opposite_cross_start() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let first = assert_append_div_to(&mut root, container);
@@ -459,16 +460,21 @@ fn wrap_reverse_stacks_wrapped_rows_from_the_opposite_cross_start() {
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, third),
-        5.0,
-        "third wrap-reverse item top",
+        2.5,
+        "third wrap-reverse item top: align-content's initial `normal` behaves as `stretch` \
+         (CSS Align 3 5.1.3), so the 5px leftover splits equally across the two lines \
+         (CSS Flexbox 9.4 #algo-line-stretch) and the third item bottom-aligns at 2.5",
     );
 }
 
 #[test]
 // CSS Align 3 `start`/`end` are logical, while `flex-start`/`flex-end` are
 // flex-relative. In `wrap-reverse`, those differ on the cross axis even for a
-// single-line row container. WebKit added a WPT for this exact boundary in
-// `self-align-start-end-flex-001.html`.
+// single-line row container. Mozilla and Igalia added a WPT for this exact
+// boundary in `css/css-align/self-alignment/self-align-start-end-flex-001.html`,
+// which sets `align-content: stretch` explicitly so the line fills the
+// container cross size; the same geometry falls out of the stretch-behaving
+// `normal` initial value here.
 fn align_items_start_ignores_wrap_reverse_cross_flip() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let tall = assert_append_div_to(&mut root, container);
@@ -485,12 +491,12 @@ fn align_items_start_ignores_wrap_reverse_cross_flip() {
 
     assert_close(
         assert_node_border_box_screen_top_px(&root, tall),
-        30.0,
-        "tall sibling should anchor the wrap-reverse line at cross-end",
+        0.0,
+        "tall sibling should anchor at logical block-start of the stretched line",
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, short),
-        30.0,
+        0.0,
         "logical start should stay at the line's block-start even when wrap-reverse flips flex-start",
     );
 }
@@ -546,8 +552,8 @@ fn align_self_end_overrides_wrap_reverse_logical_start() {
 
     assert_close(
         assert_node_border_box_screen_top_px(&root, tall),
-        30.0,
-        "logical-start sibling should stay at the line's block-start",
+        0.0,
+        "logical-start sibling should stay at the stretched line's block-start",
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, short),
@@ -995,8 +1001,10 @@ fn flex_flow_column_wrap_moves_overflowing_items_into_the_next_column() {
     );
     assert_close(
         assert_node_border_box_screen_left_px(&root, third),
-        10.0,
-        "third wrapped-column item left",
+        20.0,
+        "third wrapped-column item left: align-content's initial `normal` behaves as `stretch` \
+         (CSS Align 3 5.1.3), so the 20px cross-axis leftover splits equally across the two \
+         column lines and the second column starts at 20",
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, third),
@@ -2433,7 +2441,7 @@ fn padded_nested_flex_item_uses_resolved_outer_width_before_inner_layout() {
 // Source anchors:
 // - CSS content-box floor during flex length resolution:
 //   https://www.w3.org/TR/css-flexbox-1/#resolve-flexible-lengths
-// - Blink `LineFlexer::FreezeViolations`:
+// - Blink `LineFlexer::FreezeItems` violation clamp:
 //   https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/renderer/core/layout/flex/line_flexer.cc
 // - Gecko `FlexLine::ResolveFlexibleLengths`:
 //   https://searchfox.org/firefox-main/source/layout/generic/nsFlexContainerFrame.cpp
@@ -2666,9 +2674,13 @@ fn column_gap_separates_items_on_the_same_flex_line() {
 
 #[test]
 // CSS Align 3 gap properties and WPT flexbox-column-row-gap-001.html:
-// row-gap inserts fixed space between wrapped flex lines. When a third 10px
-// item wraps below the first line in a 25px-wide container, a 5px row gap puts
-// the second line at a top offset of 15px instead of 10px.
+// row-gap inserts fixed space between wrapped flex lines. A third 10px item
+// wraps below the first line in a 25px-wide, 40px-high container, and the
+// stretch-behaving `normal` align-content initial (CSS Align 3 5.1.3) splits
+// the 15px line-stretch leftover (40 - 20 - 5, with the inter-line gap
+// subtracted per CSS Flexbox 9.4 #algo-line-stretch, Gecko's
+// CrossAxisPositionTracker, and Blink's flex_layout_algorithm.cc) equally
+// across the two lines, putting the second line's top at 17.5 + 5 = 22.5px.
 fn row_gap_separates_wrapped_flex_lines() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let first = assert_append_div_to(&mut root, container);
@@ -2722,7 +2734,7 @@ fn row_gap_separates_wrapped_flex_lines() {
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, third),
-        15.0,
+        22.5,
         "third wrapped-gap item top",
     );
 }
@@ -2731,7 +2743,9 @@ fn row_gap_separates_wrapped_flex_lines() {
 // CSS Align 3 gap shorthand and WPT flexbox-column-row-gap-001.html: the gap
 // shorthand sets both row-gap and column-gap for flex containers. In this
 // wrapped row case, `gap: 5px` produces the same geometry as `column-gap: 5px`
-// plus `row-gap: 5px`.
+// plus `row-gap: 5px`, including the stretch-behaving `normal` align-content
+// initial line distribution (CSS Align 3 5.1.3, CSS Flexbox 9.4
+// #algo-line-stretch): the second line's top lands at 22.5px.
 fn gap_shorthand_applies_row_and_column_spacing_to_wrapped_flex_lines() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let first = assert_append_div_to(&mut root, container);
@@ -2785,7 +2799,7 @@ fn gap_shorthand_applies_row_and_column_spacing_to_wrapped_flex_lines() {
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, third),
-        15.0,
+        22.5,
         "third shorthand-gap item top",
     );
 }
@@ -2909,8 +2923,11 @@ fn wrap_reverse_gap_shorthand_uses_padded_content_box_edges() {
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, third),
-        9.0,
-        "third padded wrap-reverse item top",
+        6.0,
+        "third padded wrap-reverse item top: the stretch-behaving `normal` align-content \
+         initial (CSS Align 3 5.1.3) splits the 6px leftover (31 - 20 - 5, gap subtracted \
+         per CSS Flexbox 9.4 #algo-line-stretch) across both lines, so the second line \
+         bottom-aligns its items at 3 + 3",
     );
     assert_close(
         assert_node_border_box_screen_left_px(&root, fourth),
@@ -2919,7 +2936,7 @@ fn wrap_reverse_gap_shorthand_uses_padded_content_box_edges() {
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, fourth),
-        9.0,
+        6.0,
         "fourth padded wrap-reverse item top",
     );
 }
@@ -2976,15 +2993,20 @@ fn gap_shorthand_uses_the_padded_content_box_as_its_origin() {
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, third),
-        18.0,
-        "third padded-gap item top",
+        21.0,
+        "third padded-gap item top: the stretch-behaving `normal` align-content initial \
+         (CSS Align 3 5.1.3) splits the 6px leftover (31 - 20 - 5, gap subtracted per CSS \
+         Flexbox 9.4 #algo-line-stretch) across both lines, putting the second line's top \
+         at 3 + 13 + 5",
     );
 }
 
 #[test]
 // CSS Align 3 gap properties and CSS Box 3 padding edges: row-gap is measured
 // between wrapped flex lines inside the content box. Container padding shifts
-// both wrapped rows while preserving the authored line gap.
+// both wrapped rows while preserving the authored line gap and the
+// stretch-behaving `normal` align-content initial (CSS Align 3 5.1.3) line
+// distribution.
 fn row_gap_uses_the_padded_content_box_for_wrapped_line_offsets() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let first = assert_append_div_to(&mut root, container);
@@ -3017,7 +3039,7 @@ fn row_gap_uses_the_padded_content_box_for_wrapped_line_offsets() {
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, third),
-        18.0,
+        21.0,
         "third padded row-gap item top",
     );
 }
@@ -4051,11 +4073,13 @@ fn append_two_column_row_measurement_row(
     assert_set_attr_str(root, value_node, "class", "two-column-measure-value");
 }
 
+#[derive(Clone, Copy)]
 enum TwoColumnRowStyleMode {
     Stylesheet { gap_px: Option<f32> },
     DirectAttrs { gap_px: Option<f32> },
 }
 
+#[derive(Clone, Copy)]
 enum TwoColumnRowWidthMode<'a> {
     Auto,
     Explicit {
@@ -4064,15 +4088,29 @@ enum TwoColumnRowWidthMode<'a> {
     },
 }
 
+#[derive(Clone, Copy)]
 enum TwoColumnRowContentMode {
     Rows,
     Empty,
     DirectText,
 }
 
+#[derive(Clone, Copy)]
 enum GapAttrMode {
     Gap(f32),
     ColumnGap(f32),
+}
+
+/// The six element keys one nested two-column row scenario builds, passed as
+/// one context object to keep helper signatures inside the workspace
+/// pedantic-clippy argument limit.
+struct TwoColumnRowElementKeys {
+    right: DomNodeSlotKey,
+    detail: DomNodeSlotKey,
+    points: DomNodeSlotKey,
+    columns: DomNodeSlotKey,
+    left_column: DomNodeSlotKey,
+    right_column: DomNodeSlotKey,
 }
 
 struct TwoColumnRowScenario {
@@ -4099,7 +4137,7 @@ fn build_nested_two_column_row_scenario_with_gap_attr(
     width_mode: TwoColumnRowWidthMode<'_>,
     content_mode: TwoColumnRowContentMode,
 ) -> TwoColumnRowScenario {
-    let gap_px = gap_attr_mode_value(&gap_attr_mode);
+    let gap_px = gap_attr_mode_value(gap_attr_mode);
     let style_mode = TwoColumnRowStyleMode::DirectAttrs { gap_px: None };
     let mut scenario =
         build_nested_two_column_row_scenario_inner(style_mode, width_mode, content_mode);
@@ -4123,7 +4161,7 @@ fn build_flat_two_column_row_scenario(
     let columns = assert_append_div_to(&mut root, document_root);
     let left_column = assert_append_div_to(&mut root, columns);
     let right_column = assert_append_div_to(&mut root, columns);
-    let gap_px = gap_attr_mode_value(&gap_attr_mode);
+    let gap_px = gap_attr_mode_value(gap_attr_mode);
 
     assert_set_attr_str(&mut root, columns, "display", "flex");
     assert_set_attr_str(&mut root, columns, "width", "320px");
@@ -4167,12 +4205,14 @@ fn build_nested_two_column_row_scenario_inner(
 
     apply_two_column_row_style_mode(
         &mut root,
-        right,
-        detail,
-        points,
-        columns,
-        left_column,
-        right_column,
+        &TwoColumnRowElementKeys {
+            right,
+            detail,
+            points,
+            columns,
+            left_column,
+            right_column,
+        },
         &style_mode,
     );
     apply_two_column_row_width_mode(&mut root, left_column, right_column, width_mode);
@@ -4189,12 +4229,7 @@ fn build_nested_two_column_row_scenario_inner(
 
 fn apply_two_column_row_style_mode(
     root: &mut RootDom,
-    right: DomNodeSlotKey,
-    detail: DomNodeSlotKey,
-    points: DomNodeSlotKey,
-    columns: DomNodeSlotKey,
-    left_column: DomNodeSlotKey,
-    right_column: DomNodeSlotKey,
+    keys: &TwoColumnRowElementKeys,
     style_mode: &TwoColumnRowStyleMode,
 ) {
     match style_mode {
@@ -4204,26 +4239,26 @@ fn apply_two_column_row_style_mode(
                 theme_stylesheet_origin(),
                 &two_column_row_stylesheet_css(*gap_px),
             );
-            assert_set_attr_str(root, right, "class", "two-column-host");
-            assert_set_attr_str(root, detail, "class", "two-column-detail");
-            assert_set_attr_str(root, points, "class", "two-column-block");
-            assert_set_attr_str(root, columns, "class", "two-column-row");
-            assert_set_attr_str(root, left_column, "class", "two-column-item");
-            assert_set_attr_str(root, right_column, "class", "two-column-item");
+            assert_set_attr_str(root, keys.right, "class", "two-column-host");
+            assert_set_attr_str(root, keys.detail, "class", "two-column-detail");
+            assert_set_attr_str(root, keys.points, "class", "two-column-block");
+            assert_set_attr_str(root, keys.columns, "class", "two-column-row");
+            assert_set_attr_str(root, keys.left_column, "class", "two-column-item");
+            assert_set_attr_str(root, keys.right_column, "class", "two-column-item");
         }
         TwoColumnRowStyleMode::DirectAttrs { gap_px } => {
-            assert_set_attr_str(root, right, "display", "block");
-            assert_set_attr_str(root, right, "width", "320px");
-            assert_set_attr_str(root, right, "height", "200px");
-            assert_set_attr_str(root, right, "overflow", "scroll");
-            assert_set_attr_str(root, detail, "display", "block");
-            assert_set_attr_str(root, points, "display", "block");
-            assert_set_attr_str(root, columns, "display", "flex");
+            assert_set_attr_str(root, keys.right, "display", "block");
+            assert_set_attr_str(root, keys.right, "width", "320px");
+            assert_set_attr_str(root, keys.right, "height", "200px");
+            assert_set_attr_str(root, keys.right, "overflow", "scroll");
+            assert_set_attr_str(root, keys.detail, "display", "block");
+            assert_set_attr_str(root, keys.points, "display", "block");
+            assert_set_attr_str(root, keys.columns, "display", "flex");
             if let Some(gap_px) = gap_px {
-                assert_set_attr_str(root, columns, "gap", &format!("{gap_px}px"));
+                assert_set_attr_str(root, keys.columns, "gap", &format!("{gap_px}px"));
             }
-            assert_set_attr_str(root, left_column, "display", "block");
-            assert_set_attr_str(root, right_column, "display", "block");
+            assert_set_attr_str(root, keys.left_column, "display", "block");
+            assert_set_attr_str(root, keys.right_column, "display", "block");
         }
     }
 }
@@ -4299,9 +4334,9 @@ fn apply_gap_attr_mode(
     }
 }
 
-fn gap_attr_mode_value(gap_attr_mode: &GapAttrMode) -> f32 {
+fn gap_attr_mode_value(gap_attr_mode: GapAttrMode) -> f32 {
     match gap_attr_mode {
-        GapAttrMode::Gap(value) | GapAttrMode::ColumnGap(value) => *value,
+        GapAttrMode::Gap(value) | GapAttrMode::ColumnGap(value) => value,
     }
 }
 
@@ -4852,8 +4887,8 @@ fn stylesheet_wrap_reverse_align_self_end_persists_after_recompute() {
 
     assert_close(
         assert_node_border_box_screen_top_px(&root, tall),
-        30.0,
-        "stylesheet wrap-reverse logical-start sibling top",
+        0.0,
+        "stylesheet wrap-reverse logical-start sibling top: the stretched line fills the container cross size, so logical start is the container's block-start",
     );
     assert_close(
         assert_node_border_box_screen_top_px(&root, short),

@@ -1063,6 +1063,12 @@ impl RootDom {
             queue_newly_connected_layer_roots_in_subtree(self, appended_key);
         }
         mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Layout);
+        // Style matching depends on tree position (type selectors, class
+        // rules, inheritance), so an insertion must arm the enclosing layer
+        // root's style phase just like attribute changes and hover do;
+        // otherwise the new subtree is laid out and painted with unstyled
+        // attrs until some later trigger marks the layer root style-dirty.
+        mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Style);
         mark_full_repaint_up_to_layout_root(self, parent_key);
         if self
             .node(appended_key)
@@ -1383,6 +1389,12 @@ impl RootDom {
             fragment_key = next_fragment_key;
         }
         mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Layout);
+        // Imported nodes are born dirty on their own flags, but the style
+        // and paint gates read the enclosing layer root, so the parent chain
+        // must propagate all three flags for the first update to restyle,
+        // relayout, and repaint the imported subtree.
+        mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Style);
+        mark_full_repaint_up_to_layout_root(self, parent_key);
         Ok(imported_top_level_keys)
     }
 

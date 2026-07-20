@@ -953,6 +953,12 @@ fn update_block_flow(
 }
 
 fn collapsed_sibling_margin_overlap_px(flow: BlockFlowState, child_style: NodeStyle) -> f32 {
+    // CSS 2.1 8.3.1 (collapsing margins): adjoining vertical margins collapse
+    // so the used gap is the larger margin, i.e. the overlap saved is the
+    // smaller one. Gecko and Blink run the same max-collapse in
+    // nsBlockFrame.cpp / block_layout_algorithm.cc. Subset note: this path
+    // covers the non-negative margin slice; signed negative-margin collapse
+    // from the same section is not admitted yet.
     if !flow.has_block_children || flow.line_height_px > 0.0 {
         return 0.0;
     }
@@ -1154,6 +1160,10 @@ pub(super) fn auto_content_width_for_exit(
 }
 
 fn shrink_to_fit_content_width(min_px: f32, max_px: f32, available_px: f32) -> f32 {
+    // CSS 2.1 10.3.5/10.3.7 (shrink-to-fit width): the used width is
+    // min(max(preferred minimum width, available width), preferred width).
+    // Gecko applies the same three-way clamp in ReflowInput.cpp's
+    // shrink-wrap path and Blink in its fit-content width computation.
     max_px.min(min_px.max(available_px))
 }
 

@@ -13,6 +13,7 @@ mod normal_flow;
 mod popup_menus;
 mod popup_text_rows;
 mod replaced_elements;
+mod stylesheet_lifecycle;
 mod support;
 mod text_auto_size;
 mod transitions;

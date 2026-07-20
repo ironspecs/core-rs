@@ -1677,20 +1677,27 @@ fn staged_align_content(node: &DomNode) -> FlexLineCrossAxisAlignment {
         return align_content_from_str(value)
             .unwrap_or_else(|| panic!("staged align-content is unsupported: {value}"));
     }
-    staged_place_content_alignments(node).map_or(
-        FlexLineCrossAxisAlignment::FlexStart,
-        |(align_content, _)| align_content,
-    )
+    // CSS Align 3 §5.1.3 (flex containers): the `align-content` initial
+    // value `normal` behaves as `stretch`; CSS Flexbox 1 §8.4 names the same
+    // initial. Browsers therefore stretch lines into leftover cross space
+    // unless the author picks a different packing alignment.
+    staged_place_content_alignments(node)
+        .map_or(FlexLineCrossAxisAlignment::Stretch, |(align_content, _)| {
+            align_content
+        })
 }
 
 fn supported_align_content(node: &DomNode) -> Option<FlexLineCrossAxisAlignment> {
     if let Some(value) = presented_string_attr(node, &DomAttribute::AlignContent) {
         return align_content_from_str(value);
     }
-    Some(supported_place_content_alignments(node).map_or(
-        FlexLineCrossAxisAlignment::FlexStart,
-        |(align_content, _)| align_content,
-    ))
+    // See the CSS Align 3 §5.1.3 note in `staged_align_content`.
+    Some(
+        supported_place_content_alignments(node)
+            .map_or(FlexLineCrossAxisAlignment::Stretch, |(align_content, _)| {
+                align_content
+            }),
+    )
 }
 
 fn align_content_from_str(value: &str) -> Option<FlexLineCrossAxisAlignment> {
@@ -2422,6 +2429,12 @@ fn build_measured_flex_lines(
     container_main_size_px: Option<f32>,
     gap_between_items_px: f32,
 ) -> Vec<FlexLine> {
+    // CSS Flexbox 9.2 (#algo-line-breaking): collect items into lines by
+    // adding each item's outer hypothetical main size plus the inter-item
+    // gap and breaking when the line would exceed the container's inner
+    // main size. This is the same greedy line break as Blink's
+    // `flex_line_breaker.cc` and Gecko's line-building loop in
+    // nsFlexContainerFrame.cpp (`GenerateFlexLines`).
     if items.is_empty() {
         return Vec::new();
     }
@@ -2557,6 +2570,15 @@ fn resolved_line_cross_sizes(
     container_style: FlexContainerStyle,
     container_cross_size_px: Option<f32>,
 ) -> Vec<f32> {
+    // CSS Flexbox 9.4: single-line containers always give their one line the
+    // container's inner cross size (#algo-cross-line); multi-line containers
+    // with `align-content: stretch` distribute the leftover free space
+    // equally into each line's cross size (#algo-line-stretch). The leftover
+    // subtracts the inter-line gaps: Gecko's `CrossAxisPositionTracker`
+    // constructor in nsFlexContainerFrame.cpp and Blink's
+    // flex_layout_algorithm.cc both compute
+    // `content_size - sum(line cross sizes) - gap * (line count - 1)`
+    // before stretching.
     if !container_style.wrap_mode.is_wrapping()
         && let Some(container_cross_size_px) = container_cross_size_px
     {
@@ -2578,8 +2600,11 @@ fn resolved_line_cross_sizes(
     if line_cross_sizes_px.is_empty() {
         return line_cross_sizes_px;
     }
-    let remaining_cross_space_px =
-        container_cross_size_px - total_line_cross_size_px(&line_cross_sizes_px, 0.0);
+    let remaining_cross_space_px = container_cross_size_px
+        - total_line_cross_size_px(
+            &line_cross_sizes_px,
+            container_style.gap_sizes.between_lines_px,
+        );
     if remaining_cross_space_px <= 0.0 {
         return line_cross_sizes_px;
     }
@@ -2894,6 +2919,13 @@ fn resolve_flex_line_item_resolution_states(
     container_main_size_px: f32,
     gap_between_items_px: f32,
 ) -> Vec<FlexLineItemResolutionState> {
+    // CSS Flexbox 9.7 (#resolve-flexible-lengths): freeze inflexible items,
+    // then loop the free-space distribution (scaled by grow factors, or by
+    // shrink factors times base size) with min/max/auto-min violation
+    // clamping and refreezing until every item is frozen. Blink mirrors this
+    // in `LineFlexer::ResolveFlexibleLengths`/`FreezeItems` (line_flexer.cc)
+    // and Gecko in `FlexLine::ResolveFlexibleLengths`
+    // (nsFlexContainerFrame.cpp).
     let is_using_flex_grow =
         flex_line_uses_flex_grow(items, container_main_size_px, gap_between_items_px);
     let mut resolution_states = initial_flex_line_item_resolution_states(items);
@@ -4989,7 +5021,14 @@ mod tests {
     }
 
     #[test]
-    fn active_flex_gate_rejects_wrap_without_definite_cross_sizes() {
+    fn active_flex_gate_admits_wrap_with_browser_default_stretch_cross_size() {
+        // CSS Flexbox 1 §8.3 (align-items) defines the initial value as
+        // `stretch`, and CSS Align 3 §5.1.3 resolves `normal` to `stretch`
+        // for flex items, so a wrap item with an auto cross size is resolved
+        // by stretching to the line cross size rather than gated out. Gecko
+        // and Blink both default flex items to this stretch path; the active
+        // solver covers it, matching the single-line admission pinned by
+        // `active_flex_gate_uses_browser_default_stretch_for_auto_cross_size_items`.
         let (mut root, container, _) = flex_container_with_context();
         let child = append_div(&mut root, container);
         root.set_attr_str(container, "width", "50px")
@@ -5004,9 +5043,39 @@ mod tests {
                 .expect("container style");
 
         assert!(
+            active_flex_subset_is_supported(&root, container, style, &inherited_style)
+                .expect("gate should evaluate"),
+            "active flex solver should admit wrap when the item auto cross size resolves through the browser-default align-items:stretch path",
+        );
+    }
+
+    #[test]
+    fn active_flex_gate_rejects_wrap_with_non_stretch_auto_cross_size_item() {
+        // Without a definite cross size and without stretch resolution, the
+        // active solver has no line cross size input for the item yet, so the
+        // wrap case stays with the placeholder solver. CSS Flexbox 1 §9.4
+        // (`#line-sizing`) sizes lines from item hypothetical cross sizes;
+        // the active solver only covers that when the cross size is definite
+        // or stretch-resolved.
+        let (mut root, container, _) = flex_container_with_context();
+        let child = append_div(&mut root, container);
+        root.set_attr_str(container, "width", "50px")
+            .expect("width should set");
+        root.set_attr_str(container, "flex-wrap", "wrap")
+            .expect("wrap should set");
+        root.set_attr_str(container, "align-items", "flex-start")
+            .expect("align-items should set");
+        root.set_attr_str(child, "flex-basis", "30px")
+            .expect("basis should set");
+
+        let (style, inherited_style) =
+            resolved_node_style(&root, container, &InheritedStyleContext::default())
+                .expect("container style");
+
+        assert!(
             !active_flex_subset_is_supported(&root, container, style, &inherited_style)
                 .expect("gate should evaluate"),
-            "active flex solver should keep wrap gated when line cross sizes are not definite yet",
+            "active flex solver should keep wrap gated when the item cross size is neither definite nor stretch-resolved",
         );
     }
 

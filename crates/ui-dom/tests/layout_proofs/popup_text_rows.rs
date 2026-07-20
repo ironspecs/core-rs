@@ -48,6 +48,9 @@ struct PopupTextRowsScenario {
 }
 
 #[test]
+// CSS 2.1 10.6.3 (normal-block auto height) and 10.7 (#min-max-heights):
+// while content height stays under `max-height`, the used height is the
+// content height and the clamp must not engage.
 fn fixed_popup_text_rows_keep_auto_height_below_max_height() {
     let labels = [
         "Scene 0", "Scene 1", "Scene 2", "Scene 3", "Scene 4", "Scene 5", "Scene 6",
@@ -99,6 +102,10 @@ fn fixed_popup_text_rows_keep_auto_height_below_max_height() {
 }
 
 #[test]
+// CSS 2.1 10.7 (#min-max-heights) and CSS2.1-suite `max-height-108.htm`:
+// once the computed content height exceeds `max-height`, the used height is
+// `max-height`, while the retained content height stays at the full extent
+// for scroll measurement (CSS 2.1 11.1.1 #overflow).
 fn fixed_popup_text_rows_clamp_only_after_content_exceeds_max_height() {
     let labels = [
         "Scene 0", "Scene 1", "Scene 2", "Scene 3", "Scene 4", "Scene 5", "Scene 6", "Scene 7",
@@ -134,6 +141,9 @@ fn fixed_popup_text_rows_clamp_only_after_content_exceeds_max_height() {
 }
 
 #[test]
+// CSS 2.1 10.6.3 plus 10.7: auto height recomputes from live content after
+// row removal, so the clamp disengages and the used height returns to the
+// content height.
 fn fixed_popup_text_rows_shrink_back_below_max_height_after_row_removal() {
     let labels = [
         "Scene 0", "Scene 1", "Scene 2", "Scene 3", "Scene 4", "Scene 5", "Scene 6", "Scene 7",
@@ -191,6 +201,8 @@ fn fixed_popup_text_rows_shrink_back_below_max_height_after_row_removal() {
 }
 
 #[test]
+// CSS 2.1 10.6.3: with no in-flow children left, the auto content height
+// collapses to zero and only the authored vertical padding remains.
 fn fixed_popup_text_rows_shrink_to_padding_when_all_rows_are_removed() {
     let labels = [
         "Scene 0", "Scene 1", "Scene 2", "Scene 3", "Scene 4", "Scene 5", "Scene 6", "Scene 7",
@@ -236,6 +248,8 @@ fn fixed_popup_text_rows_shrink_to_padding_when_all_rows_are_removed() {
 }
 
 #[test]
+// CSS 2.1 10.6.4 (absolutely positioned auto height) and 10.7: below
+// `max-height`, an absolutely positioned popup sizes to its in-flow content.
 fn absolute_popup_text_rows_keep_auto_height_below_max_height() {
     let labels = [
         "Scene 0", "Scene 1", "Scene 2", "Scene 3", "Scene 4", "Scene 5", "Scene 6",
@@ -270,6 +284,8 @@ fn absolute_popup_text_rows_keep_auto_height_below_max_height() {
 }
 
 #[test]
+// CSS 2.1 10.7 and CSS2.1-suite `max-height-109.htm`: growth that pushes
+// content past `max-height` engages the clamp on the next layout pass.
 fn fixed_popup_text_rows_clamp_after_growing_past_max_height() {
     let labels = [
         "Scene 0", "Scene 1", "Scene 2", "Scene 3", "Scene 4", "Scene 5", "Scene 6",
@@ -346,6 +362,8 @@ fn fixed_popup_text_rows_clamp_after_growing_past_max_height() {
 }
 
 #[test]
+// CSS Text 3 soft wrapping plus CSS 2.1 10.7: wrapped rows grow the content
+// height, and the resulting over-max content engages the `max-height` clamp.
 fn wrapped_text_rows_can_drive_popup_clamp_height() {
     let labels = [
         "สถานะเซสชันกำลังทำงานและมีรายละเอียดเพิ่มเติม",

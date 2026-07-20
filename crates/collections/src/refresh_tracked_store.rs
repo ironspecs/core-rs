@@ -266,11 +266,8 @@ where
         let old_marker = self.entries_by_key.get(key)?.recency_marker;
         let new_marker = self.next_recency_marker();
 
-        if let Some(entry) = self.entries_by_key.get_mut(key) {
-            entry.recency_marker = new_marker;
-        } else {
-            return None;
-        }
+        let entry = self.entries_by_key.get_mut(key)?;
+        entry.recency_marker = new_marker;
 
         self.remove_marker(old_marker);
         self.insert_marker(new_marker, key.clone());
@@ -565,7 +562,7 @@ mod tests {
 
         assert!(store.is_stale(&2, Duration::from_secs(1)));
         assert!(store.is_stale(&1, Duration::from_secs(1)));
-        assert!(!store.is_stale(&1, Duration::from_secs(60)));
+        assert!(!store.is_stale(&1, Duration::from_mins(1)));
     }
 
     #[test]

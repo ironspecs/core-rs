@@ -45,7 +45,6 @@ fn public_external_layer_target_exposes_document_image() {
 }
 
 #[test]
-#[ignore = "vendor integration boundary"]
 fn root_dom_retries_after_dead_bevy_parent_rejection() {
     let mut root = RootDom::new(RootDomContext::new_gpu());
     let node = root.create_element(DomTag::Div).expect("node");
@@ -69,7 +68,6 @@ fn root_dom_retries_after_dead_bevy_parent_rejection() {
 }
 
 #[test]
-#[ignore = "vendor integration boundary"]
 fn layer_pool_reuses_a_surface_asset_for_matching_extents() {
     let mut world = integration_world();
     let first = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 65.0, 10.0));

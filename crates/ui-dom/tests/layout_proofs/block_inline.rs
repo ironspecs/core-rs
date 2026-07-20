@@ -14,7 +14,7 @@
 //! - CSS 2.1 10.6.1 inline, non-replaced height and 10.8 line height:
 //!   <https://www.w3.org/TR/CSS21/visudet.html#inline-non-replaced>
 //!   <https://www.w3.org/TR/CSS21/visudet.html#line-height>
-//! - CSS 2.1 10.3.10 inline-block, non-replaced elements in normal flow:
+//! - CSS 2.1 10.3.9 inline-block, non-replaced elements in normal flow:
 //!   <https://www.w3.org/TR/CSS21/visudet.html#inlineblock-width>
 //! - CSS 2.1 10.6.3 block formatting context height calculation:
 //!   <https://www.w3.org/TR/CSS21/visudet.html#normal-block>
@@ -401,7 +401,7 @@ fn span_text_child_ignores_authored_inline_width_and_height() {
 }
 
 #[test]
-// CSS 2.1 9.2.2 and 10.3.10 plus WPT inline-block-001.xht: an inline-block is
+// CSS 2.1 9.2.2 and 10.3.9 plus WPT inline-block-001.xht: an inline-block is
 // an atomic inline-level box whose inner block formatting context shrink-wraps
 // to its contents, then adds authored padding around that content box.
 fn inline_block_text_chip_shrink_wraps_text_width_plus_padding() {

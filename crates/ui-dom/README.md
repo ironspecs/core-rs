@@ -143,12 +143,14 @@ caller-owned source buffer retained outside `ui-dom`.
 
 Internally, DOM edits mark one or more retained dirty flags on nodes:
 
+- `style`
 - `layout`
 - `paint`
 - `composite`
 
 Those flags drive the internal sync pipelines on the next frame. The pipelines are separate on purpose:
 
+- style recomputes matched rules and resolved attributes for dirty layer-root subtrees; insertions, style-affecting attribute changes, pseudo-state changes, and stylesheet revisions all propagate style dirtiness up to the enclosing layer root
 - layout updates the retained geometric results for one layout tree
 - paint draws directly into the Bevy image owned by one composite layer
 - composite arranges owned layers relative to the foreign anchor parent and in the correct sibling order
@@ -160,18 +162,6 @@ The cheap steady-state rule is important:
 - if only composite changed, do not rerun layout or paint
 - when there is a change, do the minimum pipeline work needed to make the presented layers correct again
 
-## Visual Regression Artifacts
-
-The crate-level visual suites now keep rolling artifacts beside the crate:
-
-- `crates/ui-dom/tests/artifacts/<suite>/current`
-- `crates/ui-dom/tests/artifacts/<suite>/previous`
-- `crates/ui-dom/tests/artifacts/<suite>/diff`
-
-The first run bootstraps `current` and records that no previous baseline
-existed. Later runs rotate `current` to `previous`, write a fresh `current`,
-and compare the new images to the immediately prior run.
-
 ## Composite-Layer Root Scheduling
 
 The sync entrypoint should be composite-layer rooted.
@@ -180,8 +170,9 @@ The sync entrypoint should be composite-layer rooted.
 - that DOM node identifies the layout tree whose layout and paint contribute to that layer image
 - initial attach and later updates use the same layer-root layout schedule before paint and hit testing
 - sync should start from those layer roots, inspect retained dirtiness there, and then run:
-  - layout first when needed
-  - paint second when needed
+  - style first when needed
+  - layout second when needed
+  - paint third when needed
   - composite last when needed
 
 That keeps the scheduling unit honest:

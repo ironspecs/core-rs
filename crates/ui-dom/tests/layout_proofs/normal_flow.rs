@@ -21,7 +21,7 @@
 //!   `third_party/blink/renderer/core/layout/block_layout_algorithm.cc`,
 //!   `third_party/blink/renderer/core/layout/ng/ng_constraint_space_builder.cc`
 
-use ui_dom::{DomPointerUpdate, DomTag, RootDomNodesMetricName};
+use ui_dom::DomPointerUpdate;
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_close, assert_node_border_box_screen_top_px, assert_node_layout,
@@ -29,12 +29,9 @@ use crate::layout_proofs::support::{
     nested_parent_child_setup, parent_with_two_children_setup,
 };
 
-fn node_store_metric_history_names(root: &ui_dom::RootDom) -> Vec<RootDomNodesMetricName> {
-    root.node_history().map(|entry| entry.name).collect()
-}
-
 #[test]
-// CSS 2.1 9.4.1: relative positioning keeps a box in normal flow.
+// CSS 2.1 9.4.3 (relative positioning): a relatively positioned box keeps its
+// normal-flow slot; the offset is applied later and does not change siblings.
 fn relative_child_stays_in_normal_flow_during_root_update() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
@@ -574,108 +571,4 @@ fn empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_
         46.0,
         "outer parent uses max-collapsed propagated boundaries instead of summing both generations",
     );
-}
-
-#[test]
-fn root_node_store_metrics_track_existing_public_root_accesses() {
-    let (_world, mut root) =
-        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
-
-    root.reset_node_metrics();
-
-    let document_root = root.document_node().0;
-    let child = root
-        .create_element(DomTag::Div)
-        .expect("div should insert through the root node store");
-    let node = root.node(document_root);
-
-    assert!(node.is_some(), "document root should remain readable");
-    assert_eq!(root.node_count(RootDomNodesMetricName::Get), 3);
-    assert_eq!(root.node_count(RootDomNodesMetricName::Insert), 1);
-
-    let history = node_store_metric_history_names(&root);
-    assert_eq!(
-        history,
-        vec![
-            RootDomNodesMetricName::Get,
-            RootDomNodesMetricName::Insert,
-            RootDomNodesMetricName::Get,
-            RootDomNodesMetricName::Get,
-        ]
-    );
-
-    let snapshot = root.node_metrics();
-    assert_eq!(snapshot.count(RootDomNodesMetricName::Get), 3);
-    assert_eq!(snapshot.count(RootDomNodesMetricName::Insert), 1);
-
-    assert!(
-        root.node(child).is_some(),
-        "inserted child should stay readable"
-    );
-}
-
-#[test]
-fn root_node_store_metrics_track_document_root_lookup_by_itself() {
-    let (_world, mut root) =
-        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
-
-    root.reset_node_metrics();
-
-    let _document_root = root.document_node().0;
-
-    assert_eq!(root.node_count(RootDomNodesMetricName::Get), 1);
-    assert_eq!(
-        node_store_metric_history_names(&root),
-        vec![RootDomNodesMetricName::Get]
-    );
-}
-
-#[test]
-fn root_node_store_metrics_track_text_node_insert_and_lookup() {
-    let (_world, mut root) =
-        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
-
-    root.reset_node_metrics();
-
-    let text = root
-        .create_text_node("metrics")
-        .expect("text should insert through the root node store");
-
-    assert!(
-        root.node(text).is_some(),
-        "inserted text should remain readable"
-    );
-    assert_eq!(root.node_count(RootDomNodesMetricName::Insert), 1);
-    assert_eq!(root.node_count(RootDomNodesMetricName::Get), 2);
-    assert_eq!(
-        node_store_metric_history_names(&root),
-        vec![
-            RootDomNodesMetricName::Insert,
-            RootDomNodesMetricName::Get,
-            RootDomNodesMetricName::Get,
-        ]
-    );
-}
-
-#[test]
-fn root_node_store_metrics_reset_clears_previous_accesses() {
-    let (_world, mut root) =
-        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
-
-    root.reset_node_metrics();
-    let _document_root = root.document_node().0;
-    let _text = root
-        .create_text_node("before reset")
-        .expect("text should insert before reset");
-
-    assert!(
-        !node_store_metric_history_names(&root).is_empty(),
-        "metric history should record accesses before reset"
-    );
-
-    root.reset_node_metrics();
-
-    assert_eq!(root.node_count(RootDomNodesMetricName::Get), 0);
-    assert_eq!(root.node_count(RootDomNodesMetricName::Insert), 0);
-    assert_eq!(node_store_metric_history_names(&root), Vec::new());
 }

@@ -3,10 +3,24 @@
 //! Replaced-element layout proofs.
 //!
 //! Spec references:
-//! - CSS 2.1 10.6.2 replaced elements in normal flow:
+//! - CSS 2.1 10.6.2 replaced element height from the intrinsic ratio:
 //!   <https://www.w3.org/TR/CSS21/visudet.html#inline-replaced-height>
-//! - CSS 2.1 10.3.2 replaced elements in normal flow:
+//! - CSS 2.1 10.3.2 replaced element width from the intrinsic ratio:
 //!   <https://www.w3.org/TR/CSS21/visudet.html#inline-replaced-width>
+//! - CSS Images 3 5.3 default object size (300x150) for replaced content
+//!   with no intrinsic dimensions:
+//!   <https://www.w3.org/TR/css-images-3/#default-object-size>
+//!
+//! Browser-backed subset pinned here: only the aspect-ratio transfer math of
+//! CSS 2.1 10.3.2/10.6.2 (one authored dimension resolves through the
+//! element's intrinsic ratio). No WPT or browser test covers the placeholder
+//! ratio itself: a real `img` with no intrinsic dimensions falls back to the
+//! 300x150 default object size (CSS Images 3 5.3, `LayoutReplaced::kDefaultWidth`
+//! in Blink's `layout_replaced.cc` and the `GetIntrinsicRatio` image handling
+//! in Gecko's `nsImageFrame.cpp`), while `ui-dom`
+//! deliberately seeds its unloaded `img` placeholder with a 16:9 intrinsic
+//! ratio as a crate-owned invariant. The cited CSS 2.1 sections govern the
+//! transfer formulas only; they do not govern the 16:9 ratio.
 
 use ui_dom::DomPointerUpdate;
 
@@ -16,8 +30,10 @@ use crate::layout_proofs::support::{
 };
 
 #[test]
-// ui-dom invariant: placeholder img intrinsic ratio transfers authored width
-// into used height during the real update path.
+// Browser-backed: CSS 2.1 10.6.2 transfers an authored width through the
+// element's intrinsic ratio. Crate-owned: the placeholder's 16:9 ratio (see
+// module header), which a browser would replace with the 300x150 default
+// object size for an image with no intrinsic dimensions.
 fn img_with_only_width_uses_intrinsic_aspect_ratio_for_height() {
     let (mut world, mut root, img) = img_under_document_setup();
 
@@ -33,8 +49,9 @@ fn img_with_only_width_uses_intrinsic_aspect_ratio_for_height() {
 }
 
 #[test]
-// ui-dom invariant: placeholder img intrinsic ratio transfers authored height
-// into used width during the real update path.
+// Browser-backed: CSS 2.1 10.3.2 transfers an authored height through the
+// element's intrinsic ratio. Crate-owned: the placeholder's 16:9 ratio (see
+// module header).
 fn img_with_only_height_uses_intrinsic_aspect_ratio_for_width() {
     let (mut world, mut root, img) = img_under_document_setup();
 

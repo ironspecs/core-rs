@@ -12,6 +12,17 @@ pub fn attached_gpu_root_dom_default_viewport_setup() -> (World, RootDom) {
 }
 
 pub fn attached_gpu_root_dom_setup(width_px: f32, height_px: f32) -> (World, RootDom) {
+    attached_gpu_root_dom_setup_with_context(RootDomContext::new_gpu(), width_px, height_px)
+}
+
+/// Same attached GPU setup as [`attached_gpu_root_dom_setup`], but the root
+/// is constructed from the caller-provided context so stylesheet state can be
+/// prepared before `RootDom::new`.
+pub fn attached_gpu_root_dom_setup_with_context(
+    context: std::sync::Arc<RootDomContext>,
+    width_px: f32,
+    height_px: f32,
+) -> (World, RootDom) {
     let mut world = World::new();
     install_direct_gpu_support(&mut world);
 
@@ -22,7 +33,7 @@ pub fn attached_gpu_root_dom_setup(width_px: f32, height_px: f32) -> (World, Roo
         },))
         .id();
 
-    let mut root = RootDom::new(RootDomContext::new_gpu());
+    let mut root = RootDom::new(context);
     root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
         .expect("layout proof root should attach");
 

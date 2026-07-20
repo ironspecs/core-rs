@@ -15,10 +15,13 @@
 //!   <https://chromium.googlesource.com/chromium/src/+/HEAD/third_party/blink/renderer/core/css/white_space.h>
 //! - Blink white-space behavior tests:
 //!   <https://chromium.googlesource.com/chromium/src/+/HEAD/third_party/blink/renderer/core/css/white_space_test.cc>
-//! - Gecko longhand definitions for `white-space-collapse` and `text-wrap-mode`:
-//!   <https://searchfox.org/firefox-main/source/servo/components/style/properties/longhands.toml#7501>
-//! - Gecko `white-space` shorthand definition:
-//!   <https://searchfox.org/firefox-main/source/servo/components/style/properties/shorthands.toml#962>
+//! - Gecko `[white-space-collapse]` and `[text-wrap-mode]` longhand definitions
+//!   in `servo/components/style/properties/longhands.toml` (revision-pinned so
+//!   the link cannot drift):
+//!   <https://searchfox.org/firefox-main/rev/ad704963dac696aa26a7cb39eded9642c10c0ae0/servo/components/style/properties/longhands.toml>
+//! - Gecko `[white-space]` shorthand definition in
+//!   `servo/components/style/properties/shorthands.toml` (revision-pinned):
+//!   <https://searchfox.org/firefox-main/rev/ad704963dac696aa26a7cb39eded9642c10c0ae0/servo/components/style/properties/shorthands.toml>
 
 use ui_dom::{DomAttribute, DomAttributeValue, DomIntrinsic, DomNode, DomPointerUpdate};
 
@@ -565,9 +568,39 @@ fn stylesheet_white_space_break_spaces_preserves_space_width_after_recompute() {
 }
 
 #[test]
-#[ignore = "ui-dom currently proves the shared preserve-and-wrap slice; enable when retained text layout exposes trailing-space break positions"]
-fn break_spaces_preserves_trailing_space_break_positions() {
-    let _ = layout_for_text_with_white_space("Alpha   Beta   ", "break-spaces", 54.0);
+// CSS Text 4 `break-spaces`
+// (<https://www.w3.org/TR/css-text-4/#white-space-property>, value definition
+// at <https://www.w3.org/TR/css-text-3/#valdef-white-space-break-spaces>):
+// preserved spaces have a soft wrap opportunity after every one of them,
+// take up advance space, and never hang, so trailing spaces that overflow
+// the line wrap onto their own line and count toward intrinsic sizes.
+// Closest WPT oracle: `css/css-text/white-space/break-spaces-005.html`,
+// which asserts preserved-space advance width is not collapsed so the
+// spaces wrap. No WPT file covers plain trailing spaces specifically; the
+// trailing-space WPT family (`trailing-ideographic-space-*.html`) covers
+// ideographic space, so this proof pins the browser-backed slice named
+// above: wrap behavior plus max-content advance of plain trailing
+// preserved spaces.
+fn break_spaces_wraps_trailing_spaces_onto_their_own_line() {
+    let trailing = layout_for_text_with_white_space("Alpha Beta   ", "break-spaces", 70.0);
+    let trimmed = layout_for_text_with_white_space("Alpha Beta", "break-spaces", 70.0);
+
+    assert_close(
+        trimmed.block_height,
+        trimmed.line_height,
+        "break-spaces text without trailing spaces fits one line at this width",
+    );
+    assert_close(
+        trailing.block_height,
+        trailing.line_height * 2.0,
+        "break-spaces trailing preserved spaces wrap onto their own line",
+    );
+    assert!(
+        trailing.max_content_width > trimmed.max_content_width,
+        "break-spaces trailing preserved spaces must take up max-content advance: trailing={} trimmed={}",
+        trailing.max_content_width,
+        trimmed.max_content_width,
+    );
 }
 
 fn layout_for_text_with_white_space(

@@ -66,6 +66,9 @@ Normal-flow coverage map:
   invariants.
 - `white_space.rs`: CSS Text-backed `white-space` collapse, preservation, and
   wrapping behavior.
+- `stylesheet_lifecycle.rs`: stylesheet load/attach/append/import orderings
+  must all present styled content on the first update, and unloaded
+  stylesheets must stay unapplied.
 
 Known boundary split:
 
@@ -73,6 +76,9 @@ Known boundary split:
 - `src/domains/composite/mod.rs` tests must still prove clipped-layer
   presentation size, because rendered popup height can diverge from retained
   layout if that seam goes stale.
+- Metric and allocation contracts do not live in `layout_proofs/`; they live in
+  `tests/perf_metric_contract.rs` (work-site and node-store counters) and
+  `tests/perf_allocation_contract.rs` (allocator windows).
 - Pointer and interaction coverage does not live in `layout_proofs/`.
   - Attached event targeting: `src/domains/visitor/event_target.rs`
   - Hover and active pseudo-state targeting: `src/domains/visitor/pseudo_state.rs`
