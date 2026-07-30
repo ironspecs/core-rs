@@ -159,8 +159,15 @@ never on mocked internals, and never through visibility that exists
 only because a test wanted it. If a test cannot be expressed that way,
 examine what it is actually asserting: the genuine unit assertion
 belongs in the owning file's own inline tests, and the cross-module
-assertion belongs in `tests/`. Production code is never reshaped to
-accommodate a test.
+assertion belongs in `tests/`. When behavior's output is not
+observable, prefer growing the metrics/history emission surface over
+keeping an internal test; a test that is still inexpressible after
+emission is moot, and so is functionality with no observable output.
+Production code is never reshaped to accommodate a test.
+
+**`history()` assertions are ordering-only** — assert one event's
+position before or after another's, never that the history equals an
+exact array. Instrumentation must be free to grow.
 
 **Enforcement:** `syn` parses each `#[cfg(test)]` module and walks every
 `use` tree (including braced groups) and every path in expression, type,

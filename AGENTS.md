@@ -92,6 +92,17 @@ asserted through public API and designed metrics/history accessors. Do not add
 mocks, test-only constructors, or visibility that exists only because a test
 wanted it — reshape the test, not the production code.
 
+When behavior's output is not observable, prefer growing the metrics/history
+emission surface over writing internal tests: real counts of a function's cost
+and business output justify the code's existence. A test that still cannot be
+expressed through the public surface after emission is moot, and functionality
+with no observable output is moot — delete both rather than bury them.
+
+`history()` assertions are ordering-only: assert that one event's position is
+before or after another's (`position(a) < position(b)`), never that the
+history equals an exact array. Instrumentation must be free to grow without
+breaking every test; exact-array assertions make growth a breaking change.
+
 ## Panic and boundary policy
 
 In production code, `.expect()`, `.unwrap()`, `assert!`, and `debug_assert!`
