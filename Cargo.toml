@@ -4,6 +4,7 @@ members = [
   "crates/structural-lint",
   "crates/ui-dom",
   "crates/ui-icons",
+  "xtask",
 ]
 resolver = "2"
 

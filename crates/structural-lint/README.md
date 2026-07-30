@@ -34,6 +34,12 @@ an error with the count when any exist. `collect_violations` returns the
 same data as a `Vec<Violation>` for census and tooling use. Exit-code and
 reporting policy belongs to the calling binary.
 
+Repos without an `xtask` can self-check with a single integration test in
+`tests/` that calls `collect_violations` on the workspace root and asserts
+the result is empty — the lint then runs as part of `cargo test
+--workspace`. Repos with an `xtask` should prefer the xtask command, which
+is what `core-rs` itself does.
+
 There are no exemptions, no grandfathered files, and no suppression
 attributes. Every rule below is mechanical and absolute within the roots a
 repo chooses to lint.

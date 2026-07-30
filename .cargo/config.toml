@@ -4,3 +4,7 @@ rustflags = ["-Dwarnings"]
 
 [env]
 SCCACHE_CACHE_SIZE = { value = "40G", force = false }
+
+[alias]
+xtask = "run --package xtask --"
+lint = "xtask lint"

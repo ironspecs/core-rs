@@ -14,9 +14,14 @@ This repository is a Rust monorepo for stable, reusable foundation crates.
 ## Ownership boundaries
 
 - `collections` owns generic collection behavior and metrics helpers.
+- `structural-lint` owns the structural rules below and their `syn`-based
+  enforcement. It is the single implementation; every consuming repo wires
+  it into its own xtask with its own lint roots.
 - `ui-icons` owns shared icon identifiers and icon asset metadata.
 - `ui-dom` owns the DOM, layout, paint, text, and Bevy/WGPU integration that
   belong to the shared UI runtime boundary.
+- `xtask` owns repo automation (the `lint` command). It is the only binary
+  in this workspace and contains no product logic.
 
 Do not move app workflows, operator logic, or product orchestration into this
 repo.
@@ -46,6 +51,10 @@ asset ownership, update the affected `README.md` files in the same change.
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `cargo test --workspace`
+- `cargo xtask lint` (structural rules; see below)
+
+The `Justfile` mirrors these as `just fmt`, `just clippy`, `just test`,
+`just lint-xtask`, and the combined `just lint`.
 
 Do not commit with `--no-verify` unless the user explicitly asks for a
 checkpoint commit.
@@ -94,6 +103,29 @@ Do not use panic-backed validation on boundary data such as:
 
 Prefer typed errors or explicit boundary rejection.
 
+## Structural rules
+
+This repo enforces the five structural rules owned by `structural-lint`
+on itself via `cargo xtask lint`. The rules are mechanical and absolute
+within `crates/`:
+
+1. **Behavior-type file naming** — a type with an `impl` (or a `trait`)
+   lives in its own `snake_case` file; `mod.rs`/`lib.rs` hold no
+   behavior-bearing types.
+2. **Behavior files require unit tests** — every file with behavior
+   methods has a `#[cfg(test)]` module with at least one real, non-empty
+   test. Placeholder tests are not acceptable in this repo.
+3. **Test isolation** — inline test modules import `use super::*` plus
+   external crates only. Cross-module fixtures are declared at file scope
+   as `#[cfg(test)] use crate::...;`, never inside the test module.
+4. **No recursion** — iterative loops or visitor patterns only.
+5. **Definition and impl in the same file** — a type's `impl` blocks live
+   in the file named after the type.
+
+The canonical rule text and rationale live in
+`crates/structural-lint/README.md`. Do not weaken, suppress, or
+grandfather violations in this repo.
+
 ## Workspace scope rules
 
 Add a crate here only if it is:
@@ -104,7 +136,8 @@ Add a crate here only if it is:
 
 Do not add:
 
-- binaries
+- binaries (single exception: `xtask`, the repo-automation entry point;
+  it holds no product logic)
 - app shells
 - repo-local experiments
 - crates whose main value is product orchestration
