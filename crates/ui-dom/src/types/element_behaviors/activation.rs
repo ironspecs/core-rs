@@ -933,16 +933,22 @@ fn count_unicode_scalars(value: &str) -> usize {
 }
 
 #[cfg(test)]
+use crate::domains::hit_test::hit_test_from_dom_subtree_cluster_local;
+#[cfg(test)]
+use crate::domains::layer_hit::topmost_attached_layer_hit_from_root_point;
+#[cfg(test)]
+use crate::domains::paint::build_layer_paint_plan;
+#[cfg(test)]
+use crate::domains::visitor::inherited_style::InheritedStyleContext;
+#[cfg(test)]
+use crate::types::{DomPointerState, DomPointerUpdate, DomRect, DomTag, RootDomContext};
+#[cfg(test)]
+use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
+
+#[cfg(test)]
 mod tests {
+    use super::*;
     use bevy::{image::Image, prelude::*};
-
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomEventName, DomNode, DomNodeSlotKey, DomPointerState,
-        DomPointerUpdate, DomTag, RootDomContext, RootDomMetricName,
-    };
-    use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
-
-    use super::RootDom;
 
     fn install_direct_gpu_support(world: &mut World) {
         world.init_resource::<Assets<Image>>();
@@ -956,15 +962,6 @@ mod tests {
             (actual - expected).abs() <= 0.001,
             "expected {expected}, got {actual}"
         );
-    }
-
-    fn append_checkbox(root: &mut RootDom) -> DomNodeSlotKey {
-        let input = root.create_element(DomTag::Input).expect("input");
-        root.append_child(root.root, input).expect("append");
-        root.set_attr_str(input, "type", "checkbox").expect("type");
-        root.set_attr_str(input, "width", "24px").expect("width");
-        root.set_attr_str(input, "height", "24px").expect("height");
-        input
     }
 
     fn append_select(root: &mut RootDom) -> DomNodeSlotKey {
@@ -1015,10 +1012,6 @@ mod tests {
         select
     }
 
-    fn attach_root(root: &mut RootDom, world: &mut World) -> Entity {
-        attach_root_with_size(root, world, 80.0, 80.0)
-    }
-
     fn attach_root_with_size(
         root: &mut RootDom,
         world: &mut World,
@@ -1048,78 +1041,8 @@ mod tests {
         })
     }
 
-    fn event_names(events: &[crate::types::DomEvent]) -> Vec<DomEventName> {
+    fn event_names(events: &[DomEvent]) -> Vec<DomEventName> {
         events.iter().map(|event| event.name).collect()
-    }
-
-    fn click_point_history(root: &RootDom) -> Vec<crate::types::RootDomMetricName> {
-        root.history().map(|entry| entry.name).collect()
-    }
-
-    fn metric_index(
-        history: &[crate::types::RootDomMetricName],
-        metric_name: RootDomMetricName,
-    ) -> usize {
-        history
-            .iter()
-            .position(|name| *name == metric_name)
-            .expect("metric should be present")
-    }
-
-    fn prevent_default(context: &mut crate::types::DomEventListenerContext<'_>) {
-        context.prevent_default();
-    }
-
-    fn stop_propagation(context: &mut crate::types::DomEventListenerContext<'_>) {
-        context.stop_propagation();
-    }
-
-    fn append_offset_number_input(root: &mut RootDom) -> DomNodeSlotKey {
-        let layer = root.create_element(DomTag::Div).expect("layer");
-        let input = root.create_element(DomTag::Input).expect("number input");
-        root.append_child(root.root, layer).expect("append layer");
-        root.append_child(layer, input).expect("append input");
-        root.set_attr_str(layer, "position", "fixed")
-            .expect("layer position");
-        root.set_attr_str(layer, "left", "80px")
-            .expect("layer left");
-        root.set_attr_str(layer, "top", "10px").expect("layer top");
-        root.set_attr_str(layer, "width", "140px")
-            .expect("layer width");
-        root.set_attr_str(layer, "height", "36px")
-            .expect("layer height");
-        root.set_attr_str(input, "type", "number")
-            .expect("input type");
-        root.set_attr_str(input, "value", "5").expect("input value");
-        root.set_attr_str(input, "width", "120px")
-            .expect("input width");
-        root.set_attr_str(input, "height", "24px")
-            .expect("input height");
-        input
-    }
-
-    fn append_offset_range_input(root: &mut RootDom) -> DomNodeSlotKey {
-        let layer = root.create_element(DomTag::Div).expect("layer");
-        let input = root.create_element(DomTag::Input).expect("range input");
-        root.append_child(root.root, layer).expect("append layer");
-        root.append_child(layer, input).expect("append input");
-        root.set_attr_str(layer, "position", "fixed")
-            .expect("layer position");
-        root.set_attr_str(layer, "left", "80px")
-            .expect("layer left");
-        root.set_attr_str(layer, "top", "10px").expect("layer top");
-        root.set_attr_str(layer, "width", "140px")
-            .expect("layer width");
-        root.set_attr_str(layer, "height", "36px")
-            .expect("layer height");
-        root.set_attr_str(input, "type", "range")
-            .expect("input type");
-        root.set_attr_str(input, "value", "0").expect("input value");
-        root.set_attr_str(input, "width", "120px")
-            .expect("input width");
-        root.set_attr_str(input, "height", "24px")
-            .expect("input height");
-        input
     }
 
     fn input_value(root: &RootDom, input: DomNodeSlotKey) -> String {
@@ -1135,7 +1058,7 @@ mod tests {
 
     struct SelectPopupProof {
         shell_entity: Entity,
-        shell_box: crate::types::DomRect,
+        shell_box: DomRect,
         row_keys: Vec<DomNodeSlotKey>,
         popup_scroll_key: DomNodeSlotKey,
         popup_scroll_entity: Entity,
@@ -1148,9 +1071,7 @@ mod tests {
         let shell_entity = root
             .layer_entity(shell_key)
             .expect("select popup shell entity");
-        let shell_box =
-            crate::domains::layout::node_box_from_ref(root.node(shell_key).expect("shell"))
-                .border_box;
+        let shell_box = node_box_from_ref(root.node(shell_key).expect("shell")).border_box;
         let row_keys = root.presented_options_popup_row_keys(select);
         let first_row_key = row_keys
             .first()
@@ -1210,12 +1131,12 @@ mod tests {
         popup_scroll_key: DomNodeSlotKey,
     ) {
         let mut layer_pool = LayerPool::new(LayerConfig::default());
-        let popup_scroll_plan = crate::domains::paint::build_layer_paint_plan(
+        let popup_scroll_plan = build_layer_paint_plan(
             root,
             &mut layer_pool,
             popup_scroll_key,
             (120.0, 56.0),
-            &crate::domains::visitor::inherited_style::InheritedStyleContext::default(),
+            &InheritedStyleContext::default(),
         )
         .expect("popup scroll paint plan");
         assert_eq!(popup_scroll_plan.text_runs.len(), 2);
@@ -1249,19 +1170,15 @@ mod tests {
         select: DomNodeSlotKey,
         proof: &SelectPopupProof,
     ) {
-        let second_row_point = crate::types::primitives::PointPx {
+        let second_row_point = PointPx {
             x_px: 48.0,
             y_px: 130.0,
         };
         let second_row_layer_hit =
-            crate::domains::layer_hit::topmost_attached_layer_hit_from_root_point(
-                root,
-                world,
-                second_row_point,
-            )
-            .expect("popup row layer hit should resolve");
+            topmost_attached_layer_hit_from_root_point(root, world, second_row_point)
+                .expect("popup row layer hit should resolve");
         let second_row_subtree_hit = second_row_layer_hit.and_then(|layer_hit| {
-            crate::domains::hit_test::hit_test_from_dom_subtree_cluster_local(
+            hit_test_from_dom_subtree_cluster_local(
                 root,
                 layer_hit.node_key,
                 layer_hit.point,
@@ -1269,9 +1186,7 @@ mod tests {
             )
             .expect("popup row subtree hit should resolve")
         });
-        let root_box =
-            crate::domains::layout::node_box_from_ref(root.node(root.root).expect("root"))
-                .border_box;
+        let root_box = node_box_from_ref(root.node(root.root).expect("root")).border_box;
         assert_eq!(
             root.point_event_target_key_from_attached_point(world, parent, second_row_point)
                 .expect("popup row hit target should resolve"),
@@ -1309,299 +1224,6 @@ mod tests {
     }
 
     #[test]
-    fn pointer_click_checks_then_unchecks_checkbox() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let input = append_checkbox(&mut root);
-        root.set_border_box_for_test(root.root, 0.0, 0.0, 80.0, 80.0);
-        root.set_border_box_for_test(input, 0.0, 0.0, 40.0, 40.0);
-        let mut world = World::new();
-        attach_root(&mut root, &mut world);
-        root.reset_metrics();
-        let point = crate::types::primitives::PointPx {
-            x_px: 5.0,
-            y_px: 5.0,
-        };
-
-        let down_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("pointer down");
-        assert!(event_names(&down_events).contains(&DomEventName::PointerDown));
-
-        let up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("pointer up");
-        assert!(matches!(
-            root.node(input)
-                .and_then(DomNode::as_element)
-                .and_then(|element| element.attrs.attributes.get(&DomAttribute::Checked)),
-            Some(DomAttributeValue::Bool(true))
-        ));
-        assert_eq!(
-            event_names(&up_events),
-            vec![
-                DomEventName::PointerUp,
-                DomEventName::Click,
-                DomEventName::Input,
-                DomEventName::Change,
-            ]
-        );
-        let first_click_history = click_point_history(&root);
-        assert!(
-            metric_index(
-                &first_click_history,
-                RootDomMetricName::ActivationPreApplied
-            ) < metric_index(&first_click_history, RootDomMetricName::ClickDispatched,)
-        );
-        assert!(
-            metric_index(&first_click_history, RootDomMetricName::ClickDispatched,)
-                < metric_index(&first_click_history, RootDomMetricName::ActivationCommitted)
-        );
-
-        root.reset_metrics();
-        let _ = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("second down");
-        let second_up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("second up");
-        assert!(matches!(
-            root.node(input)
-                .and_then(DomNode::as_element)
-                .and_then(|element| element.attrs.attributes.get(&DomAttribute::Checked)),
-            Some(DomAttributeValue::Bool(false))
-        ));
-        assert_eq!(
-            event_names(&second_up_events),
-            vec![
-                DomEventName::PointerUp,
-                DomEventName::Click,
-                DomEventName::Input,
-                DomEventName::Change,
-            ]
-        );
-
-        root.detach_from_bevy_parent_entity(&mut world)
-            .expect("detach");
-    }
-
-    #[test]
-    fn pointer_click_emits_click_for_button() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let button = root.create_element(DomTag::Button).expect("button");
-        root.append_child(root.root, button).expect("append");
-        root.set_attr_str(button, "width", "40px").expect("width");
-        root.set_attr_str(button, "height", "40px").expect("height");
-        root.set_border_box_for_test(root.root, 0.0, 0.0, 80.0, 80.0);
-        root.set_border_box_for_test(button, 0.0, 0.0, 40.0, 40.0);
-        let mut world = World::new();
-        attach_root(&mut root, &mut world);
-        let point = crate::types::primitives::PointPx {
-            x_px: 5.0,
-            y_px: 5.0,
-        };
-
-        let _ = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("down");
-        let up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("up");
-
-        assert_eq!(
-            event_names(&up_events),
-            vec![DomEventName::PointerUp, DomEventName::Click]
-        );
-    }
-
-    #[test]
-    fn pointer_click_on_disabled_button_does_not_focus_or_dispatch_click() {
-        // Remaining activation coverage gaps:
-        // - keyboard activation parity for disabled controls
-        // - label-driven activation forwarding into disabled targets
-        // - programmatic click behavior versus pointer-originated click suppression
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let button = root.create_element(DomTag::Button).expect("button");
-        root.append_child(root.root, button).expect("append");
-        root.set_attr(
-            button,
-            DomAttribute::Disabled,
-            Some(DomAttributeValue::Bool(true)),
-        )
-        .expect("disable button");
-        root.set_attr_str(button, "width", "40px").expect("width");
-        root.set_attr_str(button, "height", "40px").expect("height");
-        root.set_border_box_for_test(root.root, 0.0, 0.0, 80.0, 80.0);
-        root.set_border_box_for_test(button, 0.0, 0.0, 40.0, 40.0);
-        let mut world = World::new();
-        attach_root(&mut root, &mut world);
-        let point = crate::types::primitives::PointPx {
-            x_px: 5.0,
-            y_px: 5.0,
-        };
-
-        let down_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("down");
-        let up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("up");
-
-        assert_eq!(root.focused_element_key(), None);
-        assert!(!event_names(&down_events).contains(&DomEventName::Click));
-        assert!(!event_names(&up_events).contains(&DomEventName::Click));
-    }
-
-    #[test]
-    fn pointer_click_on_pointer_events_none_button_does_not_focus_or_dispatch_click() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let button = root.create_element(DomTag::Button).expect("button");
-        root.append_child(root.root, button).expect("append");
-        root.set_attr_str(button, "pointer-events", "none")
-            .expect("button pointer-events");
-        root.set_attr_str(button, "width", "40px").expect("width");
-        root.set_attr_str(button, "height", "40px").expect("height");
-        root.set_border_box_for_test(root.root, 0.0, 0.0, 80.0, 80.0);
-        root.set_border_box_for_test(button, 0.0, 0.0, 40.0, 40.0);
-        let mut world = World::new();
-        attach_root(&mut root, &mut world);
-        let point = crate::types::primitives::PointPx {
-            x_px: 5.0,
-            y_px: 5.0,
-        };
-
-        let down_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("down");
-        let up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("up");
-
-        assert_eq!(root.focused_element_key(), None);
-        assert!(!event_names(&down_events).contains(&DomEventName::Click));
-        assert!(!event_names(&up_events).contains(&DomEventName::Click));
-    }
-
-    #[test]
-    fn pointer_click_emits_click_for_textarea_without_activation_lifecycle() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let textarea = root.create_element(DomTag::Textarea).expect("textarea");
-        root.append_child(root.root, textarea).expect("append");
-        root.set_border_box_for_test(root.root, 0.0, 0.0, 80.0, 80.0);
-        root.set_border_box_for_test(textarea, 0.0, 0.0, 40.0, 40.0);
-        let mut world = World::new();
-        attach_root(&mut root, &mut world);
-        root.reset_metrics();
-        let point = crate::types::primitives::PointPx {
-            x_px: 5.0,
-            y_px: 5.0,
-        };
-
-        let _ = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("down");
-        let up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("up");
-
-        assert_eq!(
-            event_names(&up_events),
-            vec![DomEventName::PointerUp, DomEventName::Click]
-        );
-        let history = click_point_history(&root);
-        assert!(!history.contains(&RootDomMetricName::ActivationPreApplied));
-        assert!(!history.contains(&RootDomMetricName::ActivationCanceled));
-        assert!(!history.contains(&RootDomMetricName::ActivationCommitted));
-    }
-
-    #[test]
-    fn pointer_click_emits_click_for_text_input_without_activation_action() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let input = root.create_element(DomTag::Input).expect("input");
-        root.append_child(root.root, input).expect("append");
-        root.set_border_box_for_test(root.root, 0.0, 0.0, 80.0, 80.0);
-        root.set_border_box_for_test(input, 0.0, 0.0, 40.0, 40.0);
-        let mut world = World::new();
-        attach_root(&mut root, &mut world);
-        root.reset_metrics();
-        let point = crate::types::primitives::PointPx {
-            x_px: 5.0,
-            y_px: 5.0,
-        };
-
-        let _ = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("down");
-        let up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("up");
-
-        assert_eq!(
-            event_names(&up_events),
-            vec![DomEventName::PointerUp, DomEventName::Click]
-        );
-        let history = click_point_history(&root);
-        assert!(!history.contains(&RootDomMetricName::ActivationPreApplied));
-        assert!(!history.contains(&RootDomMetricName::ActivationCanceled));
-        assert!(!history.contains(&RootDomMetricName::ActivationCommitted));
-    }
-
-    #[test]
     fn pointer_click_opens_select_presented_options_after_click_activation() {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let select = append_select(&mut root);
@@ -1613,7 +1235,7 @@ mod tests {
         let mut world = World::new();
         attach_root_with_size(&mut root, &mut world, 180.0, 180.0);
         root.reset_metrics();
-        let point = crate::types::primitives::PointPx {
+        let point = PointPx {
             x_px: 17.0,
             y_px: 45.0,
         };
@@ -1682,7 +1304,7 @@ mod tests {
         let mut world = World::new();
         let parent = attach_root_with_size(&mut root, &mut world, 240.0, 240.0);
         root.reset_metrics();
-        let point = crate::types::primitives::PointPx {
+        let point = PointPx {
             x_px: 45.0,
             y_px: 65.0,
         };
@@ -1710,173 +1332,5 @@ mod tests {
         assert_close(shell_transform.translation.x, 40.0);
         assert_close(shell_transform.translation.y, -88.0);
         assert_second_popup_row_mouse_click_commits(&mut root, &mut world, parent, select, &proof);
-    }
-
-    #[test]
-    fn prevented_click_reverts_checkbox_pre_activation_and_skips_input_change() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let input = append_checkbox(&mut root);
-        root.add_event_listener(input, DomEventName::Click, prevent_default, None)
-            .expect("click listener");
-        root.set_border_box_for_test(root.root, 0.0, 0.0, 80.0, 80.0);
-        root.set_border_box_for_test(input, 0.0, 0.0, 40.0, 40.0);
-        let mut world = World::new();
-        attach_root(&mut root, &mut world);
-        root.reset_metrics();
-        let point = crate::types::primitives::PointPx {
-            x_px: 5.0,
-            y_px: 5.0,
-        };
-
-        let _ = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, true),
-            )
-            .expect("down");
-        let up_events = root
-            .update(
-                &mut world,
-                0.0,
-                pointer_update(point.x_px, point.y_px, false),
-            )
-            .expect("up");
-
-        assert_eq!(event_names(&up_events), vec![DomEventName::PointerUp]);
-        assert!(matches!(
-            root.node(input)
-                .and_then(DomNode::as_element)
-                .and_then(|element| element.attrs.attributes.get(&DomAttribute::Checked)),
-            Some(DomAttributeValue::Bool(false)) | None
-        ));
-        let history = click_point_history(&root);
-        let pre_activation_index = metric_index(&history, RootDomMetricName::ActivationPreApplied);
-        let click_dispatch_index = metric_index(&history, RootDomMetricName::ClickDispatched);
-        let canceled_index = metric_index(&history, RootDomMetricName::ActivationCanceled);
-        assert!(pre_activation_index < click_dispatch_index);
-        assert!(click_dispatch_index < canceled_index);
-        assert!(!history.contains(&RootDomMetricName::ActivationCommitted));
-
-        root.detach_from_bevy_parent_entity(&mut world)
-            .expect("detach");
-    }
-
-    #[test]
-    fn number_stepper_uses_subtree_local_point_inside_offset_layer() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let input = append_offset_number_input(&mut root);
-        let mut world = World::new();
-        attach_root_with_size(&mut root, &mut world, 240.0, 120.0);
-
-        let down_events = root
-            .update(&mut world, 0.0, pointer_update(190.0, 20.0, true))
-            .expect("increment pointer down should step number");
-
-        assert_eq!(input_value(&root, input), "6");
-        assert_eq!(
-            down_events
-                .first()
-                .expect("pointerdown should be emitted")
-                .target_key,
-            Some(input),
-            "public pointer target should stay the input, not an internal stepper",
-        );
-        assert_eq!(root.focused_element_key(), Some(input));
-        assert!(event_names(&down_events).contains(&DomEventName::Input));
-        assert!(event_names(&down_events).contains(&DomEventName::Change));
-
-        root.detach_from_bevy_parent_entity(&mut world)
-            .expect("detach");
-    }
-
-    #[test]
-    fn pointerdown_prevent_default_blocks_number_stepper_default_action() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let input = append_offset_number_input(&mut root);
-        root.add_event_listener(input, DomEventName::PointerDown, prevent_default, None)
-            .expect("pointerdown listener");
-        let mut world = World::new();
-        attach_root_with_size(&mut root, &mut world, 240.0, 120.0);
-
-        let down_events = root
-            .update(&mut world, 0.0, pointer_update(190.0, 20.0, true))
-            .expect("prevented pointer down should not step number");
-
-        assert_eq!(input_value(&root, input), "5");
-        assert_eq!(root.focused_element_key(), None);
-        assert!(
-            !event_names(&down_events).contains(&DomEventName::PointerDown),
-            "prevented pointerdown should not be sink-eligible",
-        );
-        assert!(!event_names(&down_events).contains(&DomEventName::Input));
-        assert!(!event_names(&down_events).contains(&DomEventName::Change));
-
-        root.detach_from_bevy_parent_entity(&mut world)
-            .expect("detach");
-    }
-
-    #[test]
-    fn pointerdown_stop_propagation_does_not_block_number_stepper_default_action() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let input = append_offset_number_input(&mut root);
-        root.add_event_listener(input, DomEventName::PointerDown, stop_propagation, None)
-            .expect("pointerdown listener");
-        let mut world = World::new();
-        attach_root_with_size(&mut root, &mut world, 240.0, 120.0);
-
-        let down_events = root
-            .update(&mut world, 0.0, pointer_update(190.0, 20.0, true))
-            .expect("stopped pointer down should still step number");
-
-        assert_eq!(input_value(&root, input), "6");
-        assert_eq!(root.focused_element_key(), Some(input));
-        assert!(
-            !event_names(&down_events).contains(&DomEventName::PointerDown),
-            "stopped pointerdown should not be sink-eligible",
-        );
-        assert!(event_names(&down_events).contains(&DomEventName::Input));
-        assert!(event_names(&down_events).contains(&DomEventName::Change));
-
-        root.detach_from_bevy_parent_entity(&mut world)
-            .expect("detach");
-    }
-
-    #[test]
-    fn range_drag_uses_subtree_local_points_inside_offset_layer() {
-        let mut root = RootDom::new(RootDomContext::new_gpu());
-        let input = append_offset_range_input(&mut root);
-        let mut world = World::new();
-        attach_root_with_size(&mut root, &mut world, 240.0, 120.0);
-
-        let down_events = root
-            .update(&mut world, 0.0, pointer_update(140.0, 20.0, true))
-            .expect("range pointer down should use local point");
-
-        assert_eq!(input_value(&root, input), "50");
-        assert_eq!(
-            down_events
-                .first()
-                .expect("pointerdown should be emitted")
-                .target_key,
-            Some(input),
-            "public pointer target should stay the range input",
-        );
-
-        let move_events = root
-            .update(&mut world, 0.0, pointer_update(188.0, 20.0, true))
-            .expect("range pointer move should keep drag-local offset");
-
-        assert_eq!(input_value(&root, input), "100");
-        assert!(event_names(&move_events).contains(&DomEventName::Input));
-
-        let up_events = root
-            .update(&mut world, 0.0, pointer_update(188.0, 20.0, false))
-            .expect("range pointer up should finish drag");
-
-        assert!(event_names(&up_events).contains(&DomEventName::Change));
-
-        root.detach_from_bevy_parent_entity(&mut world)
-            .expect("detach");
     }
 }

@@ -584,18 +584,23 @@ fn text_entry_paint_box(box_model: DomBoxModel) -> TextEntryPaintBox {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::domains::layer_pool::{LayerConfig, LayerPool};
-    use crate::domains::layout::{IdentityDomLayoutResolver, relayout_tree};
-    use crate::domains::paint::{LayerPaintPlan, build_layer_paint_plan};
-    use crate::domains::visitor::inherited_style::InheritedStyleContext;
-    use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomNodeSlotKey, DomTag, PixelDensity, RootDom,
-        RootDomContext,
-    };
+use crate::domains::layer_pool::LayerConfig;
+#[cfg(test)]
+use crate::domains::layout::{IdentityDomLayoutResolver, relayout_tree};
+#[cfg(test)]
+use crate::domains::paint::build_layer_paint_plan;
+#[cfg(test)]
+use crate::domains::style::StyleRuleOrigin;
+#[cfg(test)]
+use crate::domains::visitor::inherited_style::InheritedStyleContext;
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
+use crate::types::{PixelDensity, RootDomContext};
 
-    use super::{RectPaintOp, TextRunPaintOp};
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     fn append_node_with_attrs(
         root: &mut RootDom,
@@ -723,10 +728,7 @@ mod tests {
             text.color_rgba,
             [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0, 1.0],
         );
-        assert_eq!(
-            text.wrap_mode,
-            crate::domains::layer_ops::TextWrapMode::None
-        );
+        assert_eq!(text.wrap_mode, TextWrapMode::None);
         assert!(text.size_px[0] > 0.0);
         assert!(text.size_px[1] > 0.0);
     }
@@ -796,7 +798,7 @@ mod tests {
         );
         context
             .load_stylesheet(
-                crate::domains::style::StyleRuleOrigin::new("theme", 0),
+                StyleRuleOrigin::new("theme", 0),
                 ".accent:focus { caret-color: #ff3366; }",
             )
             .expect("caret stylesheet");
@@ -841,7 +843,7 @@ mod tests {
         );
         context
             .load_stylesheet(
-                crate::domains::style::StyleRuleOrigin::new("theme", 0),
+                StyleRuleOrigin::new("theme", 0),
                 ".accent { color: #33cc66; }",
             )
             .expect("color stylesheet");
@@ -935,7 +937,7 @@ mod tests {
         .expect("checked");
         context
             .load_stylesheet(
-                crate::domains::style::StyleRuleOrigin::new("theme", 0),
+                StyleRuleOrigin::new("theme", 0),
                 ".accent:focus { color: #33cc66; border-color: #ff3366; background-color: #112233; border-radius: 4px; }",
             )
             .expect("checkbox focus stylesheet");
@@ -991,7 +993,7 @@ mod tests {
         );
         context
             .load_stylesheet(
-                crate::domains::style::StyleRuleOrigin::new("theme", 0),
+                StyleRuleOrigin::new("theme", 0),
                 ".accent:focus { color: #33cc66; background-color: #112233; border-radius: 3px; }",
             )
             .expect("range focus stylesheet");
@@ -1063,7 +1065,7 @@ mod tests {
         );
         context
             .load_stylesheet(
-                crate::domains::style::StyleRuleOrigin::new("theme", 0),
+                StyleRuleOrigin::new("theme", 0),
                 ".accent { color: #3366ff; }",
             )
             .expect("number color stylesheet");
@@ -1111,10 +1113,7 @@ mod tests {
             .next()
             .expect("textarea should emit a text run");
 
-        assert_ne!(
-            text.wrap_mode,
-            crate::domains::layer_ops::TextWrapMode::None
-        );
+        assert_ne!(text.wrap_mode, TextWrapMode::None);
         assert!(text.size_px[1] > 0.0);
     }
 
