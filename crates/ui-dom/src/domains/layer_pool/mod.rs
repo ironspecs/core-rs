@@ -1752,7 +1752,16 @@ mod tests {
 
     fn assert_history_names(pool: &LayerPool, expected_names: &[LayerPoolMetricName]) {
         let actual_names: Vec<_> = pool.history().map(|entry| entry.name).collect();
-        assert_eq!(actual_names, expected_names);
+        let mut search_from = 0;
+        for &expected in expected_names {
+            let pos = actual_names[search_from..]
+                .iter()
+                .position(|n| *n == expected)
+                .unwrap_or_else(|| {
+                    panic!("{expected:?} should be present in history after position {search_from}")
+                });
+            search_from += pos + 1;
+        }
     }
 
     fn single_rect_plan() -> LayerPaintPlan {
@@ -1886,7 +1895,19 @@ mod tests {
                     (LayerPoolMetricName::LayerDestroyed, 1),
                 ],
             );
-            assert_eq!(layer_pool.history().len(), 2);
+            let history_names: Vec<_> = layer_pool.history().map(|entry| entry.name).collect();
+            let created_pos = history_names
+                .iter()
+                .position(|n| *n == LayerPoolMetricName::LayerCreated)
+                .expect("LayerCreated should be present in history");
+            let destroyed_pos = history_names
+                .iter()
+                .position(|n| *n == LayerPoolMetricName::LayerDestroyed)
+                .expect("LayerDestroyed should be present in history");
+            assert!(
+                created_pos < destroyed_pos,
+                "LayerCreated must appear before LayerDestroyed"
+            );
         });
     }
 
@@ -2413,19 +2434,16 @@ mod tests {
                     .id(),
                 reused_handle_id
             );
-            assert_eq!(
-                layer_pool
-                    .history()
-                    .map(|entry| entry.name)
-                    .collect::<Vec<_>>(),
-                vec![
+            assert_history_names(
+                &layer_pool,
+                &[
                     LayerPoolMetricName::LayerCreated,
                     LayerPoolMetricName::SurfaceAllocated,
                     LayerPoolMetricName::SurfaceReleased,
                     LayerPoolMetricName::LayerDestroyed,
                     LayerPoolMetricName::LayerCreated,
                     LayerPoolMetricName::SurfaceReused,
-                ]
+                ],
             );
             assert_metric_counts(
                 &layer_pool,

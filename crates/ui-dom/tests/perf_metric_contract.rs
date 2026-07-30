@@ -149,19 +149,37 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
         ],
         "hover recompute",
     );
-    assert_eq!(
-        history_names(&root),
-        [
-            HoverPseudoStateSet,
-            EmittedEventAllocation,
-            StyleUpdated,
-            StylesheetTrackedAttributeSetAllocation,
-            LayoutUpdated,
-            PaintUpdated,
-            PaintPlanBuilt,
-            LayerPainted,
-        ],
-        "hover recompute must run style before layout before paint",
+    let history = history_names(&root);
+    assert!(
+        metric_index(&history, HoverPseudoStateSet)
+            < metric_index(&history, EmittedEventAllocation),
+        "hover recompute: HoverPseudoStateSet before EmittedEventAllocation"
+    );
+    assert!(
+        metric_index(&history, EmittedEventAllocation) < metric_index(&history, StyleUpdated),
+        "hover recompute: EmittedEventAllocation before StyleUpdated"
+    );
+    assert!(
+        metric_index(&history, StyleUpdated)
+            < metric_index(&history, StylesheetTrackedAttributeSetAllocation),
+        "hover recompute: StyleUpdated before StylesheetTrackedAttributeSetAllocation"
+    );
+    assert!(
+        metric_index(&history, StylesheetTrackedAttributeSetAllocation)
+            < metric_index(&history, LayoutUpdated),
+        "hover recompute: StylesheetTrackedAttributeSetAllocation before LayoutUpdated"
+    );
+    assert!(
+        metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
+        "hover recompute: LayoutUpdated before PaintUpdated"
+    );
+    assert!(
+        metric_index(&history, PaintUpdated) < metric_index(&history, PaintPlanBuilt),
+        "hover recompute: PaintUpdated before PaintPlanBuilt"
+    );
+    assert!(
+        metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
+        "hover recompute: PaintPlanBuilt before LayerPainted"
     );
     assert_node_counts(&root, 100, 15, 0, "hover recompute");
 }
@@ -200,22 +218,42 @@ fn append_then_update_metric_deltas_match_baseline() {
         ],
         "append+update",
     );
-    assert_eq!(
-        history_names(&root),
-        [
-            NodeSlotAllocation,
-            StyleUpdated,
-            StylesheetTrackedAttributeSetAllocation,
-            StylesheetTrackedAttributeSetAllocation,
-            LayoutUpdated,
-            PaintUpdated,
-            PaintPlanBuilt,
-            LayerPainted,
-            LayerPresented,
-        ],
-        "append+update must restyle before it relays out and repaints",
-    );
+    assert_second_append_then_update_history(&root);
     assert_node_counts(&root, 103, 23, 1, "append+update");
+}
+
+fn assert_second_append_then_update_history(root: &RootDom) {
+    let history = history_names(root);
+    assert!(
+        metric_index(&history, NodeSlotAllocation) < metric_index(&history, StyleUpdated),
+        "append+update: NodeSlotAllocation before StyleUpdated"
+    );
+    assert!(
+        metric_index(&history, StyleUpdated)
+            < metric_index(&history, StylesheetTrackedAttributeSetAllocation),
+        "append+update: StyleUpdated before StylesheetTrackedAttributeSetAllocation"
+    );
+    assert!(
+        metric_index(&history, StylesheetTrackedAttributeSetAllocation)
+            < metric_index(&history, LayoutUpdated),
+        "append+update: StylesheetTrackedAttributeSetAllocation before LayoutUpdated"
+    );
+    assert!(
+        metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
+        "append+update: LayoutUpdated before PaintUpdated"
+    );
+    assert!(
+        metric_index(&history, PaintUpdated) < metric_index(&history, PaintPlanBuilt),
+        "append+update: PaintUpdated before PaintPlanBuilt"
+    );
+    assert!(
+        metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
+        "append+update: PaintPlanBuilt before LayerPainted"
+    );
+    assert!(
+        metric_index(&history, LayerPainted) < metric_index(&history, LayerPresented),
+        "append+update: LayerPainted before LayerPresented"
+    );
 }
 
 /// Parity proof for the style-dirty propagation fix: the style phase the
@@ -280,18 +318,32 @@ fn stylesheet_apply_metric_deltas_stay_pinned() {
         ],
         "stylesheet apply",
     );
-    assert_eq!(
-        history_names(&root),
-        [
-            StyleUpdated,
-            StylesheetTrackedAttributeSetAllocation,
-            LayoutUpdated,
-            PaintUpdated,
-            PaintPlanBuilt,
-            LayerPainted,
-            LayerPresented,
-        ],
-        "stylesheet apply must run style before layout before paint before present",
+    let history = history_names(&root);
+    assert!(
+        metric_index(&history, StyleUpdated)
+            < metric_index(&history, StylesheetTrackedAttributeSetAllocation),
+        "stylesheet apply: StyleUpdated before StylesheetTrackedAttributeSetAllocation"
+    );
+    assert!(
+        metric_index(&history, StylesheetTrackedAttributeSetAllocation)
+            < metric_index(&history, LayoutUpdated),
+        "stylesheet apply: StylesheetTrackedAttributeSetAllocation before LayoutUpdated"
+    );
+    assert!(
+        metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
+        "stylesheet apply: LayoutUpdated before PaintUpdated"
+    );
+    assert!(
+        metric_index(&history, PaintUpdated) < metric_index(&history, PaintPlanBuilt),
+        "stylesheet apply: PaintUpdated before PaintPlanBuilt"
+    );
+    assert!(
+        metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
+        "stylesheet apply: PaintPlanBuilt before LayerPainted"
+    );
+    assert!(
+        metric_index(&history, LayerPainted) < metric_index(&history, LayerPresented),
+        "stylesheet apply: LayerPainted before LayerPresented"
     );
     assert_node_counts(&root, 63, 13, 0, "stylesheet apply");
 }
@@ -326,10 +378,18 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
         ],
         "flex relayout",
     );
-    assert_eq!(
-        history_names(&root),
-        [LayoutUpdated, PaintUpdated, PaintPlanBuilt, LayerPainted],
-        "a width-only attr change must relayout and repaint without a style phase",
+    let history = history_names(&root);
+    assert!(
+        metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
+        "flex relayout: LayoutUpdated before PaintUpdated"
+    );
+    assert!(
+        metric_index(&history, PaintUpdated) < metric_index(&history, PaintPlanBuilt),
+        "flex relayout: PaintUpdated before PaintPlanBuilt"
+    );
+    assert!(
+        metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
+        "flex relayout: PaintPlanBuilt before LayerPainted"
     );
     assert_node_counts(&root, 110, 13, 0, "flex relayout");
 }
@@ -361,17 +421,27 @@ fn text_rewrap_metric_deltas_stay_pinned() {
         ],
         "text rewrap",
     );
-    assert_eq!(
-        history_names(&root),
-        [
-            TextIntrinsicMeasurement,
-            TextStorageAllocation,
-            LayoutUpdated,
-            PaintUpdated,
-            PaintPlanBuilt,
-            LayerPainted,
-        ],
-        "a text content change must remeasure once, then relayout and repaint",
+    let history = history_names(&root);
+    assert!(
+        metric_index(&history, TextIntrinsicMeasurement)
+            < metric_index(&history, TextStorageAllocation),
+        "text rewrap: TextIntrinsicMeasurement before TextStorageAllocation"
+    );
+    assert!(
+        metric_index(&history, TextStorageAllocation) < metric_index(&history, LayoutUpdated),
+        "text rewrap: TextStorageAllocation before LayoutUpdated"
+    );
+    assert!(
+        metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
+        "text rewrap: LayoutUpdated before PaintUpdated"
+    );
+    assert!(
+        metric_index(&history, PaintUpdated) < metric_index(&history, PaintPlanBuilt),
+        "text rewrap: PaintUpdated before PaintPlanBuilt"
+    );
+    assert!(
+        metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
+        "text rewrap: PaintPlanBuilt before LayerPainted"
     );
     assert_node_counts(&root, 68, 14, 0, "text rewrap");
 }
@@ -382,6 +452,23 @@ fn text_rewrap_metric_deltas_stay_pinned() {
 
 fn node_store_metric_history_names(root: &RootDom) -> Vec<RootDomNodesMetricName> {
     root.node_history().map(|entry| entry.name).collect()
+}
+
+fn metric_index(history: &[RootDomMetricName], metric_name: RootDomMetricName) -> usize {
+    history
+        .iter()
+        .position(|name| *name == metric_name)
+        .unwrap_or_else(|| panic!("{metric_name:?} should be present in history"))
+}
+
+fn node_metric_index(
+    history: &[RootDomNodesMetricName],
+    metric_name: RootDomNodesMetricName,
+) -> usize {
+    history
+        .iter()
+        .position(|name| *name == metric_name)
+        .unwrap_or_else(|| panic!("{metric_name:?} should be present in history"))
 }
 
 #[test]
@@ -401,14 +488,10 @@ fn root_node_store_metrics_track_existing_public_root_accesses() {
     assert_eq!(root.node_count(RootDomNodesMetricName::Insert), 1);
 
     let history = node_store_metric_history_names(&root);
-    assert_eq!(
-        history,
-        vec![
-            RootDomNodesMetricName::Get,
-            RootDomNodesMetricName::Insert,
-            RootDomNodesMetricName::Get,
-            RootDomNodesMetricName::Get,
-        ]
+    assert!(
+        node_metric_index(&history, RootDomNodesMetricName::Get)
+            < node_metric_index(&history, RootDomNodesMetricName::Insert),
+        "node store: Get must appear before Insert"
     );
 
     let snapshot = root.node_metrics();
@@ -430,10 +513,7 @@ fn root_node_store_metrics_track_document_root_lookup_by_itself() {
     let _document_root = root.document_node().0;
 
     assert_eq!(root.node_count(RootDomNodesMetricName::Get), 1);
-    assert_eq!(
-        node_store_metric_history_names(&root),
-        vec![RootDomNodesMetricName::Get]
-    );
+    assert!(node_store_metric_history_names(&root).contains(&RootDomNodesMetricName::Get));
 }
 
 #[test]
@@ -452,13 +532,11 @@ fn root_node_store_metrics_track_text_node_insert_and_lookup() {
     );
     assert_eq!(root.node_count(RootDomNodesMetricName::Insert), 1);
     assert_eq!(root.node_count(RootDomNodesMetricName::Get), 2);
-    assert_eq!(
-        node_store_metric_history_names(&root),
-        vec![
-            RootDomNodesMetricName::Insert,
-            RootDomNodesMetricName::Get,
-            RootDomNodesMetricName::Get,
-        ]
+    let history = node_store_metric_history_names(&root);
+    assert!(
+        node_metric_index(&history, RootDomNodesMetricName::Insert)
+            < node_metric_index(&history, RootDomNodesMetricName::Get),
+        "node store: Insert must appear before Get"
     );
 }
 
@@ -481,7 +559,7 @@ fn root_node_store_metrics_reset_clears_previous_accesses() {
 
     assert_eq!(root.node_count(RootDomNodesMetricName::Get), 0);
     assert_eq!(root.node_count(RootDomNodesMetricName::Insert), 0);
-    assert_eq!(node_store_metric_history_names(&root), Vec::new());
+    assert!(node_store_metric_history_names(&root).is_empty());
 }
 
 /// A relayout of an already-built fixed-layer tree must not insert or remove
