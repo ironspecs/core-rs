@@ -103,6 +103,18 @@ before or after another's (`position(a) < position(b)`), never that the
 history equals an exact array. Instrumentation must be free to grow without
 breaking every test; exact-array assertions make growth a breaking change.
 
+Metrics/history emission must remain perfectly zero-allocation. Metric names
+are a static, closed vocabulary fixed at compile time; counters are
+enum-indexed fixed arrays; history is a fixed-capacity name-only ring. No
+Vecs, no dynamic strings, no per-event buffers, no payloads. Any proposal to
+add allocation to the emission path is rejected on sight: a foundation
+library cannot spend its consumer's allocator budget, instrumentation must be
+invisible to the cost model it measures, and zero cost is what makes the
+observation surface always-on in production rather than a debug-only build
+mode. Content observability is achieved with read accessors over retained
+state and on-demand computed projections (see `compute_style_map`), never
+with emission payloads.
+
 ## Panic and boundary policy
 
 In production code, `.expect()`, `.unwrap()`, `assert!`, and `debug_assert!`
