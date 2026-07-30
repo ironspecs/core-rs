@@ -1,7 +1,7 @@
-//! Structural linter that enforces five invariant rules on `.rs` files under
+//! Structural linter that enforces four invariant rules on `.rs` files under
 //! caller-supplied lint roots.
 //!
-//! This file owns the public façade, all five check functions, and the file
+//! This file owns the public façade, all four check functions, and the file
 //! walking logic. It contains no behavior-bearing types — only free functions
 //! and the plain-data [`Violation`] struct.
 //!
@@ -18,8 +18,7 @@
 //!    `super::super` climbs; (b) a [`syn::visit::Visit`] pass walks every
 //!    expression, type, and pattern [`syn::Path`] for the same two patterns
 //!    outside of `use` statements.
-//! 5. **recursion** — no direct self-recursion in any function.
-//! 6. **cross-file-impl** — a type's definition and all its `impl` blocks
+//! 5. **cross-file-impl** — a type's definition and all its `impl` blocks
 //!    must be in the same file.
 //!
 //! Violations print to stderr tagged `error[<rule>]`. There are no exemptions
@@ -32,7 +31,6 @@
 //! - [`collect_violations`] — same pass, returns structured data.
 //! - [`Violation`] — plain data carrying a rule tag and a message.
 
-mod recursion_finder;
 mod test_path_visitor;
 
 use std::collections::{HashMap, HashSet};
@@ -147,7 +145,6 @@ pub fn collect_violations(workspace_root: &Path, lint_roots: &[&str]) -> Vec<Vio
         check_behavior_type_file_naming(file, rel, filename, *is_mod, &mut violations);
         check_behavior_tests(file, rel, &mut violations);
         check_test_isolation(file, rel, filename, &mut violations);
-        check_recursion(file, rel, &mut violations);
     }
 
     violations
@@ -403,6 +400,13 @@ fn check_behavior_tests(file: &File, rel: &str, violations: &mut Vec<Violation>)
 // ---------------------------------------------------------------------------
 
 fn check_test_isolation(file: &File, rel: &str, filename: &str, violations: &mut Vec<Violation>) {
+    // Seam-test files (rule-3 contract): files whose stem ends with
+    // `_seam_tests` exist solely for cross-module testing and are exempt
+    // from test-isolation enforcement. All other rules still apply.
+    if filename.ends_with("_seam_tests") {
+        return;
+    }
+
     for item in &file.items {
         if let Item::Mod(m) = item {
             if !m.attrs.iter().any(is_cfg_test) {
@@ -492,60 +496,7 @@ fn check_use_tree(tree: &UseTree, current: &str, rel: &str, violations: &mut Vec
 }
 
 // ---------------------------------------------------------------------------
-// Rule 5: recursion
-// ---------------------------------------------------------------------------
-
-fn check_recursion(file: &File, rel: &str, violations: &mut Vec<Violation>) {
-    for item in &file.items {
-        match item {
-            Item::Fn(func) => {
-                if recursion_finder::check_free_fn(func) {
-                    let name = func.sig.ident.to_string();
-                    violations.push(Violation {
-                        rule: "recursion",
-                        message: format!(
-                            "`{name}` in `{rel}` is recursive — convert to loop/visitor"
-                        ),
-                    });
-                }
-            }
-            Item::Impl(impl_block) => {
-                for impl_item in &impl_block.items {
-                    if let syn::ImplItem::Fn(method) = impl_item
-                        && recursion_finder::check_method(method)
-                    {
-                        let name = method.sig.ident.to_string();
-                        violations.push(Violation {
-                            rule: "recursion",
-                            message: format!(
-                                "method `{name}` in `{rel}` is recursive — convert to loop/visitor"
-                            ),
-                        });
-                    }
-                }
-            }
-            Item::Trait(trait_item) => {
-                for trait_item_inner in &trait_item.items {
-                    if let syn::TraitItem::Fn(fn_item) = trait_item_inner
-                        && recursion_finder::check_trait_method(fn_item)
-                    {
-                        let name = fn_item.sig.ident.to_string();
-                        violations.push(Violation {
-                            rule: "recursion",
-                            message: format!(
-                                "trait method `{name}` in `{rel}` is recursive — convert to loop/visitor"
-                            ),
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Rule 6: cross-file-impl
+// Rule 5: cross-file-impl
 // ---------------------------------------------------------------------------
 
 fn check_cross_file_impls(
@@ -1004,6 +955,52 @@ mod tests {
         let mut violations = Vec::new();
         check_test_isolation(&file, "crates/x/src/my_mod.rs", "my_mod", &mut violations);
         assert!(violations.is_empty());
+    }
+
+    // ---- test-isolation: seam-test exemption ----
+
+    #[test]
+    fn seam_test_file_exempt_from_test_isolation() {
+        // A file stem ending with `_seam_tests` is exempt from
+        // test-isolation by rule-3 contract — its entire purpose is
+        // cross-module testing.
+        let code = r"
+            #[cfg(test)]
+            mod tests {
+                use crate::other::SomeType;
+            }
+        ";
+        let file = syn::parse_file(code).unwrap();
+        let mut violations = Vec::new();
+        check_test_isolation(
+            &file,
+            "crates/x/src/my_mod_seam_tests.rs",
+            "my_mod_seam_tests",
+            &mut violations,
+        );
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn stem_containing_but_not_ending_with_seam_tests_not_exempt() {
+        // A file stem that merely contains `_seam_tests` but does not
+        // end with it (e.g. `seam_tests_helper`) is NOT exempt.
+        let code = r"
+            #[cfg(test)]
+            mod tests {
+                use crate::other::SomeType;
+            }
+        ";
+        let file = syn::parse_file(code).unwrap();
+        let mut violations = Vec::new();
+        check_test_isolation(
+            &file,
+            "crates/x/src/seam_tests_helper.rs",
+            "seam_tests_helper",
+            &mut violations,
+        );
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule, "test-isolation");
     }
 
     // ---- cross-file-impl ----

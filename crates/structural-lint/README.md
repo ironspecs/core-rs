@@ -5,7 +5,7 @@ invariants shared across the organization's Rust repositories.
 
 ## Purpose
 
-This crate exists so the five structural rules below have exactly one
+This crate exists so the structural rules below have exactly one
 implementation. Product repos wire it into their own `xtask` (or equivalent)
 with their own source roots; this crate owns the parsing, the checks, and
 the violation model. It does not own repo policy, repo layout decisions, or
@@ -13,7 +13,8 @@ CI wiring — each repo supplies its own lint roots and decides how the lint
 is invoked.
 
 It owns:
-- the five invariant checks and their `syn`-based enforcement
+- the four mechanical invariant checks (rules 1, 2, 3, 5) and their
+  `syn`-based enforcement
 - the `Violation` model and the `run_lint` / `collect_violations` entry
   points
 
@@ -21,6 +22,9 @@ It does not own:
 - which directories a repo lints (callers pass `lint_roots`)
 - vendored/third-party exclusions (callers omit those roots)
 - repo-specific quality gates, hooks, or CI jobs
+- rule 4 (algorithm work-patterns): that rule is architectural, and its
+  enforcement lives in each crate's metrics/history contract tests, not
+  in this crate
 
 ## Usage
 
@@ -138,19 +142,32 @@ dependency is cross-module and has two honest homes:
 1. **Declare it at file scope:** `#[cfg(test)] use
    crate::<other_module>::SomeType;`. The import is absolute, visible
    in the file header, and picked up by the test module's
-   `use super::*`. Use this for fixture types the tested logic
-   collaborates with but the file does not otherwise import.
-2. **Move the test to a dedicated test module:** a `#[cfg(test)]`-gated
-   source module of the crate (a `*_seam_tests.rs` pattern), or
-   `tests/` for public-API scenarios. Genuinely cross-module assertions
-   belong here by nature.
+   `use super::*`. Use this for one or two fixture *types* the tested
+   logic collaborates with but the file does not otherwise import.
+   This is not a license to launder an integration test: when a test
+   module imports behavior from several modules or drives another
+   module's logic, the test is not a unit test — use home 2.
+2. **Move the test to `tests/`:** the crate's integration-test
+   directory. Integration tests import the crate by name
+   (`use ui_dom::...`) and are outside rule 3 by nature. There is no
+   in-`src/` home for cross-module tests.
+
+**Tests observe through the intended public interface only.** A moved
+test asserts on public behavior and on the crate's designed
+observability surface — public API plus metrics/history accessors —
+never on mocked internals, and never through visibility that exists
+only because a test wanted it. If a test cannot be expressed that way,
+examine what it is actually asserting: the genuine unit assertion
+belongs in the owning file's own inline tests, and the cross-module
+assertion belongs in `tests/`. Production code is never reshaped to
+accommodate a test.
 
 **Enforcement:** `syn` parses each `#[cfg(test)]` module and walks every
 `use` tree (including braced groups) and every path in expression, type,
 and pattern position. Flagged: any path leading with `crate` whose
 second segment is not the current file's module, and any path beginning
 `super::super`. Paths inside macro invocation token streams are
-unreachable and not checked.
+unreachable and not checked. There are no exempt files.
 
 **Allowed:**
 - `use super::*` — the file's own items and its own imports.
@@ -163,36 +180,41 @@ unreachable and not checked.
 - `use super::super::super::super::media_audio::AudioBlock` — the same
   import spelled as a climb; equally flagged.
 
-## 4. No recursion
+## 4. Work completes during traversal — visitor, not batch
 
-Recursive algorithms are written as explicit iterative loops (with an
-explicit stack or queue) or as visitor patterns where the visitor
-completes work *during* traversal. Direct self-recursion is not used
-anywhere: not in free functions, not in `impl` methods, not in trait
-default methods.
+Algorithms that walk a structure complete their work *during* the walk.
+The alternative — accumulating intermediate collections on the way down
+and combining them on the way back (list/batch style) — allocates per
+frame, holds intermediate results alive, and changes the structure's
+access pattern. A visitor-style pass walks the structure and, at each
+node, does its work immediately: no return value to accumulate, no
+list-building on the way back, no second fetch of a node already
+visited.
 
-**Why:** recursion causes stack overflow on deep structures, allocates
-intermediate Vecs at each frame, and is structurally slower than the
-equivalent loop. The visitor pattern is the preferred alternative: walk
-the structure iteratively, and at each node the visitor does its work
-immediately — no return value to accumulate, no list-building on the
-way back.
+This rule is about the algorithm's *work pattern*, not its syntax.
+Recursion versus iteration is an entirely different discussion and is
+not what this rule governs: a recursive short-circuit search that
+visits each node once and allocates nothing is visitor-style; an
+iterative loop that collects a `Vec` per level and folds it afterward
+is batch-style. What is forbidden is introducing batch-style
+accumulation — and the extra structure accesses that come with it —
+where a visitor pass does the job.
 
-**Enforcement:** `syn::visit::Visit` walks each function body. A
-function is flagged when it calls itself by name through a
-single-segment path (`foo()`) or, for methods, through a `self`
-receiver (`self.foo()`). There is no suppression attribute: the lint
-cannot prove tail position mechanically, so tail-recursive algorithms
-are converted too — the loop form of a tail-recursive algorithm is a
-mechanical rewrite.
+**Why not a mechanical check:** whether an algorithm is visitor- or
+batch-style is a semantic property of its access and allocation
+pattern, not of its shape. A syntactic proxy (for example, flagging
+any self-call) misidentifies conforming algorithms and, worse,
+pressures conversions that *change* the access pattern — a real
+performance change that review cannot see.
 
-**What counts as recursion:**
-- `fn foo() { foo() }` — flagged (direct call).
-- `impl T { fn foo(&self) { self.foo() } }` — flagged (`self`
-  receiver).
-- `fn foo() { other.foo() }` — NOT flagged (receiver is not `self`).
-- `fn run() { commands::health::run() }` — NOT flagged (qualified
-  path).
+**Enforcement:** performance invariants are enforced by measurement,
+not by syntax. Crates pin the access pattern of performance-sensitive
+operations with metrics/history contract tests (see
+`crates/ui-dom/tests/perf_metric_contract.rs`: scenario through the
+public API, then exact assertion of metric names, counts, and
+node-access totals). Any change to an algorithm's access pattern moves
+those pins — which is precisely the signal that the change is a
+performance change and must be reviewed as one, in its own commit.
 
 ## 5. Definition and impl in the same file
 

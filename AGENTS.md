@@ -87,6 +87,11 @@ Respect the Law of Demeter. Prefer context objects over long parameter lists.
 Prefer maps of functions over long switch or `if`/`else` chains when that keeps
 decision ownership clearer.
 
+Observability is part of the public interface. Behavior worth asserting is
+asserted through public API and designed metrics/history accessors. Do not add
+mocks, test-only constructors, or visibility that exists only because a test
+wanted it — reshape the test, not the production code.
+
 ## Panic and boundary policy
 
 In production code, `.expect()`, `.unwrap()`, `assert!`, and `debug_assert!`
@@ -105,9 +110,9 @@ Prefer typed errors or explicit boundary rejection.
 
 ## Structural rules
 
-This repo enforces the five structural rules owned by `structural-lint`
-on itself via `cargo xtask lint`. The rules are mechanical and absolute
-within `crates/`:
+This repo enforces the structural rules owned by `structural-lint`
+on itself via `cargo xtask lint`. Rules 1, 2, 3, and 5 are mechanical
+and absolute within `crates/`:
 
 1. **Behavior-type file naming** — a type with an `impl` (or a `trait`)
    lives in its own `snake_case` file; `mod.rs`/`lib.rs` hold no
@@ -118,13 +123,50 @@ within `crates/`:
 3. **Test isolation** — inline test modules import `use super::*` plus
    external crates only. Cross-module fixtures are declared at file scope
    as `#[cfg(test)] use crate::...;`, never inside the test module.
-4. **No recursion** — iterative loops or visitor patterns only.
+   Cross-module tests move to `tests/`.
+4. **Visitor, not batch** — algorithms complete work during traversal;
+   no batch-style accumulation with its extra accesses. This rule is
+   architectural: it is enforced by metrics/history contract tests
+   (e.g. `crates/ui-dom/tests/perf_metric_contract.rs`), not by the
+   lint. Any change that moves those pins is a performance change and
+   is reviewed as one, in its own commit.
 5. **Definition and impl in the same file** — a type's `impl` blocks live
    in the file named after the type.
 
 The canonical rule text and rationale live in
 `crates/structural-lint/README.md`. Do not weaken, suppress, or
 grandfather violations in this repo.
+
+## Structural migration policy
+
+Applying the structural rules to pre-existing code is done in
+behavior-preserving changesets:
+
+- **Production behavior is frozen.** Moved items (types, impls, functions,
+  tests) relocate byte-identically. A migration diff reads as cut/paste plus
+  imports plus visibility adjustments. If a rule cannot be satisfied without
+  changing behavior, stop and escalate — never improvise a semantic change
+  to make a lint pass.
+- **Algorithm changes are their own commits.** Any change to an
+  algorithm's traversal or access pattern (rule 4) is a performance
+  change: it is reviewed on its own, with the full test suite including
+  the metrics/history contract tests green as the gate. If a contract
+  pin moves, the code changed access patterns — that is never a side
+  effect of other work. Never bundle algorithm changes into layout
+  migrations.
+- **Tests relocate; they are never rewritten or manufactured to fit.** A
+  file's unit tests move with its types. A test that reaches across modules
+  is an integration test and moves to `tests/`, where it observes through
+  the crate's public interface — public API plus metrics/history accessors.
+  Tests that depended on mocks or test-only visibility are examined for
+  what they actually assert: genuine unit assertions re-home into the
+  owning file's inline tests; cross-module assertions are re-expressed in
+  `tests/` against the public interface. Production code is never reshaped
+  to accommodate a test. Files left behavior-bearing without tests are
+  enumerated for the coverage effort — they are not filled with
+  manufactured tests during a migration.
+- **The reviewer runs the gate.** Claims of green are verified by running
+  fmt, clippy, the full test suite, and the lint before every merge.
 
 ## Workspace scope rules
 
