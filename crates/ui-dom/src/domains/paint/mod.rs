@@ -92,7 +92,48 @@ pub(crate) fn build_layer_paint_plan(
         inherited_style,
         &mut plan,
     )?;
+    emit_paint_plan_op_metrics(root_dom, &plan);
     Ok(plan)
+}
+
+fn emit_paint_plan_op_metrics(root_dom: &mut RootDom, plan: &LayerPaintPlan) {
+    if !plan.rects.is_empty() {
+        root_dom.increment_metric_count_by(
+            RootDomMetricName::LayerPaintRectOp,
+            u64::try_from(plan.rects.len()).expect("plan rect count should fit into u64"),
+        );
+    }
+    if !plan.stroke_paths.is_empty() {
+        root_dom.increment_metric_count_by(
+            RootDomMetricName::LayerPaintStrokePathOp,
+            u64::try_from(plan.stroke_paths.len())
+                .expect("plan stroke-path count should fit into u64"),
+        );
+    }
+    if !plan.text_runs.is_empty() {
+        root_dom.increment_metric_count_by(
+            RootDomMetricName::LayerPaintTextRunOp,
+            u64::try_from(plan.text_runs.len()).expect("plan text-run count should fit into u64"),
+        );
+    }
+    if !plan.svgs.is_empty() {
+        root_dom.increment_metric_count_by(
+            RootDomMetricName::LayerPaintSvgOp,
+            u64::try_from(plan.svgs.len()).expect("plan svg count should fit into u64"),
+        );
+    }
+    if !plan.images.is_empty() {
+        root_dom.increment_metric_count_by(
+            RootDomMetricName::LayerPaintImageOp,
+            u64::try_from(plan.images.len()).expect("plan image count should fit into u64"),
+        );
+    }
+    if !plan.icons.is_empty() {
+        root_dom.increment_metric_count_by(
+            RootDomMetricName::LayerPaintIconOp,
+            u64::try_from(plan.icons.len()).expect("plan icon count should fit into u64"),
+        );
+    }
 }
 
 pub(crate) fn layer_tree_needs_paint(

@@ -347,6 +347,15 @@ impl RootDom {
         self.metrics.increment(name);
     }
 
+    /// Increments one root-owned metric counter by `delta` without recording a
+    /// history entry. A `delta` of zero is a no-op.
+    ///
+    /// High-frequency tallies (such as per-op paint-plan counts) use this so
+    /// the fixed-capacity history ring stays reserved for lifecycle events.
+    pub fn increment_metric_count_by(&mut self, name: RootDomMetricName, delta: u64) {
+        self.metrics.increment_count_by(name, delta);
+    }
+
     /// Clears root-owned metric counters and history, then restarts the profiling window.
     pub fn reset_metrics(&mut self) {
         self.metrics.reset();

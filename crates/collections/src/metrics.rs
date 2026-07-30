@@ -9,6 +9,7 @@
 //! - reads after construction stay allocation-free
 //! - reset clears counts and retained history together
 //! - retained history iteration remains oldest-to-newest
+//! - high-frequency tallies use count-only increments and never touch history
 
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
@@ -61,6 +62,32 @@ impl<Name: MetricName, const N: usize> MetricSnapshot<Name, N> {
             .expect("metric index should resolve to one counter slot");
         *count = count
             .checked_add(1)
+            .expect("metric counter should not overflow");
+    }
+
+    /// Increments one counter without recording a history entry.
+    pub(crate) fn increment_count(&mut self, name: Name) {
+        let count = self
+            .counts
+            .get_mut(name.index())
+            .expect("metric index should resolve to one counter slot");
+        *count = count
+            .checked_add(1)
+            .expect("metric counter should not overflow");
+    }
+
+    /// Increments one counter by `delta` without recording a history entry.
+    /// A `delta` of zero is a no-op.
+    pub(crate) fn increment_count_by(&mut self, name: Name, delta: u64) {
+        if delta == 0 {
+            return;
+        }
+        let count = self
+            .counts
+            .get_mut(name.index())
+            .expect("metric index should resolve to one counter slot");
+        *count = count
+            .checked_add(delta)
             .expect("metric counter should not overflow");
     }
 }
@@ -185,6 +212,21 @@ impl<Name: MetricName, const N: usize, const HISTORY_CAPACITY: usize>
         self.history.record(name);
     }
 
+    /// Increments one counter without recording a history entry.
+    /// High-frequency tallies use this so the fixed-capacity history ring
+    /// stays reserved for lifecycle events.
+    pub fn increment_count(&mut self, name: Name) {
+        self.counts.increment_count(name);
+    }
+
+    /// Increments one counter by `delta` without recording a history entry.
+    /// A `delta` of zero is a no-op.
+    /// High-frequency tallies use this so the fixed-capacity history ring
+    /// stays reserved for lifecycle events.
+    pub fn increment_count_by(&mut self, name: Name, delta: u64) {
+        self.counts.increment_count_by(name, delta);
+    }
+
     pub fn reset(&mut self) {
         self.counts = MetricSnapshot::default();
         self.history.reset();
@@ -295,5 +337,48 @@ mod tests {
         assert_eq!(metrics.count(TestMetricName::Alpha), 0);
         assert_eq!(metrics.count(TestMetricName::Beta), 0);
         assert_eq!(metrics.history().len(), 0);
+    }
+
+    #[test]
+    fn increment_count_updates_counter_without_history() {
+        let mut metrics = TestMetrics::default();
+
+        metrics.increment_count(TestMetricName::Alpha);
+        metrics.increment_count(TestMetricName::Alpha);
+        metrics.increment_count(TestMetricName::Beta);
+
+        assert_eq!(metrics.count(TestMetricName::Alpha), 2);
+        assert_eq!(metrics.count(TestMetricName::Beta), 1);
+        assert_eq!(metrics.history().len(), 0);
+    }
+
+    #[test]
+    fn increment_count_by_updates_counter_by_delta_without_history() {
+        let mut metrics = TestMetrics::default();
+
+        metrics.increment_count_by(TestMetricName::Alpha, 3);
+        metrics.increment_count_by(TestMetricName::Beta, 0);
+
+        assert_eq!(metrics.count(TestMetricName::Alpha), 3);
+        assert_eq!(metrics.count(TestMetricName::Beta), 0);
+        assert_eq!(metrics.history().len(), 0);
+    }
+
+    #[test]
+    fn increment_count_does_not_affect_history_from_increment() {
+        let mut metrics = TestMetrics::default();
+
+        metrics.increment(TestMetricName::Alpha);
+        metrics.increment_count(TestMetricName::Beta);
+        metrics.increment(TestMetricName::Alpha);
+
+        assert_eq!(metrics.count(TestMetricName::Alpha), 2);
+        assert_eq!(metrics.count(TestMetricName::Beta), 1);
+        assert_eq!(metrics.history().len(), 2);
+        let history_names: Vec<_> = metrics.history().map(|entry| entry.name).collect();
+        assert_eq!(
+            history_names,
+            [TestMetricName::Alpha, TestMetricName::Alpha]
+        );
     }
 }

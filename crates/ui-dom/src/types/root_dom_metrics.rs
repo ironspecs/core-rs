@@ -143,9 +143,11 @@ pub enum RootDomMetricName {
     FragmentImportValidationStackAllocation,
     /// Number of removed subtree key lists built.
     RemovedSubtreeKeyListAllocation,
+    /// Number of retained icon ops published by completed layer paints.
+    LayerPaintIconOp,
 }
 
-pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 36] = [
+pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 37] = [
     RootDomMetricName::HoverPseudoStateSet,
     RootDomMetricName::HoverPseudoStateCleared,
     RootDomMetricName::StyleUpdated,
@@ -182,6 +184,7 @@ pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 36] = [
     RootDomMetricName::FragmentTopLevelKeyListAllocation,
     RootDomMetricName::FragmentImportValidationStackAllocation,
     RootDomMetricName::RemovedSubtreeKeyListAllocation,
+    RootDomMetricName::LayerPaintIconOp,
 ];
 
 impl RootDomMetricName {
@@ -228,6 +231,7 @@ impl RootDomMetricName {
             Self::FragmentTopLevelKeyListAllocation => 33,
             Self::FragmentImportValidationStackAllocation => 34,
             Self::RemovedSubtreeKeyListAllocation => 35,
+            Self::LayerPaintIconOp => 36,
         }
     }
 }
