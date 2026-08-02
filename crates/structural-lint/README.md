@@ -3,6 +3,10 @@
 `structural-lint` owns the mechanical enforcement of the structural
 invariants shared across the organization's Rust repositories.
 
+**Engine refactor (implementers):** see [`DESIGN-SPEC.md`](./DESIGN-SPEC.md)
+for the scoped Biome/oxlint-style architecture (rules emit → reporters;
+behavior-preserving). Do not expand scope beyond that document.
+
 ## Purpose
 
 This crate exists so the structural rules below have exactly one

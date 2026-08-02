@@ -1,0 +1,7 @@
+# Keep Docker build contexts small (services-rs --build-context core-rs=…).
+target/
+**/target/
+.git/
+**/.git/
+.DS_Store
+**/*.rs.bk
