@@ -17,10 +17,28 @@ CI wiring — each repo supplies its own lint roots and decides how the lint
 is invoked.
 
 It owns:
-- the four mechanical invariant checks (rules 1, 2, 3, 5) and their
+- the five mechanical invariant checks (rules 1, 2, 3, 5) and their
   `syn`-based enforcement
 - the `Violation` model and the `run_lint` / `collect_violations` entry
   points
+
+### Engine architecture
+
+The crate is shaped as an ESLint/Biome-style engine:
+
+- **`engine/`** — walk → parse → context → workspace index → rule runner →
+  emitter → reporter. All orchestration, shared helpers, and traits
+  (`Config`, `FileContext`, `WorkspaceIndex`, `Rule`, `Emitter`,
+  `Reporter`) live here.
+- **`rules/`** — isolated `Rule` implementations (one per file): rules
+  only `emit` `Diagnostic`s; reporters own all printing.
+- **`test_path_visitor.rs`** — support visitor for the `test-isolation`
+  rule.
+- Public API (`run_lint`, `collect_violations`, `Violation`) is unchanged.
+
+See [`DESIGN-SPEC.md`](./DESIGN-SPEC.md) for the full architecture document.
+
+**Test layer.** Each behavior-bearing file has inline `#[cfg(test)]` tests covering its own contract (rule 3). Cross-file and module-level orchestration — the `walk → parse → ingest → WorkspaceIndex → workspace-phase rule` pipeline, each file-phase rule wired through the runner, and the `run_lint` Result contract — is covered by integration tests under `tests/` (`orchestration.rs`, `run_lint.rs`, `self_lint.rs`). Fixtures are built at runtime under `target/test-fixtures/` so the linter's own walk never sees deliberately-violating sources.
 
 It does not own:
 - which directories a repo lints (callers pass `lint_roots`)
