@@ -9,7 +9,6 @@
 //! # Local invariants
 //!
 //! - Rule id is `"test-isolation"` — do not rename.
-//! - Files whose stem ends with `_seam_tests` are exempt (rule-3 contract).
 //! - `check_use_tree` walks `UseTree` nodes for `crate::<other>` and
 //!   `super::super` in import statements.
 //! - `TestPathVisitor` walks expression/type/pattern paths for the same
@@ -43,13 +42,6 @@ impl Rule for TestIsolation {
 }
 
 fn check(file: &File, rel: &str, filename: &str, emitter: &mut dyn Emitter) {
-    // Seam-test files (rule-3 contract): files whose stem ends with
-    // `_seam_tests` exist solely for cross-module testing and are exempt
-    // from test-isolation enforcement. All other rules still apply.
-    if filename.ends_with("_seam_tests") {
-        return;
-    }
-
     for item in &file.items {
         if let Item::Mod(m) = item {
             if !m.attrs.iter().any(is_cfg_test) {
@@ -363,7 +355,11 @@ mod tests {
     }
 
     #[test]
-    fn seam_test_file_exempt_from_test_isolation() {
+    fn seam_tests_filename_does_not_grant_exemption() {
+        // The `_seam_tests` filename suffix is NOT a recognized exemption.
+        // Inline test modules must obey test-isolation regardless of filename;
+        // cross-module integration tests belong in `tests/` (observing the
+        // public surface), not in a `src/` file reaching across `crate::`.
         let file = syn::parse_file(
             r"
             #[cfg(test)]
@@ -378,27 +374,6 @@ mod tests {
             &file,
             "crates/x/src/my_mod_seam_tests.rs",
             "my_mod_seam_tests",
-            &mut em,
-        );
-        assert!(em.diagnostics.is_empty());
-    }
-
-    #[test]
-    fn stem_containing_but_not_ending_with_seam_tests_not_exempt() {
-        let file = syn::parse_file(
-            r"
-            #[cfg(test)]
-            mod tests {
-                use crate::other::SomeType;
-            }
-        ",
-        )
-        .unwrap();
-        let mut em = VecEmitter::default();
-        check(
-            &file,
-            "crates/x/src/seam_tests_helper.rs",
-            "seam_tests_helper",
             &mut em,
         );
         assert_eq!(em.diagnostics.len(), 1);
