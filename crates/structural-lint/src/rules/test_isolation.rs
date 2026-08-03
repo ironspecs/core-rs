@@ -9,8 +9,9 @@
 //! # Local invariants
 //!
 //! - Rule id is `"test-isolation"` — do not rename.
-//! - `check_use_tree` walks `UseTree` nodes for `crate::<other>` and
-//!   `super::super` in import statements.
+//! - `check_use_tree` walks `UseTree` nodes for cross-module `crate::...`
+//!   imports (terminal names, module paths, renames, and brace groups — see
+//!   `check_crate_child`) and `super::super` climbs in import statements.
 //! - `TestPathVisitor` walks expression/type/pattern paths for the same
 //!   patterns outside of use statements, emitting directly. There is no
 //!   double-reporting.
@@ -75,19 +76,12 @@ fn check_use_tree(tree: &UseTree, current: &str, rel: &str, emitter: &mut dyn Em
     while let Some(t) = stack.pop() {
         match t {
             UseTree::Path(path) => {
-                // Flag crate::<other_module>::...
-                if path.ident == "crate"
-                    && let UseTree::Path(inner) = &*path.tree
-                {
-                    let module = inner.ident.to_string();
-                    if module != current && module != "self" {
-                        emitter.emit(Diagnostic {
-                            rule: TestIsolation::ID,
-                            message: format!(
-                                "test in `{rel}` imports `crate::{module}::...` — tests must only test their own file"
-                            ),
-                        });
-                    }
+                // Flag any `crate::...` import whose first segment after
+                // `crate` is neither the current module nor `self`. Covers
+                // terminal re-exported names, nested module paths, renames,
+                // and brace groups — see `check_crate_child`.
+                if path.ident == "crate" {
+                    check_crate_child(&path.tree, current, rel, emitter);
                 }
                 // Flag super::super::... (climb past immediate parent).
                 if path.ident == "super"
@@ -110,6 +104,63 @@ fn check_use_tree(tree: &UseTree, current: &str, rel: &str, emitter: &mut dyn Em
             }
             _ => {}
         }
+    }
+}
+
+/// Emit one test-isolation diagnostic per branch under `crate::` whose first
+/// segment is neither the current module nor `self`.
+///
+/// Covers terminal re-exported names (`crate::X`), nested module paths
+/// (`crate::module::...`), renames (`crate::X as Y`), and brace groups
+/// (`crate::{A, B}`, `crate::{module::X, Y}`). The group case is the
+/// "group instead of a module" spelling that previously bypassed the
+/// single-shape check; every branch inside the braces is examined.
+///
+/// `crate::*` (a glob) is intentionally not flagged: a glob has no named
+/// first segment, and at the crate root it may bind the current module's own
+/// items (e.g. in `lib.rs` / `main.rs`). That is a known residual in the same
+/// escape family.
+fn check_crate_child(tree: &UseTree, current: &str, rel: &str, emitter: &mut dyn Emitter) {
+    match tree {
+        UseTree::Path(p) => {
+            if p.ident != current && p.ident != "self" {
+                emitter.emit(Diagnostic {
+                    rule: TestIsolation::ID,
+                    message: format!(
+                        "test in `{rel}` imports `crate::{}::...` — tests must only test their own file",
+                        p.ident
+                    ),
+                });
+            }
+        }
+        UseTree::Name(n) => {
+            if n.ident != current && n.ident != "self" {
+                emitter.emit(Diagnostic {
+                    rule: TestIsolation::ID,
+                    message: format!(
+                        "test in `{rel}` imports `crate::{}` — tests must only test their own file",
+                        n.ident
+                    ),
+                });
+            }
+        }
+        UseTree::Rename(r) => {
+            if r.ident != current && r.ident != "self" {
+                emitter.emit(Diagnostic {
+                    rule: TestIsolation::ID,
+                    message: format!(
+                        "test in `{rel}` imports `crate::{}` — tests must only test their own file",
+                        r.ident
+                    ),
+                });
+            }
+        }
+        UseTree::Group(g) => {
+            for item in &g.items {
+                check_crate_child(item, current, rel, emitter);
+            }
+        }
+        UseTree::Glob(_) => {}
     }
 }
 
@@ -345,6 +396,110 @@ mod tests {
             #[cfg(test)]
             mod tests {
                 use super::Foo;
+            }
+        ",
+        )
+        .unwrap();
+        let mut em = VecEmitter::default();
+        check(&file, "crates/x/src/my_mod.rs", "my_mod", &mut em);
+        assert!(em.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn flags_terminal_crate_reexport_in_use() {
+        // `use crate::CrossType;` — a crate-root re-export, no module segment.
+        // Previously escaped; the first segment after `crate` is cross-module.
+        let file = syn::parse_file(
+            r"
+            #[cfg(test)]
+            mod tests {
+                use crate::CrossType;
+            }
+        ",
+        )
+        .unwrap();
+        let mut em = VecEmitter::default();
+        check(&file, "crates/x/src/my_mod.rs", "my_mod", &mut em);
+        assert_eq!(em.diagnostics.len(), 1);
+        assert_eq!(em.diagnostics[0].rule, "test-isolation");
+        assert!(em.diagnostics[0].message.contains("crate::CrossType"));
+    }
+
+    #[test]
+    fn flags_grouped_terminal_crate_reexports() {
+        // `use crate::{A, B};` — a brace group of re-exported names.
+        // Each cross-module branch is one violation.
+        let file = syn::parse_file(
+            r"
+            #[cfg(test)]
+            mod tests {
+                use crate::{CrossA, CrossB};
+            }
+        ",
+        )
+        .unwrap();
+        let mut em = VecEmitter::default();
+        check(&file, "crates/x/src/my_mod.rs", "my_mod", &mut em);
+        assert_eq!(em.diagnostics.len(), 2);
+        assert!(
+            em.diagnostics
+                .iter()
+                .any(|v| v.message.contains("crate::CrossA"))
+        );
+        assert!(
+            em.diagnostics
+                .iter()
+                .any(|v| v.message.contains("crate::CrossB"))
+        );
+    }
+
+    #[test]
+    fn flags_grouped_module_path_in_use() {
+        // `use crate::{other::Thing};` — the grouped spelling of the
+        // long-caught `crate::other::Thing`. Previously escaped via braces.
+        let file = syn::parse_file(
+            r"
+            #[cfg(test)]
+            mod tests {
+                use crate::{other::Thing};
+            }
+        ",
+        )
+        .unwrap();
+        let mut em = VecEmitter::default();
+        check(&file, "crates/x/src/my_mod.rs", "my_mod", &mut em);
+        assert_eq!(em.diagnostics.len(), 1);
+        assert_eq!(em.diagnostics[0].rule, "test-isolation");
+        assert!(em.diagnostics[0].message.contains("crate::other"));
+    }
+
+    #[test]
+    fn flags_crate_rename_in_use() {
+        // `use crate::X as Y;` — rename of a cross-module re-export.
+        let file = syn::parse_file(
+            r"
+            #[cfg(test)]
+            mod tests {
+                use crate::CrossType as Bound;
+            }
+        ",
+        )
+        .unwrap();
+        let mut em = VecEmitter::default();
+        check(&file, "crates/x/src/my_mod.rs", "my_mod", &mut em);
+        assert_eq!(em.diagnostics.len(), 1);
+        assert!(em.diagnostics[0].message.contains("crate::CrossType"));
+    }
+
+    #[test]
+    fn silent_when_group_has_only_self_and_same_module() {
+        // `use crate::{self, my_mod::X};` in my_mod.rs — `self` allowed,
+        // `my_mod` is the current module — both branches permitted.
+        let file = syn::parse_file(
+            r"
+            #[cfg(test)]
+            mod tests {
+                use crate::{self, my_mod::X};
             }
         ",
         )
