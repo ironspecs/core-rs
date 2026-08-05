@@ -23,6 +23,7 @@
 use crate::types::{DomBoxModel, DomError, DomNode, DomNodeSlotKey};
 
 mod flex;
+mod flex_item_source;
 mod flow;
 mod style;
 mod walker;

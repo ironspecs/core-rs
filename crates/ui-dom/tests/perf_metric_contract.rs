@@ -391,7 +391,7 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
         metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
         "flex relayout: PaintPlanBuilt before LayerPainted"
     );
-    assert_node_counts(&root, 110, 13, 0, "flex relayout");
+    assert_node_counts(&root, 96, 13, 0, "flex relayout");
 }
 
 #[test]

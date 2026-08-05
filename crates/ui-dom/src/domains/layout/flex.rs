@@ -13,8 +13,8 @@
 //! - temporary state here must be algorithmic necessity, not caching for its
 //!   own sake
 //! - staged measurement helpers return records only
-//! - final node layout writes remain on the placeholder path until resolved
-//!   placement lands
+//! - final node layout writes use active flex placement with anonymous flex
+//!   item generation for inline-level children per CSS Flexbox §4
 use std::collections::HashMap;
 
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
@@ -25,6 +25,7 @@ use crate::types::{
 };
 
 use super::DomLayoutResolver;
+use super::flex_item_source::FlexItemSource;
 use super::flow::{
     EnteredNodeLayout, FlowSize, InlineFlowState, LayoutContext, auto_content_width_for_exit,
     border_box_height, border_box_width, child_layout_context, content_width_contribution_for_exit,
@@ -141,7 +142,7 @@ struct FlexContainerStyle {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct MeasuredFlexItem {
-    child_key: DomNodeSlotKey,
+    source: FlexItemSource,
     order: i32,
     main_axis: FlexAxis,
     cross_axis: FlexAxis,
@@ -164,7 +165,7 @@ struct MeasuredFlexItem {
 
 #[derive(Clone, Debug, PartialEq)]
 struct FlexLine {
-    item_keys: Vec<DomNodeSlotKey>,
+    item_sources: Vec<FlexItemSource>,
     outer_hypothetical_main_size_px: f32,
     cross_size_px: f32,
 }
@@ -172,7 +173,7 @@ struct FlexLine {
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ResolvedFlexItem {
-    child_key: DomNodeSlotKey,
+    source: FlexItemSource,
     align_self: Option<FlexCrossAxisAlignment>,
     resolved_main_size_px: f32,
     main_axis_border_padding_px: f32,
@@ -234,7 +235,7 @@ struct ActiveFlexPlacementRequest<'a> {
 }
 
 struct ActiveFlexChildRelayoutRequest<'a> {
-    child_key: DomNodeSlotKey,
+    source: FlexItemSource,
     child_context: &'a LayoutContext,
     container_style: FlexContainerStyle,
     container_main_size_px: f32,
@@ -243,35 +244,6 @@ struct ActiveFlexChildRelayoutRequest<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct PlaceholderFlexVisitState {
-    next_main_offset_px: f32,
-    line_cross_size_px: f32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PlaceholderFlexItemRecord {
-    child_key: DomNodeSlotKey,
-    measured_flow: FlowSize,
-    hypothetical_main_px: f32,
-    hypothetical_cross_px: f32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct PlaceholderFlexLine {
-    item_keys: Vec<DomNodeSlotKey>,
-    sum_hypothetical_main_px: f32,
-    cross_size_px: f32,
-}
-
-#[derive(Clone, Debug)]
-struct PlaceholderFlexContainerSolve {
-    items: Vec<PlaceholderFlexItemRecord>,
-    lines: Vec<PlaceholderFlexLine>,
-    main_size_px: f32,
-    cross_size_px: f32,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
 struct MeasuredBlockFlowState {
     block_top_px: f32,
     inline_left_px: f32,
@@ -296,24 +268,7 @@ pub(super) fn relayout_flex_node<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    if active_flex_subset_is_supported_for_available_width(
-        root_dom,
-        key,
-        style,
-        &inherited_style,
-        context.available_width_px,
-    )? {
-        return relayout_active_flex_node(
-            root_dom,
-            tree_size,
-            key,
-            context,
-            style,
-            inherited_style,
-            resolver,
-        );
-    }
-    relayout_placeholder_flex_node(
+    relayout_active_flex_node(
         root_dom,
         tree_size,
         key,
@@ -321,70 +276,6 @@ where
         style,
         inherited_style,
         resolver,
-    )
-}
-
-#[cfg(test)]
-fn active_flex_subset_is_supported(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
-) -> Result<bool, DomError> {
-    active_flex_subset_is_supported_for_available_width(root_dom, key, style, inherited_style, None)
-}
-
-fn active_flex_subset_is_supported_for_context(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
-    context: &LayoutContext,
-) -> Result<bool, DomError> {
-    active_flex_subset_is_supported_for_available_width(
-        root_dom,
-        key,
-        style,
-        inherited_style,
-        context.available_width_px,
-    )
-}
-
-fn active_flex_subset_is_supported_for_available_width(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
-    available_width_px: Option<f32>,
-) -> Result<bool, DomError> {
-    if style.display != LayoutDisplay::Flex {
-        return Ok(false);
-    }
-    let container_node = node_for_key(root_dom, key)?;
-    let Some(container_style) =
-        supported_active_flex_container_style(container_node, inherited_style, style.font_size_px)
-    else {
-        return Ok(false);
-    };
-    if !container_has_definite_sizes_for_active_flex_subset(
-        style,
-        container_style,
-        available_width_px,
-    ) {
-        return Ok(false);
-    }
-    if !style_has_no_main_axis_limits(style, container_style.main_axis) {
-        return Ok(false);
-    }
-    if !container_alignment_is_supported_for_active_subset(container_node) {
-        return Ok(false);
-    }
-    children_support_active_flex_subset(
-        root_dom,
-        key,
-        container_style,
-        inherited_style,
-        active_child_available_width_px(style, available_width_px),
     )
 }
 
@@ -412,8 +303,7 @@ where
         inherited_style,
         resolver,
     )?;
-    let container_main_size_px = entered_container_main_size(&entered, container_style.main_axis)
-        .expect("active flex solver requires a definite container main size");
+    let container_main_size_px = entered_container_main_size(&entered, container_style.main_axis);
     let child_context = child_layout_context(context.clone(), entered.clone());
     let container_cross_size_px = entered_container_cross_size(&entered, container_style.main_axis);
     let measured_solve = build_staged_measurement_solve_from_container(
@@ -423,15 +313,17 @@ where
             key,
             child_context: child_context.clone(),
             container_style,
-            container_main_size_px: Some(container_main_size_px),
+            container_main_size_px,
             use_order_modified_sequence: true,
         },
         resolver,
     )?;
+    let resolved_container_main_size_px =
+        container_main_size_px.unwrap_or(measured_solve.main_size_px);
     let resolved_solve = resolve_active_flex_container(
         measured_solve,
         container_style,
-        container_main_size_px,
+        resolved_container_main_size_px,
         container_cross_size_px,
     );
     exit_active_flex_container(
@@ -447,79 +339,6 @@ where
         },
         resolver,
     )
-}
-
-fn container_has_definite_sizes_for_active_flex_subset(
-    style: NodeStyle,
-    container_style: FlexContainerStyle,
-    available_width_px: Option<f32>,
-) -> bool {
-    let width_is_definite = style.width_px.is_some() || available_width_px.is_some();
-    match container_style.main_axis {
-        FlexAxis::Horizontal => width_is_definite,
-        FlexAxis::Vertical => width_is_definite && style.height_px.is_some(),
-    }
-}
-
-fn active_child_available_width_px(
-    style: NodeStyle,
-    available_width_px: Option<f32>,
-) -> Option<f32> {
-    style.width_px.or(available_width_px)
-}
-
-fn children_support_active_flex_subset(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    container_style: FlexContainerStyle,
-    inherited_style: &InheritedStyleContext,
-    available_width_px: Option<f32>,
-) -> Result<bool, DomError> {
-    let mut child_key = first_child_key(root_dom, key)?;
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, inherited_style)?;
-        if !active_flex_item_is_supported(
-            root_dom,
-            current_child_key,
-            child_style,
-            container_style,
-            &child_inherited_style,
-            available_width_px,
-        )? {
-            return Ok(false);
-        }
-        child_key = next_child_key;
-    }
-    Ok(true)
-}
-
-fn container_alignment_is_supported_for_active_subset(container_node: &DomNode) -> bool {
-    justify_content_is_supported_for_active_subset(container_node)
-        && align_items_is_supported_for_active_subset(container_node)
-}
-
-fn justify_content_is_supported_for_active_subset(node: &DomNode) -> bool {
-    let Some(value) = presented_string_attr(node, &DomAttribute::JustifyContent) else {
-        return true;
-    };
-    justify_content_from_str(value).is_some()
-}
-
-fn align_items_is_supported_for_active_subset(node: &DomNode) -> bool {
-    let Some(value) = presented_string_attr(node, &DomAttribute::AlignItems) else {
-        return true;
-    };
-    align_items_from_str(value).is_some()
-}
-
-fn align_self_is_supported_for_active_subset(node: &DomNode) -> bool {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::AlignSelf) {
-        return value == "auto" || align_items_from_str(value).is_some();
-    }
-    supported_place_self_align(node).is_some()
-        || presented_string_attr(node, &DomAttribute::PlaceSelf).is_none()
 }
 
 #[cfg(test)]
@@ -598,168 +417,6 @@ where
     ))
 }
 
-fn relayout_placeholder_flex_node<R>(
-    root_dom: &mut RootDom,
-    tree_size: (f32, f32),
-    key: DomNodeSlotKey,
-    context: LayoutContext,
-    style: NodeStyle,
-    inherited_style: InheritedStyleContext,
-    resolver: &mut R,
-) -> Result<FlowSize, DomError>
-where
-    R: DomLayoutResolver + ?Sized,
-{
-    let entered = enter_node(
-        root_dom,
-        tree_size,
-        key,
-        context.clone(),
-        style,
-        inherited_style,
-        resolver,
-    )?;
-    let child_context = child_layout_context(context.clone(), entered.clone());
-    let items = collect_placeholder_flex_items(root_dom, tree_size, key, child_context, resolver)?;
-    let lines = build_placeholder_flex_lines(&items);
-    let solve = resolve_placeholder_flex_container(items, lines);
-    exit_placeholder_flex_container(root_dom, key, context, entered, solve)
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn collect_placeholder_flex_items<R>(
-    root_dom: &mut RootDom,
-    tree_size: (f32, f32),
-    key: DomNodeSlotKey,
-    child_context: LayoutContext,
-    resolver: &mut R,
-) -> Result<Vec<PlaceholderFlexItemRecord>, DomError>
-where
-    R: DomLayoutResolver + ?Sized,
-{
-    let mut items = Vec::new();
-    let mut visit_state = PlaceholderFlexVisitState::default();
-    let mut child_key = first_child_key(root_dom, key)?;
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let next_child_context = next_inline_child_context(
-            child_context.clone(),
-            placeholder_inline_flow_state(visit_state),
-        );
-        let child_flow = relayout_tree_walker_node(
-            root_dom,
-            tree_size,
-            current_child_key,
-            next_child_context,
-            resolver,
-        )?;
-        let item = collect_placeholder_flex_item(current_child_key, child_flow);
-        visit_state = advance_placeholder_flex_visit_state(visit_state, item);
-        items.push(item);
-        child_key = next_child_key;
-    }
-    Ok(items)
-}
-
-fn collect_placeholder_flex_item(
-    child_key: DomNodeSlotKey,
-    measured_flow: FlowSize,
-) -> PlaceholderFlexItemRecord {
-    PlaceholderFlexItemRecord {
-        child_key,
-        measured_flow,
-        hypothetical_main_px: measured_flow.width_px,
-        hypothetical_cross_px: measured_flow.height_px,
-    }
-}
-
-fn build_placeholder_flex_lines(items: &[PlaceholderFlexItemRecord]) -> Vec<PlaceholderFlexLine> {
-    if items.is_empty() {
-        return Vec::new();
-    }
-    let mut line = PlaceholderFlexLine {
-        item_keys: Vec::with_capacity(items.len()),
-        sum_hypothetical_main_px: 0.0,
-        cross_size_px: 0.0,
-    };
-    for item in items {
-        line.item_keys.push(item.child_key);
-        line.sum_hypothetical_main_px += item.hypothetical_main_px;
-        line.cross_size_px = line.cross_size_px.max(item.hypothetical_cross_px);
-    }
-    vec![line]
-}
-
-fn resolve_placeholder_flex_container(
-    items: Vec<PlaceholderFlexItemRecord>,
-    lines: Vec<PlaceholderFlexLine>,
-) -> PlaceholderFlexContainerSolve {
-    let mut main_size_px: f32 = 0.0;
-    let mut cross_size_px: f32 = 0.0;
-    for line in &lines {
-        main_size_px = main_size_px.max(line.sum_hypothetical_main_px);
-        cross_size_px += line.cross_size_px;
-    }
-    PlaceholderFlexContainerSolve {
-        items,
-        lines,
-        main_size_px,
-        cross_size_px,
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn exit_placeholder_flex_container(
-    root_dom: &mut RootDom,
-    key: DomNodeSlotKey,
-    context: LayoutContext,
-    entered: EnteredNodeLayout,
-    solve: PlaceholderFlexContainerSolve,
-) -> Result<FlowSize, DomError> {
-    let has_items = !solve.items.is_empty();
-    let has_lines = !solve.lines.is_empty();
-    assert_eq!(
-        has_items, has_lines,
-        "flex placeholder should keep item and line presence aligned",
-    );
-    let auto_content_width_px = auto_content_width_for_exit(
-        &entered,
-        context.available_width_px,
-        solve.main_size_px,
-        solve.main_size_px,
-        solve.main_size_px,
-    );
-    exit_node(
-        root_dom,
-        key,
-        context,
-        entered,
-        auto_content_width_px,
-        (auto_content_width_px, auto_content_width_px),
-        non_negative_auto_content_height(solve.cross_size_px),
-    )
-}
-
-fn advance_placeholder_flex_visit_state(
-    state: PlaceholderFlexVisitState,
-    item: PlaceholderFlexItemRecord,
-) -> PlaceholderFlexVisitState {
-    PlaceholderFlexVisitState {
-        next_main_offset_px: state.next_main_offset_px + item.measured_flow.width_px,
-        line_cross_size_px: state.line_cross_size_px.max(item.measured_flow.height_px),
-    }
-}
-
-fn placeholder_inline_flow_state(state: PlaceholderFlexVisitState) -> InlineFlowState {
-    InlineFlowState {
-        inline_left_px: state.next_main_offset_px,
-        line_height_px: state.line_cross_size_px,
-        min_width_px: state.next_main_offset_px,
-        max_content_width_px: state.next_main_offset_px,
-        has_children: state.next_main_offset_px > 0.0 || state.line_cross_size_px > 0.0,
-    }
-}
-
 fn collect_measured_flex_items_in_dom_order<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
@@ -775,10 +432,11 @@ where
     let mut child_key = first_child_key(root_dom, key)?;
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
+        let source = FlexItemSource::BlockItem(current_child_key);
         let item = measure_one_flex_item(
             root_dom,
             tree_size,
-            current_child_key,
+            source,
             child_context,
             container_style.main_axis,
             resolver,
@@ -792,7 +450,7 @@ where
 fn measure_one_flex_item<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
-    child_key: DomNodeSlotKey,
+    source: FlexItemSource,
     child_context: &LayoutContext,
     main_axis: FlexAxis,
     resolver: &mut R,
@@ -800,6 +458,7 @@ fn measure_one_flex_item<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
+    let child_key = source.key();
     let (child_style, child_inherited_style) =
         resolved_node_style(root_dom, child_key, &child_context.inherited_style)?;
     let measured_flow = measure_tree_walker_node_without_layout_write(
@@ -840,7 +499,7 @@ where
     let margin_cross_start_px = cross_axis_start_margin(child_style, main_axis);
     let margin_cross_end_px = cross_axis_end_margin(child_style, main_axis);
     Ok(MeasuredFlexItem {
-        child_key,
+        source,
         order,
         main_axis,
         cross_axis: cross_axis(main_axis),
@@ -931,17 +590,6 @@ fn measure_flex_node_without_layout_write<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    let is_supported = active_flex_subset_is_supported_for_context(
-        root_dom,
-        key,
-        style,
-        &inherited_style,
-        context,
-    )?;
-    assert!(
-        is_supported,
-        "no-write flex measurement should only receive a supported flex container",
-    );
     // CSS Flexbox 9.2/9.7 split flex item collection from final layout:
     // https://www.w3.org/TR/css-flexbox-1/#algo-main-item
     // https://www.w3.org/TR/css-flexbox-1/#resolve-flexible-lengths
@@ -965,8 +613,7 @@ where
         resolver,
     )?;
     let child_context = child_layout_context(context.clone(), entered.clone());
-    let container_main_size_px = entered_container_main_size(&entered, container_style.main_axis)
-        .expect("no-write flex measurement requires a definite container main size");
+    let container_main_size_px = entered_container_main_size(&entered, container_style.main_axis);
     let measured_solve = build_staged_measurement_solve_from_container(
         root_dom,
         tree_size,
@@ -974,15 +621,17 @@ where
             key,
             child_context,
             container_style,
-            container_main_size_px: Some(container_main_size_px),
+            container_main_size_px,
             use_order_modified_sequence: true,
         },
         resolver,
     )?;
+    let resolved_container_main_size_px =
+        container_main_size_px.unwrap_or(measured_solve.main_size_px);
     let resolved_solve = resolve_active_flex_container(
         measured_solve,
         container_style,
-        container_main_size_px,
+        resolved_container_main_size_px,
         entered_container_cross_size(&entered, container_style.main_axis),
     );
     let content_width_px = active_flex_content_width_px(
@@ -1553,15 +1202,6 @@ fn staged_place_self_align(node: &DomNode) -> Option<PlaceSelfAlignment> {
             panic!("staged place-self align token is unsupported: {align_token}")
         }),
     ))
-}
-
-fn supported_place_self_align(node: &DomNode) -> Option<PlaceSelfAlignment> {
-    let value = presented_string_attr(node, &DomAttribute::PlaceSelf)?;
-    let (align_token, _) = place_tokens(value)?;
-    if align_token == "auto" {
-        return Some(PlaceSelfAlignment::Auto);
-    }
-    align_items_from_str(align_token).map(PlaceSelfAlignment::Alignment)
 }
 
 fn staged_place_content_alignments(
@@ -2391,11 +2031,6 @@ fn style_has_definite_main_axis_size(style: NodeStyle, main_axis: FlexAxis) -> b
     }
 }
 
-fn style_has_no_main_axis_limits(style: NodeStyle, main_axis: FlexAxis) -> bool {
-    let (min_main_size_px, max_main_size_px) = main_axis_limits(style, main_axis);
-    min_main_size_px.is_none() && max_main_size_px.is_none()
-}
-
 fn style_has_definite_cross_axis_size(style: NodeStyle, main_axis: FlexAxis) -> bool {
     match main_axis {
         FlexAxis::Horizontal => style.height_px.is_some(),
@@ -2476,7 +2111,7 @@ fn build_measured_flex_lines(
 
 fn build_measured_flex_line(items: &[MeasuredFlexItem], gap_between_items_px: f32) -> FlexLine {
     let mut line = FlexLine {
-        item_keys: Vec::with_capacity(items.len()),
+        item_sources: Vec::with_capacity(items.len()),
         outer_hypothetical_main_size_px: 0.0,
         cross_size_px: 0.0,
     };
@@ -2484,7 +2119,7 @@ fn build_measured_flex_line(items: &[MeasuredFlexItem], gap_between_items_px: f3
         if index > 0 {
             line.outer_hypothetical_main_size_px += gap_between_items_px;
         }
-        line.item_keys.push(item.child_key);
+        line.item_sources.push(item.source);
         line.outer_hypothetical_main_size_px += item.outer_hypothetical_main_size_px;
         line.cross_size_px = line.cross_size_px.max(
             item.measured_cross_size_input_px
@@ -2758,7 +2393,7 @@ fn measured_items_by_child_key(
     let item_map = measured_items
         .iter()
         .copied()
-        .map(|measured_item| (measured_item.child_key, measured_item))
+        .map(|measured_item| (measured_item.source.key(), measured_item))
         .collect::<HashMap<_, _>>();
     assert_eq!(
         item_map.len(),
@@ -2772,11 +2407,11 @@ fn measured_items_for_line(
     line: &FlexLine,
     measured_items_by_child_key: &HashMap<DomNodeSlotKey, MeasuredFlexItem>,
 ) -> Vec<MeasuredFlexItem> {
-    line.item_keys
+    line.item_sources
         .iter()
-        .map(|child_key| {
+        .map(|source| {
             measured_items_by_child_key
-                .get(child_key)
+                .get(&source.key())
                 .copied()
                 .expect("active flex line should only reference measured child items")
         })
@@ -2813,7 +2448,7 @@ fn resolve_flex_line_items(
     let mut resolved_items = Vec::with_capacity(resolution_states.len());
     for (index, resolution_state) in resolution_states.into_iter().enumerate() {
         resolved_items.push(ResolvedFlexItem {
-            child_key: resolution_state.measured_item.child_key,
+            source: resolution_state.measured_item.source,
             align_self: resolution_state.measured_item.align_self,
             resolved_main_size_px: resolution_state.resolved_main_size_px,
             main_axis_border_padding_px: resolution_state.measured_item.main_axis_border_padding_px,
@@ -3006,9 +2641,15 @@ fn freeze_flex_line_inflexible_items(
 
 fn flex_line_item_is_inflexible(item: MeasuredFlexItem, is_using_flex_grow: bool) -> bool {
     if is_using_flex_grow {
-        return item.flex_grow_factor == 0.0;
+        if item.flex_grow_factor == 0.0 {
+            return true;
+        }
+        return item.flex_base_size_px > item.hypothetical_main_size_px;
     }
-    item.flex_shrink_factor == 0.0
+    if item.flex_shrink_factor == 0.0 {
+        return true;
+    }
+    item.flex_base_size_px < item.hypothetical_main_size_px
 }
 
 fn remaining_flex_line_free_space(
@@ -3251,7 +2892,7 @@ where
             root_dom,
             tree_size,
             &ActiveFlexChildRelayoutRequest {
-                child_key: current_child_key,
+                source: FlexItemSource::BlockItem(current_child_key),
                 child_context: request.child_context,
                 container_style: request.container_style,
                 container_main_size_px: request.container_main_size_px,
@@ -3313,7 +2954,7 @@ where
 {
     let (child_style, _) = resolved_node_style(
         root_dom,
-        request.child_key,
+        request.source.key(),
         &request.child_context.inherited_style,
     )?;
     let placed_context = active_flex_resolved_child_context(
@@ -3327,7 +2968,7 @@ where
     let child_flow = relayout_tree_walker_node(
         root_dom,
         tree_size,
-        request.child_key,
+        request.source.key(),
         placed_context,
         resolver,
     )?;
@@ -3343,7 +2984,7 @@ fn resolved_items_by_child_key(
     let item_map = resolved_items
         .iter()
         .copied()
-        .map(|resolved_item| (resolved_item.child_key, resolved_item))
+        .map(|resolved_item| (resolved_item.source.key(), resolved_item))
         .collect::<HashMap<_, _>>();
     assert_eq!(
         item_map.len(),
@@ -3356,8 +2997,8 @@ fn resolved_items_by_child_key(
 fn line_index_by_child_key(lines: &[FlexLine]) -> HashMap<DomNodeSlotKey, usize> {
     let mut item_map = HashMap::new();
     for (line_index, line) in lines.iter().enumerate() {
-        for child_key in &line.item_keys {
-            let previous = item_map.insert(*child_key, line_index);
+        for source in &line.item_sources {
+            let previous = item_map.insert(source.key(), line_index);
             assert!(
                 previous.is_none(),
                 "active flex lines should not place the same child in more than one line",
@@ -3368,7 +3009,7 @@ fn line_index_by_child_key(lines: &[FlexLine]) -> HashMap<DomNodeSlotKey, usize>
 }
 
 fn flex_line_item_count(lines: &[FlexLine]) -> usize {
-    lines.iter().map(|line| line.item_keys.len()).sum()
+    lines.iter().map(|line| line.item_sources.len()).sum()
 }
 
 fn flex_line_gap_count(item_count: usize) -> usize {
@@ -3413,16 +3054,6 @@ fn resolved_flex_item_cross_axis_alignment(
         resolved_item
             .align_self
             .unwrap_or(container_style.align_items),
-        container_style,
-    )
-}
-
-fn resolved_flex_item_cross_axis_alignment_from_node(
-    child_node: &DomNode,
-    container_style: FlexContainerStyle,
-) -> FlexCrossAxisAlignment {
-    resolved_cross_axis_alignment(
-        item_align_self(child_node).unwrap_or(container_style.align_items),
         container_style,
     )
 }
@@ -3697,382 +3328,6 @@ fn node_for_key(root_dom: &RootDom, key: DomNodeSlotKey) -> Result<&DomNode, Dom
     root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)
 }
 
-fn has_any_presented_attr(node: &DomNode, attributes: &[DomAttribute]) -> bool {
-    attributes
-        .iter()
-        .any(|attribute| node.presented_attr(attribute).is_some())
-}
-
-fn active_flex_item_is_supported(
-    root_dom: &RootDom,
-    child_key: DomNodeSlotKey,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-    child_inherited_style: &InheritedStyleContext,
-    available_width_px: Option<f32>,
-) -> Result<bool, DomError> {
-    if child_style.position != PositionMode::Static {
-        return Ok(false);
-    }
-    match child_style.display {
-        LayoutDisplay::Block => active_block_flex_item_is_supported(
-            root_dom,
-            child_key,
-            child_style,
-            container_style,
-            child_inherited_style,
-        ),
-        LayoutDisplay::Flex => active_flex_container_item_is_supported(
-            root_dom,
-            child_key,
-            child_style,
-            container_style,
-            child_inherited_style,
-            available_width_px,
-        ),
-        LayoutDisplay::Inline
-        | LayoutDisplay::InlineBlock
-        | LayoutDisplay::InlineFlex
-        | LayoutDisplay::None => Ok(false),
-    }
-}
-
-fn active_block_flex_item_is_supported(
-    root_dom: &RootDom,
-    child_key: DomNodeSlotKey,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-    child_inherited_style: &InheritedStyleContext,
-) -> Result<bool, DomError> {
-    let child_node = node_for_key(root_dom, child_key)?;
-    if !active_flex_item_box_is_supported(child_node, child_style, container_style) {
-        return Ok(false);
-    }
-    if !active_flex_item_has_supported_flex_basis(child_node, child_style, container_style) {
-        return Ok(false);
-    }
-    if item_overflow_is_visible(child_node)
-        && !active_flex_item_has_supported_content_based_auto_min(
-            root_dom,
-            child_key,
-            child_style,
-            container_style,
-            child_inherited_style,
-        )?
-    {
-        return Ok(false);
-    }
-    let _ = item_flex_grow_factor_from_node(child_node, child_style.font_size_px);
-    let _ = item_flex_shrink_factor_from_node(child_node, child_style.font_size_px);
-    if subtree_contains_nested_flex(root_dom, child_key, child_inherited_style)? {
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-fn active_flex_container_item_is_supported(
-    root_dom: &RootDom,
-    child_key: DomNodeSlotKey,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-    child_inherited_style: &InheritedStyleContext,
-    available_width_px: Option<f32>,
-) -> Result<bool, DomError> {
-    let child_node = node_for_key(root_dom, child_key)?;
-    if !active_flex_container_item_box_is_supported(child_node, child_style, container_style) {
-        return Ok(false);
-    }
-    if !active_flex_container_item_has_supported_flex_basis(
-        child_node,
-        child_style,
-        container_style,
-    ) {
-        return Ok(false);
-    }
-    if item_overflow_is_visible(child_node)
-        && !active_flex_item_has_supported_content_based_auto_min(
-            root_dom,
-            child_key,
-            child_style,
-            container_style,
-            child_inherited_style,
-        )?
-    {
-        return Ok(false);
-    }
-    let _ = item_flex_grow_factor_from_node(child_node, child_style.font_size_px);
-    let _ = item_flex_shrink_factor_from_node(child_node, child_style.font_size_px);
-    active_flex_subset_is_supported_for_available_width(
-        root_dom,
-        child_key,
-        child_style,
-        child_inherited_style,
-        available_width_px,
-    )
-}
-
-fn active_flex_item_box_is_supported(
-    child_node: &DomNode,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-) -> bool {
-    if !active_flex_item_cross_size_is_supported(child_node, child_style, container_style) {
-        return false;
-    }
-    if !active_flex_item_has_supported_overflow(child_node) {
-        return false;
-    }
-    if !align_self_is_supported_for_active_subset(child_node) {
-        return false;
-    }
-    true
-}
-
-fn active_flex_container_item_box_is_supported(
-    child_node: &DomNode,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-) -> bool {
-    if !active_flex_item_cross_size_is_supported(child_node, child_style, container_style) {
-        return false;
-    }
-    if !active_flex_item_has_supported_overflow(child_node) {
-        return false;
-    }
-    if !align_self_is_supported_for_active_subset(child_node) {
-        return false;
-    }
-    true
-}
-
-fn active_flex_item_cross_size_is_supported(
-    child_node: &DomNode,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-) -> bool {
-    style_has_definite_cross_axis_size(child_style, container_style.main_axis)
-        || flex_item_uses_stretch_cross_size(child_node, child_style, container_style)
-}
-
-fn flex_item_uses_stretch_cross_size(
-    child_node: &DomNode,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-) -> bool {
-    resolved_flex_item_cross_axis_alignment_from_node(child_node, container_style)
-        == FlexCrossAxisAlignment::Stretch
-        && !style_has_definite_cross_axis_size(child_style, container_style.main_axis)
-}
-
-fn active_flex_item_has_supported_overflow(node: &DomNode) -> bool {
-    flex_auto_min_overflow_mode(node).is_some()
-}
-
-fn active_flex_item_has_supported_flex_basis(
-    node: &DomNode,
-    style: NodeStyle,
-    container_style: FlexContainerStyle,
-) -> bool {
-    preferred_flex_basis_px(node, style).is_some()
-        || (flex_basis_uses_main_size_property(node, style)
-            && style_has_definite_main_axis_size(style, container_style.main_axis))
-        || active_subset_uses_automatic_flex_basis_measurement(node, style, container_style)
-}
-
-fn active_subset_uses_automatic_flex_basis_measurement(
-    node: &DomNode,
-    style: NodeStyle,
-    container_style: FlexContainerStyle,
-) -> bool {
-    if flex_basis_uses_main_size_property(node, style)
-        && style_has_definite_main_axis_size(style, container_style.main_axis)
-    {
-        return false;
-    }
-    if container_style.main_axis != FlexAxis::Horizontal
-        || container_style.wrap_mode != FlexWrapMode::NoWrap
-    {
-        return false;
-    }
-    matches!(
-        flex_basis_source_from_node(node, style),
-        None | Some(FlexBasisSource::Auto | FlexBasisSource::Content)
-    )
-}
-
-fn active_flex_container_item_has_supported_flex_basis(
-    node: &DomNode,
-    style: NodeStyle,
-    container_style: FlexContainerStyle,
-) -> bool {
-    if preferred_flex_basis_px(node, style).is_some() {
-        return true;
-    }
-    if flex_basis_uses_main_size_property(node, style)
-        && style_has_definite_main_axis_size(style, container_style.main_axis)
-    {
-        return true;
-    }
-    false
-}
-
-fn flex_basis_uses_main_size_property(node: &DomNode, style: NodeStyle) -> bool {
-    matches!(
-        flex_basis_source_from_node(node, style),
-        None | Some(FlexBasisSource::Auto)
-    )
-}
-
-fn active_flex_item_has_supported_content_based_auto_min(
-    root_dom: &RootDom,
-    child_key: DomNodeSlotKey,
-    child_style: NodeStyle,
-    container_style: FlexContainerStyle,
-    child_inherited_style: &InheritedStyleContext,
-) -> Result<bool, DomError> {
-    if style_has_definite_main_axis_size(child_style, container_style.main_axis) {
-        return Ok(true);
-    }
-    if container_style.main_axis == FlexAxis::Vertical {
-        return Ok(true);
-    }
-    horizontal_content_based_auto_min_is_supported(
-        root_dom,
-        child_key,
-        child_style,
-        child_inherited_style,
-    )
-}
-
-fn horizontal_content_based_auto_min_is_supported(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
-) -> Result<bool, DomError> {
-    let node = node_for_key(root_dom, key)?;
-    if has_any_presented_attr(node, &[DomAttribute::OverflowWrap, DomAttribute::WordBreak]) {
-        return Ok(false);
-    }
-    if node_intrinsic_horizontal_content_width_px(node, inherited_style).is_some() {
-        return Ok(true);
-    }
-    if style.display == LayoutDisplay::Flex
-        && !horizontal_flex_container_content_based_auto_min_is_supported(
-            root_dom,
-            key,
-            style,
-            inherited_style,
-        )?
-    {
-        return Ok(false);
-    }
-    let mut child_key = first_child_key(root_dom, key)?;
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, inherited_style)?;
-        if child_style.display == LayoutDisplay::None
-            || matches!(
-                child_style.position,
-                PositionMode::Absolute | PositionMode::Fixed
-            )
-        {
-            child_key = next_child_key;
-            continue;
-        }
-        if !horizontal_flex_container_auto_min_child_flexing_is_supported(
-            node_for_key(root_dom, current_child_key)?,
-            child_style,
-        ) {
-            return Ok(false);
-        }
-        if !horizontal_content_based_auto_min_is_supported(
-            root_dom,
-            current_child_key,
-            child_style,
-            &child_inherited_style,
-        )? {
-            return Ok(false);
-        }
-        child_key = next_child_key;
-    }
-    Ok(true)
-}
-
-fn horizontal_flex_container_content_based_auto_min_is_supported(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
-) -> Result<bool, DomError> {
-    let container_node = node_for_key(root_dom, key)?;
-    let Some(container_style) =
-        supported_active_flex_container_style(container_node, inherited_style, style.font_size_px)
-    else {
-        return Ok(false);
-    };
-    if !flex_container_content_based_auto_min_is_supported(container_style) {
-        return Ok(false);
-    }
-    let mut child_key = first_child_key(root_dom, key)?;
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, inherited_style)?;
-        if child_style.display == LayoutDisplay::None
-            || matches!(
-                child_style.position,
-                PositionMode::Absolute | PositionMode::Fixed
-            )
-        {
-            child_key = next_child_key;
-            continue;
-        }
-        if !horizontal_content_based_auto_min_is_supported(
-            root_dom,
-            current_child_key,
-            child_style,
-            &child_inherited_style,
-        )? {
-            return Ok(false);
-        }
-        child_key = next_child_key;
-    }
-    Ok(true)
-}
-
-fn horizontal_flex_container_auto_min_child_flexing_is_supported(
-    child_node: &DomNode,
-    child_style: NodeStyle,
-) -> bool {
-    item_flex_grow_factor_from_node(child_node, child_style.font_size_px) == 0.0
-}
-
-fn subtree_contains_nested_flex(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    inherited_style: &InheritedStyleContext,
-) -> Result<bool, DomError> {
-    let mut child_key = first_child_key(root_dom, key)?;
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, inherited_style)?;
-        if matches!(
-            child_style.display,
-            LayoutDisplay::Flex | LayoutDisplay::InlineFlex
-        ) {
-            return Ok(true);
-        }
-        if subtree_contains_nested_flex(root_dom, current_child_key, &child_inherited_style)? {
-            return Ok(true);
-        }
-        child_key = next_child_key;
-    }
-    Ok(false)
-}
-
 fn presented_string_attr<'a>(node: &'a DomNode, attribute: &DomAttribute) -> Option<&'a str> {
     let value = node.presented_attr(attribute)?;
     let DomAttributeValue::String(value) = value else {
@@ -4085,24 +3340,17 @@ fn presented_string_attr<'a>(node: &'a DomNode, attribute: &DomAttribute) -> Opt
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::{
-        FlexAxis, FlexContainerStyle, FlexCrossAxisAlignment, FlexLine, FlexLineCrossAxisAlignment,
-        FlexMainAxisAlignment, FlexWrapMode, MeasuredFlexItem, PlaceholderFlexVisitState,
+        FlexAxis, FlexContainerStyle, FlexItemSource, FlexLine, FlexWrapMode, MeasuredFlexItem,
         active_flex_content_height_px, active_flex_content_width_px,
-        active_flex_resolved_child_context, active_flex_subset_is_supported,
-        active_flex_subset_is_supported_for_available_width, advance_placeholder_flex_visit_state,
-        build_measured_flex_lines, build_placeholder_flex_lines, build_staged_measurement_solve,
-        collect_measured_flex_items_in_dom_order, collect_placeholder_flex_item,
+        active_flex_resolved_child_context, build_measured_flex_lines,
+        build_staged_measurement_solve, collect_measured_flex_items_in_dom_order,
         cross_axis_alignment_offset_px, order_modified_measured_items,
-        placeholder_inline_flow_state, resolve_active_flex_container,
-        resolve_measured_flex_container, resolve_placeholder_flex_container,
-        resolved_cross_axis_alignment, resolved_cross_axis_is_reversed,
-        resolved_flex_item_main_start_px, resolved_line_cross_axis_alignment,
-        resolved_main_axis_alignment, resolved_main_axis_is_reversed, staged_flex_container_style,
+        resolve_active_flex_container, resolve_measured_flex_container,
+        resolved_flex_item_main_start_px, staged_flex_container_style,
     };
     use crate::domains::layout::IdentityDomLayoutResolver;
     use crate::domains::layout::flow::{
-        FlowSize, LayoutContext, child_layout_context, enter_node, next_sibling_key,
-        resolved_node_style,
+        LayoutContext, child_layout_context, enter_node, next_sibling_key, resolved_node_style,
     };
     use crate::domains::layout::style::{
         BoxSides, LayoutDisplay, NodeStyle, PositionMode, layout_dirty_from_ref, node_box_from_ref,
@@ -4117,32 +3365,19 @@ mod tests {
         let mut keys = slotmap::SlotMap::with_key();
         (0..count).map(|_| keys.insert(())).collect()
     }
-
-    fn placeholder_item(
-        child_key: DomNodeSlotKey,
-        width_px: f32,
-        height_px: f32,
-    ) -> super::PlaceholderFlexItemRecord {
-        collect_placeholder_flex_item(
-            child_key,
-            FlowSize {
-                width_px,
-                height_px,
-                min_width_px: width_px,
-                max_width_px: width_px,
-            },
-        )
+    fn source(key: DomNodeSlotKey) -> FlexItemSource {
+        FlexItemSource::BlockItem(key)
     }
 
     fn measured_row_item(
-        child_key: DomNodeSlotKey,
+        source: FlexItemSource,
         flex_grow_factor: f32,
         flex_shrink_factor: f32,
         flex_base_size_px: f32,
         measured_cross_size_input_px: f32,
     ) -> MeasuredFlexItem {
         measured_row_item_with_automatic_min(
-            child_key,
+            source,
             flex_grow_factor,
             flex_shrink_factor,
             flex_base_size_px,
@@ -4152,7 +3387,7 @@ mod tests {
     }
 
     fn measured_row_item_with_automatic_min(
-        child_key: DomNodeSlotKey,
+        source: FlexItemSource,
         flex_grow_factor: f32,
         flex_shrink_factor: f32,
         flex_base_size_px: f32,
@@ -4160,7 +3395,7 @@ mod tests {
         automatic_min_main_size_px: f32,
     ) -> MeasuredFlexItem {
         MeasuredFlexItem {
-            child_key,
+            source,
             order: 0,
             main_axis: FlexAxis::Horizontal,
             cross_axis: FlexAxis::Vertical,
@@ -4183,7 +3418,7 @@ mod tests {
     }
 
     fn measured_row_item_with_limits(
-        child_key: DomNodeSlotKey,
+        source: FlexItemSource,
         flex_grow_factor: f32,
         flex_shrink_factor: f32,
         flex_base_size_px: f32,
@@ -4192,7 +3427,7 @@ mod tests {
         max_main_size_px: Option<f32>,
     ) -> MeasuredFlexItem {
         let mut measured_item = measured_row_item(
-            child_key,
+            source,
             flex_grow_factor,
             flex_shrink_factor,
             flex_base_size_px,
@@ -4224,11 +3459,11 @@ mod tests {
     }
 
     fn measured_row_item_with_box_edges(
-        child_key: DomNodeSlotKey,
+        source: FlexItemSource,
         box_edges: MeasuredRowItemBoxEdges,
     ) -> MeasuredFlexItem {
         MeasuredFlexItem {
-            child_key,
+            source,
             order: 0,
             main_axis: FlexAxis::Horizontal,
             cross_axis: FlexAxis::Vertical,
@@ -4410,1475 +3645,6 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_item_keeps_measured_flow_as_hypothetical_size() {
-        let child_key = test_keys(1).remove(0);
-        let item = placeholder_item(child_key, 12.0, 18.0);
-
-        assert_eq!(item.child_key, child_key);
-        assert_eq!(item.measured_flow.width_px, 12.0);
-        assert_eq!(item.measured_flow.height_px, 18.0);
-        assert_eq!(item.hypothetical_main_px, 12.0);
-        assert_eq!(item.hypothetical_cross_px, 18.0);
-    }
-
-    #[test]
-    fn placeholder_visit_state_accumulates_main_and_tracks_tallest_cross() {
-        let keys = test_keys(2);
-        let first = placeholder_item(keys[0], 10.0, 12.0);
-        let second = placeholder_item(keys[1], 16.0, 9.0);
-
-        let after_first =
-            advance_placeholder_flex_visit_state(PlaceholderFlexVisitState::default(), first);
-        let after_second = advance_placeholder_flex_visit_state(after_first, second);
-
-        assert_eq!(
-            after_first,
-            PlaceholderFlexVisitState {
-                next_main_offset_px: 10.0,
-                line_cross_size_px: 12.0,
-            }
-        );
-        assert_eq!(
-            after_second,
-            PlaceholderFlexVisitState {
-                next_main_offset_px: 26.0,
-                line_cross_size_px: 12.0,
-            }
-        );
-    }
-
-    #[test]
-    fn placeholder_inline_flow_state_uses_main_offset_as_inline_left() {
-        let state = placeholder_inline_flow_state(PlaceholderFlexVisitState {
-            next_main_offset_px: 22.0,
-            line_cross_size_px: 15.0,
-        });
-
-        assert_eq!(state.inline_left_px, 22.0);
-        assert_eq!(state.line_height_px, 15.0);
-        assert!(state.has_children);
-    }
-
-    #[test]
-    fn build_placeholder_flex_lines_keeps_placeholder_items_in_one_line_in_visit_order() {
-        let keys = test_keys(2);
-        let items = vec![
-            placeholder_item(keys[0], 10.0, 12.0),
-            placeholder_item(keys[1], 16.0, 18.0),
-        ];
-
-        let lines = build_placeholder_flex_lines(&items);
-
-        assert_eq!(
-            lines,
-            vec![super::PlaceholderFlexLine {
-                item_keys: items.iter().map(|item| item.child_key).collect(),
-                sum_hypothetical_main_px: 26.0,
-                cross_size_px: 18.0,
-            }]
-        );
-    }
-
-    #[test]
-    fn resolve_placeholder_flex_container_uses_widest_line_and_total_cross_size() {
-        let keys = test_keys(2);
-        let items = vec![
-            placeholder_item(keys[0], 10.0, 12.0),
-            placeholder_item(keys[1], 16.0, 18.0),
-        ];
-        let lines = vec![
-            super::PlaceholderFlexLine {
-                item_keys: vec![items[0].child_key],
-                sum_hypothetical_main_px: 10.0,
-                cross_size_px: 12.0,
-            },
-            super::PlaceholderFlexLine {
-                item_keys: vec![items[1].child_key],
-                sum_hypothetical_main_px: 16.0,
-                cross_size_px: 18.0,
-            },
-        ];
-
-        let solve = resolve_placeholder_flex_container(items.clone(), lines.clone());
-
-        assert_eq!(solve.items.len(), items.len());
-        assert_eq!(solve.lines, lines);
-        assert_eq!(solve.main_size_px, 16.0);
-        assert_eq!(solve.cross_size_px, 30.0);
-    }
-
-    #[test]
-    fn active_flex_gate_admits_row_nowrap_grow_subset() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-direction", "row")
-            .expect("direction should set");
-        root.set_attr_str(container, "flex-wrap", "nowrap")
-            .expect("wrap should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "flex-grow", "1")
-            .expect("grow should set");
-        root.set_attr_str(child, "flex-shrink", "1")
-            .expect("shrink should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should be admitted",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_row_reverse_items() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-direction", "row-reverse")
-            .expect("direction should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit row-reverse placement",
-        );
-    }
-
-    #[test]
-    fn resolved_main_axis_reversal_uses_rtl_for_row_direction() {
-        let row_ltr = row_container_style();
-        let row_rtl = FlexContainerStyle {
-            text_direction: DomTextDirection::Rtl,
-            ..row_container_style()
-        };
-        let row_reverse_rtl = FlexContainerStyle {
-            is_main_reversed: true,
-            text_direction: DomTextDirection::Rtl,
-            ..row_container_style()
-        };
-
-        assert!(
-            !resolved_main_axis_is_reversed(row_ltr),
-            "ltr row should progress from the physical left edge",
-        );
-        assert!(
-            resolved_main_axis_is_reversed(row_rtl),
-            "rtl row should progress from the physical right edge",
-        );
-        assert!(
-            !resolved_main_axis_is_reversed(row_reverse_rtl),
-            "rtl row-reverse should cancel back to physical left-to-right progression",
-        );
-    }
-
-    #[test]
-    fn logical_start_alignment_resolves_opposite_to_flex_start_on_reversed_axes() {
-        let row_reverse_ltr = FlexContainerStyle {
-            is_main_reversed: true,
-            ..row_container_style()
-        };
-        let wrap_reverse_row = FlexContainerStyle {
-            wrap_mode: FlexWrapMode::WrapReverse,
-            ..row_container_style()
-        };
-        let rtl_column = FlexContainerStyle {
-            main_axis: FlexAxis::Vertical,
-            text_direction: DomTextDirection::Rtl,
-            ..row_container_style()
-        };
-
-        assert_eq!(
-            resolved_main_axis_alignment(FlexMainAxisAlignment::Start, row_reverse_ltr),
-            FlexMainAxisAlignment::FlexEnd,
-            "row-reverse should map logical main-axis start to flex-end in ltr",
-        );
-        assert_eq!(
-            resolved_cross_axis_alignment(FlexCrossAxisAlignment::Start, wrap_reverse_row),
-            FlexCrossAxisAlignment::FlexEnd,
-            "wrap-reverse should map logical cross-axis start opposite flex-start",
-        );
-        assert_eq!(
-            resolved_cross_axis_alignment(FlexCrossAxisAlignment::FlexStart, rtl_column),
-            FlexCrossAxisAlignment::FlexStart,
-            "column flex-start should already respect rtl inline-start before any logical aliasing",
-        );
-        assert!(
-            resolved_cross_axis_is_reversed(rtl_column),
-            "rtl column cross axis should point at the physical right edge",
-        );
-    }
-
-    #[test]
-    fn logical_end_alignment_resolves_opposite_to_flex_end_on_reversed_axes() {
-        let row_reverse_ltr = FlexContainerStyle {
-            is_main_reversed: true,
-            ..row_container_style()
-        };
-        let wrap_reverse_row = FlexContainerStyle {
-            wrap_mode: FlexWrapMode::WrapReverse,
-            ..row_container_style()
-        };
-
-        assert_eq!(
-            resolved_main_axis_alignment(FlexMainAxisAlignment::End, row_reverse_ltr),
-            FlexMainAxisAlignment::FlexStart,
-            "row-reverse should map logical main-axis end to flex-start in ltr",
-        );
-        assert_eq!(
-            resolved_cross_axis_alignment(FlexCrossAxisAlignment::End, wrap_reverse_row),
-            FlexCrossAxisAlignment::FlexStart,
-            "wrap-reverse should map logical cross-axis end opposite flex-end",
-        );
-        assert_eq!(
-            resolved_line_cross_axis_alignment(FlexLineCrossAxisAlignment::End, wrap_reverse_row),
-            FlexLineCrossAxisAlignment::FlexStart,
-            "wrap-reverse line packing should map logical cross-axis end opposite flex-end",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_ordered_row_reverse_items() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-direction", "row-reverse")
-            .expect("direction should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(first, "order", "2")
-            .expect("order should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "order", "-1")
-            .expect("order should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit row-reverse with order-modified sequencing",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_ordered_items() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(first, "order", "2")
-            .expect("order should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "order", "-1")
-            .expect("order should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit order-modified items",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_uses_browser_default_row_direction_without_explicit_attr() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should honor the browser default row direction when flex-direction is omitted",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_uses_available_width_for_auto_width_row_container() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "overflow", "scroll")
-            .expect("overflow should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported_for_available_width(
-                &root,
-                container,
-                style,
-                &inherited_style,
-                Some(90.0),
-            )
-            .expect("gate should evaluate"),
-            "block-level row flex should use containing-block available width as its definite main size",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_flex_shorthand_items() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "flex", "1 1 10px")
-            .expect("flex shorthand should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should admit common flex shorthand once the staged parser feeds the same grow, shrink, and basis variables as the longhands",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_auto_flex_basis_items_for_single_line_rows() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "flex-basis", "auto")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should admit auto flex-basis for the supported single-line horizontal subset",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_auto_flex_basis_items_for_wrap_when_width_is_definite() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "20px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(child, "flex-basis", "auto")
-            .expect("basis should set");
-        root.set_attr_str(child, "width", "40px")
-            .expect("width should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should admit wrapped auto flex-basis items when the main-size property already gives the browser algorithm a definite base size",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_auto_flex_basis_items_for_columns_when_height_is_definite() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "20px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "90px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-direction", "column")
-            .expect("direction should set");
-        root.set_attr_str(child, "flex-basis", "auto")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "20px")
-            .expect("height should set");
-        root.set_attr_str(child, "width", "10px")
-            .expect("width should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should admit column auto flex-basis when the definite height already supplies the main-size property branch from the browser algorithm",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_rejects_unsupported_overflow_token_for_auto_min_subset() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "overflow", "overlay")
-            .expect("overflow should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            !active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should reject unsupported overflow tokens instead of letting the solver panic",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_rejects_horizontal_auto_min_text_break_overrides() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(child, "overflow", "visible")
-            .expect("overflow should set");
-        root.set_attr_str(child, "overflow-wrap", "anywhere")
-            .expect("overflow-wrap should set");
-        root.set_attr_str(child, "flex-basis", "auto")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-        append_text(&mut root, child, "tiny Supercalifragilistic tiny");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            !active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should keep horizontal visible-overflow text-break overrides on the placeholder path until the min-content oracle handles them",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_ignores_container_order_like_browser_flex_layout() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(container, "order", "3")
-            .expect("order should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "container order should not disable child flex layout support",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_ignores_container_align_self_like_browser_flex_layout() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(container, "align-self", "center")
-            .expect("align-self should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "container align-self should not disable child flex layout support",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_wrap_when_cross_sizes_are_definite() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "50px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(first, "flex-basis", "30px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "flex-basis", "30px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should admit wrap when line cross sizes are definite in the active subset",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_wrap_with_browser_default_stretch_cross_size() {
-        // CSS Flexbox 1 §8.3 (align-items) defines the initial value as
-        // `stretch`, and CSS Align 3 §5.1.3 resolves `normal` to `stretch`
-        // for flex items, so a wrap item with an auto cross size is resolved
-        // by stretching to the line cross size rather than gated out. Gecko
-        // and Blink both default flex items to this stretch path; the active
-        // solver covers it, matching the single-line admission pinned by
-        // `active_flex_gate_uses_browser_default_stretch_for_auto_cross_size_items`.
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "50px")
-            .expect("width should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(child, "flex-basis", "30px")
-            .expect("basis should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex solver should admit wrap when the item auto cross size resolves through the browser-default align-items:stretch path",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_rejects_wrap_with_non_stretch_auto_cross_size_item() {
-        // Without a definite cross size and without stretch resolution, the
-        // active solver has no line cross size input for the item yet, so the
-        // wrap case stays with the placeholder solver. CSS Flexbox 1 §9.4
-        // (`#line-sizing`) sizes lines from item hypothetical cross sizes;
-        // the active solver only covers that when the cross size is definite
-        // or stretch-resolved.
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "50px")
-            .expect("width should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(container, "align-items", "flex-start")
-            .expect("align-items should set");
-        root.set_attr_str(child, "flex-basis", "30px")
-            .expect("basis should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            !active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex solver should keep wrap gated when the item cross size is neither definite nor stretch-resolved",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_column_with_definite_width_and_height() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "20px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "90px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-direction", "column")
-            .expect("direction should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "width", "10px")
-            .expect("width should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should admit the column subset through the shared axis-mapped path",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_rejects_column_without_definite_width() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "height", "90px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-direction", "column")
-            .expect("direction should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "width", "10px")
-            .expect("width should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            !active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should keep column gated without a definite cross-axis width",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_rejects_column_without_definite_height() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "20px")
-            .expect("width should set");
-        root.set_attr_str(container, "flex-direction", "column")
-            .expect("direction should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "width", "10px")
-            .expect("width should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            !active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should keep column gated without a definite main-axis height",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_column_reverse_with_definite_sizes() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "20px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "90px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-direction", "column-reverse")
-            .expect("direction should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "width", "10px")
-            .expect("width should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should admit column-reverse once reversed vertical main-axis placement is proven",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_wrap_reverse_with_definite_cross_size() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "25px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "25px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-wrap", "wrap-reverse")
-            .expect("wrap should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should admit wrap-reverse once reversed cross-axis line stacking is proven",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_center_alignment_and_gap_attrs() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "50px")
-            .expect("height should set");
-        root.set_attr_str(container, "justify-content", "center")
-            .expect("justify-content should set");
-        root.set_attr_str(container, "align-items", "center")
-            .expect("align-items should set");
-        root.set_attr_str(container, "column-gap", "5px")
-            .expect("column-gap should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "align-self", "center")
-            .expect("align-self should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit the batch-6 alignment and gap attrs",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_gap_and_padding_item_when_margins_are_present() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "20px")
-            .expect("height should set");
-        root.set_attr_str(container, "column-gap", "5px")
-            .expect("column-gap should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(first, "padding-left", "4px")
-            .expect("left padding should set");
-        root.set_attr_str(first, "padding-right", "4px")
-            .expect("right padding should set");
-        root.set_attr_str(first, "margin-left", "3px")
-            .expect("left margin should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should admit explicit margins because line collection and placement already use outer hypothetical sizes and margin-adjusted offsets",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_wrapped_row_gap_item_with_cross_margin() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        let third = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "25px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "40px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(container, "row-gap", "5px")
-            .expect("row-gap should set");
-        for child in [first, second, third] {
-            root.set_attr_str(child, "flex-basis", "10px")
-                .expect("basis should set");
-            root.set_attr_str(child, "height", "10px")
-                .expect("height should set");
-        }
-        root.set_attr_str(third, "margin-top", "2px")
-            .expect("top margin should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style,)
-                .expect("gate should evaluate"),
-            "active flex solver should admit cross-axis margins because wrapped line cross sizes already include each item's outer cross size before row-gap placement",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_place_content_place_items_and_place_self_aliases() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "50px")
-            .expect("height should set");
-        root.set_attr_str(container, "place-content", "center space-between")
-            .expect("place-content should set");
-        root.set_attr_str(container, "place-items", "end center")
-            .expect("place-items should set");
-        root.set_attr_str(child, "place-self", "center auto")
-            .expect("place-self should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit the common place-* shorthands once they resolve to the same alignment variables as the explicit longhands",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_item_main_axis_limits() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "100px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "flex-grow", "1")
-            .expect("grow should set");
-        root.set_attr_str(first, "flex-shrink", "1")
-            .expect("shrink should set");
-        root.set_attr_str(first, "max-width", "20px")
-            .expect("max-width should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "flex-grow", "1")
-            .expect("grow should set");
-        root.set_attr_str(second, "flex-shrink", "1")
-            .expect("shrink should set");
-        root.set_attr_str(second, "min-width", "5px")
-            .expect("min-width should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit item min/max limits because the flexible-length solver already clamps against those limits",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_flex_end_for_align_items_and_align_self() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "50px")
-            .expect("height should set");
-        root.set_attr_str(container, "align-items", "flex-end")
-            .expect("align-items should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "align-self", "flex-end")
-            .expect("align-self should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit align-items:flex-end and align-self:flex-end",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_stretch_for_auto_cross_size_items() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "50px")
-            .expect("height should set");
-        root.set_attr_str(container, "align-items", "stretch")
-            .expect("align-items should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "flex-grow", "0")
-            .expect("grow should set");
-        root.set_attr_str(child, "flex-shrink", "0")
-            .expect("shrink should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit align-items:stretch when auto cross-size items can be stretched honestly",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_uses_browser_default_stretch_for_auto_cross_size_items() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "50px")
-            .expect("height should set");
-        root.set_attr_str(child, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(child, "flex-grow", "0")
-            .expect("grow should set");
-        root.set_attr_str(child, "flex-shrink", "0")
-            .expect("shrink should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should use the browser default align-items:stretch when the container omits align-items",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_align_self_stretch_override_for_auto_cross_size_item() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "50px")
-            .expect("height should set");
-        root.set_attr_str(container, "align-items", "flex-start")
-            .expect("align-items should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "align-self", "stretch")
-            .expect("align-self should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit one auto cross-size item stretched by align-self when the sibling cross sizes are already supported",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_visible_overflow_item_with_definite_main_size() {
-        let (mut root, container, _) = flex_container_with_context();
-        let child = append_div(&mut root, container);
-        let nested = append_div(&mut root, child);
-        let nested_text = append_text(&mut root, nested, "Visible overflow content width");
-        root.set_attr_str(container, "width", "120px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "40px")
-            .expect("height should set");
-        root.set_attr_str(child, "width", "60px")
-            .expect("width should set");
-        root.set_attr_str(child, "overflow", "visible")
-            .expect("overflow should set");
-        root.set_attr_str(nested, "display", "block")
-            .expect("display should set");
-        let _ = nested_text;
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit a visible-overflow item with a definite main size without requiring content-based auto-min subtree support",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_flex_end_and_space_between_justify_content() {
-        for justify_content in ["flex-end", "space-between"] {
-            let (mut root, container, _) = flex_container_with_context();
-            let first = append_div(&mut root, container);
-            let second = append_div(&mut root, container);
-            root.set_attr_str(container, "width", "60px")
-                .expect("width should set");
-            root.set_attr_str(container, "height", "10px")
-                .expect("height should set");
-            root.set_attr_str(container, "justify-content", justify_content)
-                .expect("justify-content should set");
-            for child in [first, second] {
-                root.set_attr_str(child, "flex-basis", "10px")
-                    .expect("basis should set");
-                root.set_attr_str(child, "height", "10px")
-                    .expect("height should set");
-            }
-
-            let (style, inherited_style) =
-                resolved_node_style(&root, container, &InheritedStyleContext::default())
-                    .expect("container style");
-
-            assert!(
-                active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                    .expect("gate should evaluate"),
-                "active flex subset should admit justify-content:{justify_content}",
-            );
-        }
-    }
-
-    #[test]
-    fn active_flex_gate_admits_space_around_for_main_and_line_packing() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        let third = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "100px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "40px")
-            .expect("height should set");
-        root.set_attr_str(container, "justify-content", "space-around")
-            .expect("justify-content should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(container, "align-content", "space-around")
-            .expect("align-content should set");
-        for child in [first, second, third] {
-            root.set_attr_str(child, "flex-basis", "10px")
-                .expect("basis should set");
-            root.set_attr_str(child, "height", "10px")
-                .expect("height should set");
-        }
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit justify-content:space-around and align-content:space-around",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_space_evenly_for_main_and_line_packing() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        let third = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "100px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "40px")
-            .expect("height should set");
-        root.set_attr_str(container, "justify-content", "space-evenly")
-            .expect("justify-content should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(container, "align-content", "space-evenly")
-            .expect("align-content should set");
-        for child in [first, second, third] {
-            root.set_attr_str(child, "flex-basis", "10px")
-                .expect("basis should set");
-            root.set_attr_str(child, "height", "10px")
-                .expect("height should set");
-        }
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit justify-content:space-evenly and align-content:space-evenly",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_center_align_content_for_wrapped_rows() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        let third = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "25px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "40px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(container, "align-content", "center")
-            .expect("align-content should set");
-        root.set_attr_str(first, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(second, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
-            .expect("height should set");
-        root.set_attr_str(third, "flex-basis", "10px")
-            .expect("basis should set");
-        root.set_attr_str(third, "height", "10px")
-            .expect("height should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit wrapped-row align-content:center once line-content placement is real",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_flex_end_and_space_between_align_content_for_wrapped_rows() {
-        for align_content in ["flex-end", "space-between"] {
-            let (mut root, container, _) = flex_container_with_context();
-            let first = append_div(&mut root, container);
-            let second = append_div(&mut root, container);
-            let third = append_div(&mut root, container);
-
-            root.set_attr_str(container, "width", "25px")
-                .expect("container width");
-            root.set_attr_str(container, "height", "40px")
-                .expect("container height");
-            root.set_attr_str(container, "flex-wrap", "wrap")
-                .expect("flex-wrap should set");
-            root.set_attr_str(container, "align-content", align_content)
-                .expect("align-content should set");
-            for child in [first, second, third] {
-                root.set_attr_str(child, "flex-basis", "10px")
-                    .expect("flex-basis should set");
-                root.set_attr_str(child, "height", "10px")
-                    .expect("height should set");
-            }
-
-            let (style, inherited_style) =
-                resolved_node_style(&root, container, &InheritedStyleContext::default())
-                    .expect("container style");
-
-            assert!(
-                active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                    .expect("gate should evaluate"),
-                "active flex subset should admit wrapped-row align-content:{align_content} once line-content placement is real",
-            );
-        }
-    }
-
-    #[test]
-    fn active_flex_gate_admits_stretch_align_content_for_wrapped_rows() {
-        let (mut root, container, _) = flex_container_with_context();
-        let first = append_div(&mut root, container);
-        let second = append_div(&mut root, container);
-        let third = append_div(&mut root, container);
-        root.set_attr_str(container, "width", "25px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "40px")
-            .expect("height should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
-            .expect("wrap should set");
-        root.set_attr_str(container, "align-content", "stretch")
-            .expect("align-content should set");
-        for child in [first, second, third] {
-            root.set_attr_str(child, "flex-basis", "10px")
-                .expect("flex-basis should set");
-            root.set_attr_str(child, "height", "10px")
-                .expect("height should set");
-        }
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex subset should admit wrapped-row align-content:stretch once line cross-size expansion is real",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_flex_container_items_with_explicit_basis() {
-        let (mut root, container, _) = flex_container_with_context();
-        let nested = append_div(&mut root, container);
-        let nested_child = append_div(&mut root, nested);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "20px")
-            .expect("height should set");
-        root.set_attr_str(nested, "display", "flex")
-            .expect("nested display should set");
-        root.set_attr_str(nested, "height", "20px")
-            .expect("nested height should set");
-        root.set_attr_str(nested, "flex-basis", "20px")
-            .expect("nested basis should set");
-        root.set_attr_str(nested, "overflow", "scroll")
-            .expect("nested overflow should set");
-        root.set_attr_str(nested_child, "flex-basis", "10px")
-            .expect("nested child basis should set");
-        root.set_attr_str(nested_child, "height", "10px")
-            .expect("nested child height should set");
-        root.set_attr_str(nested_child, "overflow", "scroll")
-            .expect("nested child overflow should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should admit display:flex items when measurement can use the same entry/exit solver",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_rejects_flex_container_items_with_auto_basis() {
-        let (mut root, container, _) = flex_container_with_context();
-        let nested = append_div(&mut root, container);
-        let nested_child = append_div(&mut root, nested);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "20px")
-            .expect("height should set");
-        root.set_attr_str(nested, "display", "flex")
-            .expect("nested display should set");
-        root.set_attr_str(nested, "height", "20px")
-            .expect("nested height should set");
-        root.set_attr_str(nested, "overflow", "scroll")
-            .expect("nested overflow should set");
-        root.set_attr_str(nested_child, "flex-basis", "10px")
-            .expect("nested child basis should set");
-        root.set_attr_str(nested_child, "height", "10px")
-            .expect("nested child height should set");
-        root.set_attr_str(nested_child, "overflow", "scroll")
-            .expect("nested child overflow should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            !active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should reject nested flex auto-basis without a definite main size until max-content flex container sizing is implemented",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_flex_container_items_with_auto_basis_from_width() {
-        let (mut root, container, _) = flex_container_with_context();
-        let nested = append_div(&mut root, container);
-        let nested_child = append_div(&mut root, nested);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "20px")
-            .expect("height should set");
-        root.set_attr_str(nested, "display", "flex")
-            .expect("nested display should set");
-        root.set_attr_str(nested, "width", "20px")
-            .expect("nested width should set");
-        root.set_attr_str(nested, "height", "20px")
-            .expect("nested height should set");
-        root.set_attr_str(nested, "overflow", "scroll")
-            .expect("nested overflow should set");
-        root.set_attr_str(nested_child, "flex-basis", "10px")
-            .expect("nested child basis should set");
-        root.set_attr_str(nested_child, "height", "10px")
-            .expect("nested child height should set");
-        root.set_attr_str(nested_child, "overflow", "scroll")
-            .expect("nested child overflow should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "active flex gate should admit nested flex auto-basis when the main-size property gives the used flex basis",
-        );
-    }
-
-    #[test]
-    fn active_flex_gate_admits_visible_overflow_flex_container_items() {
-        let (mut root, container, _) = flex_container_with_context();
-        let nested = append_div(&mut root, container);
-        let nested_child = append_div(&mut root, nested);
-        root.set_attr_str(container, "width", "90px")
-            .expect("width should set");
-        root.set_attr_str(container, "height", "20px")
-            .expect("height should set");
-        root.set_attr_str(nested, "display", "flex")
-            .expect("nested display should set");
-        root.set_attr_str(nested, "height", "20px")
-            .expect("nested height should set");
-        root.set_attr_str(nested, "flex-basis", "20px")
-            .expect("nested basis should set");
-        root.set_attr_str(nested, "overflow", "visible")
-            .expect("nested overflow should set");
-        root.set_attr_str(nested_child, "flex-basis", "10px")
-            .expect("nested child basis should set");
-        root.set_attr_str(nested_child, "height", "10px")
-            .expect("nested child height should set");
-        root.set_attr_str(nested_child, "overflow", "scroll")
-            .expect("nested child overflow should set");
-
-        let (style, inherited_style) =
-            resolved_node_style(&root, container, &InheritedStyleContext::default())
-                .expect("container style");
-
-        assert!(
-            active_flex_subset_is_supported(&root, container, style, &inherited_style)
-                .expect("gate should evaluate"),
-            "visible-overflow nested flex should be admitted when its content-based auto-min size is supported",
-        );
-    }
-
-    #[test]
     fn measured_item_record_uses_explicit_width_and_height() {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
@@ -5890,7 +3656,7 @@ mod tests {
         let items = collect_items_for_container(&mut root, container, context);
         let item = items.first().expect("child item");
 
-        assert_eq!(item.child_key, child);
+        assert_eq!(item.source.key(), child);
         assert_eq!(item.main_axis, FlexAxis::Horizontal);
         assert_eq!(item.cross_axis, FlexAxis::Vertical);
         assert_eq!(item.flex_base_size_px, 12.0);
@@ -5931,7 +3697,7 @@ mod tests {
         let items = collect_items_for_container(&mut root, container, context);
         let item = items.first().expect("child item");
 
-        assert_eq!(item.child_key, child);
+        assert_eq!(item.source.key(), child);
         assert!(item.flex_base_size_px > 0.0);
         assert!(item.flex_base_size_px < 320.0);
         assert!(item.hypothetical_main_size_px > 0.0);
@@ -6220,7 +3986,7 @@ mod tests {
         assert_eq!(
             ordered_items
                 .iter()
-                .map(|item| item.child_key)
+                .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             vec![third, first, second],
         );
@@ -6255,12 +4021,12 @@ mod tests {
             lines,
             vec![
                 FlexLine {
-                    item_keys: vec![first],
+                    item_sources: vec![source(first)],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![second, third],
+                    item_sources: vec![source(second), source(third)],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6272,9 +4038,9 @@ mod tests {
     fn gap_is_included_in_line_breaking_only_once_per_adjacency() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
 
         let lines = build_measured_flex_lines(&items, FlexWrapMode::Wrap, Some(25.0), 5.0);
@@ -6283,12 +4049,12 @@ mod tests {
             lines,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0], keys[1]],
+                    item_sources: vec![source(keys[0]), source(keys[1])],
                     outer_hypothetical_main_size_px: 25.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[2]],
+                    item_sources: vec![source(keys[2])],
                     outer_hypothetical_main_size_px: 10.0,
                     cross_size_px: 10.0,
                 },
@@ -6300,9 +4066,9 @@ mod tests {
     fn no_wrap_keeps_measured_items_in_a_single_line() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
 
         let lines = build_measured_flex_lines(&items, FlexWrapMode::NoWrap, Some(50.0), 0.0);
@@ -6310,7 +4076,11 @@ mod tests {
         assert_eq!(
             lines,
             vec![FlexLine {
-                item_keys: keys,
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>(),
                 outer_hypothetical_main_size_px: 80.0,
                 cross_size_px: 10.0,
             }],
@@ -6321,9 +4091,9 @@ mod tests {
     fn line_membership_is_stable_across_repeated_solves_with_unchanged_inputs() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
 
         let first_lines = build_measured_flex_lines(&items, FlexWrapMode::Wrap, Some(50.0), 0.0);
@@ -6336,9 +4106,9 @@ mod tests {
     fn wrap_reverse_reverses_collected_line_order_without_reordering_items_within_a_line() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
 
         let lines = build_measured_flex_lines(&items, FlexWrapMode::WrapReverse, Some(25.0), 5.0);
@@ -6347,12 +4117,12 @@ mod tests {
             lines,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[2]],
+                    item_sources: vec![source(keys[2])],
                     outer_hypothetical_main_size_px: 10.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[0], keys[1]],
+                    item_sources: vec![source(keys[0]), source(keys[1])],
                     outer_hypothetical_main_size_px: 25.0,
                     cross_size_px: 10.0,
                 },
@@ -6401,7 +4171,7 @@ mod tests {
             solve
                 .measured_items_in_dom_order
                 .iter()
-                .map(|item| item.child_key)
+                .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             vec![first, second, third],
         );
@@ -6409,7 +4179,7 @@ mod tests {
             solve
                 .line_collection_items
                 .iter()
-                .map(|item| item.child_key)
+                .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             vec![second, third, first],
         );
@@ -6417,12 +4187,12 @@ mod tests {
             solve.lines,
             vec![
                 FlexLine {
-                    item_keys: vec![second, third],
+                    item_sources: vec![source(second), source(third)],
                     outer_hypothetical_main_size_px: 35.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![first],
+                    item_sources: vec![source(first)],
                     outer_hypothetical_main_size_px: 20.0,
                     cross_size_px: 10.0,
                 },
@@ -6437,21 +4207,21 @@ mod tests {
     fn resolve_active_flex_container_assigns_cross_offsets_per_line() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6469,7 +4239,7 @@ mod tests {
             solve
                 .resolved_items
                 .iter()
-                .map(|item| item.child_key)
+                .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             keys,
         );
@@ -6496,21 +4266,21 @@ mod tests {
     fn resolve_active_flex_container_centers_wrapped_lines_inside_definite_cross_size() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6537,21 +4307,21 @@ mod tests {
     fn resolve_active_flex_container_packs_wrapped_lines_to_cross_end() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6578,21 +4348,21 @@ mod tests {
     fn resolve_active_flex_container_distributes_remaining_cross_space_between_wrapped_lines() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6619,14 +4389,14 @@ mod tests {
     fn resolve_active_flex_container_packs_items_to_main_end() {
         let keys = test_keys(2);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: vec![keys[0], keys[1]],
+                item_sources: vec![source(keys[0]), source(keys[1])],
                 outer_hypothetical_main_size_px: 20.0,
                 cross_size_px: 10.0,
             }],
@@ -6651,15 +4421,20 @@ mod tests {
     fn resolve_active_flex_container_distributes_remaining_main_space_between_items() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 30.0,
                 cross_size_px: 10.0,
             }],
@@ -6684,15 +4459,20 @@ mod tests {
     fn resolve_active_flex_container_distributes_main_space_around_items() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 30.0,
                 cross_size_px: 10.0,
             }],
@@ -6717,21 +4497,21 @@ mod tests {
     fn resolve_active_flex_container_distributes_cross_space_around_wrapped_lines() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6757,15 +4537,20 @@ mod tests {
     fn resolve_active_flex_container_distributes_main_space_evenly() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 30.0,
                 cross_size_px: 10.0,
             }],
@@ -6790,21 +4575,21 @@ mod tests {
     fn resolve_active_flex_container_distributes_cross_space_evenly_between_wrapped_lines() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6838,21 +4623,21 @@ mod tests {
     fn resolve_active_flex_container_stretches_wrapped_line_cross_sizes_to_fill_container() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 30.0, 10.0),
-            measured_row_item(keys[2], 0.0, 0.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
                 },
@@ -6879,7 +4664,7 @@ mod tests {
     #[test]
     fn cross_axis_alignment_offset_packs_item_to_cross_end() {
         let resolved_item = super::ResolvedFlexItem {
-            child_key: DomNodeSlotKey::default(),
+            source: FlexItemSource::BlockItem(DomNodeSlotKey::default()),
             align_self: Some(super::FlexCrossAxisAlignment::FlexEnd),
             resolved_main_size_px: 10.0,
             main_axis_border_padding_px: 0.0,
@@ -6900,15 +4685,20 @@ mod tests {
     fn resolve_active_flex_container_distributes_positive_free_space_by_grow_factor() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 1.0, 10.0, 10.0),
-            measured_row_item(keys[1], 1.0, 1.0, 10.0, 10.0),
-            measured_row_item(keys[2], 2.0, 1.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 1.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 1.0, 1.0, 10.0, 10.0),
+            measured_row_item(source(keys[2]), 2.0, 1.0, 10.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 30.0,
                 cross_size_px: 10.0,
             }],
@@ -6939,14 +4729,19 @@ mod tests {
     fn resolve_active_flex_container_limits_positive_free_space_when_grow_sum_is_below_one() {
         let keys = test_keys(2);
         let items = vec![
-            measured_row_item(keys[0], 0.5, 1.0, 20.0, 10.0),
-            measured_row_item(keys[1], 0.0, 1.0, 20.0, 10.0),
+            measured_row_item(source(keys[0]), 0.5, 1.0, 20.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 1.0, 20.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 40.0,
                 cross_size_px: 10.0,
             }],
@@ -6977,14 +4772,19 @@ mod tests {
     fn resolve_active_flex_container_redistributes_growth_after_max_main_size_freeze() {
         let keys = test_keys(2);
         let items = vec![
-            measured_row_item_with_limits(keys[0], 1.0, 1.0, 10.0, 10.0, None, Some(20.0)),
-            measured_row_item_with_limits(keys[1], 1.0, 1.0, 10.0, 10.0, None, None),
+            measured_row_item_with_limits(source(keys[0]), 1.0, 1.0, 10.0, 10.0, None, Some(20.0)),
+            measured_row_item_with_limits(source(keys[1]), 1.0, 1.0, 10.0, 10.0, None, None),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 20.0,
                 cross_size_px: 10.0,
             }],
@@ -7015,14 +4815,19 @@ mod tests {
     fn resolve_active_flex_container_redistributes_shrink_after_min_main_size_freeze() {
         let keys = test_keys(2);
         let items = vec![
-            measured_row_item_with_limits(keys[0], 0.0, 1.0, 20.0, 10.0, Some(15.0), None),
-            measured_row_item_with_limits(keys[1], 0.0, 1.0, 20.0, 10.0, None, None),
+            measured_row_item_with_limits(source(keys[0]), 0.0, 1.0, 20.0, 10.0, Some(15.0), None),
+            measured_row_item_with_limits(source(keys[1]), 0.0, 1.0, 20.0, 10.0, None, None),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 40.0,
                 cross_size_px: 10.0,
             }],
@@ -7053,15 +4858,20 @@ mod tests {
     fn resolve_active_flex_container_subtracts_gap_total_before_distributing_growth() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 16.0, 16.0),
-            measured_row_item(keys[1], 1.0, 1.0, 0.0, 18.0),
-            measured_row_item(keys[2], 0.0, 0.0, 16.0, 16.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 16.0, 16.0),
+            measured_row_item(source(keys[1]), 1.0, 1.0, 0.0, 18.0),
+            measured_row_item(source(keys[2]), 0.0, 0.0, 16.0, 16.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 32.0,
                 cross_size_px: 18.0,
             }],
@@ -7095,7 +4905,7 @@ mod tests {
         let keys = test_keys(3);
         let items = vec![
             measured_row_item_with_box_edges(
-                keys[0],
+                source(keys[0]),
                 MeasuredRowItemBoxEdges {
                     main_size: 18.0,
                     cross_size: 10.0,
@@ -7107,7 +4917,7 @@ mod tests {
                 },
             ),
             measured_row_item_with_box_edges(
-                keys[1],
+                source(keys[1]),
                 MeasuredRowItemBoxEdges {
                     main_size: 12.0,
                     cross_size: 10.0,
@@ -7119,7 +4929,7 @@ mod tests {
                 },
             ),
             measured_row_item_with_box_edges(
-                keys[2],
+                source(keys[2]),
                 MeasuredRowItemBoxEdges {
                     main_size: 12.0,
                     cross_size: 10.0,
@@ -7138,12 +4948,12 @@ mod tests {
             lines,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0]],
+                    item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 23.0,
                     cross_size_px: 10.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[1], keys[2]],
+                    item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 41.0,
                     cross_size_px: 10.0,
                 },
@@ -7156,7 +4966,7 @@ mod tests {
         let keys = test_keys(2);
         let items = vec![
             measured_row_item_with_box_edges(
-                keys[0],
+                source(keys[0]),
                 MeasuredRowItemBoxEdges {
                     main_size: 18.0,
                     cross_size: 10.0,
@@ -7168,7 +4978,7 @@ mod tests {
                 },
             ),
             measured_row_item_with_box_edges(
-                keys[1],
+                source(keys[1]),
                 MeasuredRowItemBoxEdges {
                     main_size: 16.0,
                     cross_size: 10.0,
@@ -7184,7 +4994,12 @@ mod tests {
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 49.0,
                 cross_size_px: 10.0,
             }],
@@ -7218,7 +5033,7 @@ mod tests {
         let keys = test_keys(3);
         let items = vec![
             measured_row_item_with_box_edges(
-                keys[0],
+                source(keys[0]),
                 MeasuredRowItemBoxEdges {
                     main_size: 10.0,
                     cross_size: 8.0,
@@ -7230,7 +5045,7 @@ mod tests {
                 },
             ),
             measured_row_item_with_box_edges(
-                keys[1],
+                source(keys[1]),
                 MeasuredRowItemBoxEdges {
                     main_size: 10.0,
                     cross_size: 9.0,
@@ -7242,7 +5057,7 @@ mod tests {
                 },
             ),
             measured_row_item_with_box_edges(
-                keys[2],
+                source(keys[2]),
                 MeasuredRowItemBoxEdges {
                     main_size: 10.0,
                     cross_size: 7.0,
@@ -7260,7 +5075,11 @@ mod tests {
         assert_eq!(
             line,
             FlexLine {
-                item_keys: keys,
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>(),
                 outer_hypothetical_main_size_px: 40.0,
                 cross_size_px: 15.0,
             },
@@ -7272,7 +5091,7 @@ mod tests {
         let keys = test_keys(3);
         let items = vec![
             measured_row_item_with_box_edges(
-                keys[0],
+                source(keys[0]),
                 MeasuredRowItemBoxEdges {
                     main_size: 10.0,
                     cross_size: 8.0,
@@ -7284,7 +5103,7 @@ mod tests {
                 },
             ),
             measured_row_item_with_box_edges(
-                keys[1],
+                source(keys[1]),
                 MeasuredRowItemBoxEdges {
                     main_size: 10.0,
                     cross_size: 9.0,
@@ -7296,7 +5115,7 @@ mod tests {
                 },
             ),
             measured_row_item_with_box_edges(
-                keys[2],
+                source(keys[2]),
                 MeasuredRowItemBoxEdges {
                     main_size: 10.0,
                     cross_size: 7.0,
@@ -7313,12 +5132,12 @@ mod tests {
             items,
             vec![
                 FlexLine {
-                    item_keys: vec![keys[0], keys[1]],
+                    item_sources: vec![source(keys[0]), source(keys[1])],
                     outer_hypothetical_main_size_px: 25.0,
                     cross_size_px: 15.0,
                 },
                 FlexLine {
-                    item_keys: vec![keys[2]],
+                    item_sources: vec![source(keys[2])],
                     outer_hypothetical_main_size_px: 10.0,
                     cross_size_px: 7.0,
                 },
@@ -7345,14 +5164,19 @@ mod tests {
     fn resolve_active_flex_container_distributes_negative_free_space_by_scaled_shrink_factor() {
         let keys = test_keys(2);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 2.0, 40.0, 10.0),
-            measured_row_item(keys[1], 0.0, 3.0, 40.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 2.0, 40.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 3.0, 40.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 80.0,
                 cross_size_px: 10.0,
             }],
@@ -7383,14 +5207,19 @@ mod tests {
     fn resolve_active_flex_container_clamps_shrink_result_to_automatic_min_main_size() {
         let keys = test_keys(2);
         let items = vec![
-            measured_row_item_with_automatic_min(keys[0], 0.0, 1.0, 40.0, 10.0, 40.0),
-            measured_row_item_with_automatic_min(keys[1], 0.0, 1.0, 40.0, 10.0, 0.0),
+            measured_row_item_with_automatic_min(source(keys[0]), 0.0, 1.0, 40.0, 10.0, 40.0),
+            measured_row_item_with_automatic_min(source(keys[1]), 0.0, 1.0, 40.0, 10.0, 0.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 80.0,
                 cross_size_px: 10.0,
             }],
@@ -7420,7 +5249,8 @@ mod tests {
     #[test]
     fn resolve_active_flex_container_floors_shrunk_content_box_at_zero() {
         let keys = test_keys(1);
-        let mut item = measured_row_item_with_automatic_min(keys[0], 0.0, 1.0, 8.0, 10.0, 0.0);
+        let mut item =
+            measured_row_item_with_automatic_min(source(keys[0]), 0.0, 1.0, 8.0, 10.0, 0.0);
         item.main_axis_border_padding_px = 8.0;
 
         let resolved = super::resolve_flex_line_items(&[item], 4.0, row_container_style(), 0.0);
@@ -7433,14 +5263,19 @@ mod tests {
     fn resolve_active_flex_container_centers_each_line_after_main_axis_sizing() {
         let keys = test_keys(2);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 0.0, 10.0, 10.0),
-            measured_row_item(keys[1], 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
+            measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
         ];
         let measured_solve = resolve_measured_flex_container(
             items.clone(),
             items,
             vec![FlexLine {
-                item_keys: keys.clone(),
+                item_sources: keys
+                    .iter()
+                    .copied()
+                    .map(FlexItemSource::BlockItem)
+                    .collect::<Vec<_>>()
+                    .clone(),
                 outer_hypothetical_main_size_px: 20.0,
                 cross_size_px: 10.0,
             }],
@@ -7464,7 +5299,7 @@ mod tests {
     #[test]
     fn align_self_center_overrides_container_align_items_for_cross_axis_alignment() {
         let resolved_item = super::ResolvedFlexItem {
-            child_key: test_keys(1)[0],
+            source: FlexItemSource::BlockItem(test_keys(1)[0]),
             align_self: Some(super::FlexCrossAxisAlignment::Center),
             resolved_main_size_px: 10.0,
             main_axis_border_padding_px: 0.0,
@@ -7484,7 +5319,7 @@ mod tests {
     #[test]
     fn stretch_alignment_uses_line_start_offset() {
         let resolved_item = super::ResolvedFlexItem {
-            child_key: test_keys(1)[0],
+            source: FlexItemSource::BlockItem(test_keys(1)[0]),
             align_self: Some(super::FlexCrossAxisAlignment::Stretch),
             resolved_main_size_px: 10.0,
             main_axis_border_padding_px: 0.0,
@@ -7536,7 +5371,7 @@ mod tests {
             solve
                 .resolved_items
                 .iter()
-                .map(|item| item.child_key)
+                .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             vec![second, third, first],
         );
@@ -7566,7 +5401,7 @@ mod tests {
     fn single_line_flex_resolved_child_context_maps_vertical_main_axis_to_top_and_height() {
         let child_context = base_context();
         let resolved_item = super::ResolvedFlexItem {
-            child_key: test_keys(1)[0],
+            source: FlexItemSource::BlockItem(test_keys(1)[0]),
             align_self: None,
             resolved_main_size_px: 30.0,
             main_axis_border_padding_px: 0.0,
@@ -7649,17 +5484,17 @@ mod tests {
     fn resolve_measured_flex_container_uses_widest_line_and_total_cross_size() {
         let keys = test_keys(3);
         let items = vec![
-            measured_row_item(keys[0], 0.0, 1.0, 10.0, 12.0),
-            measured_row_item(keys[1], 0.0, 1.0, 16.0, 18.0),
+            measured_row_item(source(keys[0]), 0.0, 1.0, 10.0, 12.0),
+            measured_row_item(source(keys[1]), 0.0, 1.0, 16.0, 18.0),
         ];
         let lines = vec![
             FlexLine {
-                item_keys: vec![keys[0]],
+                item_sources: vec![source(keys[0])],
                 outer_hypothetical_main_size_px: 10.0,
                 cross_size_px: 12.0,
             },
             FlexLine {
-                item_keys: vec![keys[1]],
+                item_sources: vec![source(keys[1])],
                 outer_hypothetical_main_size_px: 16.0,
                 cross_size_px: 18.0,
             },

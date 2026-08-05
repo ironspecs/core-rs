@@ -5305,6 +5305,275 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
     );
 }
 
+// CSS Flexbox 1 §4 (Flex Items): text nodes and inline-level children
+// participate in flex layout. In real browsers (Gecko/Blink) these are
+// wrapped in anonymous flex items by the box-tree constructor; ui-dom
+// accepts them directly in the active flex solver. WPT
+// `flexbox-anonymous-items-001.html` verifies that anonymous flex items
+// are generated and participate in flex alignment and gap spacing.
+#[test]
+fn text_children_in_flex_row_honor_gap_and_normal_flow_placement() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let label = assert_append_text_to(&mut root, container, "Left");
+    let value = assert_append_text_to(&mut root, container, "Right");
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_set_attr_str(&mut root, container, "height", "20px");
+    assert_set_attr_str(&mut root, container, "column-gap", "10px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, label),
+        0.0,
+        "label text left",
+    );
+    assert_close(
+        assert_node_border_box_screen_top_px(&root, label),
+        0.0,
+        "label text top",
+    );
+    let label_width = assert_node_layout(&root, label).width_px;
+    assert!(
+        label_width > 0.0,
+        "label text should have non-zero layout width",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, value),
+        label_width + 10.0,
+        "value text left after gap",
+    );
+    assert_close(
+        assert_node_border_box_screen_top_px(&root, value),
+        0.0,
+        "value text top",
+    );
+}
+
+#[test]
+fn div_children_with_text_content_use_auto_width_and_honor_gap() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let label_div = assert_append_div_to(&mut root, container);
+    let _label_text = assert_append_text_to(&mut root, label_div, "Label");
+    let value_div = assert_append_div_to(&mut root, container);
+    let _value_text = assert_append_text_to(&mut root, value_div, "Some value");
+
+    assert_set_flex_row_container_width(&mut root, container, "300px");
+    assert_set_attr_str(&mut root, container, "height", "30px");
+    assert_set_attr_str(&mut root, container, "column-gap", "8px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, label_div),
+        0.0,
+        "label div left",
+    );
+    let label_width = assert_node_layout(&root, label_div).width_px;
+    assert!(
+        label_width > 0.0,
+        "label div should auto-size to its text content",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, value_div),
+        label_width + 8.0,
+        "value div left after gap",
+    );
+}
+
+// CSS Flexbox 1 §9.9 (Intrinsic Sizes): when the flex container lacks a
+// definite main size, it stretches to its containing-block width (block-level
+// flex containers behave like block boxes). The items are still collected and
+// laid out with gap and alignment respected.
+#[test]
+fn auto_width_flex_container_stretches_to_containing_block_and_respects_gap() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let first = assert_append_div_to(&mut root, container);
+    let second = assert_append_div_to(&mut root, container);
+
+    assert_set_attr_str(&mut root, container, "display", "flex");
+    assert_set_attr_str(&mut root, container, "flex-direction", "row");
+    assert_set_attr_str(&mut root, container, "flex-wrap", "nowrap");
+    assert_set_attr_str(&mut root, container, "column-gap", "10px");
+    assert_set_inflexible_row_item(&mut root, first, "30px", "20px");
+    assert_set_inflexible_row_item(&mut root, second, "40px", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // Block-level flex container stretches to containing block width (viewport 320px).
+    assert_close(
+        assert_node_layout(&root, container).width_px,
+        320.0,
+        "container stretches to viewport width as block-level",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, first),
+        0.0,
+        "first item left",
+    );
+    // Gap between items is respected.
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, second),
+        30.0 + 10.0,
+        "second item left after gap",
+    );
+}
+
+// CSS Flexbox 1 §4 (Flex Items): inline-level children (spans without
+// explicit display) participate as anonymous flex items with their
+// inline content contributing to the flex algorithm's measurement and
+// placement phases.
+#[test]
+fn span_children_in_flex_row_participate_as_flex_items() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let first_span = assert_append_span_to(&mut root, container);
+    let _first_text = assert_append_text_to(&mut root, first_span, "First");
+    let second_span = assert_append_span_to(&mut root, container);
+    let _second_text = assert_append_text_to(&mut root, second_span, "Second");
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_set_attr_str(&mut root, container, "height", "20px");
+    assert_set_attr_str(&mut root, container, "column-gap", "6px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, first_span),
+        0.0,
+        "first span left",
+    );
+    let first_width = assert_node_layout(&root, first_span).width_px;
+    assert!(
+        first_width > 0.0,
+        "first span should have non-zero layout width from its text",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, second_span),
+        first_width + 6.0,
+        "second span left after gap",
+    );
+}
+
+// CSS Flexbox 1 §9.5 (Main-Axis Alignment): `justify-content:
+// space-between` distributes remaining space as gaps between items.
+// Combined with an explicit `column-gap`, the gap between items is the
+// explicit gap plus the distributed packing space.
+#[test]
+fn text_children_with_justify_content_space_between_and_gap() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let first = assert_append_text_to(&mut root, container, "A");
+    let second = assert_append_text_to(&mut root, container, "B");
+    let third = assert_append_text_to(&mut root, container, "C");
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_set_attr_str(&mut root, container, "height", "20px");
+    assert_set_attr_str(&mut root, container, "justify-content", "space-between");
+    assert_set_attr_str(&mut root, container, "column-gap", "5px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, first),
+        0.0,
+        "first item left at start",
+    );
+    let first_width = assert_node_layout(&root, first).width_px;
+    let second_width = assert_node_layout(&root, second).width_px;
+    let third_width = assert_node_layout(&root, third).width_px;
+    let total_item_width = first_width + second_width + third_width;
+    let extra_per_gap = (200.0 - total_item_width - 10.0) / 2.0;
+
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, second),
+        first_width + 5.0 + extra_per_gap,
+        "second item left with gap and packing",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, third),
+        200.0 - third_width,
+        "third item right-aligned at end",
+    );
+}
+
+// CSS Flexbox 1 §4 (Flex Items) and §9.2 (Line Breaking): text children
+// in a column flex container stack vertically with row-gap separating
+// them. The column cross-axis (horizontal) sizing respects each item's
+// measured width.
+#[test]
+fn text_children_in_flex_column_stack_with_row_gap() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let first = assert_append_text_to(&mut root, container, "Top");
+    let second = assert_append_text_to(&mut root, container, "Bottom");
+
+    assert_set_attr_str(&mut root, container, "display", "flex");
+    assert_set_attr_str(&mut root, container, "flex-direction", "column");
+    assert_set_attr_str(&mut root, container, "width", "100px");
+    assert_set_attr_str(&mut root, container, "height", "60px");
+    assert_set_attr_str(&mut root, container, "row-gap", "8px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_border_box_screen_top_px(&root, first),
+        0.0,
+        "first column item top",
+    );
+    let first_height = assert_node_layout(&root, first).height_px;
+    assert_close(
+        assert_node_border_box_screen_top_px(&root, second),
+        first_height + 8.0,
+        "second column item top after row-gap",
+    );
+}
+
+// CSS Flexbox 1 §4 (Flex Items): nested flex containers with auto-basis
+// block children participate in the active flex solver.
+#[test]
+fn nested_flex_auto_basis_block_children_participate_in_flex_layout() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_set_attr_str(&mut root, container, "height", "40px");
+    assert_set_attr_str(&mut root, container, "column-gap", "10px");
+
+    let first = assert_append_div_to(&mut root, container);
+    let _first_text = assert_append_text_to(&mut root, first, "Left");
+    let second = assert_append_div_to(&mut root, container);
+    let _second_text = assert_append_text_to(&mut root, second, "Right");
+
+    assert_set_attr_str(&mut root, first, "flex-grow", "1");
+    assert_set_attr_str(&mut root, first, "flex-shrink", "1");
+    assert_set_attr_str(&mut root, first, "flex-basis", "0px");
+    assert_set_attr_str(&mut root, second, "flex-grow", "1");
+    assert_set_attr_str(&mut root, second, "flex-shrink", "1");
+    assert_set_attr_str(&mut root, second, "flex-basis", "0px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, first).width_px,
+        95.0,
+        "first flex:1 item fills half container minus half gap",
+    );
+    assert_close(
+        assert_node_layout(&root, second).width_px,
+        95.0,
+        "second flex:1 item fills half container minus half gap",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, first),
+        0.0,
+        "first item at start",
+    );
+    assert_close(
+        assert_node_border_box_screen_left_px(&root, second),
+        95.0 + 10.0,
+        "second item after first + gap",
+    );
+}
+
 fn flex_row_container_setup() -> (bevy::prelude::World, RootDom, DomNodeSlotKey) {
     let (world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
