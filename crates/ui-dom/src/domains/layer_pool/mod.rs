@@ -105,7 +105,7 @@ use crate::domains::{
     },
     layer_ops::{ImagePaintOp, SvgPaintOp, TextRunPaintOp},
     paint::RectPaintOp,
-    render_ops::RenderOpsHandlers,
+    render_ops::{RenderOpsHandlers, StagedLayerApply},
     text_layout,
 };
 use crate::numeric::{f32_to_u32, i32_to_f32, u32_to_f32};
@@ -116,7 +116,9 @@ use crate::types::{DomWhiteSpace, PixelDensity};
 use layer_config::FrozenLayerConfig;
 pub use layer_config::LayerConfig;
 use layer_pool_metrics::LayerPoolMetricStore;
-use layer_pool_text_render::{TextRunRenderState, create_text_run_render_state};
+use layer_pool_text_render::{
+    TextRunRenderState, TextRunSurfaceContext, create_text_run_render_state,
+};
 
 pub use layer_lease::LayerLease;
 pub use layer_pool::LayerPaintTarget;
@@ -130,13 +132,14 @@ pub use layer_pool_policy::LayerPoolPolicy;
 
 use layer_pool_render_feedback::LayerPoolRenderFeedback;
 use layer_pool_render_job::LayerPoolRenderJob;
+use layer_pool_render_state::RenderSurfaceApplyResult;
 
 pub use external_layer_target::ExternalLayerTarget;
 pub(crate) use layer_pool_render_executor::LayerPoolRenderExecutor;
 pub(crate) use layer_pool_render_job_queue::LayerPoolRenderJobQueue;
 
 #[cfg(test)]
-use crate::domains::render_ops::{RenderOpsHandler, StagedLayerApply, register_render_ops_handler};
+use crate::domains::render_ops::{RenderOpsHandler, register_render_ops_handler};
 
 const LAYER_POOL_HISTORY_CAPACITY: usize = 128;
 const IMAGE_PLACEHOLDER_FILL_RGBA: [f32; 4] = [96.0 / 255.0, 168.0 / 255.0, 1.0, 1.0];
@@ -534,6 +537,90 @@ impl LayerPoolRenderState {
             svg: create_debug_rect_pipeline_state(device, "svg", DIRECT_SVG_SHADER),
             image: create_debug_rect_pipeline_state(device, "image", DIRECT_IMAGE_SHADER),
         }
+    }
+}
+
+impl IconAtlasLoadState {
+    pub(super) fn take_pending_install(&mut self) -> Option<PendingIconAtlasInstall> {
+        let IconAtlasLoadState::Loading(loading_state) = self else {
+            return None;
+        };
+        loading_state.pending_install.take()
+    }
+}
+
+impl LayerPoolRenderState {
+    pub(super) fn apply_plan_to_surface(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        gpu_image: &GpuImage,
+        pixel_density: PixelDensity,
+        apply: &StagedLayerApply,
+    ) -> RenderSurfaceApplyResult {
+        let rect_buffer_grew = apply_rects_to_surface(
+            &mut self.rect,
+            device,
+            queue,
+            gpu_image,
+            pixel_density,
+            &apply.plan.rects,
+            apply.layer_zero_in_image_px,
+        );
+        apply_icons_to_surface(
+            &mut self.icon,
+            device,
+            queue,
+            gpu_image,
+            pixel_density,
+            &apply.plan.icons,
+            apply.layer_zero_in_image_px,
+        );
+        let text_runs_ready = self.text_run.apply_to_surface(
+            &TextRunSurfaceContext {
+                device,
+                queue,
+                gpu_image,
+                layer_zero_in_image_px: apply.layer_zero_in_image_px,
+                lease: apply.lease,
+            },
+            &apply.plan.text_runs,
+        );
+        apply_svgs_to_surface(
+            &mut self.svg,
+            device,
+            queue,
+            gpu_image,
+            pixel_density,
+            &apply.plan.svgs,
+            apply.layer_zero_in_image_px,
+        );
+        apply_images_to_surface(
+            &mut self.image,
+            device,
+            queue,
+            gpu_image,
+            pixel_density,
+            &apply.plan.images,
+            apply.layer_zero_in_image_px,
+        );
+        RenderSurfaceApplyResult {
+            rect_buffer_grew,
+            text_runs_ready,
+        }
+    }
+
+    pub(super) fn install_ready_icon_atlas(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        pending_install: PendingIconAtlasInstall,
+    ) {
+        install_ready_icon_atlas(device, queue, &mut self.icon, pending_install);
+    }
+
+    pub(super) fn icon_atlas_is_ready(&self) -> bool {
+        self.icon.atlas.is_some()
     }
 }
 
