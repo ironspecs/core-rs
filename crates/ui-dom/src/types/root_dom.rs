@@ -1333,18 +1333,34 @@ impl RootDom {
     }
 
     /// Returns the presented offset of one live layer root within this root's
-    /// presented space — the exact value the composite pass computes with
-    /// `layer_offset_from_dom_climb` to place the layer's Bevy entity.
+    /// presented space: the accumulation of `layer_offset_from_dom_climb` over
+    /// the layer-ancestor chain — the same accumulation the composite pass
+    /// performs down the Bevy layer hierarchy when it places layer entities.
     ///
     /// Returns `None` when `key` does not name a live layer root.
+    #[allow(clippy::similar_names)]
     #[must_use]
     pub fn layer_offset_px(&self, key: DomNodeSlotKey) -> Option<[f32; 2]> {
         let node = self.node(key)?;
         if key != self.root && layer_kind_for_node(node) == crate::types::DomLayerKind::None {
             return None;
         }
-        let offset = layer_offset_from_dom_climb(self, key).ok()?;
-        Some([offset.x_px, offset.y_px])
+        let mut total_x_px = 0.0;
+        let mut total_y_px = 0.0;
+        let mut current_key = Some(key);
+        while let Some(current) = current_key {
+            if current == self.root {
+                break;
+            }
+            let current_node = self.node(current)?;
+            if layer_kind_for_node(current_node) != crate::types::DomLayerKind::None {
+                let offset = layer_offset_from_dom_climb(self, current).ok()?;
+                total_x_px += offset.x_px;
+                total_y_px += offset.y_px;
+            }
+            current_key = current_node.parent_key();
+        }
+        Some([total_x_px, total_y_px])
     }
 
     fn import_fragment_children_into_parent(
@@ -4064,6 +4080,29 @@ mod tests {
             root.layer_offset_px(root.document_node().0),
             Some([0.0, 0.0])
         );
+    }
+
+    #[test]
+    fn layer_offset_px_accumulates_over_nested_layer_chain() {
+        let (mut world, mut root) = attached_external_target_root();
+        let parent = root.create_element(DomTag::Div).expect("parent create");
+        root.append_child(root.document_node().0, parent)
+            .expect("parent append");
+        root.set_attr_str(parent, "position", "fixed")
+            .expect("fixed position");
+        root.set_attr_str(parent, "left", "12px").expect("left");
+        root.set_attr_str(parent, "top", "8px").expect("top");
+        let child = root.create_element(DomTag::Div).expect("child create");
+        root.append_child(parent, child).expect("child append");
+        root.set_attr_str(child, "position", "absolute")
+            .expect("absolute position");
+        root.set_attr_str(child, "left", "3px").expect("left");
+        root.set_attr_str(child, "top", "2px").expect("top");
+
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
+            .expect("update should succeed");
+
+        assert_eq!(root.layer_offset_px(child), Some([15.0, 10.0]));
     }
 
     #[test]
