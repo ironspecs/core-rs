@@ -670,3 +670,107 @@ impl LayerPool {
         self.layer_config.pixel_density()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::image::Image;
+    use bevy::prelude::{Assets, World};
+
+    fn pool_with_lease(rect_px: (f32, f32, f32, f32)) -> (LayerPool, LayerLease) {
+        let mut pool = LayerPool::new(LayerConfig::default());
+        let lease = pool.create_layer(LayerRect::from_tuple(rect_px));
+        (pool, lease)
+    }
+
+    #[test]
+    fn validate_current_lease_rejects_destroyed_lease() {
+        let (mut pool, lease) = pool_with_lease((0.0, 0.0, 10.0, 10.0));
+        pool.destroy_layer(lease).expect("destroy should succeed");
+        assert!(
+            pool.validate_current_lease(lease, LayerPoolMetricName::StaleLeaseRejected)
+                .is_err(),
+            "a destroyed lease should fail validation"
+        );
+        assert_eq!(pool.count(LayerPoolMetricName::StaleLeaseRejected), 1);
+    }
+
+    #[test]
+    fn update_layer_reports_mapping_change_only_on_change() {
+        let (mut pool, lease) = pool_with_lease((0.0, 0.0, 10.0, 10.0));
+        let unchanged = pool
+            .update_layer(lease, LayerRect::from_tuple((0.0, 0.0, 10.0, 10.0)))
+            .expect("same-rect update");
+        assert!(
+            !unchanged,
+            "an unchanged mapping should not report a change"
+        );
+        let changed = pool
+            .update_layer(lease, LayerRect::from_tuple((0.0, 0.0, 20.0, 10.0)))
+            .expect("grown-rect update");
+        assert!(changed, "a grown mapping should report a change");
+        assert_eq!(pool.count(LayerPoolMetricName::LayerMappingUpdated), 1);
+        assert_eq!(pool.count(LayerPoolMetricName::SurfaceGrew), 1);
+    }
+
+    #[test]
+    fn set_layer_policy_reports_change_only_on_change() {
+        let (mut pool, lease) = pool_with_lease((0.0, 0.0, 10.0, 10.0));
+        let unchanged = pool
+            .set_layer_policy(lease, LayerPoolPolicy::Normal)
+            .expect("same-policy update");
+        assert!(
+            !unchanged,
+            "setting the already-active policy should not report a change"
+        );
+        let changed = pool
+            .set_layer_policy(lease, LayerPoolPolicy::BestEffort)
+            .expect("policy change");
+        assert!(changed, "a different policy should report a change");
+        assert_eq!(pool.count(LayerPoolMetricName::PolicyChanged), 1);
+    }
+
+    #[test]
+    fn destroy_layer_releases_surface_and_counts_metrics() {
+        let mut world = World::new();
+        world.insert_resource(Assets::<Image>::default());
+        let (mut pool, lease) = pool_with_lease((0.0, 0.0, 10.0, 10.0));
+        pool.acquire_surface(&mut world, lease)
+            .expect("surface should acquire");
+        pool.destroy_layer(lease).expect("destroy should succeed");
+        assert_eq!(pool.count(LayerPoolMetricName::LayerDestroyed), 1);
+        assert_eq!(pool.count(LayerPoolMetricName::SurfaceReleased), 1);
+        assert_eq!(
+            pool.free_surfaces_by_size.len(),
+            1,
+            "the released surface should be recorded under one exact-size key"
+        );
+        assert!(
+            !pool
+                .free_surfaces_by_size
+                .values()
+                .next()
+                .expect("one size entry should exist")
+                .is_empty(),
+            "the released surface should be reusable"
+        );
+    }
+
+    #[test]
+    fn released_surface_is_reused_by_matching_extent() {
+        let mut world = World::new();
+        world.insert_resource(Assets::<Image>::default());
+        let (mut pool, lease_a) = pool_with_lease((0.0, 0.0, 10.0, 10.0));
+        pool.acquire_surface(&mut world, lease_a)
+            .expect("lease a surface should acquire");
+        assert_eq!(pool.count(LayerPoolMetricName::SurfaceAllocated), 1);
+        pool.release_surface(lease_a)
+            .expect("lease a surface should release");
+
+        let lease_b = pool.create_layer(LayerRect::from_tuple((0.0, 0.0, 10.0, 10.0)));
+        pool.acquire_surface(&mut world, lease_b)
+            .expect("lease b surface should acquire");
+        assert_eq!(pool.count(LayerPoolMetricName::SurfaceReused), 1);
+        assert_eq!(pool.count(LayerPoolMetricName::SurfaceAllocated), 1);
+    }
+}

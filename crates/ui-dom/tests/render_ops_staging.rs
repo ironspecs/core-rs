@@ -20,8 +20,8 @@ use bevy::image::Image;
 use bevy::prelude::{Entity, Vec2, World};
 use bevy::sprite::Sprite;
 use ui_dom::{
-    DomPointerUpdate, DomTag, LayerConfig, LayerPaintPlan, LayerPool, LayerPoolPolicy, RectPaintOp,
-    RenderOpsHandler, RootDom, RootDomContext, RootDomContextConfig, StagedLayerApply,
+    DomError, DomPointerUpdate, DomTag, LayerConfig, LayerPaintPlan, LayerPool, LayerPoolPolicy,
+    RectPaintOp, RenderOpsHandler, RootDom, RootDomContext, RootDomContextConfig, StagedLayerApply,
     UiDomRenderSupport,
 };
 
@@ -35,6 +35,13 @@ fn assert_close(actual: f32, expected: f32) {
 fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
     assert_close(actual[0], expected[0]);
     assert_close(actual[1], expected[1]);
+}
+
+fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
+    assert_close(actual[0], expected[0]);
+    assert_close(actual[1], expected[1]);
+    assert_close(actual[2], expected[2]);
+    assert_close(actual[3], expected[3]);
 }
 
 /// Builds one direct-GPU world with the same retained support as
@@ -362,5 +369,90 @@ fn g9_external_producer_no_root_dom() {
     handler.with_staged_external_uploads(|uploads| {
         assert_eq!(uploads.len(), 1);
         assert_eq!(uploads[0].lease, target.lease);
+    });
+}
+
+#[test]
+fn g11_commit_error_preserves_dirt_and_retry_paints() {
+    // Pin C3's error contract: a failed paint commit must NOT clear paint dirt.
+    // A world without `UiDomRenderSupport` reaches the paint stage and fails the
+    // direct-GPU executor check (`RetainedGpuApplyFailed`). The empty document's
+    // plan is empty and never reaches the executor check, so attach succeeds;
+    // the later div makes the document layer paint-dirty.
+    let mut world = World::new();
+    world.init_resource::<Assets<Image>>();
+    world.insert_resource(LayerPool::new(LayerConfig::default()));
+    let parent = spawn_sprite_parent(&mut world, 320.0, 320.0);
+    let mut root = RootDom::new(RootDomContext::new_gpu());
+    root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
+        .expect("empty document should attach (empty plan never reaches the executor check)");
+
+    let document = root.document_node().0;
+    append_sized_div(&mut root, document, "100px", "40px");
+
+    let err = root
+        .update(&mut world, 0.0, DomPointerUpdate::Unchanged)
+        .expect_err("paint commit should fail without a direct-GPU executor");
+    assert_eq!(err, DomError::RetainedGpuApplyFailed);
+    root.context().render_ops().with_staged_applies(|applies| {
+        assert!(applies.is_empty(), "a failed commit stages nothing");
+    });
+
+    world.insert_resource(UiDomRenderSupport::direct_gpu());
+    root.update(&mut world, 1.0, DomPointerUpdate::Unchanged)
+        .expect("retry should succeed once the executor is installed");
+
+    // The retry painting at all proves the failed commit left the layer's paint
+    // dirt intact (C3): a cleared layer would stage nothing on the second update.
+    root.context().render_ops().with_staged_applies(|applies| {
+        assert_eq!(applies.len(), 1);
+        let plan = &applies[0].plan;
+        assert_eq!(plan.rects.len(), 1);
+        assert_vec2_close(plan.rects[0].size_px, [100.0, 40.0]);
+    });
+}
+
+#[test]
+fn g12_number_input_icons_stage_with_element_color() {
+    // Cover the icon op family at the staging seam (G1–G9 cover rects/text only):
+    // an `<input type="number">` emits exactly two stepper `IconPaintOp`s, both
+    // tinted with the element's effective `color`.
+    let (mut world, mut root) = support::attached_gpu_root_dom_setup(320.0, 320.0);
+    let document = root.document_node().0;
+    let input = support::assert_append_input_to(&mut root, document);
+    root.set_attr_str(input, "type", "number")
+        .expect("type should parse");
+    root.set_attr_str(input, "width", "120px")
+        .expect("width should parse");
+    root.set_attr_str(input, "height", "24px")
+        .expect("height should parse");
+    root.set_attr_str(input, "value", "4")
+        .expect("value should parse");
+    root.set_attr_str(input, "class", "accent")
+        .expect("class should parse");
+    support::assert_load_root_stylesheet(
+        &root,
+        support::theme_stylesheet_origin(),
+        ".accent { color: #3366ff; }",
+    );
+
+    root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
+        .expect("update");
+
+    root.context().render_ops().with_staged_applies(|applies| {
+        assert_eq!(applies.len(), 1);
+        let plan = &applies[0].plan;
+        assert_eq!(plan.icons.len(), 2);
+        for icon in &plan.icons {
+            assert!(
+                icon.size_px[0] > 0.0,
+                "stepper icon width should be positive"
+            );
+            assert!(
+                icon.size_px[1] > 0.0,
+                "stepper icon height should be positive"
+            );
+            assert_vec4_close(icon.color_rgba, [51.0 / 255.0, 102.0 / 255.0, 1.0, 1.0]);
+        }
     });
 }

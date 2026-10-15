@@ -47,3 +47,33 @@ pub fn register_render_ops_handler(
         registry.0.push(std::sync::Arc::clone(handler));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use bevy::prelude::World;
+
+    #[test]
+    fn registration_dedups_by_arc_ptr_eq() {
+        let mut world = World::new();
+        let handler = Arc::new(RenderOpsHandler::new());
+        register_render_ops_handler(&mut world, &handler);
+        register_render_ops_handler(&mut world, &handler);
+        assert_eq!(world.resource::<RenderOpsHandlers>().0.len(), 1);
+    }
+
+    #[test]
+    fn registration_order_is_preserved() {
+        let mut world = World::new();
+        let handler_one = Arc::new(RenderOpsHandler::new());
+        let handler_two = Arc::new(RenderOpsHandler::new());
+        register_render_ops_handler(&mut world, &handler_one);
+        register_render_ops_handler(&mut world, &handler_two);
+        let registry = world.resource::<RenderOpsHandlers>();
+        assert_eq!(registry.0.len(), 2);
+        assert!(Arc::ptr_eq(&registry.0[0], &handler_one));
+        assert!(Arc::ptr_eq(&registry.0[1], &handler_two));
+    }
+}
