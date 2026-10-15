@@ -38,6 +38,8 @@
 //! need a pure style query. The live retained recompute path in this file must
 //! stay independent from that helper for both architecture and performance.
 
+#[cfg(test)]
+use crate::domains::style::StyleRuleOrigin;
 use crate::domains::style::{
     ComputedStyleMap, apply_pseudo_state_style_declarations, matched_style_rules_for_element,
 };
@@ -50,6 +52,10 @@ use crate::types::dom_node::{DomNode, DomNodeSlotKey};
 use crate::types::{
     DomAttribute, DomAttributeValue, DomError, DomOverflowWrap, DomWhiteSpace, DomWordBreak,
     RootDom, RootDomMetricName,
+};
+#[cfg(test)]
+use crate::types::{
+    DomIntrinsic, DomTag, RootDomContext, RootDomContextConfig, parse_css_color_rgba,
 };
 
 #[cfg(test)]
@@ -293,15 +299,8 @@ fn recompute_text_metric_intrinsic_for_style_pass(
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
+    use super::*;
     use std::sync::Arc;
-
-    use crate::domains::style::StyleRuleOrigin;
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomIntrinsic, DomTag, RootDom, RootDomContext,
-        RootDomContextConfig, parse_css_color_rgba,
-    };
-
-    use super::recompute_dirty_style_subtree_for_layer_root;
 
     fn assert_f32_eq(actual: f32, expected: f32) {
         assert!(
@@ -1055,7 +1054,7 @@ mod tests {
 
     fn element_attr(
         root: &RootDom,
-        key: crate::types::DomNodeSlotKey,
+        key: DomNodeSlotKey,
         attribute: &DomAttribute,
     ) -> Option<DomAttributeValue> {
         let node = root.node(key)?;
@@ -1063,41 +1062,41 @@ mod tests {
         element.attrs.attributes.get(attribute).cloned()
     }
 
-    fn style_dirty(root: &RootDom, key: crate::types::DomNodeSlotKey) -> bool {
+    fn style_dirty(root: &RootDom, key: DomNodeSlotKey) -> bool {
         let node = root.node(key).expect("node should exist");
         match node {
-            crate::types::DomNode::Document(document) => document.base.style.dirty,
-            crate::types::DomNode::DocumentFragment(fragment) => fragment.base.style.dirty,
-            crate::types::DomNode::Element(element) => element.base.style.dirty,
-            crate::types::DomNode::Text(text) => text.base.style.dirty,
+            DomNode::Document(document) => document.base.style.dirty,
+            DomNode::DocumentFragment(fragment) => fragment.base.style.dirty,
+            DomNode::Element(element) => element.base.style.dirty,
+            DomNode::Text(text) => text.base.style.dirty,
         }
     }
 
-    fn clear_layout_dirty_for_test(root: &mut RootDom, key: crate::types::DomNodeSlotKey) {
+    fn clear_layout_dirty_for_test(root: &mut RootDom, key: DomNodeSlotKey) {
         let node = root.nodes.get_mut(key).expect("node should exist");
         match node {
-            crate::types::DomNode::Document(document) => {
+            DomNode::Document(document) => {
                 document.base.layout.dirty = false;
             }
-            crate::types::DomNode::DocumentFragment(fragment) => {
+            DomNode::DocumentFragment(fragment) => {
                 fragment.base.layout.dirty = false;
             }
-            crate::types::DomNode::Element(element) => {
+            DomNode::Element(element) => {
                 element.base.layout.dirty = false;
             }
-            crate::types::DomNode::Text(text) => {
+            DomNode::Text(text) => {
                 text.base.layout.dirty = false;
             }
         }
     }
 
-    fn layout_dirty_for_test(root: &RootDom, key: crate::types::DomNodeSlotKey) -> bool {
+    fn layout_dirty_for_test(root: &RootDom, key: DomNodeSlotKey) -> bool {
         let node = root.node(key).expect("node should exist");
         match node {
-            crate::types::DomNode::Document(document) => document.base.layout.dirty,
-            crate::types::DomNode::DocumentFragment(fragment) => fragment.base.layout.dirty,
-            crate::types::DomNode::Element(element) => element.base.layout.dirty,
-            crate::types::DomNode::Text(text) => text.base.layout.dirty,
+            DomNode::Document(document) => document.base.layout.dirty,
+            DomNode::DocumentFragment(fragment) => fragment.base.layout.dirty,
+            DomNode::Element(element) => element.base.layout.dirty,
+            DomNode::Text(text) => text.base.layout.dirty,
         }
     }
 }
