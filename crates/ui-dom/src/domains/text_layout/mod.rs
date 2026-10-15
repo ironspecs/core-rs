@@ -84,7 +84,7 @@ pub(crate) enum TextFontFamilyId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum TextWrapMode {
+pub enum TextWrapMode {
     None,
     Word,
     Glyph,
@@ -92,7 +92,7 @@ pub(crate) enum TextWrapMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum TextAlign {
+pub enum TextAlign {
     Left,
     Center,
     Right,

@@ -25,6 +25,7 @@ pub(crate) mod layer_ops;
 pub mod layer_pool;
 pub mod layout;
 pub(crate) mod paint;
+pub mod render_ops;
 pub mod style;
 pub(crate) mod text_layout;
 pub(crate) mod visitor;
@@ -34,6 +35,10 @@ pub use crate::types::{
     RootDomMetricName, RootDomMetrics,
 };
 pub use keyboard::dispatch_bevy_keyboard_input_from_focus_and_apply_default_behavior;
+pub use layer_ops::{
+    IconPaintOp, ImagePaintId, ImagePaintOp, LayerPaintPlan, RectPaintOp, StrokePathOp, SvgPaintId,
+    SvgPaintOp, TextRunPaintOp,
+};
 pub use layer_pool::{
     ExternalLayerTarget, LayerConfig, LayerLease, LayerPool, LayerPoolApplyError,
     LayerPoolMetricHistoryEntry, LayerPoolMetricHistoryIter, LayerPoolMetricName, LayerPoolMetrics,
@@ -47,4 +52,9 @@ pub use layout::{
     DomLayoutInput, DomLayoutResolver, IdentityDomLayoutResolver, node_box, node_layout_dirty,
     node_paint_dirty, root_key,
 };
+pub use render_ops::{
+    RenderOpsBatch, RenderOpsHandler, RenderOpsHandlers, StageOutcome, StagedExternalRgbaUpload,
+    StagedLayerApply, register_render_ops_handler,
+};
 pub use style::{ComputedStyleMap, StyleRule, StyleRuleKey, StyleRuleOrigin};
+pub use text_layout::{TextAlign, TextWrapMode};
