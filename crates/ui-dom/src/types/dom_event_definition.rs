@@ -73,7 +73,7 @@ impl DomEventDescriptorBuilder {
 // These definitions are immutable after construction and are consulted through
 // `DomEventName::descriptor()`. Concrete `DomEvent` values must not duplicate
 // or override this type behavior per occurrence.
-const DOM_EVENT_DESCRIPTORS: [DomEventDescriptor; DomEventName::COUNT] = [
+pub(crate) const DOM_EVENT_DESCRIPTORS: [DomEventDescriptor; DomEventName::COUNT] = [
     DomEventDescriptorBuilder::new(DomEventName::PointerDown)
         .dom_name("pointerdown")
         .behavior(DomEventBehavior::new(
@@ -219,13 +219,6 @@ const DOM_EVENT_DESCRIPTORS: [DomEventDescriptor; DomEventName::COUNT] = [
         ))
         .build(),
 ];
-
-impl DomEventName {
-    #[must_use]
-    pub(crate) fn descriptor(self) -> &'static DomEventDescriptor {
-        &DOM_EVENT_DESCRIPTORS[self.index()]
-    }
-}
 
 #[cfg(test)]
 mod tests {

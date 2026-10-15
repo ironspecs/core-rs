@@ -3,6 +3,8 @@
 //! This file separates event names from payload and policy details so callers
 //! can reference the vocabulary without depending on internal descriptor data.
 
+use crate::types::dom_event_definition::{DOM_EVENT_DESCRIPTORS, DomEventDescriptor};
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum DomEventName {
     PointerDown,
@@ -54,5 +56,12 @@ impl DomEventName {
             Self::TransitionEnd => 18,
             Self::TransitionCancel => 19,
         }
+    }
+}
+
+impl DomEventName {
+    #[must_use]
+    pub(crate) fn descriptor(self) -> &'static DomEventDescriptor {
+        &DOM_EVENT_DESCRIPTORS[self.index()]
     }
 }
