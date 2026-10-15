@@ -648,3 +648,60 @@ criterion 4 ⇐ G8; criterion 5 ⇐ G6; criterion 6 ⇐ G10; criterion 7 is the 
 6. Handler metric names, if any (zero-alloc emission; steady-state silence;
    pin updates in their own commit).
 7. Exact form of the context constructor accepting a shared handler (§4.2).
+
+## 10. Implementation record (landed on branch `render-ops-handler`)
+
+Three commits:
+
+- `fa650d6` — `feat(ui-dom): add sealed render-ops staging module` (additive:
+  `domains/render_ops` + op-vocabulary re-exports; no behavior change).
+- `d23bc8e` — `feat(ui-dom)!: move render ops to context-owned RenderOpsHandler
+  staging` (the intentional behavior change: C1 move-only ops, C3
+  clear-on-terminal-decision, writer seam, extract drain, invalidation
+  broadcast, registration, API deltas, gate tests G1–G9).
+- `0f7a807` — `test(ui-dom): re-pin perf contracts for render-ops staging`
+  (own commit per policy; every moved pin justified inline).
+
+Deltas from this plan as written (all within scope and intent):
+
+- §5.1: the new module landed as **5 files, not 4** — `render_ops_batch.rs` was
+  split out per structural rule 1. The `RenderOpsHandlers` registry and
+  `register_render_ops_handler` live in `render_ops/mod.rs` (derive-only type +
+  free fn; lint-clean).
+- §5.2: `layer_pool_render_state.rs` also changed — one mechanical type rename
+  (`PendingLayerApply` → `StagedLayerApply` in `apply_plan_to_surface`'s
+  signature). It was listed under "explicitly untouched"; that was a plan
+  inaccuracy. Behavior untouched.
+- The `layer_ops` paint-op vocabulary (`LayerPaintPlan`, `RectPaintOp`, etc.)
+  and `text_layout`'s `TextAlign` / `TextWrapMode` are now publicly re-exported
+  (required by §7.2's external-test assertions; smallest visibility change:
+  re-exports, the modules themselves stay `pub(crate)`).
+- `LayerPaintTarget` is publicly re-exported — a public writer seam must return
+  a nameable type.
+- G3's test scenario uses a normal-flow sibling so the root layer has content;
+  the literal "only a layered child" document stages one apply (the root
+  layer's plan is empty, per G5 semantics).
+
+§9 open questions — resolved:
+
+1. Accessor set: `with_staged_applies`, `with_staged_external_uploads`,
+   `take_staged`.
+2. Writer seam `acquire_paint_target_in_world`: **public**.
+3. External RGBA: `handler: &RenderOpsHandler` parameter on
+   `submit_external_rgba_in_world`; validation unchanged.
+4. `RootDom::layer_lease(key)`: **public**.
+5. Dead paint-revision channel **deleted** (zero callers workspace-wide);
+   `DamagedRectsRepaint` machinery and intrinsic `generation` fields
+   deliberately **untouched** (left for a future verdict, per §2.7).
+6. **No new metric names.** `UploadDeferred` is incremented via a new
+   `pub(crate)` `LayerPool::increment_metric`.
+7. `RootDomContext::new_with_render_ops(config, Arc<RenderOpsHandler>)` +
+   `render_ops()` reader + crate-internal `render_ops_shared()` for attach
+   registration.
+
+Gate status at landing: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets --all-features -- -D warnings`, and `cargo test --workspace` all
+green. `cargo xtask lint` reports **406 pre-existing violations that also exist
+on `main`** (zero added by this work) — so §8.7's "lint passes" criterion
+cannot be literally satisfied until that pre-existing backlog is cleaned up;
+flagged for the operator as a separate effort outside this plan's scope.
