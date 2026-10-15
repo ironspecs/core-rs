@@ -90,11 +90,13 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "hover-on update",
         Stats {
-            allocations: 60,
-            deallocations: 60,
+            // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
+            // −1 allocation, −128 bytes in this window.
+            allocations: 59,
+            deallocations: 59,
             reallocations: 0,
-            bytes_allocated: 6016,
-            bytes_deallocated: 6016,
+            bytes_allocated: 5888,
+            bytes_deallocated: 5888,
             bytes_reallocated: 0,
         },
         region.change(),
@@ -133,11 +135,13 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "append+update",
         Stats {
-            allocations: 69,
-            deallocations: 67,
+            // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
+            // −1 allocation, −128 bytes in this window.
+            allocations: 68,
+            deallocations: 66,
             reallocations: 2,
-            bytes_allocated: 14297,
-            bytes_deallocated: 8308,
+            bytes_allocated: 14169,
+            bytes_deallocated: 8180,
             bytes_reallocated: 5440,
         },
         region.change(),
@@ -194,12 +198,18 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "text-rewrap update",
         Stats {
-            allocations: 165,
-            deallocations: 153,
-            reallocations: 27,
-            bytes_allocated: 92580,
-            bytes_deallocated: 32801,
-            bytes_reallocated: 9504,
+            // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
+            // −2 allocations, −2 deallocations. The plan owns one rect Vec and
+            // one text-run Vec; the −1 reallocation / −768 reallocated bytes is
+            // the allocator's second-order response to the removed allocations
+            // (a shaping buffer growth shifts from realloc-in-place to a fresh
+            // alloc), not a separate production change.
+            allocations: 163,
+            deallocations: 151,
+            reallocations: 26,
+            bytes_allocated: 91632,
+            bytes_deallocated: 32621,
+            bytes_reallocated: 8736,
         },
         region.change(),
     );

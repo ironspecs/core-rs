@@ -181,7 +181,10 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
         metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
         "hover recompute: PaintPlanBuilt before LayerPainted"
     );
-    assert_node_counts(&root, 100, 15, 0, "hover recompute");
+    // C3 terminal clear walk adds 7 node-store Gets on this paint frame (dirt
+    // clearing moved out of the build walk into one terminal traversal;
+    // PLAN.md §4.4 C3).
+    assert_node_counts(&root, 107, 15, 0, "hover recompute");
 }
 
 /// Post style-dirty propagation fix pin: one append now arms the layer
@@ -219,7 +222,10 @@ fn append_then_update_metric_deltas_match_baseline() {
         "append+update",
     );
     assert_second_append_then_update_history(&root);
-    assert_node_counts(&root, 103, 23, 1, "append+update");
+    // C3 terminal clear walk adds 11 node-store Gets on this paint frame (dirt
+    // clearing moved out of the build walk into one terminal traversal;
+    // PLAN.md §4.4 C3).
+    assert_node_counts(&root, 114, 23, 1, "append+update");
 }
 
 fn assert_second_append_then_update_history(root: &RootDom) {
@@ -345,7 +351,10 @@ fn stylesheet_apply_metric_deltas_stay_pinned() {
         metric_index(&history, LayerPainted) < metric_index(&history, LayerPresented),
         "stylesheet apply: LayerPainted before LayerPresented"
     );
-    assert_node_counts(&root, 63, 13, 0, "stylesheet apply");
+    // C3 terminal clear walk adds 7 node-store Gets on this paint frame (dirt
+    // clearing moved out of the build walk into one terminal traversal;
+    // PLAN.md §4.4 C3).
+    assert_node_counts(&root, 70, 13, 0, "stylesheet apply");
 }
 
 #[test]
@@ -391,7 +400,10 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
         metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
         "flex relayout: PaintPlanBuilt before LayerPainted"
     );
-    assert_node_counts(&root, 96, 13, 0, "flex relayout");
+    // C3 terminal clear walk adds 15 node-store Gets on this paint frame (dirt
+    // clearing moved out of the build walk into one terminal traversal;
+    // PLAN.md §4.4 C3).
+    assert_node_counts(&root, 111, 13, 0, "flex relayout");
 }
 
 #[test]
@@ -443,7 +455,10 @@ fn text_rewrap_metric_deltas_stay_pinned() {
         metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
         "text rewrap: PaintPlanBuilt before LayerPainted"
     );
-    assert_node_counts(&root, 68, 14, 0, "text rewrap");
+    // C3 terminal clear walk adds 11 node-store Gets on this paint frame (dirt
+    // clearing moved out of the build walk into one terminal traversal;
+    // PLAN.md §4.4 C3).
+    assert_node_counts(&root, 79, 14, 0, "text rewrap");
 }
 
 // The four `root_node_store_metrics_*` tests below were relocated from
