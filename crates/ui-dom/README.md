@@ -102,10 +102,39 @@ The authored tree drives the retained derived domains in `src/domains/`:
 
 - layout
 - paint
+- render-ops staging
 - composite
 - hit test
 
 Those domains read `RootDom` state and node-owned caches, but they do not become a second ownership model.
+
+## Render-Ops Staging
+
+Paint plans do not cross into the render world directly. Each `RootDomContext`
+owns one shared `RenderOpsHandler` (`src/domains/render_ops/`): a sealed staging
+owner that holds one Bevy tick's outgoing paint ops. During the paint stage,
+`paint_layer` moves each dirty layer's owned `LayerPaintPlan` into the handler —
+moved, never copied. Bevy's extract drains every registered handler once per
+tick, in registration order, into the render executor.
+
+Consequences:
+
+- the exact render ops one update produced are observable in the main world
+  between `update` and extract (`handler.with_staged_applies(...)`, or
+  `handler.take_staged()` when no render app is installed). The layout proofs
+  assert against these staged ops directly.
+- handlers are shared per context, not per root: give one root its own context
+  for per-root isolation, or share one context/handler to merge several roots'
+  ops. External (non-DOM) producers can hold a handler directly and stage
+  through the same path.
+- ops carry no root attribution across the render boundary; a `LayerLease`
+  identifies the target surface and nothing more.
+- a lease destroyed between staging and extract can never execute: lease
+  invalidation is broadcast into every registered handler.
+- registration happens at `attach_to_bevy_parent_entity` (idempotent);
+  standalone producers register via `register_render_ops_handler`.
+- `RootDom::layer_offset_px(key)` exposes the presented placement composite
+  computes for one live layer root (its own accumulation, not a recomputation).
 
 ## GPU Boundary
 

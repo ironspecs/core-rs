@@ -747,3 +747,6 @@ Decisions made during the follow-up (beyond the plan as written):
 - `node_box` (already public) serves position claims for non-layer content;
   no new test-support helpers were added beyond the two from `d366e9e`.
 - The §2.7 debris and the NOTE 1 clear remain untouched, as scoped.
+- Review pass (`9e20949`) added the C5 re-stage order-preservation pin and the
+  registration-requirement doc line on `submit_external_rgba_in_world`, and the
+  crate README gained a "Render-Ops Staging" section documenting the seam.
