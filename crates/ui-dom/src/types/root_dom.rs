@@ -169,11 +169,6 @@ pub enum DomPointerUpdate {
     Set(DomPointerState),
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct LayerRevisionState {
-    paint_revision: u64,
-}
-
 #[derive(Debug)]
 pub struct RootDom {
     context: Arc<RootDomContext>,
@@ -203,7 +198,6 @@ pub struct RootDom {
     raised_layer_roots: Vec<DomNodeSlotKey>,
     layer_entity_by_root: HashMap<DomNodeSlotKey, Entity>,
     layer_lease_by_root: HashMap<DomNodeSlotKey, LayerLease>,
-    layer_revisions_by_root: HashMap<DomNodeSlotKey, LayerRevisionState>,
     vertical_scroll_offset_by_node: HashMap<DomNodeSlotKey, f32>,
     previous_pointer_state: Option<DomPointerState>,
     pub(crate) pressed_pointer_click_target: Option<PressedPointerClickTarget>,
@@ -236,7 +230,6 @@ impl RootDom {
             raised_layer_roots: Vec::new(),
             layer_entity_by_root: HashMap::new(),
             layer_lease_by_root: HashMap::new(),
-            layer_revisions_by_root: HashMap::new(),
             vertical_scroll_offset_by_node: HashMap::new(),
             previous_pointer_state: None,
             pressed_pointer_click_target: None,
@@ -1017,6 +1010,7 @@ impl RootDom {
             return Err(DomError::InvalidParentTarget);
         }
         self.attached_bevy_parent = Some(parent);
+        crate::domains::register_render_ops_handler(world, &self.context.render_ops_shared());
         if let Err(error) = crate::domains::composite::create(self, world, parent) {
             self.attached_bevy_parent = None;
             return Err(error);
@@ -1254,7 +1248,6 @@ impl RootDom {
 
     pub(crate) fn register_layer_entity(&mut self, key: DomNodeSlotKey, entity: Entity) {
         self.layer_entity_by_root.insert(key, entity);
-        self.layer_revisions_by_root.entry(key).or_default();
         self.register_raised_layer_root(key);
     }
 
@@ -1265,7 +1258,6 @@ impl RootDom {
     pub(crate) fn unregister_layer_entity(&mut self, key: DomNodeSlotKey) {
         self.layer_entity_by_root.remove(&key);
         self.layer_lease_by_root.remove(&key);
-        self.layer_revisions_by_root.remove(&key);
         self.unregister_raised_layer_root(key);
     }
 
@@ -1332,18 +1324,12 @@ impl RootDom {
             })
     }
 
-    pub(crate) fn layer_lease(&self, key: DomNodeSlotKey) -> Option<LayerLease> {
+    /// Returns the retained-layer lease for one live layer root, if any.
+    ///
+    /// The lease is an opaque `Copy` capability that identifies a retained
+    /// surface; by itself it grants no mutation authority.
+    pub fn layer_lease(&self, key: DomNodeSlotKey) -> Option<LayerLease> {
         self.layer_lease_by_root.get(&key).copied()
-    }
-
-    pub(crate) fn next_paint_revision(&mut self, key: DomNodeSlotKey) -> u64 {
-        let revisions = self.layer_revisions_by_root.entry(key).or_default();
-        revisions.paint_revision = revisions.paint_revision.wrapping_add(1);
-        revisions.paint_revision
-    }
-
-    pub(crate) fn mark_layer_full_repaint(&mut self, key: DomNodeSlotKey) {
-        mark_full_repaint_up_to_layout_root(self, key);
     }
 
     fn import_fragment_children_into_parent(

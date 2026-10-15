@@ -5,7 +5,8 @@
 //! This file represents the shared runtime context every `RootDom` receives at
 //! creation. Its purpose is to keep backend selection and shared style runtime
 //! policy explicit instead of hiding them in paint globals or per-root one-off
-//! state.
+//! state. It also carries the shared render-ops staging handler that owns one
+//! tick's outgoing paint ops until the render-world handoff.
 
 use std::sync::{Arc, Mutex};
 
@@ -93,14 +94,29 @@ impl RootDomContextConfig {
 pub struct RootDomContext {
     config: RootDomContextConfig,
     pub(crate) style_runtime: Mutex<StyleRuntime>,
+    render_ops: Arc<crate::domains::RenderOpsHandler>,
 }
 
 impl RootDomContext {
     #[must_use]
     pub fn new(config: RootDomContextConfig) -> Self {
+        Self::new_with_render_ops(config, Arc::new(crate::domains::RenderOpsHandler::new()))
+    }
+
+    /// Creates one context with a caller-provided shared render-ops handler.
+    ///
+    /// Contexts can deliberately share one handler (so several roots stage into
+    /// the same outgoing-ops owner), and external producers can hold one with no
+    /// `RootDom` at all.
+    #[must_use]
+    pub fn new_with_render_ops(
+        config: RootDomContextConfig,
+        render_ops: Arc<crate::domains::RenderOpsHandler>,
+    ) -> Self {
         Self {
             config,
             style_runtime: Mutex::new(StyleRuntime::default()),
+            render_ops,
         }
     }
 
@@ -129,6 +145,19 @@ impl RootDomContext {
     #[must_use]
     pub fn debug_capture_enabled(&self) -> bool {
         self.config.debug_capture_enabled
+    }
+
+    /// Returns the shared render-ops staging handler this context uses for its
+    /// outgoing paint ops.
+    #[must_use]
+    pub fn render_ops(&self) -> &crate::domains::RenderOpsHandler {
+        &self.render_ops
+    }
+
+    /// Returns a clone of the shared handler `Arc`, used by attach registration
+    /// to publish this context's handler to the render-world extract drain.
+    pub(crate) fn render_ops_shared(&self) -> Arc<crate::domains::RenderOpsHandler> {
+        Arc::clone(&self.render_ops)
     }
 
     /// Loads one stylesheet origin into the retained style runtime.

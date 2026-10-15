@@ -1,7 +1,7 @@
 //! `LayerPool` is the authoritative retained-layer owner for `ui-dom`.
 //! This file exists so retained surface lifetime, retained mapping, and world-scoped apply entrypoints stay in one owner instead of leaking across DOM, paint, and host code.
 //!
-//! The type keeps setup policy as a frozen config snapshot and keeps render submission as queueing work rather than performing GPU work directly in main-world paths.
+//! The type keeps setup policy as a frozen config snapshot and keeps render submission as staged ops handed to the `RenderOpsHandler` rather than performing GPU work directly in main-world paths.
 //! The public world-scoped facade methods are kept here so callers use one unsurprising boundary instead of reaching into helper structs or sibling files.
 //!
 //! Strict invariants:
@@ -27,6 +27,18 @@ pub struct LayerPool {
     pub(super) pending_text_run_removals: Vec<TextRunId>,
     pub(super) metrics: LayerPoolMetricStore,
     pub(super) next_generation: LayerGeneration,
+}
+
+/// Validated paint target for one live layer: resolved surface, retained
+/// mapping, and policy. `Ok(None)` means the layer's policy suppresses uploads.
+#[derive(Clone, Debug)]
+pub struct LayerPaintTarget {
+    /// Resolved surface the repaint draws into.
+    pub image_handle: Handle<Image>,
+    /// Surface-local origin of this layer's zero point, in image pixels.
+    pub layer_zero_in_image_px: [f32; 2],
+    /// Retained upload policy for this layer.
+    pub policy: LayerPoolPolicy,
 }
 
 impl LayerPool {
@@ -316,6 +328,14 @@ impl LayerPool {
         self.metrics.reset();
     }
 
+    /// Increments one `LayerPool` metric counter.
+    ///
+    /// Mirrors `RootDom::increment_metric`'s contract: call only after the
+    /// measured work actually occurred, never as bookkeeping ahead of it.
+    pub(crate) fn increment_metric(&mut self, name: LayerPoolMetricName) {
+        self.metrics.increment(name);
+    }
+
     /// Creates one retained layer lease through the authoritative world-scoped facade.
     #[must_use]
     pub fn create_layer_lease_in_world(
@@ -431,10 +451,11 @@ impl LayerPool {
     /// Submits one full RGBA upload for a caller-rendered external layer target.
     ///
     /// The caller keeps ownership of its source buffer. `LayerPool` copies the
-    /// slice once into the render job queue, and the render executor uploads
-    /// those bytes into the target texture.
+    /// slice once into the supplied render-ops handler, and the render executor
+    /// uploads those bytes into the target texture.
     pub fn submit_external_rgba_in_world(
         world: &mut World,
+        handler: &crate::domains::RenderOpsHandler,
         target: &ExternalLayerTarget,
         rgba_bytes: &[u8],
     ) -> Result<(), &'static str> {
@@ -469,15 +490,12 @@ impl LayerPool {
             }
             Ok::<(), &'static str>(())
         }?;
-        world.init_resource::<LayerPoolRenderJobQueue>();
-        world
-            .resource_mut::<LayerPoolRenderJobQueue>()
-            .queue_external_rgba_upload(PendingExternalRgbaUpload {
-                lease: target.lease,
-                image_handle: target.image_handle.clone(),
-                image_extent_px: target.image_extent_px,
-                rgba_bytes: rgba_bytes.to_vec(),
-            });
+        handler.stage_external_rgba(crate::domains::StagedExternalRgbaUpload {
+            lease: target.lease,
+            image_handle: target.image_handle.clone(),
+            image_extent_px: target.image_extent_px,
+            rgba_bytes: rgba_bytes.to_vec(),
+        });
         Ok(())
     }
 
@@ -532,74 +550,54 @@ impl LayerPool {
         })
     }
 
-    pub(crate) fn apply_paint_plan_in_world(
+    /// Validates one lease and acquires its retained surface for a coming repaint.
+    ///
+    /// Order is load-bearing and matches the deleted apply path exactly:
+    /// validate lease -> read policy -> suppress Offscreen/External (`UploadSuppressed`
+    /// metric) -> require the direct GPU executor -> acquire surface.
+    pub fn acquire_paint_target_in_world(
         world: &mut World,
         lease: LayerLease,
-        plan: &LayerPaintPlan,
-    ) -> Result<(), LayerPoolApplyError> {
+    ) -> Result<Option<LayerPaintTarget>, LayerPoolApplyError> {
         assert!(
             world.contains_resource::<LayerPool>(),
             "ui-dom GPU layer work requires an installed LayerPool",
         );
         world.resource_scope(|world, mut layer_pool: bevy::prelude::Mut<LayerPool>| {
-            layer_pool.apply_paint_plan(world, lease, plan)
-        })
-    }
-
-    fn apply_paint_plan(
-        &mut self,
-        world: &mut World,
-        lease: LayerLease,
-        plan: &LayerPaintPlan,
-    ) -> Result<(), LayerPoolApplyError> {
-        if plan.is_empty() {
-            return Ok(());
-        }
-        self.validate_current_lease(lease, LayerPoolMetricName::StaleLeaseRejected)
-            .map_err(LayerPoolApplyError::InvalidLease)?;
-        let policy = self
-            .layers
-            .get(lease.layer_id)
-            .expect("validated lease should still resolve to a record")
-            .policy;
-        if policy == LayerPoolPolicy::Offscreen || policy == LayerPoolPolicy::External {
-            self.metrics
-                .increment(LayerPoolMetricName::UploadSuppressed);
-            return Ok(());
-        }
-        require_direct_gpu_executor(world)?;
-        self.acquire_surface(world, lease)
-            .map_err(LayerPoolApplyError::InvalidLease)?;
-        let (image_handle, layer_zero_in_image_px) = {
-            let record = self
+            layer_pool
+                .validate_current_lease(lease, LayerPoolMetricName::StaleLeaseRejected)
+                .map_err(LayerPoolApplyError::InvalidLease)?;
+            let policy = layer_pool
+                .layers
+                .get(lease.layer_id)
+                .expect("validated lease should still resolve to a record")
+                .policy;
+            if policy == LayerPoolPolicy::Offscreen || policy == LayerPoolPolicy::External {
+                layer_pool
+                    .metrics
+                    .increment(LayerPoolMetricName::UploadSuppressed);
+                return Ok(None);
+            }
+            require_direct_gpu_executor(world)?;
+            layer_pool
+                .acquire_surface(world, lease)
+                .map_err(LayerPoolApplyError::InvalidLease)?;
+            let record = layer_pool
                 .layers
                 .get(lease.layer_id)
                 .expect("validated lease should still resolve to a record");
-            (
-                record
+            Ok(Some(LayerPaintTarget {
+                image_handle: record
                     .image
                     .clone()
                     .expect("acquired layer surface should bind an image handle"),
-                [
+                layer_zero_in_image_px: [
                     record.layer_zero_x_in_image_px,
                     record.layer_zero_y_in_image_px,
                 ],
-            )
-        };
-        world.init_resource::<LayerPoolRenderJobQueue>();
-        let deferred = world.resource_mut::<LayerPoolRenderJobQueue>().queue_apply(
-            PendingLayerApply {
-                lease,
-                image_handle,
-                layer_zero_in_image_px,
-                plan: plan.clone(),
-            },
-            policy,
-        );
-        if deferred {
-            self.metrics.increment(LayerPoolMetricName::UploadDeferred);
-        }
-        Ok(())
+                policy,
+            }))
+        })
     }
 
     fn allocate_generation(&mut self) -> LayerGeneration {

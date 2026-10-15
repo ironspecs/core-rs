@@ -13,12 +13,14 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+use crate::domains::render_ops::{StagedExternalRgbaUpload, StagedLayerApply};
+
 #[derive(Resource)]
 pub(crate) struct LayerPoolRenderExecutor {
     pub(super) layer_config: FrozenLayerConfig,
     pub(super) icon_atlas_state: IconAtlasLoadState,
-    pub(super) pending_applies: Vec<PendingLayerApply>,
-    pub(super) pending_external_rgba_uploads: Vec<PendingExternalRgbaUpload>,
+    pub(super) pending_applies: Vec<StagedLayerApply>,
+    pub(super) pending_external_rgba_uploads: Vec<StagedExternalRgbaUpload>,
     ordered_surface_entities_by_attached_root_parent: HashMap<MainEntity, Vec<MainEntity>>,
     parent_z_order_by_attached_root_parent: HashMap<MainEntity, f32>,
     attached_root_parent_by_surface_entity: HashMap<MainEntity, MainEntity>,
@@ -73,30 +75,32 @@ impl LayerPoolRenderExecutor {
         self.pending_text_run_removals.push(text_run_id);
     }
 
+    pub(super) fn stage_apply(&mut self, apply: StagedLayerApply) {
+        if let Some(existing) = self
+            .pending_applies
+            .iter_mut()
+            .find(|existing| existing.lease == apply.lease)
+        {
+            *existing = apply;
+        } else {
+            self.pending_applies.push(apply);
+        }
+    }
+
+    pub(super) fn stage_external_rgba_upload(&mut self, upload: StagedExternalRgbaUpload) {
+        if let Some(existing) = self
+            .pending_external_rgba_uploads
+            .iter_mut()
+            .find(|existing| existing.lease == upload.lease)
+        {
+            *existing = upload;
+        } else {
+            self.pending_external_rgba_uploads.push(upload);
+        }
+    }
+
     pub(super) fn apply_job(&mut self, job: LayerPoolRenderJob) {
         match job {
-            LayerPoolRenderJob::Apply(apply) => {
-                if let Some(existing) = self
-                    .pending_applies
-                    .iter_mut()
-                    .find(|existing| existing.lease == apply.lease)
-                {
-                    *existing = apply;
-                } else {
-                    self.pending_applies.push(apply);
-                }
-            }
-            LayerPoolRenderJob::ExternalRgbaUpload(upload) => {
-                if let Some(existing) = self
-                    .pending_external_rgba_uploads
-                    .iter_mut()
-                    .find(|existing| existing.lease == upload.lease)
-                {
-                    *existing = upload;
-                } else {
-                    self.pending_external_rgba_uploads.push(upload);
-                }
-            }
             LayerPoolRenderJob::Invalidate { lease } => {
                 self.pending_applies.retain(|apply| apply.lease != lease);
                 self.pending_external_rgba_uploads
@@ -313,7 +317,7 @@ impl LayerPoolRenderExecutor {
 fn apply_external_rgba_upload_to_surface(
     queue: &RenderQueue,
     gpu_image: &GpuImage,
-    upload: &PendingExternalRgbaUpload,
+    upload: &StagedExternalRgbaUpload,
 ) {
     assert_eq!(
         gpu_image.size.width, upload.image_extent_px.x,

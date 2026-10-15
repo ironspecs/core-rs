@@ -40,7 +40,7 @@ pub use layer_ops::{
     SvgPaintOp, TextRunPaintOp,
 };
 pub use layer_pool::{
-    ExternalLayerTarget, LayerConfig, LayerLease, LayerPool, LayerPoolApplyError,
+    ExternalLayerTarget, LayerConfig, LayerLease, LayerPaintTarget, LayerPool, LayerPoolApplyError,
     LayerPoolMetricHistoryEntry, LayerPoolMetricHistoryIter, LayerPoolMetricName, LayerPoolMetrics,
     LayerPoolPolicy,
 };

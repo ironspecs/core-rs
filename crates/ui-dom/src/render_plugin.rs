@@ -122,6 +122,7 @@ fn install_ui_dom_main_runtime(app: &mut App, layer_config: LayerConfig) {
         .register_asset_loader(UiIconAtlasManifestAssetLoader)
         .init_resource::<UiDomTextFontExtractState>()
         .init_resource::<LayerPoolRenderJobQueue>()
+        .init_resource::<crate::domains::RenderOpsHandlers>()
         .add_systems(Startup, load_ui_dom_text_fonts);
     install_ui_dom_surface_material_support(app);
 }

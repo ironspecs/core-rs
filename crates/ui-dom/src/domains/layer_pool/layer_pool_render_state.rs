@@ -8,6 +8,8 @@ use super::layer_pool_text_render::TextRunSurfaceContext;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+use crate::domains::render_ops::StagedLayerApply;
+
 pub(super) struct RenderSurfaceApplyResult {
     pub(super) rect_buffer_grew: bool,
     pub(super) text_runs_ready: bool,
@@ -20,7 +22,7 @@ impl LayerPoolRenderState {
         queue: &RenderQueue,
         gpu_image: &GpuImage,
         pixel_density: PixelDensity,
-        apply: &PendingLayerApply,
+        apply: &StagedLayerApply,
     ) -> RenderSurfaceApplyResult {
         let rect_buffer_grew = apply_rects_to_surface(
             &mut self.rect,

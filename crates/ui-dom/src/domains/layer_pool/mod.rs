@@ -7,6 +7,9 @@
 //! one module owner.
 //! Main-world ownership stays centered on `LayerPool`, render-world execution stays centered on `LayerPoolRenderExecutor`, and internal helper files stay private unless the domain truly exports them.
 //!
+//! Staged paint ops are owned by `domains/render_ops` and arrive at the executor
+//! through the registered-handler drain at the end of extract.
+//!
 //! Retained sizing policy:
 //!
 //! - allocate exact to the current retained need
@@ -100,8 +103,9 @@ use crate::domains::{
         IconPaintOp, TextAlign, TextFontFamilyId, TextLanguageId, TextRunId, TextRunSignature,
         TextWrapMode,
     },
-    layer_ops::{ImagePaintOp, LayerPaintPlan, SvgPaintOp, TextRunPaintOp},
+    layer_ops::{ImagePaintOp, SvgPaintOp, TextRunPaintOp},
     paint::RectPaintOp,
+    render_ops::RenderOpsHandlers,
     text_layout,
 };
 use crate::numeric::{f32_to_u32, i32_to_f32, u32_to_f32};
@@ -115,6 +119,7 @@ use layer_pool_metrics::LayerPoolMetricStore;
 use layer_pool_text_render::{TextRunRenderState, create_text_run_render_state};
 
 pub use layer_lease::LayerLease;
+pub use layer_pool::LayerPaintTarget;
 pub use layer_pool::LayerPool;
 pub use layer_pool_apply_error::LayerPoolApplyError;
 pub use layer_pool_metric_name::LayerPoolMetricName;
@@ -129,6 +134,9 @@ use layer_pool_render_job::LayerPoolRenderJob;
 pub use external_layer_target::ExternalLayerTarget;
 pub(crate) use layer_pool_render_executor::LayerPoolRenderExecutor;
 pub(crate) use layer_pool_render_job_queue::LayerPoolRenderJobQueue;
+
+#[cfg(test)]
+use crate::domains::render_ops::{RenderOpsHandler, StagedLayerApply, register_render_ops_handler};
 
 const LAYER_POOL_HISTORY_CAPACITY: usize = 128;
 const IMAGE_PLACEHOLDER_FILL_RGBA: [f32; 4] = [96.0 / 255.0, 168.0 / 255.0, 1.0, 1.0];
@@ -310,22 +318,6 @@ struct PendingLeaseDependencies {
     missing_font_families: Vec<TextFontFamilyId>,
 }
 
-#[derive(Clone, Debug)]
-struct PendingLayerApply {
-    lease: LayerLease,
-    image_handle: Handle<Image>,
-    layer_zero_in_image_px: [f32; 2],
-    plan: LayerPaintPlan,
-}
-
-#[derive(Clone, Debug)]
-struct PendingExternalRgbaUpload {
-    lease: LayerLease,
-    image_handle: Handle<Image>,
-    image_extent_px: UVec2,
-    rgba_bytes: Vec<u8>,
-}
-
 fn external_rgba_byte_len(image_extent_px: UVec2) -> usize {
     usize::try_from(image_extent_px.x)
         .expect("external upload width should fit usize")
@@ -335,8 +327,6 @@ fn external_rgba_byte_len(image_extent_px: UVec2) -> usize {
         .and_then(|value| value.checked_mul(4))
         .expect("external upload byte length should fit usize")
 }
-
-const BEST_EFFORT_UPLOAD_QUEUE_LIMIT: usize = 1;
 
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
@@ -570,9 +560,18 @@ pub(crate) fn extract_layer_pool_render_work(
             for job in pending_jobs.jobs.drain(..) {
                 executor.apply_job(job);
             }
-            pending_jobs.promote_deferred_best_effort_applies();
         },
     );
+    main_world.init_resource::<RenderOpsHandlers>();
+    for handler in &main_world.resource::<RenderOpsHandlers>().0 {
+        let batch = handler.take_staged();
+        for apply in batch.applies {
+            executor.stage_apply(apply);
+        }
+        for upload in batch.external_uploads {
+            executor.stage_external_rgba_upload(upload);
+        }
+    }
 }
 
 fn extract_text_font_assets(main_world: &mut MainWorld, executor: &mut LayerPoolRenderExecutor) {
@@ -1571,6 +1570,10 @@ fn enqueue_layer_invalidation(world: &mut World, lease: LayerLease) {
     world
         .resource_mut::<LayerPoolRenderJobQueue>()
         .push_invalidate(lease);
+    world.init_resource::<RenderOpsHandlers>();
+    for handler in &world.resource::<RenderOpsHandlers>().0 {
+        handler.invalidate_lease(lease);
+    }
 }
 
 fn enqueue_layer_invalidation_for_policy(
@@ -1687,15 +1690,16 @@ fn create_layer_surface_image(world: &mut World, image_size_px: (u32, u32)) -> H
 mod tests {
     use super::layer_pool_text_render as text_render;
     use super::{
-        CacheKey, LayerLease, LayerPaintPlan, LayerPool, LayerPoolApplyError, LayerPoolMetricName,
-        LayerPoolPolicy, LayerPoolRenderExecutor, LayerPoolRenderJob, LayerPoolRenderJobQueue,
-        TextLanguageId, TextRunPaintOp, TextRunSignature, icon_uv_window, pixel_density_scale,
+        CacheKey, LayerLease, LayerPool, LayerPoolApplyError, LayerPoolMetricName, LayerPoolPolicy,
+        LayerPoolRenderExecutor, LayerPoolRenderJob, LayerPoolRenderJobQueue, TextLanguageId,
+        TextRunPaintOp, TextRunSignature, icon_uv_window, pixel_density_scale,
     };
+    use super::{RenderOpsHandler, StagedLayerApply, register_render_ops_handler};
     use crate::domains::LayerConfig;
     use crate::domains::icon_atlas::{
         ValidatedUiIconAtlasEntry, ValidatedUiIconAtlasLookup, ValidatedUiIconAtlasManifest,
     };
-    use crate::domains::layer_ops::IconPaintOp;
+    use crate::domains::layer_ops::{IconPaintOp, LayerPaintPlan};
     use crate::domains::paint::RectPaintOp;
     use crate::domains::text_layout;
     use crate::domains::text_layout::TextWrapMode;
@@ -1785,7 +1789,6 @@ mod tests {
         world.init_resource::<LayerPoolRenderJobQueue>();
         let mut pending_jobs = world.resource_mut::<LayerPoolRenderJobQueue>();
         pending_jobs.jobs.clear();
-        pending_jobs.deferred_best_effort_applies.clear();
     }
 
     fn install_layer_pool(world: &mut World, pixel_density: PixelDensity) {
@@ -2562,36 +2565,35 @@ mod tests {
     }
 
     #[test]
-    fn empty_plan_does_not_trigger_shared_render_work() {
-        let mut world = World::new();
-        install_layer_pool(&mut world, PixelDensity::X1);
-        let lease = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 32.0, 16.0));
-
-        LayerPool::apply_paint_plan_in_world(&mut world, lease, &LayerPaintPlan::default())
-            .expect("empty plan should not fail");
-
-        world.resource_scope(|_, layer_pool: bevy::prelude::Mut<LayerPool>| {
-            assert_metric_counts(&layer_pool, &[(LayerPoolMetricName::LayerCreated, 1)]);
-            assert_history_names(&layer_pool, &[LayerPoolMetricName::LayerCreated]);
-        });
-    }
-
-    #[test]
-    fn non_empty_plan_with_direct_gpu_executor_queues_apply_without_repaint_metrics() {
+    fn non_empty_plan_with_direct_gpu_executor_acquires_target_and_stages_apply_without_repaint_metrics()
+     {
         let mut world = World::new();
         install_layer_pool(&mut world, PixelDensity::X1);
         world.insert_resource(UiDomRenderSupport::direct_gpu());
         let lease = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 32.0, 16.0));
-        let plan = single_rect_plan();
+        let handler = RenderOpsHandler::new();
 
-        LayerPool::apply_paint_plan_in_world(&mut world, lease, &plan)
-            .expect("direct gpu executor should accept queued retained apply");
-
-        assert_eq!(
-            world.resource::<LayerPoolRenderJobQueue>().jobs.len(),
-            1,
-            "queued apply should remain pending until the render world extracts it"
+        let target = LayerPool::acquire_paint_target_in_world(&mut world, lease)
+            .expect("direct gpu executor should accept an acquired retained target")
+            .expect("normal policy should not suppress uploads");
+        let policy = target.policy;
+        let _ = handler.stage(
+            StagedLayerApply {
+                lease,
+                image_handle: target.image_handle,
+                layer_zero_in_image_px: target.layer_zero_in_image_px,
+                plan: single_rect_plan(),
+            },
+            policy,
         );
+
+        handler.with_staged_applies(|applies| {
+            assert_eq!(
+                applies.len(),
+                1,
+                "staged apply should remain pending until the render world drains it"
+            );
+        });
         world.resource_scope(|_, layer_pool: bevy::prelude::Mut<LayerPool>| {
             assert_metric_counts(
                 &layer_pool,
@@ -2611,86 +2613,50 @@ mod tests {
     }
 
     #[test]
-    fn best_effort_policy_defers_when_the_upload_queue_is_under_pressure() {
+    fn staged_deferred_best_effort_apply_promotes_for_the_next_cycle() {
         let mut world = World::new();
         install_layer_pool(&mut world, PixelDensity::X1);
         world.insert_resource(UiDomRenderSupport::direct_gpu());
         let first = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 32.0, 16.0));
         let second = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 32.0, 16.0));
-        LayerPool::set_layer_policy_in_world(&mut world, first, LayerPoolPolicy::BestEffort)
-            .expect("first lease policy should update");
-        LayerPool::set_layer_policy_in_world(&mut world, second, LayerPoolPolicy::BestEffort)
-            .expect("second lease policy should update");
-        clear_pending_jobs(&mut world);
-        let plan = single_rect_plan();
+        let handler = RenderOpsHandler::new();
+        let first_target = LayerPool::acquire_paint_target_in_world(&mut world, first)
+            .expect("first target should acquire")
+            .expect("best-effort policy should not suppress");
+        let second_target = LayerPool::acquire_paint_target_in_world(&mut world, second)
+            .expect("second target should acquire")
+            .expect("best-effort policy should not suppress");
 
-        LayerPool::apply_paint_plan_in_world(&mut world, first, &plan)
-            .expect("first best-effort apply should queue");
-        LayerPool::apply_paint_plan_in_world(&mut world, second, &plan)
-            .expect("second best-effort apply should defer under pressure");
-
-        {
-            let pending_jobs = world.resource::<LayerPoolRenderJobQueue>();
-            assert_eq!(pending_jobs.jobs.len(), 1);
-            assert_eq!(pending_jobs.deferred_best_effort_applies.len(), 1);
-        }
-        world.resource_scope(|_, layer_pool: bevy::prelude::Mut<LayerPool>| {
-            assert_metric_counts(
-                &layer_pool,
-                &[
-                    (LayerPoolMetricName::LayerCreated, 2),
-                    (LayerPoolMetricName::PolicyChanged, 2),
-                    (LayerPoolMetricName::SurfaceAllocated, 2),
-                    (LayerPoolMetricName::UploadDeferred, 1),
-                ],
-            );
-            assert_history_names(
-                &layer_pool,
-                &[
-                    LayerPoolMetricName::LayerCreated,
-                    LayerPoolMetricName::LayerCreated,
-                    LayerPoolMetricName::PolicyChanged,
-                    LayerPoolMetricName::PolicyChanged,
-                    LayerPoolMetricName::SurfaceAllocated,
-                    LayerPoolMetricName::SurfaceAllocated,
-                    LayerPoolMetricName::UploadDeferred,
-                ],
-            );
-        });
-    }
-
-    #[test]
-    fn extract_promotes_one_deferred_best_effort_apply_for_the_next_cycle() {
-        let mut world = World::new();
-        install_layer_pool(&mut world, PixelDensity::X1);
-        install_layer_pool_render_executor(&mut world, PixelDensity::X1);
-        world.insert_resource(UiDomRenderSupport::direct_gpu());
-        let first = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 32.0, 16.0));
-        let second = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 32.0, 16.0));
-        LayerPool::set_layer_policy_in_world(&mut world, first, LayerPoolPolicy::BestEffort)
-            .expect("first lease policy should update");
-        LayerPool::set_layer_policy_in_world(&mut world, second, LayerPoolPolicy::BestEffort)
-            .expect("second lease policy should update");
-        clear_pending_jobs(&mut world);
-        let plan = single_rect_plan();
-
-        LayerPool::apply_paint_plan_in_world(&mut world, first, &plan)
-            .expect("first best-effort apply should queue");
-        LayerPool::apply_paint_plan_in_world(&mut world, second, &plan)
-            .expect("second best-effort apply should defer");
-
-        world.resource_scope(
-            |_, mut pending_jobs: bevy::prelude::Mut<LayerPoolRenderJobQueue>| {
-                let mut executor = LayerPoolRenderExecutor::new(LayerConfig::default());
-                for job in pending_jobs.jobs.drain(..) {
-                    executor.apply_job(job);
-                }
-                pending_jobs.promote_deferred_best_effort_applies();
-                assert_eq!(executor.pending_applies.len(), 1);
-                assert_eq!(pending_jobs.jobs.len(), 1);
-                assert_eq!(pending_jobs.deferred_best_effort_applies.len(), 0);
+        let _ = handler.stage(
+            StagedLayerApply {
+                lease: first,
+                image_handle: first_target.image_handle,
+                layer_zero_in_image_px: first_target.layer_zero_in_image_px,
+                plan: single_rect_plan(),
             },
+            LayerPoolPolicy::BestEffort,
         );
+        let _ = handler.stage(
+            StagedLayerApply {
+                lease: second,
+                image_handle: second_target.image_handle,
+                layer_zero_in_image_px: second_target.layer_zero_in_image_px,
+                plan: single_rect_plan(),
+            },
+            LayerPoolPolicy::BestEffort,
+        );
+
+        let mut executor = LayerPoolRenderExecutor::new(LayerConfig::default());
+        let first_batch = handler.take_staged();
+        for apply in first_batch.applies {
+            executor.stage_apply(apply);
+        }
+        assert_eq!(executor.pending_applies.len(), 1);
+        let second_batch = handler.take_staged();
+        for apply in second_batch.applies {
+            executor.stage_apply(apply);
+        }
+        assert_eq!(executor.pending_applies.len(), 2);
     }
 
     #[test]
@@ -2806,16 +2772,14 @@ mod tests {
         LayerPool::set_layer_policy_in_world(&mut world, lease, LayerPoolPolicy::Offscreen)
             .expect("offscreen policy should update");
         clear_pending_jobs(&mut world);
-        let plan = single_rect_plan();
 
-        LayerPool::apply_paint_plan_in_world(&mut world, lease, &plan)
+        let target = LayerPool::acquire_paint_target_in_world(&mut world, lease)
             .expect("offscreen apply should suppress instead of failing");
 
-        {
-            let pending_jobs = world.resource::<LayerPoolRenderJobQueue>();
-            assert_eq!(pending_jobs.jobs.len(), 0);
-            assert_eq!(pending_jobs.deferred_best_effort_applies.len(), 0);
-        }
+        assert!(
+            target.is_none(),
+            "offscreen policy should suppress the retained upload"
+        );
         world.resource_scope(|_, layer_pool: bevy::prelude::Mut<LayerPool>| {
             assert_metric_counts(
                 &layer_pool,
@@ -2843,7 +2807,6 @@ mod tests {
         {
             let pending_jobs = world.resource::<LayerPoolRenderJobQueue>();
             assert_eq!(pending_jobs.jobs.len(), 0);
-            assert_eq!(pending_jobs.deferred_best_effort_applies.len(), 0);
         }
         world.resource_scope(|_, layer_pool: bevy::prelude::Mut<LayerPool>| {
             assert_metric_counts(
@@ -2869,14 +2832,13 @@ mod tests {
             .expect("external policy should update");
         clear_pending_jobs(&mut world);
 
-        LayerPool::apply_paint_plan_in_world(&mut world, lease, &single_rect_plan())
+        let target = LayerPool::acquire_paint_target_in_world(&mut world, lease)
             .expect("external apply should suppress instead of failing");
 
-        {
-            let pending_jobs = world.resource::<LayerPoolRenderJobQueue>();
-            assert_eq!(pending_jobs.jobs.len(), 0);
-            assert_eq!(pending_jobs.deferred_best_effort_applies.len(), 0);
-        }
+        assert!(
+            target.is_none(),
+            "external policy should suppress the retained upload"
+        );
         world.resource_scope(|_, layer_pool: bevy::prelude::Mut<LayerPool>| {
             assert_metric_counts(
                 &layer_pool,
@@ -2890,17 +2852,36 @@ mod tests {
     }
 
     #[test]
-    fn switching_to_external_invalidates_pending_dom_apply_work() {
+    fn switching_to_external_invalidates_staged_dom_apply_work() {
         let mut world = World::new();
         install_layer_pool(&mut world, PixelDensity::X1);
         world.insert_resource(UiDomRenderSupport::direct_gpu());
         let lease = LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 32.0, 16.0));
+        let handler = Arc::new(RenderOpsHandler::new());
+        register_render_ops_handler(&mut world, &handler);
 
-        LayerPool::apply_paint_plan_in_world(&mut world, lease, &single_rect_plan())
-            .expect("normal apply should queue");
+        let target = LayerPool::acquire_paint_target_in_world(&mut world, lease)
+            .expect("normal apply should acquire")
+            .expect("normal policy should not suppress");
+        let policy = target.policy;
+        let _ = handler.stage(
+            StagedLayerApply {
+                lease,
+                image_handle: target.image_handle,
+                layer_zero_in_image_px: target.layer_zero_in_image_px,
+                plan: single_rect_plan(),
+            },
+            policy,
+        );
         LayerPool::set_layer_policy_in_world(&mut world, lease, LayerPoolPolicy::External)
-            .expect("switching to external should still invalidate queued DOM work");
+            .expect("switching to external should still invalidate staged DOM work");
 
+        handler.with_staged_applies(|applies| {
+            assert!(
+                applies.is_empty(),
+                "switching to external should evict the staged DOM apply"
+            );
+        });
         let pending_jobs = world.resource::<LayerPoolRenderJobQueue>();
         assert!(
             matches!(
@@ -2908,7 +2889,7 @@ mod tests {
                 Some(LayerPoolRenderJob::Invalidate { lease: invalidated_lease })
                     if *invalidated_lease == lease
             ),
-            "switching to external should queue an invalidation after any queued DOM apply"
+            "switching to external should queue an invalidation for the executor"
         );
     }
 
@@ -2924,22 +2905,8 @@ mod tests {
                 .checked_add(1)
                 .expect("stale generation should remain within bounds"),
         };
-        let plan = LayerPaintPlan {
-            rects: vec![RectPaintOp {
-                position_px: [1.0, 2.0],
-                size_px: [3.0, 4.0],
-                fill_rgba: [0.1, 0.2, 0.3, 1.0],
-                corner_radii_px: [0.0, 0.0, 0.0, 0.0],
-                border_widths_px: [0.0, 0.0, 0.0, 0.0],
-                border_top_rgba: [0.0, 0.0, 0.0, 0.0],
-                border_right_rgba: [0.0, 0.0, 0.0, 0.0],
-                border_bottom_rgba: [0.0, 0.0, 0.0, 0.0],
-                border_left_rgba: [0.0, 0.0, 0.0, 0.0],
-            }],
-            ..LayerPaintPlan::default()
-        };
 
-        let apply_result = LayerPool::apply_paint_plan_in_world(&mut world, stale, &plan);
+        let apply_result = LayerPool::acquire_paint_target_in_world(&mut world, stale);
 
         assert_eq!(
             apply_result.expect_err("stale apply should be rejected"),

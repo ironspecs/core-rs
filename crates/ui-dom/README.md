@@ -130,8 +130,9 @@ custom_renderer.render(world, &target)?;
 Acquiring an external target switches the retained layer to external policy so
 DOM-derived paint no longer overwrites the image.
 CPU-authored RGBA content can use `LayerPool::submit_external_rgba_in_world`
-to enqueue one full target upload for the render executor while keeping the
-caller-owned source buffer retained outside `ui-dom`.
+to stage one full target upload through the supplied `RenderOpsHandler` for the
+render executor while keeping the caller-owned source buffer retained outside
+`ui-dom`.
 
 ## Browser-Like Internal Model
 

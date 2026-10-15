@@ -8,8 +8,9 @@ mod mark_dirty;
 
 use bevy::prelude::World;
 
-use crate::domains::layer_pool::LayerPool;
+use crate::domains::layer_pool::{LayerPool, LayerPoolMetricName};
 use crate::domains::layout::{node_box_from_ref, relative_offset_for_node};
+use crate::domains::render_ops::{StageOutcome, StagedLayerApply};
 use crate::domains::text_layout::{
     DEFAULT_TEXT_FONT_SIZE_PX, TextIntrinsicMetrics, TextLanguageId, TextLayoutRequest,
     text_align_for_css_value, text_layout_input_for_wrap_policy, text_wrap_mode_for_css_intrinsic,
@@ -69,7 +70,36 @@ pub(crate) fn paint_layer(
             inherited_style,
         )
     })?;
-    commit_gpu_paint(root_dom, world, lease, &plan)
+    if plan.is_empty() {
+        clear_paint_repaint_state_for_painted_layer(root_dom, layer_root_key)?;
+        return Ok(());
+    }
+    let target = match LayerPool::acquire_paint_target_in_world(world, lease) {
+        Ok(Some(target)) => target,
+        Ok(None) => {
+            clear_paint_repaint_state_for_painted_layer(root_dom, layer_root_key)?;
+            root_dom.increment_metric(RootDomMetricName::LayerPainted);
+            return Ok(());
+        }
+        Err(_) => return Err(DomError::RetainedGpuApplyFailed),
+    };
+    let outcome = root_dom.context().render_ops().stage(
+        StagedLayerApply {
+            lease,
+            image_handle: target.image_handle,
+            layer_zero_in_image_px: target.layer_zero_in_image_px,
+            plan,
+        },
+        target.policy,
+    );
+    if outcome == StageOutcome::Deferred {
+        world
+            .resource_mut::<LayerPool>()
+            .increment_metric(LayerPoolMetricName::UploadDeferred);
+    }
+    clear_paint_repaint_state_for_painted_layer(root_dom, layer_root_key)?;
+    root_dom.increment_metric(RootDomMetricName::LayerPainted);
+    Ok(())
 }
 
 pub(crate) fn build_layer_paint_plan(
@@ -108,21 +138,6 @@ fn node_paint_dirty(root_dom: &RootDom, node_key: DomNodeSlotKey) -> Result<bool
         .ok_or(DomError::InvalidNodeKey)?
         .paint_repaint_state()
         .is_dirty())
-}
-
-fn commit_gpu_paint(
-    root_dom: &mut RootDom,
-    world: &mut World,
-    lease: crate::domains::LayerLease,
-    plan: &LayerPaintPlan,
-) -> Result<(), DomError> {
-    let painted = !plan.is_empty();
-    LayerPool::apply_paint_plan_in_world(world, lease, plan)
-        .map_err(|_| DomError::RetainedGpuApplyFailed)?;
-    if painted {
-        root_dom.increment_metric(RootDomMetricName::LayerPainted);
-    }
-    Ok(())
 }
 
 pub(crate) fn border_radii_px(
@@ -250,11 +265,6 @@ fn derive_paint_ops_into_plan(
         &child_style,
         plan,
     )?;
-    root_dom
-        .nodes
-        .get_mut(current_key)
-        .ok_or(DomError::InvalidNodeKey)?
-        .clear_paint_repaint_state();
     Ok(())
 }
 
@@ -295,7 +305,6 @@ fn derive_child_paint_ops_into_plan(
         let child_node = root_dom.node(current_key).ok_or(DomError::InvalidNodeKey)?;
         child_key = child_node.next_sibling_key_for_store();
         if parent_is_select && Some(current_key) != select_popup_shell_key {
-            clear_subtree_paint_repaint_state(root_dom, current_key)?;
             continue;
         }
         derive_paint_ops_into_plan(
@@ -335,6 +344,56 @@ fn clear_subtree_paint_repaint_state(
         .get_mut(subtree_root_key)
         .ok_or(DomError::InvalidNodeKey)?
         .clear_paint_repaint_state();
+    Ok(())
+}
+
+/// Clears paint dirt for exactly the node set today's paint walk clears, in one
+/// act at a terminal paint decision (C3): the painted subtree plus the
+/// select-popup skipped subtrees, and nothing else.
+fn clear_paint_repaint_state_for_painted_layer(
+    root_dom: &mut RootDom,
+    layer_root_key: DomNodeSlotKey,
+) -> Result<(), DomError> {
+    clear_paint_repaint_state_from_node(root_dom, layer_root_key, layer_root_key)
+}
+
+fn clear_paint_repaint_state_from_node(
+    root_dom: &mut RootDom,
+    layer_root_key: DomNodeSlotKey,
+    current_key: DomNodeSlotKey,
+) -> Result<(), DomError> {
+    {
+        let node = root_dom.node(current_key).ok_or(DomError::InvalidNodeKey)?;
+        if current_key != layer_root_key && node.layout().layer_kind != DomLayerKind::None {
+            return Ok(());
+        }
+    }
+    root_dom
+        .nodes
+        .get_mut(current_key)
+        .ok_or(DomError::InvalidNodeKey)?
+        .clear_paint_repaint_state();
+    let parent_is_select = node_is_select_element(root_dom.node(current_key));
+    let select_popup_shell_key = if parent_is_select {
+        root_dom.presented_options_popup_shell_key(current_key)
+    } else {
+        None
+    };
+    let mut child_key = root_dom
+        .node(current_key)
+        .ok_or(DomError::InvalidNodeKey)?
+        .first_child_key_for_store();
+    while let Some(child_current_key) = child_key {
+        let child_node = root_dom
+            .node(child_current_key)
+            .ok_or(DomError::InvalidNodeKey)?;
+        child_key = child_node.next_sibling_key_for_store();
+        if parent_is_select && Some(child_current_key) != select_popup_shell_key {
+            clear_subtree_paint_repaint_state(root_dom, child_current_key)?;
+            continue;
+        }
+        clear_paint_repaint_state_from_node(root_dom, layer_root_key, child_current_key)?;
+    }
     Ok(())
 }
 
@@ -619,7 +678,8 @@ mod tests {
 
     use super::{
         IconPaintOp, ImagePaintOp, LayerPaintPlan, RectPaintOp, TextRunPaintOp,
-        build_layer_paint_plan, layer_tree_needs_paint,
+        build_layer_paint_plan, clear_paint_repaint_state_for_painted_layer,
+        layer_tree_needs_paint,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -1697,6 +1757,9 @@ mod tests {
         let plan = build_plan(&mut root, &mut layer_pool, layer_root, (220.0, 84.0));
 
         assert_eq!(text_ops(&plan).len(), 1);
+        // Plan building no longer clears dirt; the terminal clear act does.
+        clear_paint_repaint_state_for_painted_layer(&mut root, layer_root)
+            .expect("terminal clear should succeed");
         assert!(
             !layer_tree_needs_paint(&root, layer_root)
                 .expect("layer dirty state should be readable")
