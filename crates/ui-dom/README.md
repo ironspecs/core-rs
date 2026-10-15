@@ -41,8 +41,8 @@ Both owners store `SlotMap<DomNodeSlotKey, DomNode>`. The difference is ownershi
 ### `RootDom`
 
 - `RootDom::new(context)` creates exactly one `Document` root node and binds that root to one shared `Arc<RootDomContext>`.
-- `RootDomContext::shared_default()` returns one process-wide default context for tests and simple callers.
-- `UiDomRenderPlugin::new(LayerConfig)` installs one fixed retained-layer density policy per Bevy app; non-text legacy families still flow through Vello scene submission, while retained text renders through a direct atlas-backed `wgpu` pass when `PaintBackend::Gpu` is selected.
+- `RootDomContext::new_cpu()` and `RootDomContext::new_gpu()` create a shared context with the selected paint backend; `RootDomContext::new_with_render_ops(config, handler)` lets several roots deliberately share one render-ops handler.
+- `UiDomRenderPlugin::new(LayerConfig)` installs one fixed retained-layer density policy per Bevy app; all retained paint families (rect, text, image, flat icon) flow through direct retained `wgpu` execution when `PaintBackend::Gpu` is selected.
 - Callers explicitly create and append authored element and text nodes under that root.
 - `root_key(&root_dom)` returns the `Document` node key.
 

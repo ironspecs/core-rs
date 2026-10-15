@@ -32,6 +32,7 @@ pub struct RenderOpsHandlers(pub(crate) Vec<std::sync::Arc<RenderOpsHandler>>);
 /// Registers one handler for the per-tick extract drain. Idempotent per handler
 /// (dedup by `Arc::ptr_eq`). Lazily initializes the registry when absent —
 /// the same pattern `LayerPoolRenderJobQueue` uses today.
+/// Detach leaves registration in place: a drained handler is inert.
 pub fn register_render_ops_handler(
     world: &mut bevy::prelude::World,
     handler: &std::sync::Arc<RenderOpsHandler>,

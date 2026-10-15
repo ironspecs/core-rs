@@ -1336,6 +1336,9 @@ impl RootDom {
     /// presented space: the accumulation of `layer_offset_from_dom_climb` over
     /// the layer-ancestor chain — the same accumulation the composite pass
     /// performs down the Bevy layer hierarchy when it places layer entities.
+    /// The value includes ancestor-scroll adjustment: each climb subtracts the
+    /// ancestor layer's vertical scroll offset, matching layer hit-test
+    /// coordinates.
     ///
     /// Returns `None` when `key` does not name a live layer root.
     #[allow(clippy::similar_names)]
