@@ -41,6 +41,16 @@ use crate::types::dom_event::{DomEvent, DomEventDispatchContext};
 use crate::types::primitives::PointPx;
 use crate::types::{DomError, DomEventName, DomNodeSlotKey, RootDom};
 
+#[cfg(test)]
+use crate::domains::hit_test::hit_test_from_dom_subtree_local;
+#[cfg(test)]
+use crate::types::{
+    DomEventDetail, DomEventListenerContext, DomModifierState, DomMouseButton, DomNode,
+    DomPointerEvent, DomPointerState, DomPointerType, DomPointerUpdate, DomTag, RootDomContext,
+};
+#[cfg(test)]
+use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DomPointEventTarget {
     pub(crate) target_key: DomNodeSlotKey,
@@ -309,14 +319,8 @@ fn node_parent_key(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use bevy::{image::Image, prelude::*};
-
-    use crate::domains::hit_test::hit_test_from_dom_subtree_local;
-    use crate::types::primitives::PointPx;
-    use crate::types::{DomEvent, DomEventName, DomNode, DomTag, RootDom, RootDomContext};
-    use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
-
-    use super::{dispatch_event_from_point, visit_topmost_event_target_from_point};
 
     fn install_direct_gpu_support(world: &mut World) {
         world.init_resource::<Assets<Image>>();
@@ -352,7 +356,7 @@ mod tests {
             .id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         let point = PointPx {
@@ -397,7 +401,7 @@ mod tests {
             .update(
                 &mut world,
                 0.0,
-                crate::types::DomPointerUpdate::Set(crate::types::DomPointerState {
+                DomPointerUpdate::Set(DomPointerState {
                     x_px: 5.0,
                     y_px: 5.0,
                     primary_button_down: true,
@@ -445,7 +449,7 @@ mod tests {
         let parent = world.spawn_empty().id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
         set_box(&mut root, scroll_root, 0.0, 0.0, 80.0, 40.0);
         set_box(&mut root, first_item, 0.0, 0.0, 80.0, 40.0);
@@ -495,7 +499,7 @@ mod tests {
             .id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         let mut target = None;
@@ -517,15 +521,15 @@ mod tests {
 
         let event = DomEvent::new(
             DomEventName::PointerDown,
-            crate::types::DomEventDetail::Pointer(crate::types::DomPointerEvent {
+            DomEventDetail::Pointer(DomPointerEvent {
                 pointer_id: 1,
-                pointer_type: crate::types::DomPointerType::Mouse,
+                pointer_type: DomPointerType::Mouse,
                 is_primary: true,
-                button: Some(crate::types::DomMouseButton::Primary),
+                button: Some(DomMouseButton::Primary),
                 buttons: 1,
                 client_x: 5.0,
                 client_y: 5.0,
-                modifiers: crate::types::DomModifierState::default(),
+                modifiers: DomModifierState::default(),
             }),
         );
         let dispatched = dispatch_event_from_point(
@@ -567,7 +571,7 @@ mod tests {
             .id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         let mut target = None;
@@ -625,7 +629,7 @@ mod tests {
             .id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         let mut target = None;
@@ -648,15 +652,15 @@ mod tests {
         );
     }
 
-    fn prevent_default(context: &mut crate::types::DomEventListenerContext<'_>) {
+    fn prevent_default(context: &mut DomEventListenerContext<'_>) {
         context.prevent_default();
     }
 
     fn previous_event_target_oracle(
         root_dom: &RootDom,
-        subtree_root: crate::types::DomNodeSlotKey,
+        subtree_root: DomNodeSlotKey,
         point: PointPx,
-    ) -> Result<Option<crate::types::DomNodeSlotKey>, crate::types::DomError> {
+    ) -> Result<Option<DomNodeSlotKey>, DomError> {
         let Some(mut hit) = hit_test_from_dom_subtree_local(root_dom, subtree_root, point)? else {
             return Ok(None);
         };
@@ -674,7 +678,7 @@ mod tests {
 
     fn set_box(
         root: &mut RootDom,
-        key: crate::types::DomNodeSlotKey,
+        key: DomNodeSlotKey,
         left_px: f32,
         top_px: f32,
         width_px: f32,
