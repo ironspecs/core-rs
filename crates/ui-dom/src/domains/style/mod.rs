@@ -9,6 +9,9 @@ use crate::types::{
     DomAttribute, DomAttributeValue, DomError, DomPseudoState, RootDom, parse_style_attr_map,
 };
 
+#[cfg(test)]
+use crate::types::RootDomContext;
+
 pub type ComputedStyleMap = BTreeMap<DomAttribute, DomAttributeValue>;
 
 new_key_type! {
@@ -935,12 +938,7 @@ fn hash_dom_attribute_value(hasher: &mut impl Hasher, value: &DomAttributeValue)
 
 #[cfg(test)]
 mod tests {
-    use crate::domains::style::{
-        NodeLookup, SelectorSpecificity, StyleRuleOrigin, StyleRuntime, precedence_tuple,
-    };
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomPseudoState, DomTag, RootDom, RootDomContext,
-    };
+    use super::*;
 
     #[test]
     fn load_stylesheet_rejects_invalid_selector() {
@@ -951,28 +949,28 @@ mod tests {
                 "div > span { width: 10px; }",
             )
             .expect_err("invalid selector should fail");
-        assert_eq!(error, crate::types::DomError::InvalidSelector);
+        assert_eq!(error, DomError::InvalidSelector);
         let error = runtime
             .load_stylesheet(
                 StyleRuleOrigin::new("theme", 0),
                 ".cta..primary { width: 10px; }",
             )
             .expect_err("invalid multi-class selector should fail");
-        assert_eq!(error, crate::types::DomError::InvalidSelector);
+        assert_eq!(error, DomError::InvalidSelector);
         let error = runtime
             .load_stylesheet(
                 StyleRuleOrigin::new("theme", 0),
                 "#hero.primary { width: 10px; }",
             )
             .expect_err("unsupported id-plus-class selector should fail");
-        assert_eq!(error, crate::types::DomError::InvalidSelector);
+        assert_eq!(error, DomError::InvalidSelector);
         let error = runtime
             .load_stylesheet(
                 StyleRuleOrigin::new("theme", 0),
                 "button#hero { width: 10px; }",
             )
             .expect_err("unsupported tag-plus-id selector should fail");
-        assert_eq!(error, crate::types::DomError::InvalidSelector);
+        assert_eq!(error, DomError::InvalidSelector);
     }
 
     #[test]
@@ -1025,7 +1023,7 @@ mod tests {
                 "div { tab-index: 0; color: #112233; }",
             )
             .expect_err("invalid declaration should fail");
-        assert_eq!(error, crate::types::DomError::InvalidAttributeValue);
+        assert_eq!(error, DomError::InvalidAttributeValue);
     }
 
     #[test]
@@ -1193,7 +1191,7 @@ mod tests {
             )
             .expect("stylesheet should load");
 
-        let candidates = runtime.candidate_keys_for_node(crate::domains::style::NodeStyleIndex {
+        let candidates = runtime.candidate_keys_for_node(NodeStyleIndex {
             id: None,
             classes: &["primary".to_string(), "selected".to_string()],
             tag: "div",
@@ -1250,7 +1248,7 @@ mod tests {
             )
             .expect("load");
         let lookup = NodeLookup { nodes: &root.nodes };
-        let candidates = runtime.candidate_keys_for_node(crate::domains::style::NodeStyleIndex {
+        let candidates = runtime.candidate_keys_for_node(NodeStyleIndex {
             id: None,
             classes: &["label".to_string(), "focused".to_string()],
             tag: "span",
@@ -1291,7 +1289,7 @@ mod tests {
             )
             .expect("stylesheet should load");
         let lookup = NodeLookup { nodes: &root.nodes };
-        let candidates = runtime.candidate_keys_for_node(crate::domains::style::NodeStyleIndex {
+        let candidates = runtime.candidate_keys_for_node(NodeStyleIndex {
             id: None,
             classes: &[],
             tag: "button",
@@ -1331,7 +1329,7 @@ mod tests {
             )
             .expect("focus stylesheet should load");
         let lookup = NodeLookup { nodes: &root.nodes };
-        let candidates = runtime.candidate_keys_for_node(crate::domains::style::NodeStyleIndex {
+        let candidates = runtime.candidate_keys_for_node(NodeStyleIndex {
             id: None,
             classes: &[],
             tag: "button",
@@ -1367,7 +1365,7 @@ mod tests {
             .load_stylesheet(StyleRuleOrigin::new("theme", 0), "*:hover { width: 10px; }")
             .expect("stylesheet should load");
         let lookup = NodeLookup { nodes: &root.nodes };
-        let candidates = runtime.candidate_keys_for_node(crate::domains::style::NodeStyleIndex {
+        let candidates = runtime.candidate_keys_for_node(NodeStyleIndex {
             id: None,
             classes: &[],
             tag: "button",
@@ -1593,6 +1591,6 @@ mod tests {
             )
             .expect_err("unclosed comment should fail");
 
-        assert_eq!(error, crate::types::DomError::InvalidSelector);
+        assert_eq!(error, DomError::InvalidSelector);
     }
 }
