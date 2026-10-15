@@ -78,6 +78,16 @@ use crate::types::primitives::PointPx;
 use crate::types::{DomError, DomLayerKind, DomNode, DomNodeSlotKey, DomRect, RootDom};
 
 #[cfg(test)]
+use crate::domains::hit_test::{
+    hit_layer_cluster_hits_from_root_point, hit_layer_points_from_root_point,
+    hit_test_from_dom_subtree_cluster_local,
+};
+#[cfg(test)]
+use crate::types::{DomPointerUpdate, DomTag, LayerOrder, RootDomContext};
+#[cfg(test)]
+use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LayerPointHit {
     pub(crate) node_key: DomNodeSlotKey,
@@ -1000,21 +1010,7 @@ fn rect_contains_point(rect: DomRect, point: PointPx) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        LayerClusterHit, LayerPointHit, any_layer_hit_from_root_point,
-        append_optimized_all_layer_hits_from_root_point,
-        collect_layer_cluster_hits_from_root_point, collect_layer_hits_from_root_point,
-        optimized_any_layer_hit_from_root_point, optimized_specific_layer_hit_from_root_point,
-        optimized_topmost_layer_hit_from_root_point, viewport_rect,
-    };
-    use crate::domains::hit_test::{
-        hit_layer_points_from_root_point, hit_test_from_dom_subtree_cluster_local,
-    };
-    use crate::types::primitives::PointPx;
-    use crate::types::{
-        DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, DomTag, RootDom, RootDomContext,
-    };
-    use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
+    use super::*;
     use bevy::{image::Image, prelude::*};
 
     fn install_direct_gpu_support(world: &mut World) {
@@ -1295,7 +1291,7 @@ mod tests {
             .expect("raised root width");
         root.set_attr_str(raised_root, "height", "20px")
             .expect("raised root height");
-        root.set_layout_layer_order(raised_root, crate::types::LayerOrder::Raised)
+        root.set_layout_layer_order(raised_root, LayerOrder::Raised)
             .expect("raised root layer order");
         root.set_attr_str(child_layer, "position", "absolute")
             .expect("child layer position");
@@ -1316,11 +1312,8 @@ mod tests {
         set_box(&mut root, raised_root, 200.0, 0.0, 20.0, 20.0);
         set_box(&mut root, child_layer, -190.0, 0.0, 80.0, 40.0);
 
-        let layer_hits = crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(
-            &root,
-            point(20.0, 10.0),
-        )
-        .expect("raised descendant hit should resolve");
+        let layer_hits = hit_layer_cluster_hits_from_root_point(&root, point(20.0, 10.0))
+            .expect("raised descendant hit should resolve");
 
         assert_eq!(
             layer_hits
@@ -1359,7 +1352,7 @@ mod tests {
             .expect("raised width");
         root.set_attr_str(raised_popup, "height", "40px")
             .expect("raised height");
-        root.set_layout_layer_order(raised_popup, crate::types::LayerOrder::Raised)
+        root.set_layout_layer_order(raised_popup, LayerOrder::Raised)
             .expect("raised layer order");
         root.set_attr_str(option_row, "position", "absolute")
             .expect("row position");
@@ -1378,9 +1371,8 @@ mod tests {
         set_box(&mut root, option_row, 0.0, 0.0, 80.0, 40.0);
 
         let point = point(10.0, 70.0);
-        let expected =
-            crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(&root, point)
-                .expect("legacy raised hits should succeed");
+        let expected = hit_layer_cluster_hits_from_root_point(&root, point)
+            .expect("legacy raised hits should succeed");
         let expected_keys = expected.iter().map(|hit| hit.node_key).collect::<Vec<_>>();
         let topmost = optimized_topmost_layer_hit_from_root_point(
             &root,
@@ -1462,7 +1454,7 @@ mod tests {
             .expect("popup width");
         root.set_attr_str(raised_popup, "height", "40px")
             .expect("popup height");
-        root.set_layout_layer_order(raised_popup, crate::types::LayerOrder::Raised)
+        root.set_layout_layer_order(raised_popup, LayerOrder::Raised)
             .expect("popup raised order");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1518,7 +1510,7 @@ mod tests {
             .expect("popup width");
         root.set_attr_str(raised_popup, "height", "40px")
             .expect("popup height");
-        root.set_layout_layer_order(raised_popup, crate::types::LayerOrder::Raised)
+        root.set_layout_layer_order(raised_popup, LayerOrder::Raised)
             .expect("popup raised order");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1529,11 +1521,8 @@ mod tests {
         set_box(&mut root, parent_layer, 100.0, 50.0, 200.0, 150.0);
         set_box(&mut root, raised_popup, 20.0, 30.0, 60.0, 40.0);
 
-        let layer_hits = crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(
-            &root,
-            point(125.0, 85.0),
-        )
-        .expect("offset raised hit list should resolve");
+        let layer_hits = hit_layer_cluster_hits_from_root_point(&root, point(125.0, 85.0))
+            .expect("offset raised hit list should resolve");
 
         assert!(
             layer_hits.iter().any(|hit| hit.node_key == raised_popup),
@@ -1603,11 +1592,8 @@ mod tests {
         root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("optimized order proof should present once");
 
-        let expected = crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(
-            &root,
-            point(5.0, 5.0),
-        )
-        .expect("legacy ordered hits should succeed");
+        let expected = hit_layer_cluster_hits_from_root_point(&root, point(5.0, 5.0))
+            .expect("legacy ordered hits should succeed");
         let topmost = optimized_topmost_layer_hit_from_root_point(
             &root,
             &world,
@@ -1655,7 +1641,7 @@ mod tests {
             .expect("raised parent width");
         root.set_attr_str(raised_parent, "height", "80px")
             .expect("raised parent height");
-        root.set_layout_layer_order(raised_parent, crate::types::LayerOrder::Raised)
+        root.set_layout_layer_order(raised_parent, LayerOrder::Raised)
             .expect("raised parent layer order");
         root.set_attr_str(raised_child, "position", "absolute")
             .expect("raised child position");
@@ -1667,7 +1653,7 @@ mod tests {
             .expect("raised child width");
         root.set_attr_str(raised_child, "height", "40px")
             .expect("raised child height");
-        root.set_layout_layer_order(raised_child, crate::types::LayerOrder::Raised)
+        root.set_layout_layer_order(raised_child, LayerOrder::Raised)
             .expect("raised child layer order");
         root.set_attr_str(ordinary_overlay, "position", "absolute")
             .expect("ordinary overlay position");
@@ -1686,9 +1672,8 @@ mod tests {
         set_box(&mut root, ordinary_overlay, 0.0, 0.0, 80.0, 80.0);
 
         let point = point(20.0, 20.0);
-        let expected =
-            crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(&root, point)
-                .expect("legacy nested raised hits should succeed");
+        let expected = hit_layer_cluster_hits_from_root_point(&root, point)
+            .expect("legacy nested raised hits should succeed");
         let expected_keys = expected.iter().map(|hit| hit.node_key).collect::<Vec<_>>();
         let topmost = optimized_topmost_layer_hit_from_root_point(
             &root,
@@ -1779,9 +1764,8 @@ mod tests {
     fn root_dom_and_attached_raised_partition_match_for_offset_nested_roots() {
         let fixture = OffsetNestedRaisedHitTree::new();
         let point = OffsetNestedRaisedHitTree::hit_point();
-        let root_dom_hits =
-            crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(&fixture.root, point)
-                .expect("root-dom offset raised hits should resolve");
+        let root_dom_hits = hit_layer_cluster_hits_from_root_point(&fixture.root, point)
+            .expect("root-dom offset raised hits should resolve");
         let mut attached_hits = Vec::new();
         append_optimized_all_layer_hits_from_root_point(
             &fixture.root,
@@ -1841,13 +1825,10 @@ mod tests {
         root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("optimized specific proof should present once");
 
-        let expected = crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(
-            &root,
-            point(140.0, 160.0),
-        )
-        .expect("legacy ordered hits should succeed")
-        .into_iter()
-        .find(|layer_hit| layer_hit.node_key == child_layer);
+        let expected = hit_layer_cluster_hits_from_root_point(&root, point(140.0, 160.0))
+            .expect("legacy ordered hits should succeed")
+            .into_iter()
+            .find(|layer_hit| layer_hit.node_key == child_layer);
         let actual = optimized_specific_layer_hit_from_root_point(
             &root,
             &world,
@@ -1880,7 +1861,7 @@ mod tests {
         )
         .expect_err("optimized any-layer hit should reject unattached roots");
 
-        assert_eq!(error, crate::types::DomError::InvalidParentTarget);
+        assert_eq!(error, DomError::InvalidParentTarget);
     }
 
     #[test]
@@ -1903,7 +1884,7 @@ mod tests {
 
         assert_eq!(
             hit,
-            Some(crate::domains::layer_hit::LayerClusterHit {
+            Some(LayerClusterHit {
                 node_key: root.root,
                 point: point(10.0, 10.0),
                 effective_rect: viewport_rect(&root).expect("viewport rect"),
@@ -1930,7 +1911,7 @@ mod tests {
         )
         .expect_err("reparented root layer should be rejected");
 
-        assert_eq!(error, crate::types::DomError::InvalidParentTarget);
+        assert_eq!(error, DomError::InvalidParentTarget);
     }
 
     #[test]
@@ -2090,7 +2071,7 @@ mod tests {
                 .expect("raised parent width");
             root.set_attr_str(raised_parent, "height", "80px")
                 .expect("raised parent height");
-            root.set_layout_layer_order(raised_parent, crate::types::LayerOrder::Raised)
+            root.set_layout_layer_order(raised_parent, LayerOrder::Raised)
                 .expect("raised parent layer order");
             root.set_attr_str(ordinary_child, "position", "absolute")
                 .expect("ordinary child position");
@@ -2112,7 +2093,7 @@ mod tests {
                 .expect("raised child width");
             root.set_attr_str(raised_child, "height", "30px")
                 .expect("raised child height");
-            root.set_layout_layer_order(raised_child, crate::types::LayerOrder::Raised)
+            root.set_layout_layer_order(raised_child, LayerOrder::Raised)
                 .expect("raised child layer order");
 
             let mut world = attach_root_to_world(&mut root);
@@ -2206,7 +2187,7 @@ mod tests {
                     "g" => layer_g,
                     _ => panic!("unknown overlapping layer label: {label}"),
                 };
-                root.set_layout_layer_order(key, crate::types::LayerOrder::Raised)
+                root.set_layout_layer_order(key, LayerOrder::Raised)
                     .expect("raised layer order");
             }
 
@@ -2234,9 +2215,8 @@ mod tests {
         expected_topmost: Option<DomNodeSlotKey>,
     ) {
         let point = point(10.0, 10.0);
-        let expected =
-            crate::domains::hit_test::hit_layer_cluster_hits_from_root_point(&fixture.root, point)
-                .expect("legacy overlapping hits should succeed");
+        let expected = hit_layer_cluster_hits_from_root_point(&fixture.root, point)
+            .expect("legacy overlapping hits should succeed");
         let expected_non_document = non_document_layer_keys(&fixture.root, &expected);
         let topmost = optimized_topmost_layer_hit_from_root_point(
             &fixture.root,
@@ -2279,7 +2259,7 @@ mod tests {
 
     fn non_document_layer_keys(
         root: &RootDom,
-        layer_hits: &[crate::domains::layer_hit::LayerClusterHit],
+        layer_hits: &[LayerClusterHit],
     ) -> Vec<DomNodeSlotKey> {
         layer_hits
             .iter()
