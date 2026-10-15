@@ -33,7 +33,7 @@ use bevy::{
 
 use crate::domains::composite::apply_vertical_scroll_from_point;
 use crate::domains::layer_hit::any_layer_hit_from_root_point;
-use crate::domains::layout::{layer_kind_for_node, node_box_from_ref};
+use crate::domains::layout::{layer_kind_for_node, layer_offset_from_dom_climb, node_box_from_ref};
 use crate::domains::paint::{
     mark_full_repaint_up_to_layout_root, mark_node_dirty_up_to_layout_root,
 };
@@ -1330,6 +1330,21 @@ impl RootDom {
     /// surface; by itself it grants no mutation authority.
     pub fn layer_lease(&self, key: DomNodeSlotKey) -> Option<LayerLease> {
         self.layer_lease_by_root.get(&key).copied()
+    }
+
+    /// Returns the presented offset of one live layer root within this root's
+    /// presented space — the exact value the composite pass computes with
+    /// `layer_offset_from_dom_climb` to place the layer's Bevy entity.
+    ///
+    /// Returns `None` when `key` does not name a live layer root.
+    #[must_use]
+    pub fn layer_offset_px(&self, key: DomNodeSlotKey) -> Option<[f32; 2]> {
+        let node = self.node(key)?;
+        if key != self.root && layer_kind_for_node(node) == crate::types::DomLayerKind::None {
+            return None;
+        }
+        let offset = layer_offset_from_dom_climb(self, key).ok()?;
+        Some([offset.x_px, offset.y_px])
     }
 
     fn import_fragment_children_into_parent(
@@ -4028,6 +4043,40 @@ mod tests {
                 .is_dirty(),
             "normal DOM paint pass should clear dirty state even when external policy suppresses retained updates"
         );
+    }
+
+    #[test]
+    fn layer_offset_px_returns_composite_offset_for_layer_root() {
+        let (mut world, mut root) = attached_external_target_root();
+        let child = root.create_element(DomTag::Div).expect("child create");
+        root.append_child(root.document_node().0, child)
+            .expect("child append");
+        root.set_attr_str(child, "position", "fixed")
+            .expect("fixed position");
+        root.set_attr_str(child, "left", "12px").expect("left");
+        root.set_attr_str(child, "top", "8px").expect("top");
+
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
+            .expect("update should succeed");
+
+        assert_eq!(root.layer_offset_px(child), Some([12.0, 8.0]));
+        assert_eq!(
+            root.layer_offset_px(root.document_node().0),
+            Some([0.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn layer_offset_px_returns_none_for_non_layer_content() {
+        let (mut world, mut root) = attached_external_target_root();
+        let child = root.create_element(DomTag::Div).expect("child create");
+        root.append_child(root.document_node().0, child)
+            .expect("child append");
+
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
+            .expect("update should succeed");
+
+        assert!(root.layer_offset_px(child).is_none());
     }
 
     fn attached_external_target_root() -> (World, RootDom) {
