@@ -42,13 +42,19 @@ use crate::domains::hit_test::{
     topmost_active_pseudo_target_from_dom_subtree_cluster_local,
 };
 use crate::domains::layer_hit::{LayerClusterHit, visit_attached_layer_hits_from_root_point};
+#[cfg(test)]
+use crate::types::dom_event::DomEventListener;
 use crate::types::primitives::PointPx;
 use crate::types::{
     DomError, DomEvent, DomEventDetail, DomEventName, DomNodeSlotKey, DomPointerEvent,
     DomPseudoState, HoveredLayerEntry, RootDom, RootDomMetricName,
 };
 #[cfg(test)]
-use crate::types::{DomModifierState, DomPointerType};
+use crate::types::{
+    DomModifierState, DomNode, DomPointerType, DomPointerUpdate, DomTag, RootDomContext,
+};
+#[cfg(test)]
+use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
 
 #[cfg(test)]
 pub(crate) fn sync_hover_from_point(
@@ -509,17 +515,7 @@ fn hover_transition_pointer_event(point: PointPx) -> DomPointerEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        active_pointer_target_from_attached_point, active_pointer_target_from_point,
-        first_element_divergence_index, first_layer_divergence_index,
-        hover_transition_pointer_event, sync_hover_from_attached_pointer, sync_hover_from_point,
-    };
-    use crate::types::primitives::PointPx;
-    use crate::types::{
-        DomEventName, DomNode, DomNodeSlotKey, DomPseudoState, DomTag, HoveredLayerEntry, RootDom,
-        RootDomContext, RootDomMetricName,
-    };
-    use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
+    use super::*;
     use bevy::{image::Image, prelude::*};
     use slotmap::KeyData;
     use std::sync::{Arc, Mutex};
@@ -604,7 +600,7 @@ mod tests {
         root.add_event_listener(
             button,
             DomEventName::PointerEnter,
-            crate::types::dom_event::DomEventListener::new(move |_| {
+            DomEventListener::new(move |_| {
                 enter_seen.lock().expect("events should lock").push("enter");
             }),
             None,
@@ -615,7 +611,7 @@ mod tests {
         root.add_event_listener(
             button,
             DomEventName::PointerMove,
-            crate::types::dom_event::DomEventListener::new(move |_| {
+            DomEventListener::new(move |_| {
                 move_seen.lock().expect("events should lock").push("move");
             }),
             None,
@@ -632,7 +628,7 @@ mod tests {
 
         let mut world = World::new();
         let drained = root
-            .update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+            .update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("unattached unchanged update should drain queued events");
         assert!(
             drained.is_empty(),
@@ -652,7 +648,7 @@ mod tests {
         root.add_event_listener(
             button,
             DomEventName::PointerLeave,
-            crate::types::dom_event::DomEventListener::new(move |_| {
+            DomEventListener::new(move |_| {
                 leave_seen.lock().expect("events should lock").push("leave");
             }),
             None,
@@ -663,7 +659,7 @@ mod tests {
         root.add_event_listener(
             button,
             DomEventName::PointerEnter,
-            crate::types::dom_event::DomEventListener::new(move |_| {
+            DomEventListener::new(move |_| {
                 enter_seen.lock().expect("events should lock").push("enter");
             }),
             None,
@@ -820,7 +816,7 @@ mod tests {
 
         let target = active_pointer_target_from_point(
             &root,
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 5.0,
                 y_px: 5.0,
             },
@@ -868,7 +864,7 @@ mod tests {
             .id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
         set_box(&mut root, scroll_root, 0.0, 0.0, 80.0, 40.0);
         set_box(&mut root, first_item, 0.0, 0.0, 80.0, 40.0);
@@ -923,7 +919,7 @@ mod tests {
             .id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
         set_box(&mut root, scroll_root, 0.0, 0.0, 80.0, 40.0);
         set_box(&mut root, first_item, 0.0, 0.0, 80.0, 40.0);
@@ -936,7 +932,7 @@ mod tests {
 
         let target = active_pointer_target_from_point(
             &root,
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 10.0,
                 y_px: 10.0,
             },
@@ -974,7 +970,7 @@ mod tests {
 
         let target = active_pointer_target_from_point(
             &root,
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 5.0,
                 y_px: 5.0,
             },
@@ -998,13 +994,13 @@ mod tests {
         let parent = world.spawn_empty().id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         sync_hover_from_attached_pointer(
             &mut root,
             &world,
-            hover_transition_pointer_event(crate::types::primitives::PointPx {
+            hover_transition_pointer_event(PointPx {
                 x_px: 5.0,
                 y_px: 5.0,
             }),
@@ -1034,13 +1030,13 @@ mod tests {
         let parent = world.spawn_empty().id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         sync_hover_from_attached_pointer(
             &mut root,
             &world,
-            hover_transition_pointer_event(crate::types::primitives::PointPx {
+            hover_transition_pointer_event(PointPx {
                 x_px: 5.0,
                 y_px: 5.0,
             }),
@@ -1102,13 +1098,13 @@ mod tests {
         let parent = world.spawn_empty().id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         let target = active_pointer_target_from_attached_point(
             &root,
             &world,
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 5.0,
                 y_px: 5.0,
             },
@@ -1139,13 +1135,13 @@ mod tests {
         let parent = world.spawn_empty().id();
         root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
             .expect("attach root");
-        root.update(&mut world, 0.0, crate::types::DomPointerUpdate::Unchanged)
+        root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("present once");
 
         let target = active_pointer_target_from_attached_point(
             &root,
             &world,
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 5.0,
                 y_px: 5.0,
             },
@@ -1169,7 +1165,7 @@ mod tests {
 
         let target = active_pointer_target_from_point(
             &root,
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 5.0,
                 y_px: 5.0,
             },
