@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::types::dom_attr_parse::{normalize_attribute_value, validate_attribute_value};
-use crate::types::dom_node::{
-    DomDocumentFragmentNode, DomDocumentNode, DomElementNode, stored_attribute_value,
-    write_attribute,
-};
+#[cfg(test)]
+use crate::types::dom_node::{DomDocumentFragmentNode, DomDocumentNode, DomElementNode};
 use crate::types::{
     DomAttribute, DomAttributeValue, DomAttrs, DomError, parse_authored_value_input,
 };
@@ -44,134 +41,6 @@ pub trait DomAttributeNode {
         let value = parse_authored_value_input(&attribute, value)?;
         self.set_attr(attribute, value)
     }
-}
-
-impl DomAttributeNode for DomElementNode {
-    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
-        stored_attribute_value(&self.attrs, attribute)
-    }
-
-    fn attrs(&self) -> &DomAttrs {
-        &self.attrs
-    }
-
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
-        &self.attribute_style_map
-    }
-
-    fn class_list(&self) -> &[String] {
-        &self.class_list
-    }
-
-    fn set_attr(
-        &mut self,
-        attribute: DomAttribute,
-        value: Option<DomAttributeValue>,
-    ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
-        validate_attribute_value(&attribute, value.as_ref())?;
-        write_attribute(
-            &mut self.attrs,
-            &mut self.attribute_style_map,
-            &mut self.class_list,
-            &attribute,
-            value,
-        )?;
-        self.refresh_lowered_image_source_kind()
-    }
-
-    fn after_attr_write_updates_intrinsic(&self, attribute: &DomAttribute) -> bool {
-        self.tag
-            .descriptor()
-            .behavior
-            .after_attr_write_intrinsic_update
-            .matches(attribute)
-    }
-}
-
-impl DomAttributeNode for DomDocumentNode {
-    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
-        stored_attribute_value(&self.attrs, attribute)
-    }
-
-    fn attrs(&self) -> &DomAttrs {
-        &self.attrs
-    }
-
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
-        &self.attribute_style_map
-    }
-
-    fn class_list(&self) -> &[String] {
-        &self.class_list
-    }
-
-    fn set_attr(
-        &mut self,
-        attribute: DomAttribute,
-        value: Option<DomAttributeValue>,
-    ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
-        validate_document_like_attr_target(&attribute)?;
-        validate_attribute_value(&attribute, value.as_ref())?;
-        write_attribute(
-            &mut self.attrs,
-            &mut self.attribute_style_map,
-            &mut self.class_list,
-            &attribute,
-            value,
-        )
-    }
-
-    fn after_attr_write_updates_intrinsic(&self, _attribute: &DomAttribute) -> bool {
-        false
-    }
-}
-
-impl DomAttributeNode for DomDocumentFragmentNode {
-    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
-        stored_attribute_value(&self.attrs, attribute)
-    }
-
-    fn attrs(&self) -> &DomAttrs {
-        &self.attrs
-    }
-
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
-        &self.attribute_style_map
-    }
-
-    fn class_list(&self) -> &[String] {
-        &self.class_list
-    }
-
-    fn set_attr(
-        &mut self,
-        attribute: DomAttribute,
-        value: Option<DomAttributeValue>,
-    ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
-        validate_document_like_attr_target(&attribute)?;
-        validate_attribute_value(&attribute, value.as_ref())?;
-        write_attribute(
-            &mut self.attrs,
-            &mut self.attribute_style_map,
-            &mut self.class_list,
-            &attribute,
-            value,
-        )
-    }
-
-    fn after_attr_write_updates_intrinsic(&self, _attribute: &DomAttribute) -> bool {
-        false
-    }
-}
-
-fn validate_document_like_attr_target(attribute: &DomAttribute) -> Result<(), DomError> {
-    if *attribute == DomAttribute::Id {
-        return Err(DomError::InvalidAttributeTarget);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

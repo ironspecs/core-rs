@@ -51,7 +51,8 @@ use crate::domains::layer_ops::TextRunId;
 use crate::domains::paint::{measure_text_intrinsic, measure_text_intrinsic_with_font_size};
 use crate::types::box_model::DomBoxModel;
 use crate::types::dom_attr_parse::{
-    layout_length_attr_uses_unset, parse_class_attr_list, parse_style_attr_map,
+    layout_length_attr_uses_unset, normalize_attribute_value, parse_class_attr_list,
+    parse_style_attr_map, validate_attribute_value,
 };
 #[cfg(test)]
 use crate::types::dom_event::DomEventDispatchContext;
@@ -474,6 +475,49 @@ impl DomElementNode {
     }
 }
 
+impl DomAttributeNode for DomElementNode {
+    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
+        stored_attribute_value(&self.attrs, attribute)
+    }
+
+    fn attrs(&self) -> &DomAttrs {
+        &self.attrs
+    }
+
+    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
+        &self.attribute_style_map
+    }
+
+    fn class_list(&self) -> &[String] {
+        &self.class_list
+    }
+
+    fn set_attr(
+        &mut self,
+        attribute: DomAttribute,
+        value: Option<DomAttributeValue>,
+    ) -> Result<(), DomError> {
+        let value = normalize_attribute_value(&attribute, value)?;
+        validate_attribute_value(&attribute, value.as_ref())?;
+        write_attribute(
+            &mut self.attrs,
+            &mut self.attribute_style_map,
+            &mut self.class_list,
+            &attribute,
+            value,
+        )?;
+        self.refresh_lowered_image_source_kind()
+    }
+
+    fn after_attr_write_updates_intrinsic(&self, attribute: &DomAttribute) -> bool {
+        self.tag
+            .descriptor()
+            .behavior
+            .after_attr_write_intrinsic_update
+            .matches(attribute)
+    }
+}
+
 impl DomDocumentNode {
     /// Returns the document root key that owns this document node.
     ///
@@ -496,6 +540,52 @@ impl DomDocumentNode {
     }
 }
 
+fn validate_document_like_attr_target(attribute: &DomAttribute) -> Result<(), DomError> {
+    if *attribute == DomAttribute::Id {
+        return Err(DomError::InvalidAttributeTarget);
+    }
+    Ok(())
+}
+
+impl DomAttributeNode for DomDocumentNode {
+    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
+        stored_attribute_value(&self.attrs, attribute)
+    }
+
+    fn attrs(&self) -> &DomAttrs {
+        &self.attrs
+    }
+
+    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
+        &self.attribute_style_map
+    }
+
+    fn class_list(&self) -> &[String] {
+        &self.class_list
+    }
+
+    fn set_attr(
+        &mut self,
+        attribute: DomAttribute,
+        value: Option<DomAttributeValue>,
+    ) -> Result<(), DomError> {
+        let value = normalize_attribute_value(&attribute, value)?;
+        validate_document_like_attr_target(&attribute)?;
+        validate_attribute_value(&attribute, value.as_ref())?;
+        write_attribute(
+            &mut self.attrs,
+            &mut self.attribute_style_map,
+            &mut self.class_list,
+            &attribute,
+            value,
+        )
+    }
+
+    fn after_attr_write_updates_intrinsic(&self, _attribute: &DomAttribute) -> bool {
+        false
+    }
+}
+
 impl DomDocumentFragmentNode {
     /// Returns the document root key that owns this fragment node.
     ///
@@ -515,6 +605,45 @@ impl DomDocumentFragmentNode {
             attribute_style_map: BTreeMap::new(),
             class_list: Vec::new(),
         }
+    }
+}
+
+impl DomAttributeNode for DomDocumentFragmentNode {
+    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
+        stored_attribute_value(&self.attrs, attribute)
+    }
+
+    fn attrs(&self) -> &DomAttrs {
+        &self.attrs
+    }
+
+    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
+        &self.attribute_style_map
+    }
+
+    fn class_list(&self) -> &[String] {
+        &self.class_list
+    }
+
+    fn set_attr(
+        &mut self,
+        attribute: DomAttribute,
+        value: Option<DomAttributeValue>,
+    ) -> Result<(), DomError> {
+        let value = normalize_attribute_value(&attribute, value)?;
+        validate_document_like_attr_target(&attribute)?;
+        validate_attribute_value(&attribute, value.as_ref())?;
+        write_attribute(
+            &mut self.attrs,
+            &mut self.attribute_style_map,
+            &mut self.class_list,
+            &attribute,
+            value,
+        )
+    }
+
+    fn after_attr_write_updates_intrinsic(&self, _attribute: &DomAttribute) -> bool {
+        false
     }
 }
 
