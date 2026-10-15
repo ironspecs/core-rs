@@ -57,6 +57,13 @@ use crate::types::{
 };
 use slotmap::SlotMap;
 
+#[cfg(test)]
+use crate::types::root_dom::RootDom;
+#[cfg(test)]
+use crate::types::root_dom_context::RootDomContext;
+#[cfg(test)]
+use crate::types::{DomAttributeNode, parse_css_color_rgba};
+
 #[derive(Debug)]
 pub struct RootDomFragment {
     pub(crate) root: DomNodeSlotKey,
@@ -507,20 +514,9 @@ impl Default for RootDomFragment {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::dom_node::DomNode;
-    use crate::types::dom_tag::DomTag;
-    use crate::types::root_dom::RootDom;
-    use crate::types::root_dom_context::RootDomContext;
-    use crate::types::{
-        DomAttribute, DomAttributeNode, DomAttributeValue, DomError, DomIntrinsic,
-        parse_css_color_rgba,
-    };
+    use super::*;
 
-    use super::RootDomFragment;
-
-    fn query_match_ids(
-        matches: Vec<(crate::types::dom_node::DomNodeSlotKey, &DomNode)>,
-    ) -> Vec<String> {
+    fn query_match_ids(matches: Vec<(DomNodeSlotKey, &DomNode)>) -> Vec<String> {
         matches
             .into_iter()
             .map(|(_, node)| {
@@ -538,11 +534,11 @@ mod tests {
     fn build_query_test_fragment(
         fragment: &mut RootDomFragment,
     ) -> (
-        crate::types::dom_node::DomNodeSlotKey,
-        crate::types::dom_node::DomNodeSlotKey,
-        crate::types::dom_node::DomNodeSlotKey,
-        crate::types::dom_node::DomNodeSlotKey,
-        crate::types::dom_node::DomNodeSlotKey,
+        DomNodeSlotKey,
+        DomNodeSlotKey,
+        DomNodeSlotKey,
+        DomNodeSlotKey,
+        DomNodeSlotKey,
     ) {
         let container = fragment
             .create_element(DomTag::Custom("Panel".to_string()))
@@ -626,7 +622,7 @@ mod tests {
 
         assert!(matches!(
             fragment.node(fragment.document_fragment_key()),
-            Some(crate::types::DomNode::DocumentFragment(_))
+            Some(DomNode::DocumentFragment(_))
         ));
     }
 
@@ -1054,7 +1050,7 @@ mod tests {
 
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(element_node.attrs.id.as_deref(), Some("hero"));
         assert_eq!(
@@ -1080,7 +1076,7 @@ mod tests {
             .expect("em font-size should succeed in step 3");
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node.attrs.attributes.get(&DomAttribute::FontSize),
@@ -1098,7 +1094,7 @@ mod tests {
             .expect("em style should parse in step 4");
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node
@@ -1126,7 +1122,7 @@ mod tests {
 
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node
@@ -1152,7 +1148,7 @@ mod tests {
 
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node.attrs.attributes.get(&DomAttribute::Style),
@@ -1183,7 +1179,7 @@ mod tests {
 
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node.attrs.attributes.get(&DomAttribute::Class),
@@ -1213,7 +1209,7 @@ mod tests {
 
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node.attrs.attributes.get(&DomAttribute::Style),
@@ -1236,7 +1232,7 @@ mod tests {
 
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node.attrs.attributes.get(&DomAttribute::Class),
@@ -1261,7 +1257,7 @@ mod tests {
         assert_eq!(error, DomError::InvalidAttributeValue);
         let element_node = fragment
             .node(element)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("element node");
         assert_eq!(
             element_node.attrs.attributes.get(&DomAttribute::Style),
