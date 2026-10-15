@@ -705,3 +705,45 @@ green. `cargo xtask lint` reports **406 pre-existing violations that also exist
 on `main`** (zero added by this work) — so §8.7's "lint passes" criterion
 cannot be literally satisfied until that pre-existing backlog is cleaned up;
 flagged for the operator as a separate effort outside this plan's scope.
+
+## 11. Follow-up record — the `layout_proofs` simplification (landed)
+
+Five further commits on `render-ops-handler`:
+
+- `d366e9e` — block-inline and normal-flow proofs assert staged render ops;
+  `support.rs` gains `take_staged_layer_paint_plans` + `assert_rect_op_geometry`.
+- `e3934eb` — flex layout proofs (264 assertions) assert staged render ops.
+- `338bd02` — `feat: RootDom::layer_offset_px` presented-placement accessor.
+- `b241b2b` — `fix: layer_offset_px` accumulates over the layer-ancestor chain.
+- `8f35784` — layered/column assertions converted to production accessors; all
+  five offset-accumulation helpers deleted repo-wide.
+
+§7.4 simplification-gate outcomes:
+
+1. Gate scenarios G1–G9 landed with the behavior change; G10 holds.
+2. **The offset-accumulation helpers are deleted** (`assert_node_border_box_screen_*`,
+   `accumulated_border_box_edge_px`, `border_box_*_px`; zero call sites repo-wide).
+3. ~330 screen-position assertions were converted: ~288 to staged-op geometry
+   (paint truth), the rest to `node_box` (non-layer content) or
+   `layer_offset_px` (layer roots) — public production surfaces, no parallel
+   test-side math anywhere in the suite.
+4. One new off-spec proof landed: `adjacent_negative_block_margins_collapse_to_most_negative`
+   (`#[ignore]`d; CSS 2.1 §8.3.1 negative-margin collapse; root cause named in
+   the test note at `src/domains/layout/flow.rs`'s
+   `collapsed_sibling_margin_overlap_px`).
+
+Decisions made during the follow-up (beyond the plan as written):
+
+- **`RootDom::layer_offset_px(key) -> Option<[f32; 2]>`** is a new public
+  accessor (composite's own placement accumulation, matching its doc contract).
+  It exists because layer-placement claims (transitions, clipped/scroll layers)
+  are not paint-op facts; it is the production function composite itself uses,
+  not a test-side recomputation.
+- The accessor's semantics were corrected once during implementation: it
+  **accumulates** `layer_offset_from_dom_climb` over the layer-ancestor chain
+  (the same accumulation composite performs down the Bevy layer hierarchy). A
+  single-climb version returned the Bevy-local offset and was wrong for nested
+  layers; the accumulation is pinned by a nested-chain unit test.
+- `node_box` (already public) serves position claims for non-layer content;
+  no new test-support helpers were added beyond the two from `d366e9e`.
+- The §2.7 debris and the NOTE 1 clear remain untouched, as scoped.
