@@ -43,8 +43,9 @@ use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom};
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
     assert_load_root_stylesheet, assert_node_border_box_screen_left_px,
-    assert_node_border_box_screen_top_px, assert_node_layout, assert_root_dom_update,
-    assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup, theme_stylesheet_origin,
+    assert_node_border_box_screen_top_px, assert_node_layout, assert_rect_op_geometry,
+    assert_root_dom_update, assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
+    take_staged_layer_paint_plans, theme_stylesheet_origin,
 };
 
 const TITLEBAR_ICON_WIDTH_PX: f32 = 16.0;
@@ -103,36 +104,12 @@ fn flex_row_distributes_positive_free_space_by_grow_factor() {
         50.0,
         "third grow item width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first grow item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first grow item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        10.0,
-        "second grow item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "second grow item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        40.0,
-        "third grow item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        0.0,
-        "third grow item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "first grow item");
+    assert_rect_op_geometry(&rects[2], 10.0, 0.0, 30.0, 10.0, "second grow item");
+    assert_rect_op_geometry(&rects[3], 40.0, 0.0, 50.0, 10.0, "third grow item");
 }
 
 #[test]
@@ -165,36 +142,12 @@ fn row_reverse_positions_items_from_the_opposite_main_start() {
         Some(third),
         "row-reverse should keep the DOM order intact",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        80.0,
-        "first reversed-row item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first reversed-row item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        70.0,
-        "second reversed-row item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "second reversed-row item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        60.0,
-        "third reversed-row item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        0.0,
-        "third reversed-row item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 80.0, 0.0, 10.0, 10.0, "first reversed-row item");
+    assert_rect_op_geometry(&rects[2], 70.0, 0.0, 10.0, 10.0, "second reversed-row item");
+    assert_rect_op_geometry(&rects[3], 60.0, 0.0, 10.0, 10.0, "third reversed-row item");
 }
 
 #[test]
@@ -216,21 +169,12 @@ fn rtl_row_direction_uses_inline_start_for_main_axis_progression() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        80.0,
-        "first rtl row item should start at inline-start",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        70.0,
-        "second rtl row item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        60.0,
-        "third rtl row item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 80.0, 0.0, 10.0, 10.0, "first rtl row item");
+    assert_rect_op_geometry(&rects[2], 70.0, 0.0, 10.0, 10.0, "second rtl row item");
+    assert_rect_op_geometry(&rects[3], 60.0, 0.0, 10.0, 10.0, "third rtl row item");
 }
 
 #[test]
@@ -253,20 +197,32 @@ fn rtl_row_reverse_cancels_back_to_left_to_right_progression() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "first rtl row-reverse item should start at physical left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+        0.0,
         10.0,
-        "second rtl row-reverse item left",
+        10.0,
+        "first rtl row-reverse item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        0.0,
+        10.0,
+        10.0,
+        "second rtl row-reverse item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
         20.0,
-        "third rtl row-reverse item left",
+        0.0,
+        10.0,
+        10.0,
+        "third rtl row-reverse item",
     );
 }
 
@@ -289,15 +245,24 @@ fn justify_content_start_tracks_inline_start_in_row_reverse() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         10.0,
-        "first row-reverse start-aligned item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
         0.0,
-        "second row-reverse start-aligned item left",
+        10.0,
+        10.0,
+        "first row-reverse start-aligned item",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        0.0,
+        10.0,
+        10.0,
+        "second row-reverse start-aligned item",
     );
 }
 
@@ -320,15 +285,24 @@ fn justify_content_end_tracks_inline_end_in_row_reverse() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         50.0,
-        "first row-reverse end-aligned item left",
+        0.0,
+        10.0,
+        10.0,
+        "first row-reverse end-aligned item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         40.0,
-        "second row-reverse end-aligned item left",
+        0.0,
+        10.0,
+        10.0,
+        "second row-reverse end-aligned item",
     );
 }
 
@@ -369,36 +343,12 @@ fn column_direction_uses_vertical_main_axis_for_item_progression() {
         90.0,
         "column container height",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first column item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        0.0,
-        "second column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        10.0,
-        "second column item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        0.0,
-        "third column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        20.0,
-        "third column item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 20.0, 10.0, "first column item");
+    assert_rect_op_geometry(&rects[2], 0.0, 10.0, 20.0, 10.0, "second column item");
+    assert_rect_op_geometry(&rects[3], 0.0, 20.0, 20.0, 10.0, "third column item");
 }
 
 #[test]
@@ -433,35 +383,25 @@ fn wrap_reverse_stacks_wrapped_rows_from_the_opposite_cross_start() {
         Some(third),
         "wrap-reverse should keep the DOM order intact",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first wrap-reverse item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        15.0,
-        "first wrap-reverse item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 15.0, 10.0, 10.0, "first wrap-reverse item");
+    assert_rect_op_geometry(
+        &rects[2],
         10.0,
-        "second wrap-reverse item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         15.0,
-        "second wrap-reverse item top",
+        10.0,
+        10.0,
+        "second wrap-reverse item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         0.0,
-        "third wrap-reverse item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
         2.5,
-        "third wrap-reverse item top: align-content's initial `normal` behaves as `stretch` \
+        10.0,
+        10.0,
+        "third wrap-reverse item: align-content's initial `normal` behaves as `stretch` \
          (CSS Align 3 5.1.3), so the 5px leftover splits equally across the two lines \
          (CSS Flexbox 9.4 #algo-line-stretch) and the third item bottom-aligns at 2.5",
     );
@@ -489,15 +429,24 @@ fn align_items_start_ignores_wrap_reverse_cross_flip() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, tall),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = tall, rects[2] = short.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "tall sibling should anchor at logical block-start of the stretched line",
+        0.0,
+        10.0,
+        20.0,
+        "tall sibling at logical block-start",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, short),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         0.0,
-        "logical start should stay at the line's block-start even when wrap-reverse flips flex-start",
+        10.0,
+        10.0,
+        "short sibling at logical start",
     );
 }
 
@@ -519,15 +468,24 @@ fn align_items_end_ignores_wrap_reverse_cross_flip() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, tall),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = tall, rects[2] = short.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
         30.0,
-        "tall sibling should still occupy the wrap-reverse line anchor",
+        10.0,
+        20.0,
+        "tall sibling at wrap-reverse line anchor",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, short),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         40.0,
-        "logical end should stay at the line's block-end even when wrap-reverse flips flex-end",
+        10.0,
+        10.0,
+        "short sibling at logical end",
     );
 }
 
@@ -550,15 +508,17 @@ fn align_self_end_overrides_wrap_reverse_logical_start() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, tall),
-        0.0,
-        "logical-start sibling should stay at the stretched line's block-start",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, short),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = tall, rects[2] = short.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, "logical-start sibling");
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         40.0,
-        "logical end override should ignore wrap-reverse flex-end flipping",
+        10.0,
+        10.0,
+        "logical end override sibling",
     );
 }
 
@@ -582,20 +542,32 @@ fn align_content_start_ignores_wrap_reverse_cross_flip() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "logical cross-start should place the startmost wrap-reversed line at the physical top edge",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         10.0,
-        "second wrap-reversed line should follow directly after the first logical-start line",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         10.0,
-        "second wrap-reversed line should preserve the line pair top",
+        10.0,
+        "second wrap-reversed line (first)",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        "second wrap-reversed line (second)",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
+        0.0,
+        10.0,
+        10.0,
+        "startmost wrap-reversed line (third)",
     );
 }
 
@@ -636,35 +608,32 @@ fn column_reverse_positions_items_from_the_opposite_vertical_main_start() {
         Some(third),
         "column-reverse should keep the DOM order intact",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "first reversed-column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         80.0,
-        "first reversed-column item top",
+        20.0,
+        10.0,
+        "first reversed-column item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         0.0,
-        "second reversed-column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         70.0,
-        "second reversed-column item top",
+        20.0,
+        10.0,
+        "second reversed-column item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         0.0,
-        "third reversed-column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
         60.0,
-        "third reversed-column item top",
+        20.0,
+        10.0,
+        "third reversed-column item",
     );
 }
 
@@ -683,10 +652,16 @@ fn rtl_column_align_items_flex_start_uses_inline_start_cross_axis() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, child),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = child.
+    assert_rect_op_geometry(
+        &rects[1],
         40.0,
-        "rtl column cross-start should be the physical right edge",
+        0.0,
+        10.0,
+        10.0,
+        "rtl column cross-start child",
     );
 }
 
@@ -732,26 +707,11 @@ fn flex_row_distributes_negative_free_space_by_scaled_shrink_factor() {
         22.0,
         "second shrink item width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first shrink item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first shrink item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        28.0,
-        "second shrink item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "second shrink item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 28.0, 10.0, "first shrink item");
+    assert_rect_op_geometry(&rects[2], 28.0, 0.0, 22.0, 10.0, "second shrink item");
 }
 
 #[test]
@@ -783,10 +743,16 @@ fn flex_shorthand_distributes_positive_free_space_without_longhands() {
         20.0,
         "flex shorthand fixed item width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, fixed),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = growing, rects[2] = fixed.
+    assert_rect_op_geometry(
+        &rects[2],
         80.0,
-        "flex shorthand fixed item left",
+        0.0,
+        20.0,
+        10.0,
+        "flex shorthand fixed item",
     );
 }
 
@@ -821,10 +787,16 @@ fn flex_item_max_width_clamps_growth_before_remaining_space_distribution() {
         80.0,
         "sibling width after max-width freeze",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[2],
         20.0,
-        "sibling left after max-width freeze",
+        0.0,
+        80.0,
+        10.0,
+        "sibling after max-width freeze",
     );
 }
 
@@ -859,10 +831,16 @@ fn flex_item_min_width_clamps_shrink_before_remaining_space_distribution() {
         5.0,
         "sibling width after min-width freeze",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[2],
         15.0,
-        "sibling left after min-width freeze",
+        0.0,
+        5.0,
+        10.0,
+        "sibling after min-width freeze",
     );
 }
 
@@ -898,36 +876,12 @@ fn flex_row_wraps_items_when_the_next_outer_hypothetical_main_size_no_longer_fit
         Some(third),
         "row wrap should keep the DOM order intact",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first wrapped item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first wrapped item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        0.0,
-        "second wrapped item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        10.0,
-        "second wrapped item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        30.0,
-        "third wrapped item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        10.0,
-        "third wrapped item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 10.0, "first wrapped item");
+    assert_rect_op_geometry(&rects[2], 0.0, 10.0, 30.0, 10.0, "second wrapped item");
+    assert_rect_op_geometry(&rects[3], 30.0, 10.0, 20.0, 10.0, "third wrapped item");
     assert_close(container_layout.height_px, 20.0, "wrapped container height");
     assert_close(
         container_layout.content_height_px,
@@ -979,37 +933,27 @@ fn flex_flow_column_wrap_moves_overflowing_items_into_the_next_column() {
         25.0,
         "wrapped-column container height",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "first wrapped-column item");
+    assert_rect_op_geometry(
+        &rects[2],
         0.0,
-        "first wrapped-column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first wrapped-column item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        0.0,
-        "second wrapped-column item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         10.0,
-        "second wrapped-column item top",
+        10.0,
+        10.0,
+        "second wrapped-column item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         20.0,
-        "third wrapped-column item left: align-content's initial `normal` behaves as `stretch` \
+        0.0,
+        10.0,
+        10.0,
+        "third wrapped-column item: align-content's initial `normal` behaves as `stretch` \
          (CSS Align 3 5.1.3), so the 20px cross-axis leftover splits equally across the two \
          column lines and the second column starts at 20",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        0.0,
-        "third wrapped-column item top",
     );
 }
 
@@ -1045,21 +989,14 @@ fn order_changes_visual_order_without_mutating_dom_sibling_order() {
         Some(dom_third),
         "order should preserve DOM sibling links",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, dom_second),
-        0.0,
-        "order 1 item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, dom_third),
-        10.0,
-        "order 2 item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, dom_first),
-        20.0,
-        "order 3 item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container; rects stay in DOM tree order, so rects[1] = dom_first
+    // (order 3), rects[2] = dom_second (order 1), rects[3] = dom_third (order 2).
+    // The positions carry the order-modified visual placement.
+    assert_rect_op_geometry(&rects[1], 20.0, 0.0, 10.0, 10.0, "order 3 item (dom_first)");
+    assert_rect_op_geometry(&rects[2], 0.0, 0.0, 10.0, 10.0, "order 1 item (dom_second)");
+    assert_rect_op_geometry(&rects[3], 10.0, 0.0, 10.0, 10.0, "order 2 item (dom_third)");
 }
 
 #[test]
@@ -1085,26 +1022,11 @@ fn justify_content_center_offsets_items_after_main_axis_sizing() {
         Some(second),
         "justify-content should not rewrite DOM sibling links",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first centered item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        40.0,
-        "first centered item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "second centered item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        50.0,
-        "second centered item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 40.0, 0.0, 10.0, 10.0, "first centered item");
+    assert_rect_op_geometry(&rects[2], 50.0, 0.0, 10.0, 10.0, "second centered item");
 }
 
 #[test]
@@ -1131,16 +1053,11 @@ fn justify_content_flex_end_packs_items_to_main_end() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        80.0,
-        "first flex-end item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        90.0,
-        "second flex-end item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 80.0, 0.0, 10.0, 10.0, "first flex-end item");
+    assert_rect_op_geometry(&rects[2], 90.0, 0.0, 10.0, 10.0, "second flex-end item");
 }
 
 #[test]
@@ -1171,21 +1088,19 @@ fn justify_content_space_between_distributes_remaining_main_space_between_items(
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first space-between item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "first space-between item");
+    assert_rect_op_geometry(
+        &rects[2],
         45.0,
-        "second space-between item left",
+        0.0,
+        10.0,
+        10.0,
+        "second space-between item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        90.0,
-        "third space-between item left",
-    );
+    assert_rect_op_geometry(&rects[3], 90.0, 0.0, 10.0, 10.0, "third space-between item");
 }
 
 #[test]
@@ -1216,20 +1131,25 @@ fn justify_content_space_around_distributes_half_gaps_at_the_edges() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         35.0 / 3.0,
-        "first space-around item left",
+        0.0,
+        10.0,
+        10.0,
+        "first space-around item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        45.0,
-        "second space-around item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(&rects[2], 45.0, 0.0, 10.0, 10.0, "second space-around item");
+    assert_rect_op_geometry(
+        &rects[3],
         235.0 / 3.0,
-        "third space-around item left",
+        0.0,
+        10.0,
+        10.0,
+        "third space-around item",
     );
 }
 
@@ -1258,21 +1178,12 @@ fn justify_content_space_evenly_distributes_equal_gaps_including_edges() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        17.5,
-        "first space-evenly item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        45.0,
-        "second space-evenly item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        72.5,
-        "third space-evenly item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 17.5, 0.0, 10.0, 10.0, "first space-evenly item");
+    assert_rect_op_geometry(&rects[2], 45.0, 0.0, 10.0, 10.0, "second space-evenly item");
+    assert_rect_op_geometry(&rects[3], 72.5, 0.0, 10.0, 10.0, "third space-evenly item");
 }
 
 #[test]
@@ -1296,15 +1207,24 @@ fn justify_content_center_with_gap_uses_remaining_space_inside_padded_content_bo
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         31.5,
-        "first centered padded-gap item left",
+        0.0,
+        10.0,
+        10.0,
+        "first centered padded-gap item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         46.5,
-        "second centered padded-gap item left",
+        0.0,
+        10.0,
+        10.0,
+        "second centered padded-gap item",
     );
 }
 
@@ -1337,25 +1257,24 @@ fn align_items_center_offsets_items_in_the_cross_axis() {
         50.0,
         "align-items container height",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "first align-items center left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         20.0,
-        "first align-items center top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
         10.0,
-        "second align-items center left",
+        10.0,
+        "first align-items center item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         20.0,
-        "second align-items center top",
+        10.0,
+        10.0,
+        "second align-items center item",
     );
 }
 
@@ -1384,15 +1303,24 @@ fn align_items_flex_end_packs_items_to_the_cross_end() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
         40.0,
-        "first align-items flex-end top",
+        10.0,
+        10.0,
+        "first align-items flex-end item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         40.0,
-        "second align-items flex-end top",
+        10.0,
+        10.0,
+        "second align-items flex-end item",
     );
 }
 
@@ -1436,15 +1364,24 @@ fn align_items_stretch_expands_auto_cross_size_items_to_line_cross_size() {
         50.0,
         "second align-items stretch item height",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "first align-items stretch item top",
+        0.0,
+        10.0,
+        50.0,
+        "first align-items stretch item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         0.0,
-        "second align-items stretch item top",
+        10.0,
+        50.0,
+        "second align-items stretch item",
     );
 }
 
@@ -1471,26 +1408,11 @@ fn align_self_center_overrides_container_align_items() {
         Some(second),
         "align-self should not rewrite DOM sibling links",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "flex-start item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "flex-start item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        10.0,
-        "align-self center item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        20.0,
-        "align-self center item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "flex-start item");
+    assert_rect_op_geometry(&rects[2], 10.0, 20.0, 10.0, 10.0, "align-self center item");
 }
 
 #[test]
@@ -1511,15 +1433,17 @@ fn align_self_flex_end_overrides_container_align_items() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "flex-start item top when sibling uses align-self flex-end",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "flex-start sibling");
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         40.0,
-        "align-self flex-end item top",
+        10.0,
+        10.0,
+        "align-self flex-end item",
     );
 }
 
@@ -1556,11 +1480,10 @@ fn align_self_stretch_overrides_container_align_items_for_auto_cross_size() {
         50.0,
         "align-self stretch item height",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "align-self stretch item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[2], 10.0, 0.0, 10.0, 50.0, "align-self stretch item");
 }
 
 #[test]
@@ -1583,15 +1506,17 @@ fn place_items_and_place_self_aliases_apply_cross_axis_alignment() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        40.0,
-        "place-items first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 40.0, 10.0, 10.0, "place-items first item");
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         20.0,
-        "place-self overriding item top",
+        10.0,
+        10.0,
+        "place-self overriding item",
     );
 }
 
@@ -1621,36 +1546,19 @@ fn place_content_center_space_between_aliases_apply_to_wrapped_flex_container() 
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "place-content first item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        5.0,
-        "place-content first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 5.0, 10.0, 10.0, "place-content first item");
+    assert_rect_op_geometry(
+        &rects[2],
         15.0,
-        "place-content second item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         5.0,
-        "place-content second item top",
+        10.0,
+        10.0,
+        "place-content second item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        0.0,
-        "place-content third item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        15.0,
-        "place-content third item top",
-    );
+    assert_rect_op_geometry(&rects[3], 0.0, 15.0, 10.0, 10.0, "place-content third item");
 }
 
 #[test]
@@ -1682,35 +1590,32 @@ fn align_content_center_offsets_wrapped_lines_within_container_cross_size() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "first align-content center item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         10.0,
-        "first align-content center item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
         10.0,
-        "second align-content center item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         10.0,
-        "second align-content center item top",
+        "first align-content center item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        "second align-content center item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
         0.0,
-        "third align-content center item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
         20.0,
-        "third align-content center item top",
+        10.0,
+        10.0,
+        "third align-content center item",
     );
     assert_close(
         assert_node_layout(&root, container).height_px,
@@ -1740,20 +1645,32 @@ fn align_content_flex_end_packs_wrapped_lines_to_container_cross_end() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
         20.0,
-        "first align-content flex-end item top",
+        10.0,
+        10.0,
+        "first align-content flex-end item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         20.0,
-        "second align-content flex-end item top",
+        10.0,
+        10.0,
+        "second align-content flex-end item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         30.0,
-        "third align-content flex-end item top",
+        10.0,
+        10.0,
+        "third align-content flex-end item",
     );
 }
 
@@ -1785,20 +1702,32 @@ fn align_content_space_between_distributes_remaining_cross_space_between_lines()
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "first align-content space-between item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         0.0,
-        "second align-content space-between item top",
+        10.0,
+        10.0,
+        "first align-content space-between item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        0.0,
+        10.0,
+        10.0,
+        "second align-content space-between item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         30.0,
-        "third align-content space-between item top",
+        10.0,
+        10.0,
+        "third align-content space-between item",
     );
 }
 
@@ -1822,20 +1751,32 @@ fn align_content_space_around_distributes_half_gaps_at_cross_edges() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
         5.0,
-        "first align-content space-around item top",
+        10.0,
+        10.0,
+        "first align-content space-around item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         5.0,
-        "second align-content space-around item top",
+        10.0,
+        10.0,
+        "second align-content space-around item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         25.0,
-        "third align-content space-around item top",
+        10.0,
+        10.0,
+        "third align-content space-around item",
     );
 }
 
@@ -1858,20 +1799,32 @@ fn align_content_space_evenly_distributes_equal_cross_axis_gaps() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
         20.0 / 3.0,
-        "first align-content space-evenly item top",
+        10.0,
+        10.0,
+        "first align-content space-evenly item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         20.0 / 3.0,
-        "second align-content space-evenly item top",
+        10.0,
+        10.0,
+        "second align-content space-evenly item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         70.0 / 3.0,
-        "third align-content space-evenly item top",
+        10.0,
+        10.0,
+        "third align-content space-evenly item",
     );
 }
 
@@ -1904,20 +1857,32 @@ fn align_content_stretch_expands_wrapped_line_cross_sizes_to_fill_container() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "first align-content stretch item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         0.0,
-        "second align-content stretch item top",
+        10.0,
+        10.0,
+        "first align-content stretch item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        0.0,
+        10.0,
+        10.0,
+        "second align-content stretch item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         20.0,
-        "third align-content stretch item top",
+        10.0,
+        10.0,
+        "third align-content stretch item",
     );
 }
 
@@ -2005,17 +1970,24 @@ fn auto_width_titlebar_flex_item_count_changes_use_containing_block_width_withou
         16.0,
         DomPointerUpdate::Unchanged,
     );
+    let plans = take_staged_layer_paint_plans(&scenario.root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = container, rects[2] = start, rects[3] = end,
+    // rects[4] = inserted_end (title_host is a separate hidden layer).
     let first_append_pass = titlebar_mutation_probe(
         &scenario.root,
         scenario.container,
         scenario.title_host,
-        scenario.end,
+        rects[3].position_px[0],
     );
     assert_auto_width_titlebar_append_probe(first_append_pass);
-    assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, inserted_end),
+    assert_rect_op_geometry(
+        &rects[4],
         104.0,
-        "first auto-width append pass inserted end left",
+        0.0,
+        16.0,
+        16.0,
+        "first auto-width append pass inserted end",
     );
 
     assert_root_dom_update(
@@ -2024,14 +1996,8 @@ fn auto_width_titlebar_flex_item_count_changes_use_containing_block_width_withou
         32.0,
         DomPointerUpdate::Unchanged,
     );
-    assert_eq!(
-        first_append_pass,
-        titlebar_mutation_probe(
-            &scenario.root,
-            scenario.container,
-            scenario.title_host,
-            scenario.end,
-        ),
+    assert!(
+        take_staged_layer_paint_plans(&scenario.root).is_empty(),
         "auto-width append should not shift on the second layout pass",
     );
 
@@ -2046,11 +2012,14 @@ fn auto_width_titlebar_flex_item_count_changes_use_containing_block_width_withou
         48.0,
         DomPointerUpdate::Unchanged,
     );
+    let plans = take_staged_layer_paint_plans(&scenario.root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = container, rects[2] = start, rects[3] = end.
     let first_remove_pass = titlebar_mutation_probe(
         &scenario.root,
         scenario.container,
         scenario.title_host,
-        scenario.end,
+        rects[3].position_px[0],
     );
     assert_auto_width_titlebar_remove_probe(first_remove_pass);
 
@@ -2060,14 +2029,8 @@ fn auto_width_titlebar_flex_item_count_changes_use_containing_block_width_withou
         64.0,
         DomPointerUpdate::Unchanged,
     );
-    assert_eq!(
-        first_remove_pass,
-        titlebar_mutation_probe(
-            &scenario.root,
-            scenario.container,
-            scenario.title_host,
-            scenario.end,
-        ),
+    assert!(
+        take_staged_layer_paint_plans(&scenario.root).is_empty(),
         "auto-width remove should not shift on the second layout pass",
     );
 }
@@ -2161,9 +2124,15 @@ fn nested_flex_item_with_default_visible_overflow_uses_outer_grown_width() {
         80.0,
         "default-overflow nested flex item width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, nested_child),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = outer, rects[1] = nested, rects[2] = nested_child, rects[3] = sibling.
+    assert_rect_op_geometry(
+        &rects[2],
         35.0,
+        0.0,
+        10.0,
+        10.0,
         "default-overflow nested child centered in grown flex item",
     );
 }
@@ -2237,9 +2206,15 @@ fn nested_flex_item_auto_basis_uses_width_as_base_before_final_flexed_layout() {
         80.0,
         "auto-basis nested flex item final width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, nested_child),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = outer, rects[1] = nested, rects[2] = nested_child, rects[3] = sibling.
+    assert_rect_op_geometry(
+        &rects[2],
         35.0,
+        0.0,
+        10.0,
+        10.0,
         "auto-basis nested child centered after final flexed layout",
     );
 }
@@ -2272,16 +2247,18 @@ fn nested_flex_item_fractional_grow_consumes_only_that_fraction_of_free_space() 
         50.0,
         "fractional-grow nested flex item width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, sibling),
-        50.0,
-        "fractional-grow sibling starts after partially grown nested item",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, nested_child),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = outer, rects[1] = nested, rects[2] = nested_child, rects[3] = sibling.
+    assert_rect_op_geometry(
+        &rects[2],
         20.0,
-        "fractional-grow nested child centered in partially grown item",
+        0.0,
+        10.0,
+        10.0,
+        "fractional-grow nested child",
     );
+    assert_rect_op_geometry(&rects[3], 50.0, 0.0, 20.0, 20.0, "fractional-grow sibling");
 }
 
 #[test]
@@ -2560,9 +2537,15 @@ fn nested_flex_item_append_and_remove_uses_current_child_list_without_delayed_sh
         80.0,
         "warm nested flex width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first_nested_child),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = outer, rects[1] = nested, rects[2] = first_nested_child, rects[3] = sibling.
+    assert_rect_op_geometry(
+        &rects[2],
         35.0,
+        0.0,
+        10.0,
+        10.0,
         "warm single nested child centered",
     );
 
@@ -2570,32 +2553,43 @@ fn nested_flex_item_append_and_remove_uses_current_child_list_without_delayed_sh
     assert_set_inflexible_row_item(&mut root, second_nested_child, "10px", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 16.0, DomPointerUpdate::Unchanged);
-    let first_append_pass = nested_flex_mutation_probe(&root, nested, first_nested_child, sibling);
     assert_close(
-        first_append_pass.nested_width_px,
+        assert_node_layout(&root, nested).width_px,
         80.0,
         "first append pass nested width",
     );
-    assert_close(
-        first_append_pass.first_child_left_px,
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = outer, rects[1] = nested, rects[2] = first_nested_child,
+    // rects[3] = second_nested_child, rects[4] = sibling.
+    assert_rect_op_geometry(
+        &rects[2],
         30.0,
-        "first append pass first child left",
+        0.0,
+        10.0,
+        10.0,
+        "first append pass first child",
     );
-    assert_close(
-        first_append_pass.sibling_left_px,
-        80.0,
-        "first append pass sibling left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second_nested_child),
+    assert_rect_op_geometry(
+        &rects[3],
         40.0,
-        "first append pass second child left",
+        0.0,
+        10.0,
+        10.0,
+        "first append pass second child",
+    );
+    assert_rect_op_geometry(
+        &rects[4],
+        80.0,
+        0.0,
+        20.0,
+        20.0,
+        "first append pass sibling",
     );
 
     assert_root_dom_update(&mut world, &mut root, 32.0, DomPointerUpdate::Unchanged);
-    assert_eq!(
-        first_append_pass,
-        nested_flex_mutation_probe(&root, nested, first_nested_child, sibling),
+    assert!(
+        take_staged_layer_paint_plans(&root).is_empty(),
         "append should not need a second layout pass to reach stable flex geometry",
     );
 
@@ -2603,27 +2597,34 @@ fn nested_flex_item_append_and_remove_uses_current_child_list_without_delayed_sh
         .expect("dynamic flex proof should remove appended child");
 
     assert_root_dom_update(&mut world, &mut root, 48.0, DomPointerUpdate::Unchanged);
-    let first_remove_pass = nested_flex_mutation_probe(&root, nested, first_nested_child, sibling);
     assert_close(
-        first_remove_pass.nested_width_px,
+        assert_node_layout(&root, nested).width_px,
         80.0,
         "first remove pass nested width",
     );
-    assert_close(
-        first_remove_pass.first_child_left_px,
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = outer, rects[1] = nested, rects[2] = first_nested_child, rects[3] = sibling.
+    assert_rect_op_geometry(
+        &rects[2],
         35.0,
-        "first remove pass first child left",
+        0.0,
+        10.0,
+        10.0,
+        "first remove pass first child",
     );
-    assert_close(
-        first_remove_pass.sibling_left_px,
+    assert_rect_op_geometry(
+        &rects[3],
         80.0,
-        "first remove pass sibling left",
+        0.0,
+        20.0,
+        20.0,
+        "first remove pass sibling",
     );
 
     assert_root_dom_update(&mut world, &mut root, 64.0, DomPointerUpdate::Unchanged);
-    assert_eq!(
-        first_remove_pass,
-        nested_flex_mutation_probe(&root, nested, first_nested_child, sibling),
+    assert!(
+        take_staged_layer_paint_plans(&root).is_empty(),
         "remove should not need a second layout pass to reach stable flex geometry",
     );
 }
@@ -2650,25 +2651,17 @@ fn column_gap_separates_items_on_the_same_flex_line() {
         Some(second),
         "column-gap should not rewrite DOM sibling links",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first same-line gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first same-line gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "second same-line gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "first same-line gap item");
+    assert_rect_op_geometry(
+        &rects[2],
         15.0,
-        "second same-line gap item left",
+        0.0,
+        10.0,
+        10.0,
+        "second same-line gap item",
     );
 }
 
@@ -2707,36 +2700,12 @@ fn row_gap_separates_wrapped_flex_lines() {
         Some(third),
         "row-gap should keep the DOM order intact",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first wrapped-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first wrapped-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        10.0,
-        "second wrapped-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "second wrapped-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        0.0,
-        "third wrapped-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        22.5,
-        "third wrapped-gap item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "first wrapped-gap item");
+    assert_rect_op_geometry(&rects[2], 10.0, 0.0, 10.0, 10.0, "second wrapped-gap item");
+    assert_rect_op_geometry(&rects[3], 0.0, 22.5, 10.0, 10.0, "third wrapped-gap item");
 }
 
 #[test]
@@ -2772,36 +2741,19 @@ fn gap_shorthand_applies_row_and_column_spacing_to_wrapped_flex_lines() {
         Some(third),
         "gap shorthand should keep the DOM order intact",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first shorthand-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first shorthand-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "first shorthand-gap item");
+    assert_rect_op_geometry(
+        &rects[2],
         15.0,
-        "second shorthand-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         0.0,
-        "second shorthand-gap item top",
+        10.0,
+        10.0,
+        "second shorthand-gap item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        0.0,
-        "third shorthand-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        22.5,
-        "third shorthand-gap item top",
-    );
+    assert_rect_op_geometry(&rects[3], 0.0, 22.5, 10.0, 10.0, "third shorthand-gap item");
 }
 
 #[test]
@@ -2828,46 +2780,14 @@ fn column_gap_does_not_insert_a_phantom_leading_gap_on_wrapped_lines() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first phantom-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first phantom-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        15.0,
-        "second phantom-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        0.0,
-        "second phantom-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        0.0,
-        "third phantom-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
-        15.0,
-        "third phantom-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, fourth),
-        15.0,
-        "fourth phantom-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, fourth),
-        15.0,
-        "fourth phantom-gap item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third,
+    // rects[4] = fourth.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "first phantom-gap item");
+    assert_rect_op_geometry(&rects[2], 15.0, 0.0, 10.0, 10.0, "second phantom-gap item");
+    assert_rect_op_geometry(&rects[3], 0.0, 15.0, 10.0, 10.0, "third phantom-gap item");
+    assert_rect_op_geometry(&rects[4], 15.0, 15.0, 10.0, 10.0, "fourth phantom-gap item");
 }
 
 #[test]
@@ -2896,48 +2816,44 @@ fn wrap_reverse_gap_shorthand_uses_padded_content_box_edges() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third,
+    // rects[4] = fourth.
+    assert_rect_op_geometry(
+        &rects[1],
         4.0,
-        "first padded wrap-reverse item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         24.0,
-        "first padded wrap-reverse item top",
+        10.0,
+        10.0,
+        "first padded wrap-reverse item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         19.0,
-        "second padded wrap-reverse item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         24.0,
-        "second padded wrap-reverse item top",
+        10.0,
+        10.0,
+        "second padded wrap-reverse item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         4.0,
-        "third padded wrap-reverse item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
         6.0,
-        "third padded wrap-reverse item top: the stretch-behaving `normal` align-content \
+        10.0,
+        10.0,
+        "third padded wrap-reverse item: the stretch-behaving `normal` align-content \
          initial (CSS Align 3 5.1.3) splits the 6px leftover (31 - 20 - 5, gap subtracted \
          per CSS Flexbox 9.4 #algo-line-stretch) across both lines, so the second line \
          bottom-aligns its items at 3 + 3",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, fourth),
+    assert_rect_op_geometry(
+        &rects[4],
         19.0,
-        "fourth padded wrap-reverse item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, fourth),
         6.0,
-        "fourth padded wrap-reverse item top",
+        10.0,
+        10.0,
+        "fourth padded wrap-reverse item",
     );
 }
 
@@ -2966,35 +2882,18 @@ fn gap_shorthand_uses_the_padded_content_box_as_its_origin() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 4.0, 3.0, 10.0, 10.0, "first padded-gap item");
+    assert_rect_op_geometry(&rects[2], 19.0, 3.0, 10.0, 10.0, "second padded-gap item");
+    assert_rect_op_geometry(
+        &rects[3],
         4.0,
-        "first padded-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        3.0,
-        "first padded-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        19.0,
-        "second padded-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        3.0,
-        "second padded-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
-        4.0,
-        "third padded-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
         21.0,
-        "third padded-gap item top: the stretch-behaving `normal` align-content initial \
+        10.0,
+        10.0,
+        "third padded-gap item: the stretch-behaving `normal` align-content initial \
          (CSS Align 3 5.1.3) splits the 6px leftover (31 - 20 - 5, gap subtracted per CSS \
          Flexbox 9.4 #algo-line-stretch) across both lines, putting the second line's top \
          at 3 + 13 + 5",
@@ -3027,20 +2926,25 @@ fn row_gap_uses_the_padded_content_box_for_wrapped_line_offsets() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(&rects[1], 4.0, 3.0, 10.0, 10.0, "first padded row-gap item");
+    assert_rect_op_geometry(
+        &rects[2],
+        14.0,
         3.0,
-        "first padded row-gap item top",
+        10.0,
+        10.0,
+        "second padded row-gap item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        3.0,
-        "second padded row-gap item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
+        4.0,
         21.0,
-        "third padded row-gap item top",
+        10.0,
+        10.0,
+        "third padded row-gap item",
     );
 }
 
@@ -3075,16 +2979,11 @@ fn column_gap_preserves_spacing_between_padded_item_border_boxes() {
         18.0,
         "second padded-gap item width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first padded-gap item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        23.0,
-        "second padded-gap item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 18.0, 10.0, "first padded-gap item");
+    assert_rect_op_geometry(&rects[2], 23.0, 0.0, 18.0, 10.0, "second padded-gap item");
 }
 
 #[test]
@@ -3107,16 +3006,11 @@ fn flex_item_margins_and_gap_participate_in_main_axis_offsets() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "margin+gap first item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        25.0,
-        "margin+gap second item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "margin+gap first item");
+    assert_rect_op_geometry(&rects[2], 25.0, 0.0, 10.0, 10.0, "margin+gap second item");
 }
 
 #[test]
@@ -3142,25 +3036,24 @@ fn wrapped_row_auto_basis_uses_width_property_for_line_breaking() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "wrapped auto-basis first item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         0.0,
-        "wrapped auto-basis first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
-        0.0,
-        "wrapped auto-basis second item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+        40.0,
         10.0,
-        "wrapped auto-basis second item top",
+        "wrapped auto-basis first item",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        10.0,
+        40.0,
+        10.0,
+        "wrapped auto-basis second item",
     );
 }
 
@@ -3185,15 +3078,24 @@ fn column_auto_basis_uses_height_property_for_main_axis_layout() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "column auto-basis first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+        0.0,
         20.0,
-        "column auto-basis second item top",
+        20.0,
+        "column auto-basis first item",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        20.0,
+        20.0,
+        10.0,
+        "column auto-basis second item",
     );
 }
 
@@ -3287,10 +3189,16 @@ fn visible_overflow_flex_item_uses_content_based_automatic_min_main_size_before_
         text_intrinsic.max_content_width_px,
         "visible-overflow flex item width",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, item),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item; the text child emits a text run, not a rect.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "visible-overflow flex item top",
+        0.0,
+        item_layout.width_px,
+        10.0,
+        "visible-overflow flex item",
     );
 }
 
@@ -3335,15 +3243,16 @@ fn visible_overflow_column_flex_item_uses_intrinsic_block_size_before_shrink() {
         20.0,
         "column visible-overflow flex item width",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, item),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item, rects[2] = nested.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "column visible-overflow flex item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, item),
         0.0,
-        "column visible-overflow flex item top",
+        20.0,
+        30.0,
+        "column visible-overflow flex item",
     );
 }
 
@@ -3501,7 +3410,12 @@ fn titlebar_like_flex_item_count_changes_do_not_disappear_or_shift_on_second_pas
     );
 
     assert_root_dom_update(&mut world, &mut root, 16.0, DomPointerUpdate::Unchanged);
-    let first_append_pass = titlebar_mutation_probe(&root, container, title_host, end);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = start, rects[2] = end, rects[3] = inserted_end
+    // (title_host is a separate hidden layer).
+    let first_append_pass =
+        titlebar_mutation_probe(&root, container, title_host, rects[2].position_px[0]);
     assert_close(
         first_append_pass.container_width_px,
         120.0,
@@ -3517,16 +3431,18 @@ fn titlebar_like_flex_item_count_changes_do_not_disappear_or_shift_on_second_pas
         88.0,
         "first append pass original end left",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, inserted_end),
+    assert_rect_op_geometry(
+        &rects[3],
         104.0,
-        "first append pass inserted end left",
+        0.0,
+        16.0,
+        16.0,
+        "first append pass inserted end",
     );
 
     assert_root_dom_update(&mut world, &mut root, 32.0, DomPointerUpdate::Unchanged);
-    assert_eq!(
-        first_append_pass,
-        titlebar_mutation_probe(&root, container, title_host, end),
+    assert!(
+        take_staged_layer_paint_plans(&root).is_empty(),
         "titlebar append should not shift on the second layout pass",
     );
 
@@ -3534,7 +3450,11 @@ fn titlebar_like_flex_item_count_changes_do_not_disappear_or_shift_on_second_pas
         .expect("dynamic titlebar proof should remove appended icon");
 
     assert_root_dom_update(&mut world, &mut root, 48.0, DomPointerUpdate::Unchanged);
-    let first_remove_pass = titlebar_mutation_probe(&root, container, title_host, end);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = start, rects[2] = end.
+    let first_remove_pass =
+        titlebar_mutation_probe(&root, container, title_host, rects[2].position_px[0]);
     assert_close(
         first_remove_pass.container_width_px,
         120.0,
@@ -3552,9 +3472,8 @@ fn titlebar_like_flex_item_count_changes_do_not_disappear_or_shift_on_second_pas
     );
 
     assert_root_dom_update(&mut world, &mut root, 64.0, DomPointerUpdate::Unchanged);
-    assert_eq!(
-        first_remove_pass,
-        titlebar_mutation_probe(&root, container, title_host, end),
+    assert!(
+        take_staged_layer_paint_plans(&root).is_empty(),
         "titlebar remove should not shift on the second layout pass",
     );
 }
@@ -3595,20 +3514,32 @@ fn stylesheet_justify_content_space_between_and_column_gap_persist_after_recompu
     assert_set_attr_str(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet justify-content first item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content first item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         40.0,
-        "stylesheet justify-content second item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content second item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         80.0,
-        "stylesheet justify-content third item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content third item",
     );
 }
 
@@ -4020,30 +3951,47 @@ fn switching_stylesheet_justify_content_class_changes_packing_mode() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    let before_second_left = assert_node_border_box_screen_left_px(&root, second);
-    assert_close(
-        before_second_left,
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[2],
         40.0,
-        "space-between second item left before class switch",
+        0.0,
+        10.0,
+        10.0,
+        "space-between second item before class switch",
     );
 
     assert_set_attr_str(&mut root, container, "class", "flex-end-row");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         60.0,
-        "first item left after switching to flex-end class",
+        0.0,
+        10.0,
+        10.0,
+        "first item after switching to flex-end class",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         70.0,
-        "second item left after switching to flex-end class",
+        0.0,
+        10.0,
+        10.0,
+        "second item after switching to flex-end class",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         80.0,
-        "third item left after switching to flex-end class",
+        0.0,
+        10.0,
+        10.0,
+        "third item after switching to flex-end class",
     );
 }
 
@@ -4471,15 +4419,24 @@ fn stylesheet_direction_rtl_row_reverse_and_justify_content_start_persist_after_
     assert_set_attr_str(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         40.0,
-        "stylesheet rtl row-reverse logical-start first item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet rtl row-reverse logical-start first item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         50.0,
-        "stylesheet rtl row-reverse logical-start second item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet rtl row-reverse logical-start second item",
     );
 }
 
@@ -4516,25 +4473,24 @@ fn stylesheet_column_reverse_and_align_items_flex_end_persist_after_recompute() 
     assert_set_attr_str(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         10.0,
-        "stylesheet column-reverse first item left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         30.0,
-        "stylesheet column-reverse first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
         10.0,
-        "stylesheet column-reverse second item left",
+        10.0,
+        "stylesheet column-reverse first item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         20.0,
-        "stylesheet column-reverse second item top",
+        10.0,
+        10.0,
+        "stylesheet column-reverse second item",
     );
 }
 
@@ -4574,20 +4530,32 @@ fn stylesheet_wrap_reverse_row_gap_and_align_content_persist_after_recompute() {
     assert_set_attr_str(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        30.0,
-        "stylesheet wrap-reverse first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
-        30.0,
-        "stylesheet wrap-reverse second item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet wrap-reverse third item top",
+        30.0,
+        10.0,
+        10.0,
+        "stylesheet wrap-reverse first item",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        30.0,
+        10.0,
+        10.0,
+        "stylesheet wrap-reverse second item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet wrap-reverse third item",
     );
 }
 
@@ -4626,20 +4594,32 @@ fn stylesheet_wrap_reverse_align_content_start_persists_after_recompute() {
     assert_set_attr_str(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet wrap-reverse logical-start third item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
         10.0,
-        "stylesheet wrap-reverse logical-start first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         10.0,
-        "stylesheet wrap-reverse logical-start second item top",
+        10.0,
+        "stylesheet wrap-reverse logical-start first item",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        "stylesheet wrap-reverse logical-start second item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet wrap-reverse logical-start third item",
     );
 }
 
@@ -4695,10 +4675,16 @@ fn stylesheet_align_self_stretch_persists_after_recompute() {
         50.0,
         "stylesheet align-self stretch item height",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         0.0,
-        "stylesheet align-self stretch item top",
+        10.0,
+        50.0,
+        "stylesheet align-self stretch item",
     );
 }
 
@@ -4739,15 +4725,24 @@ fn stylesheet_align_self_center_persists_after_recompute() {
     assert_set_attr_str(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet align-self center sibling top",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet align-self center sibling",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         20.0,
-        "stylesheet align-self center item top",
+        10.0,
+        10.0,
+        "stylesheet align-self center item",
     );
 }
 
@@ -4837,15 +4832,24 @@ fn stylesheet_align_self_flex_end_persists_after_recompute() {
     assert_set_attr_str(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet align-self flex-end sibling top",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet align-self flex-end sibling",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         40.0,
-        "stylesheet align-self flex-end item top",
+        10.0,
+        10.0,
+        "stylesheet align-self flex-end item",
     );
 }
 
@@ -4885,15 +4889,24 @@ fn stylesheet_wrap_reverse_align_self_end_persists_after_recompute() {
     assert_set_attr_str(&mut root, tall, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, tall),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = tall, rects[2] = short.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet wrap-reverse logical-start sibling top: the stretched line fills the container cross size, so logical start is the container's block-start",
+        0.0,
+        10.0,
+        20.0,
+        "stylesheet wrap-reverse logical-start sibling: the stretched line fills the container cross size, so logical start is the container's block-start",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, short),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         40.0,
-        "stylesheet wrap-reverse logical-end self override top",
+        10.0,
+        10.0,
+        "stylesheet wrap-reverse logical-end self override",
     );
 }
 
@@ -4931,15 +4944,24 @@ fn stylesheet_gap_shorthand_persists_after_recompute() {
     assert_set_attr_str(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[2],
         15.0,
-        "stylesheet gap shorthand second item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet gap shorthand second item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         15.0,
-        "stylesheet gap shorthand third item top",
+        10.0,
+        10.0,
+        "stylesheet gap shorthand third item",
     );
 }
 
@@ -4978,20 +5000,32 @@ fn stylesheet_justify_content_space_evenly_persists_after_recompute() {
     assert_set_attr_str(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         15.0,
-        "stylesheet justify-content space-evenly first item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content space-evenly first item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         40.0,
-        "stylesheet justify-content space-evenly second item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content space-evenly second item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         65.0,
-        "stylesheet justify-content space-evenly third item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content space-evenly third item",
     );
 }
 
@@ -5030,20 +5064,32 @@ fn stylesheet_justify_content_flex_end_persists_after_recompute() {
     assert_set_attr_str(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         60.0,
-        "stylesheet justify-content flex-end first item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content flex-end first item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         70.0,
-        "stylesheet justify-content flex-end second item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content flex-end second item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         80.0,
-        "stylesheet justify-content flex-end third item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content flex-end third item",
     );
 }
 
@@ -5081,20 +5127,32 @@ fn stylesheet_justify_content_space_around_persists_after_recompute() {
     assert_set_attr_str(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         10.0,
-        "stylesheet justify-content space-around first item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content space-around first item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         40.0,
-        "stylesheet justify-content space-around second item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content space-around second item",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
         70.0,
-        "stylesheet justify-content space-around third item left",
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet justify-content space-around third item",
     );
 }
 
@@ -5133,20 +5191,32 @@ fn stylesheet_align_content_space_around_persists_after_recompute() {
     assert_set_attr_str(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
         5.0,
-        "stylesheet align-content space-around first item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-around first item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         5.0,
-        "stylesheet align-content space-around second item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-around second item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         25.0,
-        "stylesheet align-content space-around third item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-around third item",
     );
 }
 
@@ -5185,20 +5255,32 @@ fn stylesheet_align_content_space_between_persists_after_recompute() {
     assert_set_attr_str(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet align-content space-between first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         0.0,
-        "stylesheet align-content space-between second item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-between first item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet align-content space-between second item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         30.0,
-        "stylesheet align-content space-between third item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-between third item",
     );
 }
 
@@ -5236,20 +5318,32 @@ fn stylesheet_align_content_space_evenly_persists_after_recompute() {
     assert_set_attr_str(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
         6.666_666_5,
-        "stylesheet align-content space-evenly first item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-evenly first item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
         6.666_666_5,
-        "stylesheet align-content space-evenly second item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-evenly second item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         23.333_334,
-        "stylesheet align-content space-evenly third item top",
+        10.0,
+        10.0,
+        "stylesheet align-content space-evenly third item",
     );
 }
 
@@ -5288,20 +5382,32 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
     assert_set_attr_str(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second, rects[3] = third.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "stylesheet align-content stretch first item top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
         0.0,
-        "stylesheet align-content stretch second item top",
+        10.0,
+        10.0,
+        "stylesheet align-content stretch first item",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, third),
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        0.0,
+        10.0,
+        10.0,
+        "stylesheet align-content stretch second item",
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        0.0,
         20.0,
-        "stylesheet align-content stretch third item top",
+        10.0,
+        10.0,
+        "stylesheet align-content stretch third item",
     );
 }
 
@@ -5315,7 +5421,7 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
 fn text_children_in_flex_row_honor_gap_and_normal_flow_placement() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let label = assert_append_text_to(&mut root, container, "Left");
-    let value = assert_append_text_to(&mut root, container, "Right");
+    let _value = assert_append_text_to(&mut root, container, "Right");
 
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_set_attr_str(&mut root, container, "height", "20px");
@@ -5323,31 +5429,22 @@ fn text_children_in_flex_row_honor_gap_and_normal_flow_placement() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, label),
-        0.0,
-        "label text left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, label),
-        0.0,
-        "label text top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    // text_runs[0] = label, text_runs[1] = value (text children emit text runs, not rects).
+    assert_close(text_runs[0].position_px[0], 0.0, "label text left");
+    assert_close(text_runs[0].position_px[1], 0.0, "label text top");
     let label_width = assert_node_layout(&root, label).width_px;
     assert!(
         label_width > 0.0,
         "label text should have non-zero layout width",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, value),
+        text_runs[1].position_px[0],
         label_width + 10.0,
         "value text left after gap",
     );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, value),
-        0.0,
-        "value text top",
-    );
+    assert_close(text_runs[1].position_px[1], 0.0, "value text top");
 }
 
 #[test]
@@ -5364,18 +5461,18 @@ fn div_children_with_text_content_use_auto_width_and_honor_gap() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, label_div),
-        0.0,
-        "label div left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = label_div, rects[2] = value_div
+    // (text children emit text runs, not rects).
+    assert_close(rects[1].position_px[0], 0.0, "label div left");
     let label_width = assert_node_layout(&root, label_div).width_px;
     assert!(
         label_width > 0.0,
         "label div should auto-size to its text content",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, value_div),
+        rects[2].position_px[0],
         label_width + 8.0,
         "value div left after gap",
     );
@@ -5406,16 +5503,18 @@ fn auto_width_flex_container_stretches_to_containing_block_and_respects_gap() {
         320.0,
         "container stretches to viewport width as block-level",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first item left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 20.0, "first item");
     // Gap between items is respected.
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    assert_rect_op_geometry(
+        &rects[2],
         30.0 + 10.0,
-        "second item left after gap",
+        0.0,
+        40.0,
+        20.0,
+        "second item after gap",
     );
 }
 
@@ -5437,18 +5536,18 @@ fn span_children_in_flex_row_participate_as_flex_items() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first_span),
-        0.0,
-        "first span left",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first_span, rects[2] = second_span
+    // (text children emit text runs, not rects).
+    assert_close(rects[1].position_px[0], 0.0, "first span left");
     let first_width = assert_node_layout(&root, first_span).width_px;
     assert!(
         first_width > 0.0,
         "first span should have non-zero layout width from its text",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, second_span),
+        rects[2].position_px[0],
         first_width + 6.0,
         "second span left after gap",
     );
@@ -5472,11 +5571,11 @@ fn text_children_with_justify_content_space_between_and_gap() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first item left at start",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    // text_runs[0] = first, text_runs[1] = second, text_runs[2] = third
+    // (text children emit text runs, not rects).
+    assert_close(text_runs[0].position_px[0], 0.0, "first item left at start");
     let first_width = assert_node_layout(&root, first).width_px;
     let second_width = assert_node_layout(&root, second).width_px;
     let third_width = assert_node_layout(&root, third).width_px;
@@ -5484,12 +5583,12 @@ fn text_children_with_justify_content_space_between_and_gap() {
     let extra_per_gap = (200.0 - total_item_width - 10.0) / 2.0;
 
     assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+        text_runs[1].position_px[0],
         first_width + 5.0 + extra_per_gap,
         "second item left with gap and packing",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, third),
+        text_runs[2].position_px[0],
         200.0 - third_width,
         "third item right-aligned at end",
     );
@@ -5503,7 +5602,7 @@ fn text_children_with_justify_content_space_between_and_gap() {
 fn text_children_in_flex_column_stack_with_row_gap() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let first = assert_append_text_to(&mut root, container, "Top");
-    let second = assert_append_text_to(&mut root, container, "Bottom");
+    let _second = assert_append_text_to(&mut root, container, "Bottom");
 
     assert_set_attr_str(&mut root, container, "display", "flex");
     assert_set_attr_str(&mut root, container, "flex-direction", "column");
@@ -5513,14 +5612,13 @@ fn text_children_in_flex_column_stack_with_row_gap() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first),
-        0.0,
-        "first column item top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    // text_runs[0] = first, text_runs[1] = second (text children emit text runs, not rects).
+    assert_close(text_runs[0].position_px[1], 0.0, "first column item top");
     let first_height = assert_node_layout(&root, first).height_px;
     assert_close(
-        assert_node_border_box_screen_top_px(&root, second),
+        text_runs[1].position_px[1],
         first_height + 8.0,
         "second column item top after row-gap",
     );
@@ -5562,14 +5660,16 @@ fn nested_flex_auto_basis_block_children_participate_in_flex_layout() {
         95.0,
         "second flex:1 item fills half container minus half gap",
     );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first),
-        0.0,
-        "first item at start",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second (text children emit text runs).
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 95.0, 40.0, "first item at start");
+    assert_rect_op_geometry(
+        &rects[2],
         95.0 + 10.0,
+        0.0,
+        95.0,
+        40.0,
         "second item after first + gap",
     );
 }
@@ -5629,7 +5729,7 @@ fn auto_width_titlebar_flex_mutation_setup() -> AutoWidthTitlebarFlexMutationSce
     let container = assert_append_div_to(&mut root, parent);
     let _start = assert_append_inflexible_titlebar_item_to(&mut root, container);
     let title_host = assert_append_div_to(&mut root, container);
-    let end = assert_append_inflexible_titlebar_item_to(&mut root, container);
+    let _end = assert_append_inflexible_titlebar_item_to(&mut root, container);
 
     assert_set_attr_str(&mut root, parent, "width", "120px");
     assert_set_attr_str(&mut root, parent, "height", TITLEBAR_HOST_HEIGHT_PX);
@@ -5649,7 +5749,6 @@ fn auto_width_titlebar_flex_mutation_setup() -> AutoWidthTitlebarFlexMutationSce
         root,
         container,
         title_host,
-        end,
     }
 }
 
@@ -5702,28 +5801,6 @@ struct AutoWidthTitlebarFlexMutationScenario {
     root: RootDom,
     container: DomNodeSlotKey,
     title_host: DomNodeSlotKey,
-    end: DomNodeSlotKey,
-}
-
-#[allow(clippy::struct_field_names)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct NestedFlexMutationProbe {
-    nested_width_px: f32,
-    first_child_left_px: f32,
-    sibling_left_px: f32,
-}
-
-fn nested_flex_mutation_probe(
-    root: &RootDom,
-    nested: DomNodeSlotKey,
-    first_nested_child: DomNodeSlotKey,
-    sibling: DomNodeSlotKey,
-) -> NestedFlexMutationProbe {
-    NestedFlexMutationProbe {
-        nested_width_px: assert_node_layout(root, nested).width_px,
-        first_child_left_px: assert_node_border_box_screen_left_px(root, first_nested_child),
-        sibling_left_px: assert_node_border_box_screen_left_px(root, sibling),
-    }
 }
 
 #[allow(clippy::struct_field_names)]
@@ -5738,12 +5815,12 @@ fn titlebar_mutation_probe(
     root: &RootDom,
     container: DomNodeSlotKey,
     title_host: DomNodeSlotKey,
-    end: DomNodeSlotKey,
+    end_left_px: f32,
 ) -> TitlebarMutationProbe {
     TitlebarMutationProbe {
         container_width_px: assert_node_layout(root, container).width_px,
         title_width_px: assert_node_layout(root, title_host).width_px,
-        end_left_px: assert_node_border_box_screen_left_px(root, end),
+        end_left_px,
     }
 }
 

@@ -21,13 +21,12 @@
 //!   `third_party/blink/renderer/core/layout/block_layout_algorithm.cc`,
 //!   `third_party/blink/renderer/core/layout/ng/ng_constraint_space_builder.cc`
 
-use ui_dom::DomPointerUpdate;
+use ui_dom::{DomPointerUpdate, node_box};
 
 use crate::layout_proofs::support::{
-    assert_append_div_to, assert_close, assert_node_border_box_screen_top_px, assert_node_layout,
-    assert_rect_op_geometry, assert_root_dom_update, assert_set_attr_str,
-    container_with_two_parents_setup, nested_parent_child_setup, parent_with_two_children_setup,
-    take_staged_layer_paint_plans,
+    assert_append_div_to, assert_close, assert_node_layout, assert_rect_op_geometry,
+    assert_root_dom_update, assert_set_attr_str, container_with_two_parents_setup,
+    nested_parent_child_setup, parent_with_two_children_setup, take_staged_layer_paint_plans,
 };
 
 #[test]
@@ -480,7 +479,10 @@ fn empty_block_self_collapses_top_and_bottom_margins() {
         .snapshot();
 
     assert_close(
-        assert_node_border_box_screen_top_px(&root, empty_child),
+        node_box(&root, empty_child)
+            .expect("empty child should expose a box model")
+            .border_box
+            .top_px,
         11.0,
         "empty block top when parent borders prevent parent-child collapse",
     );
