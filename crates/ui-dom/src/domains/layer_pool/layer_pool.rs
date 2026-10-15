@@ -452,7 +452,9 @@ impl LayerPool {
     ///
     /// The caller keeps ownership of its source buffer. `LayerPool` copies the
     /// slice once into the supplied render-ops handler, and the render executor
-    /// uploads those bytes into the target texture.
+    /// uploads those bytes into the target texture. The supplied handler must be
+    /// registered for the per-tick extract drain (see `register_render_ops_handler`);
+    /// uploads staged into an unregistered handler never reach the executor.
     pub fn submit_external_rgba_in_world(
         world: &mut World,
         handler: &crate::domains::RenderOpsHandler,

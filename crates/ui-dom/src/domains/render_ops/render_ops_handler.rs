@@ -421,4 +421,41 @@ mod tests {
             assert_eq!(applies[1].lease, second);
         });
     }
+
+    #[test]
+    fn re_staging_a_lease_keeps_its_stage_position() {
+        let handler = RenderOpsHandler::new();
+        let [first, second] = two_leases();
+
+        let mut first_plan_v1 = LayerPaintPlan::default();
+        first_plan_v1.rects.push(rect_op([1.0, 1.0]));
+        let mut first_plan_v2 = LayerPaintPlan::default();
+        first_plan_v2.rects.push(rect_op([9.0, 9.0]));
+
+        assert_eq!(
+            handler.stage(apply(first, first_plan_v1), LayerPoolPolicy::Normal),
+            StageOutcome::Staged,
+        );
+        assert_eq!(
+            handler.stage(
+                apply(second, LayerPaintPlan::default()),
+                LayerPoolPolicy::Normal
+            ),
+            StageOutcome::Staged,
+        );
+        assert_eq!(
+            handler.stage(apply(first, first_plan_v2.clone()), LayerPoolPolicy::Normal),
+            StageOutcome::Staged,
+        );
+
+        handler.with_staged_applies(|applies| {
+            assert_eq!(applies.len(), 2);
+            assert_eq!(
+                applies[0].lease, first,
+                "re-staged lease should keep its original stage position"
+            );
+            assert_eq!(applies[1].lease, second);
+            assert_eq!(applies[0].plan, first_plan_v2);
+        });
+    }
 }
