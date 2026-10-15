@@ -17,7 +17,6 @@ use crate::types::dom_event_name::DomEventName;
 use crate::types::dom_node::DomNode;
 use crate::types::dom_node::DomNodeSlotKey;
 use crate::types::root_dom::RootDom;
-use crate::types::root_dom_fragment::RootDomFragment;
 
 pub struct DomEventListenerContext<'a> {
     root_dom: &'a mut RootDom,
@@ -145,7 +144,7 @@ pub struct DomEventListenerOptions {
     pub passive: bool,
 }
 
-fn add_event_listener_to_node(
+pub(crate) fn add_event_listener_to_node(
     node: &mut DomNode,
     event_name: DomEventName,
     listener: impl Into<DomEventListener>,
@@ -157,7 +156,7 @@ fn add_event_listener_to_node(
     !already_registered
 }
 
-fn remove_event_listener_from_node(
+pub(crate) fn remove_event_listener_from_node(
     node: &mut DomNode,
     event_name: DomEventName,
     listener: impl Into<DomEventListener>,
@@ -185,64 +184,6 @@ pub(crate) trait DomEventListenerOwner {
         listener: impl Into<DomEventListener>,
         options: Option<DomEventListenerOptions>,
     ) -> Result<bool, DomError>;
-}
-
-impl DomEventListenerOwner for RootDom {
-    fn add_event_listener(
-        &mut self,
-        key: DomNodeSlotKey,
-        event_name: DomEventName,
-        listener: impl Into<DomEventListener>,
-        options: Option<DomEventListenerOptions>,
-    ) -> Result<(), DomError> {
-        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
-        if add_event_listener_to_node(node, event_name, listener, options) {
-            self.increment_metric(
-                crate::types::root_dom_metrics::RootDomMetricName::EventListenerRegistrationAllocation,
-            );
-        }
-        Ok(())
-    }
-
-    fn remove_event_listener(
-        &mut self,
-        key: DomNodeSlotKey,
-        event_name: DomEventName,
-        listener: impl Into<DomEventListener>,
-        options: Option<DomEventListenerOptions>,
-    ) -> Result<bool, DomError> {
-        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
-        Ok(remove_event_listener_from_node(
-            node, event_name, listener, options,
-        ))
-    }
-}
-
-impl DomEventListenerOwner for RootDomFragment {
-    fn add_event_listener(
-        &mut self,
-        key: DomNodeSlotKey,
-        event_name: DomEventName,
-        listener: impl Into<DomEventListener>,
-        options: Option<DomEventListenerOptions>,
-    ) -> Result<(), DomError> {
-        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
-        let _added = add_event_listener_to_node(node, event_name, listener, options);
-        Ok(())
-    }
-
-    fn remove_event_listener(
-        &mut self,
-        key: DomNodeSlotKey,
-        event_name: DomEventName,
-        listener: impl Into<DomEventListener>,
-        options: Option<DomEventListenerOptions>,
-    ) -> Result<bool, DomError> {
-        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
-        Ok(remove_event_listener_from_node(
-            node, event_name, listener, options,
-        ))
-    }
 }
 
 #[cfg(test)]

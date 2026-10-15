@@ -53,9 +53,12 @@ use crate::element_controls::{
 };
 use crate::types::dom_attr_parse::{normalize_attribute_value, style_attr_allows_property};
 use crate::types::dom_event::{
-    DomEvent, DomEventDetail, DomEventName, DomFocusEvent, DomModifierState, DomMouseButton,
-    DomPointerEvent, DomPointerType, DomTransitionEvent, DomValueChangeEvent, DomWheelDeltaMode,
-    DomWheelEvent,
+    DomEvent, DomEventDetail, DomEventListener, DomEventListenerOptions, DomEventName,
+    DomFocusEvent, DomModifierState, DomMouseButton, DomPointerEvent, DomPointerType,
+    DomTransitionEvent, DomValueChangeEvent, DomWheelDeltaMode, DomWheelEvent,
+};
+use crate::types::dom_event_listener::{
+    add_event_listener_to_node, remove_event_listener_from_node,
 };
 use crate::types::dom_node::{
     AttributeInvalidation, DomDocumentNode, DomIntrinsic, DomNode, DomNodeSlotKey, LayerOrder,
@@ -83,7 +86,9 @@ use crate::types::root_dom_nodes::RootDomNodes;
 use crate::types::root_dom_nodes::{
     RootDomNodesMetricHistoryIter, RootDomNodesMetricName, RootDomNodesMetrics,
 };
-use crate::types::{DomAttribute, DomAttributeValue, DomError, parse_authored_value_input};
+use crate::types::{
+    DomAttribute, DomAttributeValue, DomError, DomEventListenerOwner, parse_authored_value_input,
+};
 use crate::types::{RootDomMetricHistoryIter, RootDomMetricName, RootDomMetrics};
 use slotmap::SlotMap;
 
@@ -395,7 +400,40 @@ impl RootDom {
             self, key, event_name, listener, options,
         )
     }
+}
 
+impl DomEventListenerOwner for RootDom {
+    fn add_event_listener(
+        &mut self,
+        key: DomNodeSlotKey,
+        event_name: DomEventName,
+        listener: impl Into<DomEventListener>,
+        options: Option<DomEventListenerOptions>,
+    ) -> Result<(), DomError> {
+        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
+        if add_event_listener_to_node(node, event_name, listener, options) {
+            self.increment_metric(
+                crate::types::root_dom_metrics::RootDomMetricName::EventListenerRegistrationAllocation,
+            );
+        }
+        Ok(())
+    }
+
+    fn remove_event_listener(
+        &mut self,
+        key: DomNodeSlotKey,
+        event_name: DomEventName,
+        listener: impl Into<DomEventListener>,
+        options: Option<DomEventListenerOptions>,
+    ) -> Result<bool, DomError> {
+        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
+        Ok(remove_event_listener_from_node(
+            node, event_name, listener, options,
+        ))
+    }
+}
+
+impl RootDom {
     /// Returns the first node matching the provided selector in document order.
     ///
     /// V1 selectors support `#id`, `.class`, `.class_a.class_b`, `tag`,

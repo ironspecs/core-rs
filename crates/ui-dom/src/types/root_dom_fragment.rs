@@ -33,7 +33,10 @@
 use std::collections::HashMap;
 
 use crate::types::dom_attr_parse::normalize_attribute_value;
-use crate::types::dom_event_listener::{DomEventListener, DomEventListenerOptions};
+use crate::types::dom_event_listener::{
+    DomEventListener, DomEventListenerOptions, add_event_listener_to_node,
+    remove_event_listener_from_node,
+};
 use crate::types::dom_event_name::DomEventName;
 use crate::types::dom_node::{
     DomIntrinsic, DomNode, DomNodeSlotKey, measure_text_intrinsic_from_content,
@@ -49,7 +52,9 @@ use crate::types::dom_tag::DomTag;
 use crate::types::root_dom::{
     append_child_to_parent, collect_subtree_keys, detach_node_from_parent, next_id_from_attr,
 };
-use crate::types::{DomAttribute, DomAttributeValue, DomError, parse_authored_value_input};
+use crate::types::{
+    DomAttribute, DomAttributeValue, DomError, DomEventListenerOwner, parse_authored_value_input,
+};
 use slotmap::SlotMap;
 
 #[derive(Debug)]
@@ -464,6 +469,33 @@ impl RootDomFragment {
             return;
         };
         self.id_lookup.remove(id);
+    }
+}
+
+impl DomEventListenerOwner for RootDomFragment {
+    fn add_event_listener(
+        &mut self,
+        key: DomNodeSlotKey,
+        event_name: DomEventName,
+        listener: impl Into<DomEventListener>,
+        options: Option<DomEventListenerOptions>,
+    ) -> Result<(), DomError> {
+        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
+        let _added = add_event_listener_to_node(node, event_name, listener, options);
+        Ok(())
+    }
+
+    fn remove_event_listener(
+        &mut self,
+        key: DomNodeSlotKey,
+        event_name: DomEventName,
+        listener: impl Into<DomEventListener>,
+        options: Option<DomEventListenerOptions>,
+    ) -> Result<bool, DomError> {
+        let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
+        Ok(remove_event_listener_from_node(
+            node, event_name, listener, options,
+        ))
     }
 }
 
