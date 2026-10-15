@@ -39,9 +39,9 @@ use ui_dom::{DomIntrinsic, DomPointerUpdate};
 
 use crate::layout_proofs::support::{
     assert_append_button_to, assert_append_div_to, assert_append_span_to, assert_append_text_to,
-    assert_close, assert_node_border_box_screen_left_px, assert_node_border_box_screen_top_px,
-    assert_node_layout, assert_root_dom_update, assert_set_attr_str,
-    attached_gpu_root_dom_default_viewport_setup,
+    assert_close, assert_node_layout, assert_rect_op_geometry, assert_root_dom_update,
+    assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
+    take_staged_layer_paint_plans,
 };
 
 #[test]
@@ -64,16 +64,11 @@ fn block_children_stack_vertically_from_the_top_of_the_parent() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first_child),
-        0.0,
-        "first block child screen top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second_child),
-        20.0,
-        "second block child screen top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = first child, rects[2] = second child.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 180.0, 20.0, "first block child");
+    assert_rect_op_geometry(&rects[2], 0.0, 20.0, 180.0, 30.0, "second block child");
     assert_close(parent_layout.height_px, 50.0, "parent auto height");
     assert_close(
         parent_layout.content_height_px,
@@ -100,26 +95,11 @@ fn inline_block_siblings_share_a_line_and_use_the_tallest_line_height() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, first_chip),
-        0.0,
-        "first inline-block screen left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first_chip),
-        0.0,
-        "first inline-block screen top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second_chip),
-        40.0,
-        "second inline-block screen left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second_chip),
-        0.0,
-        "second inline-block screen top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = first chip, rects[2] = second chip.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 40.0, 12.0, "first inline-block");
+    assert_rect_op_geometry(&rects[2], 40.0, 0.0, 50.0, 30.0, "second inline-block");
     assert_close(parent_layout.height_px, 30.0, "parent line-box height");
     assert_close(
         parent_layout.content_height_px,
@@ -148,15 +128,17 @@ fn block_child_after_an_inline_line_starts_below_the_line_box() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, block_child),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = first chip, rects[2] = second chip,
+    // rects[3] = block child.
+    assert_rect_op_geometry(
+        &rects[3],
         0.0,
-        "block child screen left after inline line",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, block_child),
         30.0,
-        "block child screen top after inline line",
+        180.0,
+        20.0,
+        "block child after inline line",
     );
     assert_close(parent_layout.height_px, 50.0, "parent height");
     assert_close(
@@ -187,26 +169,11 @@ fn normal_flow_children_start_inside_the_parent_padding_box() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, block_child),
-        7.0,
-        "padded block child screen left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, block_child),
-        5.0,
-        "padded block child screen top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, inline_child),
-        7.0,
-        "padded inline child screen left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, inline_child),
-        25.0,
-        "padded inline child screen top",
-    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = block child, rects[2] = inline child.
+    assert_rect_op_geometry(&rects[1], 7.0, 5.0, 173.0, 20.0, "padded block child");
+    assert_rect_op_geometry(&rects[2], 7.0, 25.0, 40.0, 12.0, "padded inline child");
     assert_close(parent_layout.height_px, 37.0, "padded parent height");
 }
 
@@ -229,16 +196,23 @@ fn inline_container_shrink_wraps_inline_block_children() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let inline_layout = assert_node_layout(&root, inline_container);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
     assert_close(
         inline_layout.width_px,
         90.0,
         "inline container shrink-wrap width",
     );
     assert_close(inline_layout.height_px, 30.0, "inline container height");
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, second_chip),
+    // rects[0] = wrapper, rects[1] = inline container, rects[2] = first chip,
+    // rects[3] = second chip.
+    assert_rect_op_geometry(
+        &rects[3],
         40.0,
-        "second chip screen left inside inline container",
+        0.0,
+        50.0,
+        30.0,
+        "second chip inside inline container",
     );
 }
 
@@ -264,15 +238,17 @@ fn inline_container_stays_on_the_same_line_as_a_preceding_inline_sibling() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let wrapper_layout = assert_node_layout(&root, wrapper);
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, inline_container),
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = wrapper, rects[1] = leading chip, rects[2] = inline container,
+    // rects[3] = first chip, rects[4] = second chip.
+    assert_rect_op_geometry(
+        &rects[2],
         20.0,
-        "inline container screen left after leading sibling",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, inline_container),
         0.0,
-        "inline container screen top after leading sibling",
+        90.0,
+        30.0,
+        "inline container after leading sibling",
     );
     assert_close(wrapper_layout.height_px, 30.0, "wrapper line-box height");
 }
@@ -298,26 +274,31 @@ fn span_text_child_without_authored_size_uses_text_intrinsic_dimensions() {
     let span_layout = assert_node_layout(&root, span);
     let text_layout = assert_node_layout(&root, text);
     let text_intrinsic = assert_text_intrinsic(&root, text);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
 
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, span),
+    // rects[0] = wrapper, rects[1] = span; the text node emits a text run, not
+    // a rect.
+    assert_rect_op_geometry(
+        &rects[1],
         0.0,
-        "span screen left",
+        0.0,
+        text_intrinsic.max_content_width_px,
+        text_intrinsic.line_height_px,
+        "span",
+    );
+    assert_close(text_runs[0].position_px[0], 0.0, "span text screen left");
+    assert_close(text_runs[0].position_px[1], 0.0, "span text screen top");
+    assert_close(
+        text_runs[0].size_px[0],
+        text_intrinsic.max_content_width_px,
+        "span text run width",
     );
     assert_close(
-        assert_node_border_box_screen_top_px(&root, span),
-        0.0,
-        "span screen top",
-    );
-    assert_close(
-        assert_node_border_box_screen_left_px(&root, text),
-        0.0,
-        "span text screen left",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, text),
-        0.0,
-        "span text screen top",
+        text_runs[0].size_px[1],
+        text_intrinsic.line_height_px,
+        "span text run height",
     );
     assert_close(
         text_layout.width_px,

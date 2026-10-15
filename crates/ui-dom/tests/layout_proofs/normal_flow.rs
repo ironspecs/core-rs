@@ -25,8 +25,9 @@ use ui_dom::DomPointerUpdate;
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_close, assert_node_border_box_screen_top_px, assert_node_layout,
-    assert_root_dom_update, assert_set_attr_str, container_with_two_parents_setup,
-    nested_parent_child_setup, parent_with_two_children_setup,
+    assert_rect_op_geometry, assert_root_dom_update, assert_set_attr_str,
+    container_with_two_parents_setup, nested_parent_child_setup, parent_with_two_children_setup,
+    take_staged_layer_paint_plans,
 };
 
 #[test]
@@ -329,16 +330,18 @@ fn adjacent_block_margins_collapse_between_normal_flow_siblings() {
         .node(parent)
         .expect("parent should remain readable after layout")
         .snapshot();
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, first_child),
+    // rects[0] = parent, rects[1] = first child, rects[2] = second child.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 180.0, 10.0, "first block child");
+    assert_rect_op_geometry(
+        &rects[2],
         0.0,
-        "first block child border-box top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, second_child),
         30.0,
-        "second block child top after sibling margin collapse",
+        180.0,
+        10.0,
+        "second block child after sibling margin collapse",
     );
     assert_close(
         parent_snapshot.layout.used_height_px,
@@ -375,16 +378,19 @@ fn first_block_child_top_margin_collapses_with_parent_top_boundary() {
         .node(parent)
         .expect("parent should remain readable after layout")
         .snapshot();
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, parent),
+    // rects[0] = container, rects[1] = parent (both 180x16 at the origin;
+    // DFS pre-order keeps container first), rects[2] = child.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 180.0, 16.0, "parent border box");
+    assert_rect_op_geometry(
+        &rects[2],
         0.0,
-        "parent border-box top",
-    );
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, child),
         0.0,
-        "first block child top after parent-child top margin collapse",
+        180.0,
+        10.0,
+        "first block child after parent-child top margin collapse",
     );
     assert_close(
         parent_snapshot.layout.used_height_px,
@@ -421,11 +427,17 @@ fn last_block_child_bottom_margin_collapses_with_parent_bottom_boundary() {
         .node(parent)
         .expect("parent should remain readable after layout")
         .snapshot();
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
 
-    assert_close(
-        assert_node_border_box_screen_top_px(&root, child),
+    // rects[0] = container, rects[1] = parent, rects[2] = child.
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
         6.0,
-        "last block child top when parent top border prevents top collapse",
+        180.0,
+        10.0,
+        "last block child when parent top border prevents top collapse",
     );
     assert_close(
         parent_snapshot.layout.used_height_px,
@@ -571,4 +583,50 @@ fn empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_
         46.0,
         "outer parent uses max-collapsed propagated boundaries instead of summing both generations",
     );
+}
+
+#[test]
+#[ignore = "CSS 2.1 8.3.1 negative-margin collapse is not implemented: the solver sums adjoining negative margins (-10px bottom, -5px top) to -15px instead of collapsing to the most-negative -10px. Spec-correct lower block top is 1px and parent border-box height is 12px; the crate emits top -4px and height 7px. Root cause: collapsed_sibling_margin_overlap_px in src/domains/layout/flow.rs clamps the collapse overlap to >= 0."]
+// CSS 2.1 8.3.1 collapsing margins, final paragraph: when there are no
+// positive adjoining margins, the collapsed margin is the maximum of the
+// absolute values of the negative adjoining margins, deducted from zero.
+// Adjoining -10px (upper bottom) and -5px (lower top) must collapse to -10px,
+// not sum to -15px. Gecko runs this in nsBlockFrame.cpp's margin-collapse
+// path; Blink in third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc.
+// Closest WPT: the CSS21 margin-collapse suite (css/CSS2/normal-flow/margin-collapse-*.xht).
+fn adjacent_negative_block_margins_collapse_to_most_negative() {
+    let (mut world, mut root) =
+        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let parent = assert_append_div_to(&mut root, document_root);
+    let upper = assert_append_div_to(&mut root, parent);
+    let lower = assert_append_div_to(&mut root, parent);
+
+    assert_set_attr_str(&mut root, parent, "width", "180px");
+    assert_set_attr_str(&mut root, parent, "border-top", "1px");
+    assert_set_attr_str(&mut root, parent, "border-bottom", "1px");
+    assert_set_attr_str(&mut root, upper, "width", "180px");
+    assert_set_attr_str(&mut root, upper, "height", "10px");
+    assert_set_attr_str(&mut root, upper, "margin-bottom", "-10px");
+    assert_set_attr_str(&mut root, lower, "width", "180px");
+    assert_set_attr_str(&mut root, lower, "height", "10px");
+    assert_set_attr_str(&mut root, lower, "margin-top", "-5px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = upper, rects[2] = lower. The collapsed
+    // -10px margin places `lower`'s border box at top 1px, fully overlapping
+    // `upper`, and leaves the parent content height at 10px (border box 12px).
+    assert_rect_op_geometry(&rects[1], 0.0, 1.0, 180.0, 10.0, "upper block");
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        1.0,
+        180.0,
+        10.0,
+        "lower block after negative margin collapse",
+    );
+    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 180.0, 12.0, "parent border box");
 }

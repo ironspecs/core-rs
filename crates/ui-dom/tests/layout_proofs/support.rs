@@ -4,7 +4,8 @@ use bevy::prelude::{Vec2, World};
 use bevy::sprite::Sprite;
 use ui_dom::{
     DomLayoutState, DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, DomTag, LayerConfig,
-    LayerPool, RootDom, RootDomContext, StyleRuleOrigin, UiDomRenderSupport, node_box,
+    LayerPaintPlan, LayerPool, RectPaintOp, RootDom, RootDomContext, StyleRuleOrigin,
+    UiDomRenderSupport, node_box,
 };
 
 pub fn attached_gpu_root_dom_default_viewport_setup() -> (World, RootDom) {
@@ -329,6 +330,44 @@ pub fn assert_close(actual: f32, expected: f32, label: &str) {
         (actual - expected).abs() <= 0.001,
         "{label} should be {expected}, got {actual}",
     );
+}
+
+/// Drains the staged render ops produced by the most recent `RootDom::update`
+/// and returns each staged layer's paint plan, in stage order (stage order =
+/// paint order = DOM layer order, root layer first).
+///
+/// In a proof with no render app installed, staged ops persist after the update
+/// until drained: drain exactly once per update phase you assert on. The
+/// document root layer is the first entry; its content sits at layer zero, so
+/// layer-local rect geometry equals screen geometry in single-layer proofs.
+pub fn take_staged_layer_paint_plans(root: &RootDom) -> Vec<LayerPaintPlan> {
+    root.context()
+        .render_ops()
+        .take_staged()
+        .applies
+        .into_iter()
+        .map(|apply| apply.plan)
+        .collect()
+}
+
+/// Asserts one rect op's layer-local geometry via the file's `assert_close`
+/// tolerance. `left_px`/`top_px` are the layer-local top-left (screen position
+/// for document-root-layer content); `width_px`/`height_px` are the border-box
+/// extent. The paint stage emits `size_px` as the border box clamped to
+/// non-negative (`paintable_node_size`), and emits no rect at all for a
+/// zero-size element.
+pub fn assert_rect_op_geometry(
+    rect: &RectPaintOp,
+    left_px: f32,
+    top_px: f32,
+    width_px: f32,
+    height_px: f32,
+    label: &str,
+) {
+    assert_close(rect.position_px[0], left_px, &format!("{label} left"));
+    assert_close(rect.position_px[1], top_px, &format!("{label} top"));
+    assert_close(rect.size_px[0], width_px, &format!("{label} width"));
+    assert_close(rect.size_px[1], height_px, &format!("{label} height"));
 }
 
 pub fn assert_node_border_box_screen_left_px(root: &RootDom, key: DomNodeSlotKey) -> f32 {
