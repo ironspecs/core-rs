@@ -11,9 +11,8 @@
 use ui_dom::DomPointerUpdate;
 
 use crate::layout_proofs::support::{
-    assert_close, assert_node_border_box_screen_left_px, assert_node_layout,
-    assert_root_dom_update, assert_set_attr_str, document_with_panel_and_scroll_sibling_setup,
-    fixed_panel_with_nested_scroll_box_setup,
+    assert_close, assert_node_layout, assert_root_dom_update, assert_set_attr_str,
+    document_with_panel_and_scroll_sibling_setup, fixed_panel_with_nested_scroll_box_setup,
 };
 
 const PANEL_TRANSITION: &str = "left 180ms ease-out";
@@ -35,8 +34,12 @@ fn absolute_nested_scroll_layer_follows_fixed_parent_mid_transition() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    let before_panel_x = assert_node_border_box_screen_left_px(&root, fixed_panel);
-    let before_scroll_x = assert_node_border_box_screen_left_px(&root, scroll_box);
+    let before_panel_x = root
+        .layer_offset_px(fixed_panel)
+        .expect("fixed panel should be a live layer root")[0];
+    let before_scroll_x = root
+        .layer_offset_px(scroll_box)
+        .expect("scroll box should be a live layer root")[0];
     let before_scroll_layout = assert_node_layout(&root, scroll_box);
 
     assert_set_attr_str(&mut root, fixed_panel, "left", OPEN_LEFT_PX);
@@ -47,8 +50,12 @@ fn absolute_nested_scroll_layer_follows_fixed_parent_mid_transition() {
         DomPointerUpdate::Unchanged,
     );
 
-    let after_panel_x = assert_node_border_box_screen_left_px(&root, fixed_panel);
-    let after_scroll_x = assert_node_border_box_screen_left_px(&root, scroll_box);
+    let after_panel_x = root
+        .layer_offset_px(fixed_panel)
+        .expect("fixed panel should be a live layer root")[0];
+    let after_scroll_x = root
+        .layer_offset_px(scroll_box)
+        .expect("scroll box should be a live layer root")[0];
     let after_scroll_layout = assert_node_layout(&root, scroll_box);
     let panel_delta_x = after_panel_x - before_panel_x;
     let scroll_delta_x = after_scroll_x - before_scroll_x;
@@ -89,8 +96,12 @@ fn fixed_nested_scroll_layer_stays_pinned_while_fixed_parent_moves_mid_transitio
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    let before_panel_x = assert_node_border_box_screen_left_px(&root, fixed_panel);
-    let before_scroll_x = assert_node_border_box_screen_left_px(&root, scroll_box);
+    let before_panel_x = root
+        .layer_offset_px(fixed_panel)
+        .expect("fixed panel should be a live layer root")[0];
+    let before_scroll_x = root
+        .layer_offset_px(scroll_box)
+        .expect("scroll box should be a live layer root")[0];
     let before_scroll_layout = assert_node_layout(&root, scroll_box);
 
     assert_set_attr_str(&mut root, fixed_panel, "left", OPEN_LEFT_PX);
@@ -101,8 +112,12 @@ fn fixed_nested_scroll_layer_stays_pinned_while_fixed_parent_moves_mid_transitio
         DomPointerUpdate::Unchanged,
     );
 
-    let after_panel_x = assert_node_border_box_screen_left_px(&root, fixed_panel);
-    let after_scroll_x = assert_node_border_box_screen_left_px(&root, scroll_box);
+    let after_panel_x = root
+        .layer_offset_px(fixed_panel)
+        .expect("fixed panel should be a live layer root")[0];
+    let after_scroll_x = root
+        .layer_offset_px(scroll_box)
+        .expect("scroll box should be a live layer root")[0];
     let after_scroll_layout = assert_node_layout(&root, scroll_box);
     let panel_delta_x = after_panel_x - before_panel_x;
     let scroll_delta_x = after_scroll_x - before_scroll_x;
@@ -140,8 +155,12 @@ fn fixed_sibling_scroll_layer_stays_pinned_while_panel_moves_mid_transition() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    let before_panel_x = assert_node_border_box_screen_left_px(&root, fixed_panel);
-    let before_scroll_x = assert_node_border_box_screen_left_px(&root, scroll_box);
+    let before_panel_x = root
+        .layer_offset_px(fixed_panel)
+        .expect("fixed panel should be a live layer root")[0];
+    let before_scroll_x = root
+        .layer_offset_px(scroll_box)
+        .expect("scroll box should be a live layer root")[0];
     let before_scroll_layout = assert_node_layout(&root, scroll_box);
 
     assert_set_attr_str(&mut root, fixed_panel, "left", OPEN_LEFT_PX);
@@ -152,8 +171,12 @@ fn fixed_sibling_scroll_layer_stays_pinned_while_panel_moves_mid_transition() {
         DomPointerUpdate::Unchanged,
     );
 
-    let after_panel_x = assert_node_border_box_screen_left_px(&root, fixed_panel);
-    let after_scroll_x = assert_node_border_box_screen_left_px(&root, scroll_box);
+    let after_panel_x = root
+        .layer_offset_px(fixed_panel)
+        .expect("fixed panel should be a live layer root")[0];
+    let after_scroll_x = root
+        .layer_offset_px(scroll_box)
+        .expect("scroll box should be a live layer root")[0];
     let after_scroll_layout = assert_node_layout(&root, scroll_box);
     let panel_delta_x = after_panel_x - before_panel_x;
     let scroll_delta_x = after_scroll_x - before_scroll_x;

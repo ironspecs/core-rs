@@ -3,9 +3,8 @@ use bevy::image::Image;
 use bevy::prelude::{Vec2, World};
 use bevy::sprite::Sprite;
 use ui_dom::{
-    DomLayoutState, DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, DomTag, LayerConfig,
-    LayerPaintPlan, LayerPool, RectPaintOp, RootDom, RootDomContext, StyleRuleOrigin,
-    UiDomRenderSupport, node_box,
+    DomLayoutState, DomNode, DomNodeSlotKey, DomPointerUpdate, DomTag, LayerConfig, LayerPaintPlan,
+    LayerPool, RectPaintOp, RootDom, RootDomContext, StyleRuleOrigin, UiDomRenderSupport,
 };
 
 pub fn attached_gpu_root_dom_default_viewport_setup() -> (World, RootDom) {
@@ -370,41 +369,6 @@ pub fn assert_rect_op_geometry(
     assert_close(rect.size_px[1], height_px, &format!("{label} height"));
 }
 
-pub fn assert_node_border_box_screen_left_px(root: &RootDom, key: DomNodeSlotKey) -> f32 {
-    accumulated_border_box_edge_px(root, key, border_box_left_px)
-}
-
-pub fn assert_node_border_box_screen_top_px(root: &RootDom, key: DomNodeSlotKey) -> f32 {
-    accumulated_border_box_edge_px(root, key, border_box_top_px)
-}
-
-fn accumulated_border_box_edge_px(
-    root: &RootDom,
-    key: DomNodeSlotKey,
-    edge_selector: fn(&DomRect) -> f32,
-) -> f32 {
-    let mut current_key = Some(key);
-    let mut edge_px = 0.0;
-    let mut saw_element = false;
-
-    while let Some(key) = current_key {
-        let node = root.node(key).expect("layout proof node should exist");
-        edge_px += edge_selector(
-            &node_box(root, key)
-                .expect("layout proof node should expose a box model")
-                .border_box,
-        );
-        current_key = node.parent_key();
-        saw_element = true;
-    }
-
-    assert!(
-        saw_element,
-        "layout proof target should resolve to a real node"
-    );
-    edge_px
-}
-
 fn install_direct_gpu_support(world: &mut World) {
     world.init_resource::<Assets<Image>>();
     world.insert_resource(LayerPool::new(LayerConfig::default()));
@@ -430,12 +394,4 @@ fn clone_node_layout(node: &DomNode) -> DomLayoutState {
         DomNode::Element(node) => node.base.layout.clone(),
         DomNode::Text(node) => node.base.layout.clone(),
     }
-}
-
-fn border_box_left_px(border_box: &DomRect) -> f32 {
-    border_box.left_px
-}
-
-fn border_box_top_px(border_box: &DomRect) -> f32 {
-    border_box.top_px
 }

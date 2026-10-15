@@ -38,12 +38,11 @@
 //! solver and is pinned by the `active_flex_gate_*` unit tests in
 //! `src/domains/layout/flex.rs`.
 
-use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom};
+use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, node_box};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
-    assert_load_root_stylesheet, assert_node_border_box_screen_left_px,
-    assert_node_border_box_screen_top_px, assert_node_layout, assert_rect_op_geometry,
+    assert_load_root_stylesheet, assert_node_layout, assert_rect_op_geometry,
     assert_root_dom_update, assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
     take_staged_layer_paint_plans, theme_stylesheet_origin,
 };
@@ -2083,12 +2082,14 @@ fn nested_flex_item_uses_outer_grown_width_for_inner_justify_content() {
         "grown nested flex item width",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, sibling),
+        root.layer_offset_px(sibling)
+            .expect("sibling role should be a live layer root")[0],
         80.0,
         "sibling after grown nested item left",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, nested_child),
+        root.layer_offset_px(nested_child)
+            .expect("nested child role should be a live layer root")[0],
         35.0,
         "nested child centered in grown flex item",
     );
@@ -2338,12 +2339,14 @@ fn nested_flex_item_uses_outer_shrunk_width_for_inner_justify_content() {
         "shrunk nested flex item width",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, sibling),
+        root.layer_offset_px(sibling)
+            .expect("sibling role should be a live layer root")[0],
         40.0,
         "sibling after shrunk nested item left",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, nested_child),
+        root.layer_offset_px(nested_child)
+            .expect("nested child role should be a live layer root")[0],
         15.0,
         "nested child centered in shrunk flex item",
     );
@@ -2398,12 +2401,14 @@ fn padded_nested_flex_item_uses_resolved_outer_width_before_inner_layout() {
         "padded nested flex item outer width",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, end),
+        root.layer_offset_px(end)
+            .expect("end role should be a live layer root")[0],
         104.0,
         "end item after padded nested flex item",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, nested_child),
+        root.layer_offset_px(nested_child)
+            .expect("nested child role should be a live layer root")[0],
         50.0,
         "nested child centered inside padded content box",
     );
@@ -2500,7 +2505,8 @@ fn nested_flex_inside_nested_flex_uses_each_resolved_width_for_final_layout() {
         "inner flex item width from middle line resolution",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&root, leaf),
+        root.layer_offset_px(leaf)
+            .expect("leaf role should be a live layer root")[0],
         45.0,
         "leaf centered after both final layout passes",
     );
@@ -3139,7 +3145,8 @@ fn scroll_flex_item_resolves_automatic_min_main_size_to_zero_before_shrink() {
     );
     assert_close(item_layout.width_px, 20.0, "scroll flex item width");
     assert_close(
-        assert_node_border_box_screen_top_px(&root, item),
+        root.layer_offset_px(item)
+            .expect("item role should be a live layer root")[1],
         0.0,
         "scroll flex item top",
     );
@@ -3608,7 +3615,10 @@ fn stylesheet_nested_two_column_row_applies_gap_between_explicit_width_items() {
     );
 
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.left_column),
+        node_box(&scenario.root, scenario.left_column)
+            .expect("left column role should expose a box model")
+            .border_box
+            .left_px,
         0.0,
         "explicit nested row left column left",
     );
@@ -3623,7 +3633,10 @@ fn stylesheet_nested_two_column_row_applies_gap_between_explicit_width_items() {
         "explicit nested row right column width",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        node_box(&scenario.root, scenario.right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         108.0,
         "explicit nested row right column left",
     );
@@ -3650,7 +3663,10 @@ fn stylesheet_nested_two_column_row_places_explicit_width_items_without_gap() {
     );
 
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.left_column),
+        node_box(&scenario.root, scenario.left_column)
+            .expect("left column role should expose a box model")
+            .border_box
+            .left_px,
         0.0,
         "explicit no-gap nested row left column left",
     );
@@ -3665,7 +3681,10 @@ fn stylesheet_nested_two_column_row_places_explicit_width_items_without_gap() {
         "explicit no-gap nested row right column width",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        node_box(&scenario.root, scenario.right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         96.0,
         "explicit no-gap nested row right column left",
     );
@@ -3701,7 +3720,10 @@ fn direct_attr_nested_two_column_row_applies_gap_between_explicit_width_items() 
         "direct explicit nested row right column width",
     );
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        node_box(&scenario.root, scenario.right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         108.0,
         "direct explicit nested row right column left",
     );
@@ -3728,7 +3750,10 @@ fn direct_attr_nested_two_column_row_places_explicit_width_items_without_gap() {
     );
 
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        node_box(&scenario.root, scenario.right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         96.0,
         "direct explicit no-gap nested row right column left",
     );
@@ -3756,7 +3781,10 @@ fn direct_attr_nested_two_column_row_applies_column_gap_between_explicit_width_i
     );
 
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        node_box(&scenario.root, scenario.right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         108.0,
         "direct explicit column-gap nested row right column left",
     );
@@ -3785,7 +3813,10 @@ fn direct_attr_nested_two_column_row_applies_gap_between_empty_explicit_width_it
     );
 
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        node_box(&scenario.root, scenario.right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         108.0,
         "direct explicit empty-column nested row right column left",
     );
@@ -3842,7 +3873,10 @@ fn direct_attr_flat_two_column_row_applies_gap_between_explicit_width_items() {
     );
 
     assert_close(
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column),
+        node_box(&scenario.root, scenario.right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         108.0,
         "flat explicit two-column row right column left",
     );
@@ -3905,7 +3939,10 @@ fn direct_attr_flat_two_column_row_applies_gap_between_flex_basis_sized_items() 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     assert_close(
-        assert_node_border_box_screen_left_px(&root, right_column),
+        node_box(&root, right_column)
+            .expect("right column role should expose a box model")
+            .border_box
+            .left_px,
         108.0,
         "flat flex-basis right column left",
     );
@@ -4362,10 +4399,14 @@ fn assert_two_auto_sized_flex_columns(mut scenario: TwoColumnRowScenario) {
         DomPointerUpdate::Unchanged,
     );
 
-    let left_column_left_px =
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.left_column);
-    let right_column_left_px =
-        assert_node_border_box_screen_left_px(&scenario.root, scenario.right_column);
+    let left_column_left_px = node_box(&scenario.root, scenario.left_column)
+        .expect("left column role should expose a box model")
+        .border_box
+        .left_px;
+    let right_column_left_px = node_box(&scenario.root, scenario.right_column)
+        .expect("right column role should expose a box model")
+        .border_box
+        .left_px;
     let left_column_width_px = assert_node_layout(&scenario.root, scenario.left_column).width_px;
     let right_column_width_px = assert_node_layout(&scenario.root, scenario.right_column).width_px;
 
@@ -5935,7 +5976,9 @@ fn measured_titlebar_flex_case(case: TitlebarFlexCase) -> TitlebarFlexReport {
     assert_titlebar_dom_order_in_tree(&root, &item_keys);
 
     let title_width_px = assert_node_layout(&root, title_host).width_px;
-    let title_left_px = assert_node_border_box_screen_left_px(&root, title_host);
+    let title_left_px = root
+        .layer_offset_px(title_host)
+        .expect("title host role should be a live layer root")[0];
     TitlebarFlexReport {
         case_name: case.name,
         container_width_px: assert_node_layout(&root, container).width_px,
@@ -5945,7 +5988,9 @@ fn measured_titlebar_flex_case(case: TitlebarFlexCase) -> TitlebarFlexReport {
         title_width_px,
         title_left_px,
         title_right_px: title_left_px + title_width_px,
-        title_top_px: assert_node_border_box_screen_top_px(&root, title_host),
+        title_top_px: root
+            .layer_offset_px(title_host)
+            .expect("title host role should be a live layer root")[1],
         end_icon_widths_px: measured_item_widths(&root, &end_icons),
         end_icon_lefts_px: measured_item_lefts(&root, &end_icons),
         end_icon_tops_px: measured_item_tops(&root, &end_icons),
@@ -6016,13 +6061,23 @@ fn measured_item_widths(root: &RootDom, keys: &[DomNodeSlotKey]) -> Vec<f32> {
 
 fn measured_item_lefts(root: &RootDom, keys: &[DomNodeSlotKey]) -> Vec<f32> {
     keys.iter()
-        .map(|key| assert_node_border_box_screen_left_px(root, *key))
+        .map(|key| {
+            node_box(root, *key)
+                .expect("icon role should expose a box model")
+                .border_box
+                .left_px
+        })
         .collect()
 }
 
 fn measured_item_tops(root: &RootDom, keys: &[DomNodeSlotKey]) -> Vec<f32> {
     keys.iter()
-        .map(|key| assert_node_border_box_screen_top_px(root, *key))
+        .map(|key| {
+            node_box(root, *key)
+                .expect("icon role should expose a box model")
+                .border_box
+                .top_px
+        })
         .collect()
 }
 
