@@ -4,6 +4,13 @@ use crate::types::dom_tag::{DomElementEditKind, DomElementLifecycleBehavior, Dom
 use crate::types::primitives::{DomRect, PointPx};
 use crate::types::{DomAttribute, DomAttributeValue};
 
+#[cfg(test)]
+use crate::types::box_model::BoxEdgeInsets;
+#[cfg(test)]
+use crate::types::dom_attr_node::DomAttributeNode;
+#[cfg(test)]
+use crate::types::{DomNode, DomNodeSlotKey};
+
 const DEFAULT_RANGE_MIN_VALUE: f32 = 0.0;
 const DEFAULT_RANGE_MAX_VALUE: f32 = 100.0;
 const DEFAULT_STEP_VALUE: f32 = 1.0;
@@ -432,24 +439,15 @@ fn point_in_rect(point: PointPx, rect: DomRect) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::dom_attr_node::DomAttributeNode;
-    use crate::types::{DomAttributeValue, DomNode, DomTag};
+    use super::*;
 
-    use super::{
-        NumericControlKind, NumericStepDirection, ResolvedElementControl,
-        ResolvedElementControlPart, ResolvedNumericControl, checkbox_default_preferred_size_px,
-        range_default_preferred_size_px, resolved_control_part_from_point,
-        resolved_element_control,
-    };
-
-    fn input_with_type(input_type: &str) -> crate::types::DomElementNode {
-        let DomNode::Element(mut node) =
-            DomNode::element(crate::types::DomNodeSlotKey::default(), DomTag::Input)
+    fn input_with_type(input_type: &str) -> DomElementNode {
+        let DomNode::Element(mut node) = DomNode::element(DomNodeSlotKey::default(), DomTag::Input)
         else {
             panic!("input should create an element node");
         };
         node.set_attr(
-            crate::types::DomAttribute::Type,
+            DomAttribute::Type,
             Some(DomAttributeValue::String(input_type.to_string())),
         )
         .expect("type");
@@ -501,22 +499,22 @@ mod tests {
     #[test]
     fn number_hit_testing_distinguishes_stepper_parts() {
         let element = input_with_type("number");
-        let box_model = crate::types::DomBoxModel::new(
-            crate::types::DomRect {
+        let box_model = DomBoxModel::new(
+            DomRect {
                 left_px: 10.0,
                 top_px: 20.0,
                 width_px: 100.0,
                 height_px: 20.0,
             },
-            crate::types::box_model::BoxEdgeInsets::default(),
-            crate::types::box_model::BoxEdgeInsets::default(),
-            crate::types::box_model::BoxEdgeInsets::default(),
+            BoxEdgeInsets::default(),
+            BoxEdgeInsets::default(),
+            BoxEdgeInsets::default(),
         );
         assert_eq!(
             resolved_control_part_from_point(
                 &element,
                 box_model,
-                crate::types::primitives::PointPx {
+                PointPx {
                     x_px: 15.0,
                     y_px: 25.0,
                 },
