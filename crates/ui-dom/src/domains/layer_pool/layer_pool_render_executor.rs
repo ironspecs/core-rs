@@ -15,6 +15,9 @@ use super::*;
 
 use crate::domains::render_ops::{StagedExternalRgbaUpload, StagedLayerApply};
 
+#[cfg(test)]
+use crate::domains::layer_ops::{LayerPaintPlan, RectPaintOp};
+
 #[derive(Resource)]
 pub(crate) struct LayerPoolRenderExecutor {
     pub(super) layer_config: FrozenLayerConfig,
@@ -423,5 +426,181 @@ impl LayerPoolRenderExecutor {
         !self
             .ordered_surface_entities_by_attached_root_parent
             .is_empty()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+    use bevy::asset::Handle;
+    use bevy::image::Image;
+    use bevy::math::UVec2;
+    use bevy::prelude::{Entity, World};
+
+    fn executor() -> LayerPoolRenderExecutor {
+        LayerPoolRenderExecutor::new(LayerConfig::default())
+    }
+
+    fn mint_leases(count: usize) -> Vec<LayerLease> {
+        let mut world = World::new();
+        world.insert_resource(LayerPool::new(LayerConfig::default()));
+        (0..count)
+            .map(|_| LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 10.0, 10.0)))
+            .collect()
+    }
+
+    fn main_entity(bits: u64) -> MainEntity {
+        Entity::from_bits(bits).into()
+    }
+
+    fn rect_op(position_px: [f32; 2]) -> RectPaintOp {
+        RectPaintOp {
+            position_px,
+            size_px: [8.0, 8.0],
+            fill_rgba: [1.0, 1.0, 1.0, 1.0],
+            corner_radii_px: [0.0; 4],
+            border_widths_px: [0.0; 4],
+            border_top_rgba: [0.0; 4],
+            border_right_rgba: [0.0; 4],
+            border_bottom_rgba: [0.0; 4],
+            border_left_rgba: [0.0; 4],
+        }
+    }
+
+    fn apply(lease: LayerLease, plan: LayerPaintPlan) -> StagedLayerApply {
+        StagedLayerApply {
+            lease,
+            image_handle: Handle::<Image>::default(),
+            layer_zero_in_image_px: [0.0, 0.0],
+            plan,
+        }
+    }
+
+    fn upload(lease: LayerLease, rgba_bytes: Vec<u8>) -> StagedExternalRgbaUpload {
+        StagedExternalRgbaUpload {
+            lease,
+            image_handle: Handle::<Image>::default(),
+            image_extent_px: UVec2::new(1, 1),
+            rgba_bytes,
+        }
+    }
+
+    #[test]
+    fn apply_job_invalidate_clears_that_leases_pending_work() {
+        let mut executor = executor();
+        let leases = mint_leases(2);
+        let lease_a = leases[0];
+        let lease_b = leases[1];
+
+        executor.stage_apply(apply(lease_a, LayerPaintPlan::default()));
+        executor.stage_apply(apply(lease_b, LayerPaintPlan::default()));
+        executor.stage_external_rgba_upload(upload(lease_a, vec![0; 4]));
+        assert_eq!(executor.pending_applies.len(), 2);
+        assert_eq!(executor.pending_external_rgba_uploads.len(), 1);
+
+        executor.apply_job(LayerPoolRenderJob::Invalidate { lease: lease_a });
+
+        assert_eq!(executor.pending_applies.len(), 1);
+        assert_eq!(executor.pending_applies[0].lease, lease_b);
+        assert!(executor.pending_external_rgba_uploads.is_empty());
+    }
+
+    #[test]
+    fn surface_order_jobs_maintain_all_three_maps_in_sync() {
+        let mut executor = executor();
+        let root_a = main_entity(1);
+        let e1 = main_entity(10);
+        let e2 = main_entity(11);
+        let e3 = main_entity(12);
+
+        executor.apply_job(LayerPoolRenderJob::ReplaceRootSurfaceOrder {
+            attached_root_parent: root_a,
+            parent_z_order: 3.0,
+            ordered_surface_entities: vec![e1, e2],
+        });
+
+        assert_eq!(
+            executor.ordered_surface_entities_for_attached_root_parent(root_a),
+            Some(&[e1, e2][..])
+        );
+        assert_eq!(
+            executor.parent_z_order_for_attached_root_parent(root_a),
+            Some(3.0)
+        );
+        assert_eq!(
+            executor.attached_root_parent_for_surface_entity(e1),
+            Some(root_a)
+        );
+        assert_eq!(
+            executor.attached_root_parent_for_surface_entity(e2),
+            Some(root_a)
+        );
+        assert!(executor.has_root_surface_orders());
+
+        executor.apply_job(LayerPoolRenderJob::ReplaceRootSurfaceOrder {
+            attached_root_parent: root_a,
+            parent_z_order: 1.0,
+            ordered_surface_entities: vec![e3],
+        });
+
+        assert_eq!(
+            executor.ordered_surface_entities_for_attached_root_parent(root_a),
+            Some(&[e3][..])
+        );
+        assert_eq!(executor.attached_root_parent_for_surface_entity(e1), None);
+        assert_eq!(executor.attached_root_parent_for_surface_entity(e2), None);
+        assert_eq!(
+            executor.attached_root_parent_for_surface_entity(e3),
+            Some(root_a)
+        );
+
+        executor.apply_job(LayerPoolRenderJob::DetachRootSurfaceOrder {
+            attached_root_parent: root_a,
+        });
+
+        assert_eq!(
+            executor.ordered_surface_entities_for_attached_root_parent(root_a),
+            None
+        );
+        assert_eq!(
+            executor.parent_z_order_for_attached_root_parent(root_a),
+            None
+        );
+        assert_eq!(executor.attached_root_parent_for_surface_entity(e3), None);
+        assert!(!executor.has_root_surface_orders());
+    }
+
+    #[test]
+    fn stage_upserts_replace_by_lease_keeping_latest() {
+        let mut executor = executor();
+        let leases = mint_leases(2);
+        let lease_a = leases[0];
+        let lease_b = leases[1];
+
+        let mut plan_p1 = LayerPaintPlan::default();
+        plan_p1.rects.push(rect_op([1.0, 2.0]));
+        let mut plan_p2 = LayerPaintPlan::default();
+        plan_p2.rects.push(rect_op([30.0, 40.0]));
+
+        executor.stage_apply(apply(lease_a, plan_p1));
+        executor.stage_apply(apply(lease_a, LayerPaintPlan::default()));
+        executor.stage_apply(apply(lease_b, plan_p2.clone()));
+
+        assert_eq!(executor.pending_applies.len(), 2);
+        assert_eq!(executor.pending_applies[0].lease, lease_a);
+        assert!(executor.pending_applies[0].plan.is_empty());
+        assert_eq!(executor.pending_applies[1].lease, lease_b);
+        assert_eq!(executor.pending_applies[1].plan, plan_p2);
+
+        executor.stage_external_rgba_upload(upload(lease_a, vec![1, 2, 3, 4]));
+        executor.stage_external_rgba_upload(upload(lease_a, vec![5, 6, 7, 8]));
+
+        assert_eq!(executor.pending_external_rgba_uploads.len(), 1);
+        assert_eq!(executor.pending_external_rgba_uploads[0].lease, lease_a);
+        assert_eq!(
+            executor.pending_external_rgba_uploads[0].rgba_bytes,
+            vec![5, 6, 7, 8]
+        );
     }
 }
