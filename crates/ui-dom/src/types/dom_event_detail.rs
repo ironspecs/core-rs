@@ -19,6 +19,9 @@ use crate::types::dom_event::{
     DomTransitionEvent, DomUiEvent, DomValueChangeEvent, DomWheelEvent,
 };
 
+#[cfg(test)]
+use crate::types::dom_event::{DomModifierState, DomMouseButton, DomPointerType};
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum DomEventDetail {
     Ui(DomUiEvent),
@@ -45,5 +48,36 @@ impl DomEventDetail {
             Self::ValueChange(_) => DomEventDetailKind::ValueChange,
             Self::Transition(_) => DomEventDetailKind::Transition,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detail_kind_reports_matching_variant() {
+        let pointer = DomEventDetail::Pointer(DomPointerEvent {
+            pointer_id: 1,
+            pointer_type: DomPointerType::Mouse,
+            is_primary: true,
+            button: Some(DomMouseButton::Primary),
+            buttons: 1,
+            client_x: 0.0,
+            client_y: 0.0,
+            modifiers: DomModifierState::default(),
+        });
+        assert_eq!(pointer.kind(), DomEventDetailKind::Pointer);
+
+        let keyboard = DomEventDetail::Keyboard(DomKeyboardEvent {
+            key: "a".to_string(),
+            code: "KeyA".to_string(),
+            repeat: false,
+            modifiers: DomModifierState::default(),
+        });
+        assert_eq!(keyboard.kind(), DomEventDetailKind::Keyboard);
+
+        let focus = DomEventDetail::Focus(DomFocusEvent::default());
+        assert_eq!(focus.kind(), DomEventDetailKind::Focus);
     }
 }

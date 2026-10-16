@@ -44,3 +44,22 @@ impl DomEventDescriptorBuilder {
         self.descriptor
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_chains_to_a_descriptor_with_exact_fields() {
+        let descriptor = DomEventDescriptorBuilder::new(DomEventName::Click)
+            .dom_name("click")
+            .behavior(DomEventBehavior::new(true, true, DomEventDetailKind::Mouse))
+            .build();
+
+        assert_eq!(descriptor.name, DomEventName::Click);
+        assert_eq!(descriptor.dom_name, "click");
+        assert!(descriptor.behavior.bubbles);
+        assert!(descriptor.behavior.cancelable);
+        assert_eq!(descriptor.behavior.detail_kind, DomEventDetailKind::Mouse);
+    }
+}

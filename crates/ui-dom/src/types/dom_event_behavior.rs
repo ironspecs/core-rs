@@ -28,3 +28,16 @@ impl DomEventBehavior {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn behavior_new_stores_bubbles_cancelable_and_detail_kind() {
+        let behavior = DomEventBehavior::new(true, false, DomEventDetailKind::Pointer);
+        assert!(behavior.bubbles);
+        assert!(!behavior.cancelable);
+        assert_eq!(behavior.detail_kind, DomEventDetailKind::Pointer);
+    }
+}
