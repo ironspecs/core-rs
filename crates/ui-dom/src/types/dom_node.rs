@@ -50,9 +50,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::domains::layer_ops::TextRunId;
 use crate::domains::paint::{measure_text_intrinsic, measure_text_intrinsic_with_font_size};
 use crate::types::dom_attr_parse::{
-    layout_length_attr_uses_unset, normalize_attribute_value, parse_class_attr_list,
-    parse_style_attr_map, validate_attribute_value,
+    layout_length_attr_uses_unset, parse_class_attr_list, parse_style_attr_map,
 };
+pub use crate::types::dom_document_fragment_node::DomDocumentFragmentNode;
+pub use crate::types::dom_document_node::DomDocumentNode;
 pub use crate::types::dom_element_node::DomElementNode;
 #[cfg(test)]
 use crate::types::dom_event::DomEventDispatchContext;
@@ -222,26 +223,6 @@ pub(crate) enum LoweredImageSourceKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DomDocumentNode {
-    /// Shared node links, caches, transitions, and owner identity.
-    pub base: DomNodeBase,
-    /// Authored root-level attrs that apply to the whole document tree.
-    pub attrs: DomAttrs,
-    pub(crate) attribute_style_map: BTreeMap<DomAttribute, DomAttributeValue>,
-    pub(crate) class_list: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct DomDocumentFragmentNode {
-    /// Shared node links, caches, transitions, and owner identity.
-    pub base: DomNodeBase,
-    /// Authored fragment-container attrs used while staging subtree content.
-    pub attrs: DomAttrs,
-    pub(crate) attribute_style_map: BTreeMap<DomAttribute, DomAttributeValue>,
-    pub(crate) class_list: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct DomTextNode {
     pub base: DomNodeBase,
     text_run_id_hint: Option<TextRunId>,
@@ -344,133 +325,11 @@ pub(crate) struct FinishedDomTransition {
     pub elapsed_s: f64,
 }
 
-impl DomDocumentNode {
-    /// Returns the document root key that owns this document node.
-    ///
-    /// This lets callers confirm ownership integrity when they are holding a
-    /// raw document node reference. The returned key is the same owner anchor
-    /// stamped onto every node created by the same root document.
-    #[must_use]
-    pub fn owner_document_key(&self) -> DomNodeSlotKey {
-        self.base.owner_document_key
-    }
-
-    #[must_use]
-    pub(crate) fn new(owner_document_key: DomNodeSlotKey) -> Self {
-        Self {
-            base: DomNodeBase::new(owner_document_key),
-            attrs: DomAttrs::default(),
-            attribute_style_map: BTreeMap::new(),
-            class_list: Vec::new(),
-        }
-    }
-}
-
-fn validate_document_like_attr_target(attribute: &DomAttribute) -> Result<(), DomError> {
+pub(crate) fn validate_document_like_attr_target(attribute: &DomAttribute) -> Result<(), DomError> {
     if *attribute == DomAttribute::Id {
         return Err(DomError::InvalidAttributeTarget);
     }
     Ok(())
-}
-
-impl DomAttributeNode for DomDocumentNode {
-    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
-        stored_attribute_value(&self.attrs, attribute)
-    }
-
-    fn attrs(&self) -> &DomAttrs {
-        &self.attrs
-    }
-
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
-        &self.attribute_style_map
-    }
-
-    fn class_list(&self) -> &[String] {
-        &self.class_list
-    }
-
-    fn set_attr(
-        &mut self,
-        attribute: DomAttribute,
-        value: Option<DomAttributeValue>,
-    ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
-        validate_document_like_attr_target(&attribute)?;
-        validate_attribute_value(&attribute, value.as_ref())?;
-        write_attribute(
-            &mut self.attrs,
-            &mut self.attribute_style_map,
-            &mut self.class_list,
-            &attribute,
-            value,
-        )
-    }
-
-    fn after_attr_write_updates_intrinsic(&self, _attribute: &DomAttribute) -> bool {
-        false
-    }
-}
-
-impl DomDocumentFragmentNode {
-    /// Returns the document root key that owns this fragment node.
-    ///
-    /// This exposes the fragment-local owner anchor used while detached content
-    /// is being staged. It exists so fragment nodes can still enforce same-root
-    /// attachment rules before import.
-    #[must_use]
-    pub fn owner_document_key(&self) -> DomNodeSlotKey {
-        self.base.owner_document_key
-    }
-
-    #[must_use]
-    pub(crate) fn new(owner_document_key: DomNodeSlotKey) -> Self {
-        Self {
-            base: DomNodeBase::new(owner_document_key),
-            attrs: DomAttrs::default(),
-            attribute_style_map: BTreeMap::new(),
-            class_list: Vec::new(),
-        }
-    }
-}
-
-impl DomAttributeNode for DomDocumentFragmentNode {
-    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
-        stored_attribute_value(&self.attrs, attribute)
-    }
-
-    fn attrs(&self) -> &DomAttrs {
-        &self.attrs
-    }
-
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
-        &self.attribute_style_map
-    }
-
-    fn class_list(&self) -> &[String] {
-        &self.class_list
-    }
-
-    fn set_attr(
-        &mut self,
-        attribute: DomAttribute,
-        value: Option<DomAttributeValue>,
-    ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
-        validate_document_like_attr_target(&attribute)?;
-        validate_attribute_value(&attribute, value.as_ref())?;
-        write_attribute(
-            &mut self.attrs,
-            &mut self.attribute_style_map,
-            &mut self.class_list,
-            &attribute,
-            value,
-        )
-    }
-
-    fn after_attr_write_updates_intrinsic(&self, _attribute: &DomAttribute) -> bool {
-        false
-    }
 }
 
 impl DomTextNode {

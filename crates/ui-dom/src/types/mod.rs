@@ -24,6 +24,8 @@ mod dom_attr_parse;
 pub mod dom_attribute;
 pub mod dom_box_model;
 pub mod dom_canonical_snapshot;
+pub mod dom_document_fragment_node;
+pub mod dom_document_node;
 mod dom_element_descriptor_builder;
 pub mod dom_element_node;
 pub mod dom_event;
@@ -70,6 +72,8 @@ pub(crate) use dom_attr_parse::{
 pub use dom_attribute::*;
 pub use dom_box_model::*;
 pub use dom_canonical_snapshot::*;
+pub use dom_document_fragment_node::*;
+pub use dom_document_node::*;
 pub use dom_element_node::*;
 pub use dom_event::*;
 pub use dom_event_listener::*;
