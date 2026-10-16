@@ -1,13 +1,20 @@
-//! Render-only text-run state and helpers for the retained layer pool.
+//! Render-only text-run helpers for the retained layer pool.
 //!
-//! This file exists so glyph-mask caching, text-buffer reuse, font registration,
-//! and final text-run GPU submission stay on the render-owned side of the
-//! boundary instead of drifting back into the shared `layer_pool` owner file.
+//! This file exists so glyph-mask caching, text-buffer reuse, and final
+//! text-run GPU submission stay on the render-owned side of the boundary
+//! instead of drifting back into the shared `layer_pool` owner file.
+//!
+//! The moved state types (`FontRegistrationState`, `PreloadWarmupQueue`, and
+//! `TextRunRenderState`) live in their own files and are re-exported here.
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-const TEXT_SHAPE_RUN_CACHE_RETAINED_AGE_COUNT: u64 = 2;
+pub(super) use super::font_registration_state::FontRegistrationState;
+pub(super) use super::preload_warmup_queue::PreloadWarmupQueue;
+pub(super) use super::text_run_render_state::TextRunRenderState;
+
+pub(super) const TEXT_SHAPE_RUN_CACHE_RETAINED_AGE_COUNT: u64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct TextBufferKey {
@@ -30,7 +37,7 @@ pub(super) struct CachedTextBuffer {
     pub(super) buffer: Buffer,
 }
 
-struct CachedGlyphMask {
+pub(super) struct CachedGlyphMask {
     bind_group: wgpu::BindGroup,
     texture: wgpu::Texture,
     width_px: u32,
@@ -40,13 +47,13 @@ struct CachedGlyphMask {
 }
 
 #[derive(Clone, Copy)]
-struct PreparedGlyphDraw {
+pub(super) struct PreparedGlyphDraw {
     glyph_key: GlyphMaskKey,
     op: GpuTextRunOp,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum PreloadKey {
+pub(super) enum PreloadKey {
     GenericGlyphWarmup(GenericGlyphWarmupKey),
 }
 
@@ -69,40 +76,6 @@ pub(super) struct GenericGlyphWarmupKey {
 pub(super) struct GenericGlyphWarmupRequest {
     pub(super) key: GenericGlyphWarmupKey,
     pub(super) sample_text: &'static str,
-}
-
-#[derive(Default)]
-pub(super) struct PreloadWarmupQueue {
-    pub(super) requests: Vec<GenericGlyphWarmupRequest>,
-    keys: HashSet<PreloadKey>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct FontRegistrationState {
-    required_font_asset_ids_by_family: HashMap<TextFontFamilyId, Vec<AssetId<UiDomFontAsset>>>,
-    registered_font_asset_ids: HashSet<AssetId<UiDomFontAsset>>,
-}
-
-pub(super) struct TextRunRenderState {
-    pixel_density: PixelDensity,
-    debug_pipeline: LayerPipelineState,
-    pipeline: wgpu::RenderPipeline,
-    gpu_buffer: wgpu::Buffer,
-    gpu_capacity: usize,
-    uniform_buffer: wgpu::Buffer,
-    uniform_bind_group: wgpu::BindGroup,
-    sampler: wgpu::Sampler,
-    glyph_bind_group_layout: wgpu::BindGroupLayout,
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    font_registration_state: FontRegistrationState,
-    run_bank: SecondaryMap<TextRunId, RenderTextRunRecord>,
-    text_buffer_cache: LruCache<TextBufferKey, CachedTextBuffer, UI_TEXT_BUFFER_CACHE_CAPACITY>,
-    glyph_mask_cache: LruCache<GlyphMaskKey, CachedGlyphMask, UI_TEXT_GLYPH_CACHE_CAPACITY>,
-    preload_warmup_queue: PreloadWarmupQueue,
-    pending_lease_dependencies: HashMap<LayerLease, PendingLeaseDependencies>,
-    prepared_glyph_draws: Vec<PreparedGlyphDraw>,
-    fallback_debug_runs: Vec<TextRunPaintOp>,
 }
 
 pub(super) struct TextRunSurfaceContext<'a> {
@@ -134,7 +107,7 @@ struct TextRunPipelineState {
     glyph_bind_group_layout: wgpu::BindGroupLayout,
 }
 
-enum GlyphMaskBuildResult {
+pub(super) enum GlyphMaskBuildResult {
     Cached(CachedGlyphMask),
     Skip,
     Unsupported,
@@ -156,166 +129,6 @@ enum GlyphMaskCacheStatus {
 pub(super) enum TextGlyphFallbackDecision {
     Continue,
     DebugRect,
-}
-
-impl FontRegistrationState {
-    #[must_use]
-    fn ready(&self, font_family_id: TextFontFamilyId) -> bool {
-        let Some(required_font_asset_ids) =
-            self.required_font_asset_ids_by_family.get(&font_family_id)
-        else {
-            return false;
-        };
-        !required_font_asset_ids.is_empty()
-            && required_font_asset_ids
-                .iter()
-                .all(|asset_id| self.registered_font_asset_ids.contains(asset_id))
-    }
-
-    pub(super) fn set_required_font_asset_ids(
-        &mut self,
-        font_family_id: TextFontFamilyId,
-        required_font_asset_ids: Vec<AssetId<UiDomFontAsset>>,
-    ) {
-        self.required_font_asset_ids_by_family
-            .insert(font_family_id, required_font_asset_ids);
-    }
-
-    fn mark_registered(&mut self, asset_id: AssetId<UiDomFontAsset>) {
-        self.registered_font_asset_ids.insert(asset_id);
-    }
-}
-
-impl PreloadWarmupQueue {
-    #[cfg(test)]
-    pub(super) fn unique_request_count(&self) -> usize {
-        self.keys.len()
-    }
-
-    fn push(&mut self, request: GenericGlyphWarmupRequest) {
-        let key = PreloadKey::GenericGlyphWarmup(request.key);
-        if !self.keys.insert(key) {
-            return;
-        }
-        self.requests.push(request);
-    }
-
-    fn take_batch(&mut self, count: usize) -> Vec<GenericGlyphWarmupRequest> {
-        let take_count = self.requests.len().min(count);
-        let drained: Vec<_> = self.requests.drain(0..take_count).collect();
-        for request in &drained {
-            let key = PreloadKey::GenericGlyphWarmup(request.key);
-            self.keys.remove(&key);
-        }
-        drained
-    }
-}
-
-impl TextRunRenderState {
-    pub(super) fn set_required_font_asset_ids(
-        &mut self,
-        font_family_id: TextFontFamilyId,
-        required_font_asset_ids: Vec<AssetId<UiDomFontAsset>>,
-    ) {
-        self.font_registration_state
-            .set_required_font_asset_ids(font_family_id, required_font_asset_ids);
-    }
-
-    pub(super) fn remove_run_record(&mut self, text_run_id: TextRunId) {
-        self.run_bank.remove(text_run_id);
-    }
-
-    pub(super) fn insert_run_record(
-        &mut self,
-        text_run_id: TextRunId,
-        run_record: RenderTextRunRecord,
-    ) {
-        self.run_bank.insert(text_run_id, run_record);
-    }
-
-    pub(super) fn apply_text_run_change(&mut self, text_run_change: ExtractedTextRunRecord) {
-        self.insert_run_record(
-            text_run_change.text_run_id,
-            RenderTextRunRecord {
-                text: text_run_change.text,
-                language_hint_id: text_run_change.language_hint_id,
-                font_family_id: text_run_change.font_family_id,
-            },
-        );
-    }
-
-    pub(super) fn trim_shape_run_cache(&mut self) {
-        self.font_system
-            .shape_run_cache
-            .trim(TEXT_SHAPE_RUN_CACHE_RETAINED_AGE_COUNT);
-    }
-
-    pub(super) fn apply_to_surface(
-        &mut self,
-        context: &TextRunSurfaceContext<'_>,
-        text_runs: &[TextRunPaintOp],
-    ) -> bool {
-        apply_text_runs_to_surface(self, context, text_runs)
-    }
-
-    pub(super) fn run_preload_warmups(&mut self, device: &RenderDevice, queue: &RenderQueue) {
-        for request in self
-            .preload_warmup_queue
-            .take_batch(UI_TEXT_PRELOAD_BATCH_SIZE)
-        {
-            if !self
-                .font_registration_state
-                .ready(request.key.font_family_id)
-            {
-                self.preload_warmup_queue.push(request);
-                continue;
-            }
-            let text_layout_request = text_layout::TextLayoutRequest {
-                text: request.sample_text,
-                white_space: DomWhiteSpace::Normal,
-                word_break: crate::types::DomWordBreak::Normal,
-                font_family_id: request.key.font_family_id,
-                language_hint_id: request.key.language_hint_id,
-                font_size_px: f32::from_bits(request.key.font_size_bits),
-                line_height_px: None,
-                width_px: None,
-                wrap_mode: TextWrapMode::WordOrGlyph,
-                alignment: TextAlign::Left,
-            };
-            let buffer = text_layout::text_render::build_render_text_buffer(
-                &mut self.font_system,
-                &text_layout_request,
-                None,
-            );
-            let raster_scale = f32::from_bits(request.key.raster_scale_bits);
-            for run in buffer.layout_runs() {
-                for glyph in run.glyphs {
-                    let physical_glyph = glyph.physical((0.0, 0.0), raster_scale);
-                    let glyph_key = GlyphMaskKey {
-                        cache_key: physical_glyph.cache_key,
-                    };
-                    if self.glyph_mask_cache.contains(&glyph_key) {
-                        let _ = self.glyph_mask_cache.get(&glyph_key);
-                        continue;
-                    }
-                    let GlyphMaskBuildResult::Cached(cached_glyph_mask) = build_glyph_mask(
-                        device,
-                        queue,
-                        &self.glyph_bind_group_layout,
-                        &self.sampler,
-                        &mut self.font_system,
-                        &mut self.swash_cache,
-                        physical_glyph.cache_key,
-                    ) else {
-                        continue;
-                    };
-                    let _ = self
-                        .glyph_mask_cache
-                        .preload(&glyph_key, || cached_glyph_mask);
-                }
-            }
-        }
-    }
 }
 
 pub(super) fn create_text_run_render_state(
@@ -568,23 +381,6 @@ fn language_warmup_samples(language_hint_id: TextLanguageId) -> &'static [&'stat
         TextLanguageId::SimplifiedChinese => &UI_TEXT_SIMPLIFIED_CHINESE_WARMUP_SAMPLES,
         TextLanguageId::Korean => &UI_TEXT_KOREAN_WARMUP_SAMPLES,
         TextLanguageId::Thai => &UI_TEXT_THAI_WARMUP_SAMPLES,
-    }
-}
-
-impl TextRunRenderState {
-    pub(super) fn register_font_asset(&mut self, font_asset: ExtractedFontAssetRecord) {
-        if self
-            .font_registration_state
-            .registered_font_asset_ids
-            .contains(&font_asset.asset_id)
-        {
-            return;
-        }
-        self.font_system
-            .db_mut()
-            .load_font_source(FontSource::Binary(std::sync::Arc::new(font_asset.bytes)));
-        self.font_registration_state
-            .mark_registered(font_asset.asset_id);
     }
 }
 
@@ -999,7 +795,7 @@ pub(super) fn build_text_buffer(
     }
 }
 
-fn build_glyph_mask(
+pub(super) fn build_glyph_mask(
     device: &RenderDevice,
     queue: &RenderQueue,
     glyph_bind_group_layout: &wgpu::BindGroupLayout,

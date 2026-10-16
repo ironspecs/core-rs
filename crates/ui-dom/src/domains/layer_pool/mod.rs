@@ -49,6 +49,7 @@
 //!   retained render payloads into the GPU op-buffer path.
 
 mod external_layer_target;
+mod font_registration_state;
 mod frozen_layer_config;
 mod layer_config;
 mod layer_lease;
@@ -64,8 +65,10 @@ mod layer_pool_render_job;
 mod layer_pool_render_job_queue;
 mod layer_pool_render_state;
 mod layer_pool_text_render;
+mod preload_warmup_queue;
+mod text_run_render_state;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use bevy::{
@@ -87,7 +90,6 @@ use collections::lru_cache::LruCache;
 use collections::metrics::{MetricName, MetricSnapshot, Metrics};
 use cosmic_text::{
     Buffer, CacheKey, FontSystem, LayoutGlyph, PhysicalGlyph, SwashCache, SwashContent,
-    fontdb::Source as FontSource,
 };
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use wgpu;
