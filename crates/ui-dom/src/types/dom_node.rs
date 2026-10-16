@@ -53,12 +53,13 @@ use crate::types::dom_attr_parse::{
     layout_length_attr_uses_unset, normalize_attribute_value, parse_class_attr_list,
     parse_style_attr_map, validate_attribute_value,
 };
+pub use crate::types::dom_element_node::DomElementNode;
 #[cfg(test)]
 use crate::types::dom_event::DomEventDispatchContext;
 use crate::types::dom_event::{DomEventListener, DomEventListenerOptions, DomEventName};
 use crate::types::dom_node_base::DomNodeBase;
-use crate::types::dom_pseudo_state::{DomPseudoState, DomPseudoStateBits};
-use crate::types::dom_tag::{DomElementBehavior, DomElementStateStyleDeclarations, DomTag};
+use crate::types::dom_pseudo_state::DomPseudoState;
+use crate::types::dom_tag::{DomElementStateStyleDeclarations, DomTag};
 use crate::types::dom_transition::DomTransition;
 use crate::types::element_behaviors::{
     commit_intrinsic_after_style_recompute, compute_intrinsic_on_create,
@@ -78,13 +79,11 @@ use crate::types::dom_event::{
     DomEvent, DomEventDetail, DomEventPhase, DomModifierState, DomMouseButton, DomMouseEvent,
 };
 #[cfg(test)]
-use crate::types::dom_tag::DomElementEditKind;
-#[cfg(test)]
 use crate::types::element_behaviors::{input_default_width_sample, measured_text_width_px};
 #[cfg(test)]
 use crate::types::{
-    DomElementIntrinsicKind, DomEventListenerContext, DomOverflowWrap, DomWhiteSpace, DomWordBreak,
-    RootDom, RootDomContext, parse_css_color_rgba,
+    DomEventListenerContext, DomOverflowWrap, DomWhiteSpace, DomWordBreak, RootDom, RootDomContext,
+    parse_css_color_rgba,
 };
 
 new_key_type! {
@@ -216,17 +215,6 @@ pub enum DomIntrinsic {
     ElementDefaultPreferredSize(ElementDefaultPreferredSizeIntrinsic),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct DomElementNode {
-    pub base: DomNodeBase,
-    pub tag: DomTag,
-    pub attrs: DomAttrs,
-    pub(crate) attribute_style_map: BTreeMap<DomAttribute, DomAttributeValue>,
-    pub(crate) class_list: Vec<String>,
-    lowered_image_source_kind: Option<LoweredImageSourceKind>,
-    pseudo_state_bits: DomPseudoStateBits,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LoweredImageSourceKind {
     InternalIcon(UiIconId),
@@ -354,127 +342,6 @@ pub(crate) struct DomTransitionSyncResult {
 pub(crate) struct FinishedDomTransition {
     pub attribute: DomAttribute,
     pub elapsed_s: f64,
-}
-
-impl DomElementNode {
-    /// Returns the document root key that owns this element.
-    ///
-    /// This is the stable ownership anchor used to prevent nodes from being
-    /// attached into the wrong document tree. Callers should treat it as a
-    /// document-local identity, not a global DOM id.
-    #[must_use]
-    pub fn owner_document_key(&self) -> DomNodeSlotKey {
-        self.base.owner_document_key
-    }
-
-    #[must_use]
-    pub(crate) fn new(owner_document_key: DomNodeSlotKey, tag: DomTag) -> Self {
-        let descriptor = tag.descriptor();
-        let mut base = DomNodeBase::new(owner_document_key);
-        base.style
-            .set_state_style_declarations(descriptor.state_style_declarations.clone());
-        Self {
-            base,
-            tag,
-            attrs: descriptor.default_attrs,
-            attribute_style_map: BTreeMap::new(),
-            class_list: Vec::new(),
-            lowered_image_source_kind: None,
-            pseudo_state_bits: DomPseudoStateBits::default(),
-        }
-    }
-
-    #[must_use]
-    pub(crate) const fn lowered_image_source_kind(&self) -> Option<LoweredImageSourceKind> {
-        self.lowered_image_source_kind
-    }
-
-    pub(crate) fn refresh_lowered_image_source_kind(&mut self) -> Result<(), DomError> {
-        if self.tag != DomTag::Img {
-            self.lowered_image_source_kind = None;
-            return Ok(());
-        }
-        self.lowered_image_source_kind = lowered_image_source_kind_from_attrs(&self.attrs)?;
-        Ok(())
-    }
-
-    /// Returns the built-in behavior associated with this element's tag.
-    ///
-    /// This keeps tag-level behavior decisions centralized on the descriptor
-    /// model instead of forcing callers to hard-code special cases. The result
-    /// is intended for shared UI behavior, not app-local policy.
-    #[must_use]
-    pub fn behavior(&self) -> DomElementBehavior {
-        self.tag.descriptor().behavior
-    }
-
-    #[must_use]
-    pub(crate) fn style(&self) -> &DomStyleObject {
-        &self.base.style
-    }
-
-    /// Returns the current pseudo-state flags for this element.
-    #[must_use]
-    pub fn pseudo_state_bits(&self) -> DomPseudoStateBits {
-        self.pseudo_state_bits
-    }
-
-    /// Returns whether this element currently carries the provided pseudo-state.
-    #[must_use]
-    pub fn has_pseudo_state(&self, pseudo_state: DomPseudoState) -> bool {
-        self.pseudo_state_bits.contains(pseudo_state)
-    }
-
-    pub(crate) fn set_pseudo_state(&mut self, pseudo_state: DomPseudoState) {
-        self.pseudo_state_bits.insert(pseudo_state);
-    }
-
-    pub(crate) fn clear_pseudo_state(&mut self, pseudo_state: DomPseudoState) {
-        self.pseudo_state_bits.remove(pseudo_state);
-    }
-}
-
-impl DomAttributeNode for DomElementNode {
-    fn attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
-        stored_attribute_value(&self.attrs, attribute)
-    }
-
-    fn attrs(&self) -> &DomAttrs {
-        &self.attrs
-    }
-
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
-        &self.attribute_style_map
-    }
-
-    fn class_list(&self) -> &[String] {
-        &self.class_list
-    }
-
-    fn set_attr(
-        &mut self,
-        attribute: DomAttribute,
-        value: Option<DomAttributeValue>,
-    ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
-        validate_attribute_value(&attribute, value.as_ref())?;
-        write_attribute(
-            &mut self.attrs,
-            &mut self.attribute_style_map,
-            &mut self.class_list,
-            &attribute,
-            value,
-        )?;
-        self.refresh_lowered_image_source_kind()
-    }
-
-    fn after_attr_write_updates_intrinsic(&self, attribute: &DomAttribute) -> bool {
-        self.tag
-            .descriptor()
-            .behavior
-            .after_attr_write_intrinsic_update
-            .matches(attribute)
-    }
 }
 
 impl DomDocumentNode {
@@ -1630,7 +1497,7 @@ fn parse_next_class_list(
     }
 }
 
-fn lowered_image_source_kind_from_attrs(
+pub(crate) fn lowered_image_source_kind_from_attrs(
     attrs: &DomAttrs,
 ) -> Result<Option<LoweredImageSourceKind>, DomError> {
     let Some(src) = stored_attribute_value(attrs, &DomAttribute::Src) else {
@@ -2703,33 +2570,6 @@ mod tests {
             .expect_err("document fragment nodes should reject ids");
 
         assert_eq!(error, DomError::InvalidAttributeTarget);
-    }
-
-    #[test]
-    fn input_nodes_start_with_input_defaults() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Input);
-        node.after_create_intrinsic_update()
-            .expect("input create intrinsic should measure");
-        let element = node.as_element().expect("element node");
-
-        assert_eq!(
-            element.attrs.attributes.get(&DomAttribute::Type),
-            Some(&DomAttributeValue::String("text".to_string()))
-        );
-        assert_eq!(
-            element.attrs.attributes.get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("inline-block".to_string()))
-        );
-        assert!(element.behavior().focusable);
-        assert_eq!(element.behavior().edit_kind, DomElementEditKind::SingleLine);
-        assert_eq!(
-            element.behavior().intrinsic_kind,
-            DomElementIntrinsicKind::ElementDefaultPreferredSize
-        );
-        assert!(matches!(
-            node.intrinsic(),
-            DomIntrinsic::ElementDefaultPreferredSize(_)
-        ));
     }
 
     #[test]
