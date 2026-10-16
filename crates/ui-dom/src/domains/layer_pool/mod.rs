@@ -51,6 +51,7 @@
 mod external_layer_target;
 mod font_registration_state;
 mod frozen_layer_config;
+mod icon_atlas_load_state;
 mod layer_config;
 mod layer_lease;
 #[allow(clippy::module_inception)]
@@ -65,6 +66,7 @@ mod layer_pool_render_job;
 mod layer_pool_render_job_queue;
 mod layer_pool_render_state;
 mod layer_pool_text_render;
+mod layer_rect;
 mod preload_warmup_queue;
 mod text_run_render_state;
 
@@ -108,7 +110,7 @@ use crate::domains::{
     },
     layer_ops::{ImagePaintOp, SvgPaintOp, TextRunPaintOp},
     paint::RectPaintOp,
-    render_ops::{RenderOpsHandlers, StagedLayerApply},
+    render_ops::RenderOpsHandlers,
     text_layout,
 };
 use crate::numeric::{f32_to_u32, i32_to_f32, u32_to_f32};
@@ -116,12 +118,10 @@ use crate::render_plugin::{
     UiDomFontAsset, UiDomRenderSupport, UiDomTextFontCatalog, UiDomTextFontExtractState,
 };
 use crate::types::{DomWhiteSpace, PixelDensity};
+use icon_atlas_load_state::IconAtlasLoadState;
 use layer_config::FrozenLayerConfig;
 pub use layer_config::LayerConfig;
 use layer_pool_metrics::LayerPoolMetricStore;
-use layer_pool_text_render::{
-    TextRunRenderState, TextRunSurfaceContext, create_text_run_render_state,
-};
 
 pub use layer_lease::LayerLease;
 pub use layer_pool::LayerPaintTarget;
@@ -135,7 +135,8 @@ pub use layer_pool_policy::LayerPoolPolicy;
 
 use layer_pool_render_feedback::LayerPoolRenderFeedback;
 use layer_pool_render_job::LayerPoolRenderJob;
-use layer_pool_render_state::RenderSurfaceApplyResult;
+use layer_pool_render_state::LayerPoolRenderState;
+use layer_rect::LayerRect;
 
 pub use external_layer_target::ExternalLayerTarget;
 pub(crate) use layer_pool_render_executor::LayerPoolRenderExecutor;
@@ -146,7 +147,7 @@ use crate::domains::icon_atlas::ValidatedUiIconAtlasLookup;
 #[cfg(test)]
 use crate::domains::layer_ops::LayerPaintPlan;
 #[cfg(test)]
-use crate::domains::render_ops::{RenderOpsHandler, register_render_ops_handler};
+use crate::domains::render_ops::{RenderOpsHandler, StagedLayerApply, register_render_ops_handler};
 
 const LAYER_POOL_HISTORY_CAPACITY: usize = 128;
 const IMAGE_PLACEHOLDER_FILL_RGBA: [f32; 4] = [96.0 / 255.0, 168.0 / 255.0, 1.0, 1.0];
@@ -234,22 +235,6 @@ struct LayerMapping {
     layer_zero_y_in_image_px: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct LayerRect {
-    origin_x: f32,
-    origin_y: f32,
-    width: f32,
-    height: f32,
-}
-
-struct LayerPoolRenderState {
-    rect: LayerPipelineState,
-    icon: IconRenderState,
-    text_run: TextRunRenderState,
-    svg: LayerPipelineState,
-    image: LayerPipelineState,
-}
-
 struct LayerPipelineState {
     pipeline: wgpu::RenderPipeline,
     gpu_buffer: wgpu::Buffer,
@@ -267,13 +252,6 @@ struct IconRenderState {
     atlas_bind_group_layout: wgpu::BindGroupLayout,
     atlas_sampler: wgpu::Sampler,
     atlas: Option<RenderOwnedIconAtlas>,
-}
-
-enum IconAtlasLoadState {
-    Empty,
-    Loading(LoadingIconAtlasState),
-    Ready,
-    Failed,
 }
 
 struct LoadingIconAtlasState {
@@ -523,113 +501,6 @@ const GPU_TEXT_RUN_OP_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
         shader_location: 2,
     },
 ];
-
-impl LayerRect {
-    fn from_tuple(layer_rect_px: (f32, f32, f32, f32)) -> Self {
-        Self {
-            origin_x: layer_rect_px.0,
-            origin_y: layer_rect_px.1,
-            width: layer_rect_px.2,
-            height: layer_rect_px.3,
-        }
-    }
-}
-
-impl LayerPoolRenderState {
-    fn new(device: &RenderDevice, layer_config: FrozenLayerConfig) -> Self {
-        Self {
-            rect: create_rect_pipeline_state(device),
-            icon: create_icon_render_state(device),
-            text_run: create_text_run_render_state(device, layer_config.pixel_density()),
-            svg: create_debug_rect_pipeline_state(device, "svg", DIRECT_SVG_SHADER),
-            image: create_debug_rect_pipeline_state(device, "image", DIRECT_IMAGE_SHADER),
-        }
-    }
-}
-
-impl IconAtlasLoadState {
-    pub(super) fn take_pending_install(&mut self) -> Option<PendingIconAtlasInstall> {
-        let IconAtlasLoadState::Loading(loading_state) = self else {
-            return None;
-        };
-        loading_state.pending_install.take()
-    }
-}
-
-impl LayerPoolRenderState {
-    pub(super) fn apply_plan_to_surface(
-        &mut self,
-        device: &RenderDevice,
-        queue: &RenderQueue,
-        gpu_image: &GpuImage,
-        pixel_density: PixelDensity,
-        apply: &StagedLayerApply,
-    ) -> RenderSurfaceApplyResult {
-        let rect_buffer_grew = apply_rects_to_surface(
-            &mut self.rect,
-            device,
-            queue,
-            gpu_image,
-            pixel_density,
-            &apply.plan.rects,
-            apply.layer_zero_in_image_px,
-        );
-        apply_icons_to_surface(
-            &mut self.icon,
-            device,
-            queue,
-            gpu_image,
-            pixel_density,
-            &apply.plan.icons,
-            apply.layer_zero_in_image_px,
-        );
-        let text_runs_ready = self.text_run.apply_to_surface(
-            &TextRunSurfaceContext {
-                device,
-                queue,
-                gpu_image,
-                layer_zero_in_image_px: apply.layer_zero_in_image_px,
-                lease: apply.lease,
-            },
-            &apply.plan.text_runs,
-        );
-        apply_svgs_to_surface(
-            &mut self.svg,
-            device,
-            queue,
-            gpu_image,
-            pixel_density,
-            &apply.plan.svgs,
-            apply.layer_zero_in_image_px,
-        );
-        apply_images_to_surface(
-            &mut self.image,
-            device,
-            queue,
-            gpu_image,
-            pixel_density,
-            &apply.plan.images,
-            apply.layer_zero_in_image_px,
-        );
-        RenderSurfaceApplyResult {
-            rect_buffer_grew,
-            text_runs_ready,
-        }
-    }
-
-    pub(super) fn install_ready_icon_atlas(
-        &mut self,
-        device: &RenderDevice,
-        queue: &RenderQueue,
-        pending_install: PendingIconAtlasInstall,
-    ) {
-        install_ready_icon_atlas(device, queue, &mut self.icon, pending_install);
-    }
-
-    pub(super) fn icon_atlas_is_ready(&self) -> bool {
-        self.icon.atlas.is_some()
-    }
-}
 
 pub(crate) fn extract_layer_pool_render_work(
     mut main_world: bevy::prelude::ResMut<MainWorld>,
