@@ -30,3 +30,33 @@ impl TextRunSignature {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_text_detects_language_hints_and_ui_sans_family() {
+        let settings = TextRunSignature::from_text("Settings".into());
+        assert_eq!(settings.language_hint_id, TextLanguageId::English);
+        assert_eq!(settings.font_family_id, TextFontFamilyId::UiSans);
+        assert_eq!(settings.text.as_ref(), "Settings");
+
+        assert_eq!(
+            TextRunSignature::from_text("メニュー".into()).language_hint_id,
+            TextLanguageId::Japanese
+        );
+        assert_eq!(
+            TextRunSignature::from_text("메뉴".into()).language_hint_id,
+            TextLanguageId::Korean
+        );
+        assert_eq!(
+            TextRunSignature::from_text("เมนู".into()).language_hint_id,
+            TextLanguageId::Thai
+        );
+        assert_eq!(
+            TextRunSignature::from_text("颜色".into()).language_hint_id,
+            TextLanguageId::SimplifiedChinese
+        );
+    }
+}

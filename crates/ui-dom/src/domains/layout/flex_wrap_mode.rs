@@ -26,3 +26,20 @@ impl FlexWrapMode {
         self == Self::WrapReverse
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_mode_methods_follow_their_variants() {
+        assert!(!FlexWrapMode::NoWrap.is_wrapping());
+        assert!(!FlexWrapMode::NoWrap.is_cross_reversed());
+
+        assert!(FlexWrapMode::Wrap.is_wrapping());
+        assert!(!FlexWrapMode::Wrap.is_cross_reversed());
+
+        assert!(FlexWrapMode::WrapReverse.is_wrapping());
+        assert!(FlexWrapMode::WrapReverse.is_cross_reversed());
+    }
+}

@@ -37,3 +37,25 @@ impl ValidatedUiIconAtlasLookup {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_entry_returns_packed_rect_for_known_icon() {
+        let first = ValidatedUiIconAtlasEntry {
+            packed_rect_px: [0, 0, 8, 8],
+        };
+        let second = ValidatedUiIconAtlasEntry {
+            packed_rect_px: [16, 16, 10, 10],
+        };
+        let lookup = ValidatedUiIconAtlasLookup::from_entries_for_tests(vec![first, second]);
+
+        assert_eq!(lookup.entry(UiIconId::Scene).packed_rect_px, [0, 0, 8, 8]);
+        assert_eq!(
+            lookup.entry(UiIconId::Media).packed_rect_px,
+            [16, 16, 10, 10]
+        );
+    }
+}

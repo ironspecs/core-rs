@@ -30,3 +30,14 @@ impl FrozenLayerConfig {
         self.0.pixel_density
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frozen_config_reports_its_constructor_density() {
+        let frozen = FrozenLayerConfig::new(LayerConfig::new(PixelDensity::X4));
+        assert_eq!(frozen.pixel_density(), PixelDensity::X4);
+    }
+}

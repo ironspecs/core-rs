@@ -27,3 +27,41 @@ impl ControlWidgetPaintOps {
         plan.icons.extend(self.icons);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ui_icons::UiIconId;
+
+    use super::*;
+
+    #[test]
+    fn append_to_plan_extends_rects_and_icons_in_order() {
+        let rect_op = RectPaintOp {
+            position_px: [1.0, 2.0],
+            size_px: [10.0, 4.0],
+            fill_rgba: [0.1, 0.2, 0.3, 1.0],
+            corner_radii_px: [2.0; 4],
+            border_widths_px: [0.0; 4],
+            border_top_rgba: [0.0; 4],
+            border_right_rgba: [0.0; 4],
+            border_bottom_rgba: [0.0; 4],
+            border_left_rgba: [0.0; 4],
+        };
+        let icon_op = IconPaintOp {
+            position_px: [3.0, 4.0],
+            size_px: [8.0, 8.0],
+            icon_id: UiIconId::Scene,
+            color_rgba: [0.9, 0.9, 1.0, 1.0],
+        };
+
+        let mut ops = ControlWidgetPaintOps::default();
+        ops.rects.push(rect_op);
+        ops.icons.push(icon_op.clone());
+
+        let mut plan = LayerPaintPlan::default();
+        ops.append_to_plan(&mut plan);
+
+        assert_eq!(plan.rects, vec![rect_op]);
+        assert_eq!(plan.icons, vec![icon_op]);
+    }
+}

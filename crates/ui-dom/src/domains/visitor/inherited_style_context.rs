@@ -58,3 +58,31 @@ impl InheritedStyleContext {
         self.text_direction.unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_methods_return_seeded_values() {
+        let context = InheritedStyleContext {
+            font_size_px: Some(20.0),
+            line_height_px: Some(28.0),
+            text_align: Some(DomTextAlign::End),
+            text_direction: Some(DomTextDirection::Rtl),
+            white_space: Some(DomWhiteSpace::PreWrap),
+            overflow_wrap: Some(DomOverflowWrap::Anywhere),
+            word_break: Some(DomWordBreak::KeepAll),
+            ..InheritedStyleContext::default()
+        };
+
+        assert_eq!(context.effective_font_size_px(), 20.0);
+        assert_eq!(context.effective_line_height_px(), Some(28.0));
+        assert_eq!(context.effective_text_align(), DomTextAlign::End);
+        assert_eq!(context.effective_text_direction(), DomTextDirection::Rtl);
+        assert_eq!(context.effective_white_space(), DomWhiteSpace::PreWrap);
+        assert_eq!(context.effective_overflow_wrap(), DomOverflowWrap::Anywhere);
+        assert_eq!(context.effective_word_break(), DomWordBreak::KeepAll);
+    }
+}

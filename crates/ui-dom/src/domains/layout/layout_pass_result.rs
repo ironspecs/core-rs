@@ -25,3 +25,35 @@ impl LayoutPassResult {
         self.propagate_width_to_parent_layer || self.propagate_height_to_parent_layer
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_propagate_reports_only_when_an_axis_propagates() {
+        let neither = LayoutPassResult {
+            propagate_width_to_parent_layer: false,
+            propagate_height_to_parent_layer: false,
+        };
+        assert!(!neither.should_propagate_to_parent_layer());
+
+        let width = LayoutPassResult {
+            propagate_width_to_parent_layer: true,
+            propagate_height_to_parent_layer: false,
+        };
+        assert!(width.should_propagate_to_parent_layer());
+
+        let height = LayoutPassResult {
+            propagate_width_to_parent_layer: false,
+            propagate_height_to_parent_layer: true,
+        };
+        assert!(height.should_propagate_to_parent_layer());
+
+        let both = LayoutPassResult {
+            propagate_width_to_parent_layer: true,
+            propagate_height_to_parent_layer: true,
+        };
+        assert!(both.should_propagate_to_parent_layer());
+    }
+}
