@@ -31,6 +31,14 @@ It does not own:
 ## Current Modules
 
 - `lru_cache.rs` owns strict bounded recency ordering and eviction.
-- `metrics.rs` owns fixed-size enum-indexed counters and retained history.
+- `metrics.rs` owns the metric-name contract (`MetricName`), the retained
+  history entry shape, and the `Metrics` tally owner; it re-exports the
+  counter snapshot, history store, and history iterator from their own files.
+- `metric_snapshot.rs` owns the copyable enum-to-count tally snapshot.
+- `metric_history_store.rs` owns the fixed-size retained history ring.
+- `metric_history_iter.rs` owns the allocation-free history iterator.
 - `refresh_tracked_store.rs` owns retained values with monotonic refresh
-  metadata and most-recent-to-least-recent iteration.
+  metadata and most-recent-to-least-recent iteration; it re-exports the
+  recency item and recency iterator from their own files.
+- `refresh_tracked_store_recency_item.rs` owns the borrowed recency item view.
+- `refresh_tracked_store_recency_iter.rs` owns the recency-ordered iterator.

@@ -19,5 +19,10 @@
 #![forbid(clippy::checked_conversions)]
 
 pub mod lru_cache;
+pub mod metric_history_iter;
+pub mod metric_history_store;
+pub mod metric_snapshot;
 pub mod metrics;
 pub mod refresh_tracked_store;
+pub mod refresh_tracked_store_recency_item;
+pub mod refresh_tracked_store_recency_iter;

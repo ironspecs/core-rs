@@ -2,7 +2,8 @@
 //!
 //! This file owns one generic retained key-value store that tracks refresh
 //! metadata and most-recent-to-least-recent iteration order without owning any
-//! domain reaction policy.
+//! domain reaction policy. The recency item and recency iterator are
+//! re-exported here from their own files.
 //!
 //! Strict invariants:
 //! - entries are retained until the caller removes them
@@ -11,15 +12,18 @@
 //!   signals owned by the caller
 //! - stale updates never replace fresher retained values
 
-use std::collections::{BTreeSet, HashMap, btree_set};
+use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 use std::time::{Duration, Instant};
 
+pub use crate::refresh_tracked_store_recency_item::RefreshTrackedStoreRecencyItem;
+pub use crate::refresh_tracked_store_recency_iter::RefreshTrackedStoreRecencyIter;
+
 #[derive(Debug)]
-struct RefreshTrackedStoreEntry<V> {
-    value: V,
-    last_updated_at: Instant,
-    last_refresh_requested_at: Instant,
+pub(crate) struct RefreshTrackedStoreEntry<V> {
+    pub(crate) value: V,
+    pub(crate) last_updated_at: Instant,
+    pub(crate) last_refresh_requested_at: Instant,
     recency_marker: u64,
 }
 
@@ -31,46 +35,15 @@ pub enum RefreshTrackedStoreWriteResult {
     IgnoredStaleUpdate,
 }
 
-/// One retained item yielded from most-recent to least-recent order.
-#[derive(Clone, Copy, Debug)]
-pub struct RefreshTrackedStoreRecencyItem<'a, K, V> {
-    pub key: &'a K,
-    pub value: &'a V,
-    pub last_updated_at: Instant,
-    pub last_refresh_requested_at: Instant,
-}
-
-impl<'a, K, V> RefreshTrackedStoreRecencyItem<'a, K, V> {
-    #[must_use]
-    pub const fn key(self) -> &'a K {
-        self.key
-    }
-
-    #[must_use]
-    pub const fn value(self) -> &'a V {
-        self.value
-    }
-
-    #[must_use]
-    pub const fn last_updated_at(self) -> Instant {
-        self.last_updated_at
-    }
-
-    #[must_use]
-    pub const fn last_refresh_requested_at(self) -> Instant {
-        self.last_refresh_requested_at
-    }
-}
-
 /// Retained key-value store with explicit refresh metadata and recency order.
 #[derive(Debug)]
 pub struct RefreshTrackedStore<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    entries_by_key: HashMap<K, RefreshTrackedStoreEntry<V>>,
+    pub(crate) entries_by_key: HashMap<K, RefreshTrackedStoreEntry<V>>,
     markers_by_recency: BTreeSet<u64>,
-    key_by_marker: HashMap<u64, K>,
+    pub(crate) key_by_marker: HashMap<u64, K>,
     next_recency_marker: u64,
 }
 
@@ -307,44 +280,6 @@ where
             .checked_add(1)
             .expect("refresh tracked store recency marker should not overflow");
         recency_marker
-    }
-}
-
-/// Iterator over retained items from most-recent to least-recent.
-#[derive(Debug)]
-pub struct RefreshTrackedStoreRecencyIter<'a, K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    store: &'a RefreshTrackedStore<K, V>,
-    markers: btree_set::Iter<'a, u64>,
-}
-
-impl<'a, K, V> Iterator for RefreshTrackedStoreRecencyIter<'a, K, V>
-where
-    K: Clone + Eq + Hash,
-{
-    type Item = RefreshTrackedStoreRecencyItem<'a, K, V>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let marker = *self.markers.next_back()?;
-        let key = self
-            .store
-            .key_by_marker
-            .get(&marker)
-            .expect("refresh tracked store recency marker should map to a key");
-        let entry = self
-            .store
-            .entries_by_key
-            .get(key)
-            .expect("refresh tracked store recency key should map to an entry");
-
-        Some(RefreshTrackedStoreRecencyItem {
-            key,
-            value: &entry.value,
-            last_updated_at: entry.last_updated_at,
-            last_refresh_requested_at: entry.last_refresh_requested_at,
-        })
     }
 }
 
