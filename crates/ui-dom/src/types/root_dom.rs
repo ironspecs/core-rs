@@ -12,7 +12,7 @@
 //!
 //! - `RootDom` owns the document slot store and all tree mutation authority
 //! - `RootDom` owns the default-behavior lifecycle methods (activation, focus,
-//!   blur, pointer, and keyboard default behavior)
+//!   blur, pointer, keyboard, and presented-options default behavior)
 //! - attachment state here describes Bevy presentation lifecycle only
 //! - node-level data must not absorb root-owned indexing or lifecycle policy
 //!
@@ -55,6 +55,7 @@ use crate::element_controls::{
     NumericStepDirection, ResolvedElementControl, range_value_string_from_point,
     resolved_control_part_from_point, resolved_element_control, resolved_text_edit_kind,
 };
+use crate::types::dom_attr_node::DomAttributeNode;
 use crate::types::dom_attr_parse::{normalize_attribute_value, style_attr_allows_property};
 use crate::types::dom_event::{
     DomEvent, DomEventDetail, DomEventListener, DomEventListenerOptions, DomEventName,
@@ -83,8 +84,17 @@ use crate::types::dom_transition::{
 };
 use crate::types::element_behaviors::{
     ActiveRangeDragSession, DomElementAfterClick, DomElementAfterFocus, DomElementOnActivation,
-    DomElementOnBlur, DomElementOnKeyboard, DomElementOnPointer, DomEventDispatchOutcome,
-    PressedPointerClickTarget,
+    DomElementOnBlur, DomElementOnKeyboard, DomElementOnPointer, DomElementPresentOptionsBehavior,
+    DomEventDispatchOutcome, PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX, PRESENTED_OPTIONS_ROLE_ROW,
+    PRESENTED_OPTIONS_ROLE_SCROLL, PRESENTED_OPTIONS_ROLE_SHELL, PRESENTED_OPTIONS_STATE_CLOSING,
+    PRESENTED_OPTIONS_STATE_OPEN, PRESENTED_OPTIONS_VERTICAL_PADDING_PX, PresentedOptionRecord,
+    PresentedOptionsOwnerKind, PresentedOptionsPopupAnchor, PressedPointerClickTarget,
+    choose_presented_options_highlighted_index, collect_direct_child_element_keys,
+    collect_presented_option_records_from_owner_source, measure_presented_options_popup_height_px,
+    presented_options_popup_anchor_for_owner, presented_options_popup_state,
+    presented_options_role_value, presented_options_row_content_height_px,
+    presented_options_row_is_highlighted, presented_options_row_source_index,
+    set_select_source_option_selected_attrs, string_attr_value,
 };
 use crate::types::primitives::PointPx;
 use crate::types::root_dom_context::RootDomContext;
@@ -101,7 +111,15 @@ use crate::types::{RootDomMetricHistoryIter, RootDomMetricName, RootDomMetrics};
 use slotmap::SlotMap;
 
 #[cfg(test)]
-use crate::types::dom_attr_node::DomAttributeNode;
+use crate::domains::hit_test::hit_test_from_dom_subtree_cluster_local;
+#[cfg(test)]
+use crate::domains::layer_hit::topmost_attached_layer_hit_from_root_point;
+#[cfg(test)]
+use crate::domains::paint::build_layer_paint_plan;
+#[cfg(test)]
+use crate::domains::visitor::inherited_style::InheritedStyleContext;
+#[cfg(test)]
+use crate::types::primitives::DomRect;
 #[cfg(test)]
 use crate::{LayerConfig, UiDomRenderSupport, domains::LayerPoolRenderJobQueue};
 
@@ -3274,6 +3292,902 @@ impl RootDom {
     }
 }
 
+impl RootDom {
+    pub(crate) fn apply_select_keyboard_default_for_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        input: &KeyboardInput,
+        event_stayed_unblocked: bool,
+    ) -> Result<bool, DomError> {
+        if input.state != ButtonState::Pressed || !event_stayed_unblocked {
+            return Ok(false);
+        }
+        if self.resolve_presented_options_owner_kind(owner_key)
+            != Some(PresentedOptionsOwnerKind::Select)
+        {
+            return Ok(false);
+        }
+        match input.logical_key {
+            Key::ArrowDown => self.move_presented_options_highlight_or_open_popup(owner_key, true),
+            Key::ArrowUp => self.move_presented_options_highlight_or_open_popup(owner_key, false),
+            Key::Enter | Key::Space => {
+                self.commit_highlighted_presented_option_or_open_popup(owner_key)
+            }
+            Key::Escape => self.close_presented_options_popup_for_owner(owner_key, false),
+            _ => Ok(false),
+        }
+    }
+
+    pub(crate) fn apply_presented_options_text_input_keyboard_navigation_for_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        input: &KeyboardInput,
+        event_stayed_unblocked: bool,
+    ) -> Result<bool, DomError> {
+        if input.state != ButtonState::Pressed || !event_stayed_unblocked {
+            return Ok(false);
+        }
+        if self.resolve_presented_options_owner_kind(owner_key)
+            != Some(PresentedOptionsOwnerKind::TextInput)
+        {
+            return Ok(false);
+        }
+        match input.logical_key {
+            Key::ArrowDown => self.move_presented_options_highlight_or_open_popup(owner_key, true),
+            Key::ArrowUp => self.move_presented_options_highlight_or_open_popup(owner_key, false),
+            Key::Enter => self.commit_highlighted_presented_option_for_owner(owner_key),
+            Key::Escape => self.close_presented_options_popup_for_owner(owner_key, false),
+            _ => Ok(false),
+        }
+    }
+
+    pub(crate) fn apply_presented_options_click_default_for_target(
+        &mut self,
+        target_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        if self.commit_presented_option_hit_row(target_key)? {
+            return Ok(true);
+        }
+        let Some(owner_key) = self.resolve_presented_options_owner_key_from_target(target_key)
+        else {
+            return Ok(false);
+        };
+        if self.presented_options_popup_shell_key(owner_key).is_some() {
+            return self.close_presented_options_popup_for_owner(owner_key, false);
+        }
+        self.open_presented_options_popup_for_owner(owner_key)
+    }
+
+    pub(crate) fn apply_select_popup_row_click_default_for_target(
+        &mut self,
+        target_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        if self
+            .resolve_presented_options_row_key_from_target(target_key)
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.commit_select_presented_option_hit_row(target_key)
+    }
+
+    pub(crate) fn apply_select_click_default_for_target(
+        &mut self,
+        target_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        if self.commit_select_presented_option_hit_row(target_key)? {
+            return Ok(true);
+        }
+        let Some(owner_key) = self.resolve_select_owner_key_from_target(target_key) else {
+            return Ok(false);
+        };
+        if self.presented_options_popup_shell_key(owner_key).is_some() {
+            return self.close_presented_options_popup_for_owner(owner_key, false);
+        }
+        self.open_select_popup_for_owner(owner_key)
+    }
+
+    pub(crate) fn close_select_popup_for_blurred_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        if self.resolve_presented_options_owner_kind(owner_key)
+            != Some(PresentedOptionsOwnerKind::Select)
+        {
+            return Ok(false);
+        }
+        self.close_presented_options_popup_for_owner(owner_key, false)
+    }
+
+    pub(crate) fn open_presented_options_for_focused_text_input_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        if self.resolve_presented_options_owner_kind(owner_key)
+            != Some(PresentedOptionsOwnerKind::TextInput)
+        {
+            return Ok(false);
+        }
+        self.open_presented_options_popup_for_owner(owner_key)
+    }
+
+    pub(crate) fn close_presented_options_for_blurred_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        self.close_presented_options_popup_for_owner(owner_key, false)
+    }
+
+    pub(crate) fn reopen_presented_options_for_text_input_value_change(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<(), DomError> {
+        if self.resolve_presented_options_owner_kind(owner_key)
+            != Some(PresentedOptionsOwnerKind::TextInput)
+        {
+            return Ok(());
+        }
+        let _ = self.open_presented_options_popup_for_owner(owner_key)?;
+        Ok(())
+    }
+
+    pub(crate) fn resolve_presented_options_owner_kind(
+        &self,
+        owner_key: DomNodeSlotKey,
+    ) -> Option<PresentedOptionsOwnerKind> {
+        let element = self.node(owner_key)?.as_element()?;
+        if element.tag == DomTag::Select {
+            return Some(PresentedOptionsOwnerKind::Select);
+        }
+        match element.behavior().present_options_behavior {
+            DomElementPresentOptionsBehavior::None => None,
+            DomElementPresentOptionsBehavior::TextInput => self
+                .resolve_presented_options_datalist_key_for_owner(owner_key)
+                .map(|_| PresentedOptionsOwnerKind::TextInput),
+        }
+    }
+
+    pub(crate) fn open_presented_options_popup_for_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        let Some(owner_kind) = self.resolve_presented_options_owner_kind(owner_key) else {
+            return Ok(false);
+        };
+        self.remove_other_presented_options_popups_immediately(owner_key)?;
+        self.replace_presented_options_popup_for_owner_kind(owner_kind, owner_key)
+    }
+
+    pub(crate) fn open_select_popup_for_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        if self.resolve_select_owner_key_from_target(owner_key) != Some(owner_key) {
+            return Ok(false);
+        }
+        self.remove_other_presented_options_popups_immediately(owner_key)?;
+        self.replace_presented_options_popup_for_owner_kind(
+            PresentedOptionsOwnerKind::Select,
+            owner_key,
+        )
+    }
+
+    pub(crate) fn close_presented_options_popup_for_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        immediate: bool,
+    ) -> Result<bool, DomError> {
+        let Some(shell_key) = self.presented_options_popup_shell_key(owner_key) else {
+            return Ok(false);
+        };
+        if immediate {
+            self.remove_node(shell_key)?;
+            return Ok(true);
+        }
+        if presented_options_popup_state(self, shell_key) == Some(PRESENTED_OPTIONS_STATE_CLOSING) {
+            return Ok(true);
+        }
+        self.set_presented_options_popup_state(shell_key, PRESENTED_OPTIONS_STATE_CLOSING)?;
+        self.set_presented_options_popup_opacity(shell_key, 0.0)?;
+        Ok(true)
+    }
+
+    pub(crate) fn presented_options_popup_shell_key(
+        &self,
+        owner_key: DomNodeSlotKey,
+    ) -> Option<DomNodeSlotKey> {
+        collect_direct_child_element_keys(self, owner_key)
+            .into_iter()
+            .find(|key| {
+                presented_options_role_value(self, *key) == Some(PRESENTED_OPTIONS_ROLE_SHELL)
+            })
+    }
+
+    pub(crate) fn presented_options_highlighted_row_key(
+        &self,
+        owner_key: DomNodeSlotKey,
+    ) -> Option<DomNodeSlotKey> {
+        self.presented_options_popup_row_keys(owner_key)
+            .into_iter()
+            .find(|row_key| presented_options_row_is_highlighted(self, *row_key))
+    }
+
+    pub(crate) fn presented_options_popup_row_keys(
+        &self,
+        owner_key: DomNodeSlotKey,
+    ) -> Vec<DomNodeSlotKey> {
+        let Some(scroll_key) = self.presented_options_popup_scroll_key(owner_key) else {
+            return Vec::new();
+        };
+        collect_direct_child_element_keys(self, scroll_key)
+            .into_iter()
+            .filter(|key| {
+                presented_options_role_value(self, *key) == Some(PRESENTED_OPTIONS_ROLE_ROW)
+            })
+            .collect()
+    }
+
+    fn move_presented_options_highlight_or_open_popup(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        move_forward: bool,
+    ) -> Result<bool, DomError> {
+        if self.presented_options_popup_shell_key(owner_key).is_some()
+            && !self.presented_options_popup_is_closing_for_owner(owner_key)
+        {
+            return self.move_presented_options_popup_highlight(owner_key, move_forward);
+        }
+        self.open_presented_options_popup_for_owner(owner_key)
+    }
+
+    fn commit_highlighted_presented_option_or_open_popup(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        if self.presented_options_popup_shell_key(owner_key).is_some()
+            && !self.presented_options_popup_is_closing_for_owner(owner_key)
+        {
+            return self.commit_highlighted_presented_option_for_owner(owner_key);
+        }
+        self.open_presented_options_popup_for_owner(owner_key)
+    }
+
+    fn replace_presented_options_popup_for_owner_kind(
+        &mut self,
+        owner_kind: PresentedOptionsOwnerKind,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        let popup_anchor = presented_options_popup_anchor_for_owner(self, owner_key)?;
+        let option_records =
+            collect_presented_option_records_from_owner_source(self, owner_kind, owner_key)?;
+        if option_records.is_empty() {
+            let _ = self.close_presented_options_popup_for_owner(owner_key, true)?;
+            return Ok(false);
+        }
+        let previous_highlighted_index =
+            self.highlighted_presented_options_source_index_for_owner(owner_key);
+        let _ = self.close_presented_options_popup_for_owner(owner_key, true)?;
+        let highlighted_index = choose_presented_options_highlighted_index(
+            self,
+            owner_kind,
+            owner_key,
+            &option_records,
+            previous_highlighted_index,
+        );
+        let popup_shell_key = self.append_presented_options_popup_shell_and_rows(
+            owner_key,
+            popup_anchor,
+            &option_records,
+            highlighted_index,
+        )?;
+        self.update_presented_options_popup_box_attrs_from_owner(owner_key)?;
+        self.set_presented_options_popup_state(popup_shell_key, PRESENTED_OPTIONS_STATE_OPEN)?;
+        self.set_presented_options_popup_opacity(popup_shell_key, 1.0)?;
+        Ok(true)
+    }
+
+    fn append_presented_options_popup_shell_and_rows(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        popup_anchor: PresentedOptionsPopupAnchor,
+        option_records: &[PresentedOptionRecord],
+        highlighted_index: usize,
+    ) -> Result<DomNodeSlotKey, DomError> {
+        let popup_height_px =
+            measure_presented_options_popup_height_px(self, owner_key, option_records.len())?;
+        let popup_shell_key = self.create_element(DomTag::Div)?;
+        let popup_scroll_key = self.create_element(DomTag::Div)?;
+        self.set_layout_layer_order(popup_shell_key, LayerOrder::Raised)?;
+        self.set_presented_options_popup_shell_style_attrs(
+            popup_shell_key,
+            popup_anchor,
+            popup_height_px,
+        )?;
+        self.set_presented_options_popup_scroll_style_attrs(
+            popup_scroll_key,
+            popup_anchor.owner_box.width_px,
+            popup_height_px,
+        )?;
+        self.append_child(popup_shell_key, popup_scroll_key)?;
+        for (source_index, option_record) in option_records.iter().enumerate() {
+            self.append_presented_options_row_element(
+                popup_scroll_key,
+                popup_anchor.owner_box.width_px,
+                source_index,
+                option_record,
+                source_index == highlighted_index,
+            )?;
+        }
+        self.append_child(owner_key, popup_shell_key)?;
+        Ok(popup_shell_key)
+    }
+
+    fn append_presented_options_row_element(
+        &mut self,
+        popup_scroll_key: DomNodeSlotKey,
+        owner_width_px: f32,
+        source_index: usize,
+        option_record: &PresentedOptionRecord,
+        highlighted: bool,
+    ) -> Result<(), DomError> {
+        let row_key = self.create_element(DomTag::Option)?;
+        let text_key = self.create_text_node(option_record.label.clone())?;
+        let row_content_height_px = presented_options_row_content_height_px();
+        self.append_child(popup_scroll_key, row_key)?;
+        self.append_child(row_key, text_key)?;
+        self.set_attr_str(row_key, "display", "block")?;
+        self.set_attr(
+            row_key,
+            DomAttribute::PresentedOptionsRole,
+            Some(DomAttributeValue::String(
+                PRESENTED_OPTIONS_ROLE_ROW.to_string(),
+            )),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::PresentedOptionsSourceIndex,
+            Some(DomAttributeValue::Integer(
+                i64::try_from(source_index).expect("source index should fit into i64"),
+            )),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::Value,
+            Some(DomAttributeValue::String(option_record.value.clone())),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::Width,
+            Some(DomAttributeValue::String(format!(
+                "{}px",
+                owner_width_px.max(1.0)
+            ))),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::Height,
+            Some(DomAttributeValue::String(format!(
+                "{row_content_height_px}px"
+            ))),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::LineHeight,
+            Some(DomAttributeValue::String(format!(
+                "{row_content_height_px}px"
+            ))),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::PaddingLeft,
+            Some(DomAttributeValue::String(format!(
+                "{PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX}px"
+            ))),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::PaddingRight,
+            Some(DomAttributeValue::String(format!(
+                "{PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX}px"
+            ))),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::PaddingTop,
+            Some(DomAttributeValue::String(format!(
+                "{PRESENTED_OPTIONS_VERTICAL_PADDING_PX}px"
+            ))),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::PaddingBottom,
+            Some(DomAttributeValue::String(format!(
+                "{PRESENTED_OPTIONS_VERTICAL_PADDING_PX}px"
+            ))),
+        )?;
+        self.set_presented_options_row_highlight_attrs(row_key, highlighted)
+    }
+
+    fn set_presented_options_popup_shell_style_attrs(
+        &mut self,
+        popup_shell_key: DomNodeSlotKey,
+        popup_anchor: PresentedOptionsPopupAnchor,
+        popup_height_px: f32,
+    ) -> Result<(), DomError> {
+        self.set_attr_str(popup_shell_key, "display", "block")?;
+        self.set_attr_str(popup_shell_key, "position", "absolute")?;
+        self.set_presented_options_popup_anchor_attrs(popup_shell_key, popup_anchor)?;
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::Width,
+            Some(DomAttributeValue::String(format!(
+                "{}px",
+                popup_anchor.owner_box.width_px.max(1.0)
+            ))),
+        )?;
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::Height,
+            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
+        )?;
+        self.set_attr_str(popup_shell_key, "transition", "opacity 120ms ease-out")?;
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::Custom("background-color".to_string()),
+            Some(DomAttributeValue::String("#141922".to_string())),
+        )?;
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::Custom("border-color".to_string()),
+            Some(DomAttributeValue::String("#394254".to_string())),
+        )?;
+        self.set_attr_str(popup_shell_key, "border-top", "1px")?;
+        self.set_attr_str(popup_shell_key, "border-right", "1px")?;
+        self.set_attr_str(popup_shell_key, "border-bottom", "1px")?;
+        self.set_attr_str(popup_shell_key, "border-left", "1px")?;
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::PresentedOptionsRole,
+            Some(DomAttributeValue::String(
+                PRESENTED_OPTIONS_ROLE_SHELL.to_string(),
+            )),
+        )?;
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::PresentedOptionsState,
+            Some(DomAttributeValue::String(
+                PRESENTED_OPTIONS_STATE_OPEN.to_string(),
+            )),
+        )
+    }
+
+    fn set_presented_options_popup_anchor_attrs(
+        &mut self,
+        popup_shell_key: DomNodeSlotKey,
+        popup_anchor: PresentedOptionsPopupAnchor,
+    ) -> Result<(), DomError> {
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::Left,
+            Some(DomAttributeValue::String(format!(
+                "{}px",
+                popup_anchor.owner_box.left_px
+            ))),
+        )?;
+        self.set_attr(
+            popup_shell_key,
+            DomAttribute::Top,
+            Some(DomAttributeValue::String(format!(
+                "{}px",
+                popup_anchor.owner_box.top_px + popup_anchor.owner_box.height_px
+            ))),
+        )
+    }
+
+    fn set_presented_options_popup_scroll_style_attrs(
+        &mut self,
+        popup_scroll_key: DomNodeSlotKey,
+        owner_width_px: f32,
+        popup_height_px: f32,
+    ) -> Result<(), DomError> {
+        self.set_attr_str(popup_scroll_key, "display", "block")?;
+        self.set_attr_str(popup_scroll_key, "overflow", "scroll")?;
+        self.set_attr(
+            popup_scroll_key,
+            DomAttribute::Width,
+            Some(DomAttributeValue::String(format!(
+                "{}px",
+                owner_width_px.max(1.0)
+            ))),
+        )?;
+        self.set_attr(
+            popup_scroll_key,
+            DomAttribute::Height,
+            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
+        )?;
+        self.set_attr(
+            popup_scroll_key,
+            DomAttribute::PresentedOptionsRole,
+            Some(DomAttributeValue::String(
+                PRESENTED_OPTIONS_ROLE_SCROLL.to_string(),
+            )),
+        )
+    }
+
+    fn update_presented_options_popup_box_attrs_from_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<(), DomError> {
+        let Some(shell_key) = self.presented_options_popup_shell_key(owner_key) else {
+            return Ok(());
+        };
+        let Some(scroll_key) = self.presented_options_popup_scroll_key(owner_key) else {
+            return Ok(());
+        };
+        let popup_anchor = presented_options_popup_anchor_for_owner(self, owner_key)?;
+        let popup_height_px = measure_presented_options_popup_height_px(
+            self,
+            owner_key,
+            self.presented_options_popup_row_keys(owner_key).len(),
+        )?;
+        self.set_presented_options_popup_anchor_attrs(shell_key, popup_anchor)?;
+        self.set_attr(
+            shell_key,
+            DomAttribute::Width,
+            Some(DomAttributeValue::String(format!(
+                "{}px",
+                popup_anchor.owner_box.width_px.max(1.0)
+            ))),
+        )?;
+        self.set_attr(
+            shell_key,
+            DomAttribute::Height,
+            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
+        )?;
+        self.set_attr(
+            scroll_key,
+            DomAttribute::Width,
+            Some(DomAttributeValue::String(format!(
+                "{}px",
+                popup_anchor.owner_box.width_px.max(1.0)
+            ))),
+        )?;
+        self.set_attr(
+            scroll_key,
+            DomAttribute::Height,
+            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
+        )?;
+        Ok(())
+    }
+
+    fn remove_other_presented_options_popups_immediately(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<(), DomError> {
+        for other_owner_key in self.owner_keys_with_presented_options_popup() {
+            if other_owner_key != owner_key {
+                let _ = self.close_presented_options_popup_for_owner(other_owner_key, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn commit_presented_option_hit_row(
+        &mut self,
+        target_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        let Some(row_key) = self.resolve_presented_options_row_key_from_target(target_key) else {
+            return Ok(false);
+        };
+        let Some(owner_key) = self.resolve_presented_options_owner_key_from_target(target_key)
+        else {
+            return Ok(false);
+        };
+        let Some(source_index) = presented_options_row_source_index(self, row_key) else {
+            return Ok(false);
+        };
+        let Some(owner_kind) = self.resolve_presented_options_owner_kind(owner_key) else {
+            return Ok(false);
+        };
+        let option_records =
+            collect_presented_option_records_from_owner_source(self, owner_kind, owner_key)?;
+        let Some(option_record) = option_records.get(source_index) else {
+            return Ok(false);
+        };
+        self.apply_presented_option_to_owner_and_dispatch_events(
+            owner_key,
+            option_record.source_key,
+            option_record.value.clone(),
+        )
+    }
+
+    fn commit_select_presented_option_hit_row(
+        &mut self,
+        target_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        let Some(row_key) = self.resolve_presented_options_row_key_from_target(target_key) else {
+            return Ok(false);
+        };
+        let Some(owner_key) = self.resolve_select_owner_key_from_target(target_key) else {
+            return Ok(false);
+        };
+        let Some(source_index) = presented_options_row_source_index(self, row_key) else {
+            return Ok(false);
+        };
+        let option_records = collect_presented_option_records_from_owner_source(
+            self,
+            PresentedOptionsOwnerKind::Select,
+            owner_key,
+        )?;
+        let Some(option_record) = option_records.get(source_index) else {
+            return Ok(false);
+        };
+        self.apply_select_option_to_owner_and_dispatch_events(
+            owner_key,
+            option_record.source_key,
+            option_record.value.clone(),
+        )
+    }
+
+    fn commit_highlighted_presented_option_for_owner(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+    ) -> Result<bool, DomError> {
+        let Some(source_index) =
+            self.highlighted_presented_options_source_index_for_owner(owner_key)
+        else {
+            return Ok(false);
+        };
+        let Some(owner_kind) = self.resolve_presented_options_owner_kind(owner_key) else {
+            return Ok(false);
+        };
+        let option_records =
+            collect_presented_option_records_from_owner_source(self, owner_kind, owner_key)?;
+        let Some(option_record) = option_records.get(source_index) else {
+            return Ok(false);
+        };
+        self.apply_presented_option_to_owner_and_dispatch_events(
+            owner_key,
+            option_record.source_key,
+            option_record.value.clone(),
+        )
+    }
+
+    fn apply_presented_option_to_owner_and_dispatch_events(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        source_key: DomNodeSlotKey,
+        value: String,
+    ) -> Result<bool, DomError> {
+        let Some(owner_kind) = self.resolve_presented_options_owner_kind(owner_key) else {
+            return Ok(false);
+        };
+        match owner_kind {
+            PresentedOptionsOwnerKind::Select => {
+                return self.apply_select_option_to_owner_and_dispatch_events(
+                    owner_key, source_key, value,
+                );
+            }
+            PresentedOptionsOwnerKind::TextInput => {
+                self.set_attr(
+                    owner_key,
+                    DomAttribute::Value,
+                    Some(DomAttributeValue::String(value.clone())),
+                )?;
+                let _ = self.dispatch_input_event_to_target_key(owner_key, value.clone())?;
+                let _ = self.dispatch_change_event_to_target_key(owner_key, value)?;
+            }
+        }
+        let _ = self.close_presented_options_popup_for_owner(owner_key, false)?;
+        Ok(true)
+    }
+
+    fn apply_select_option_to_owner_and_dispatch_events(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        source_key: DomNodeSlotKey,
+        value: String,
+    ) -> Result<bool, DomError> {
+        set_select_source_option_selected_attrs(self, owner_key, source_key)?;
+        self.set_attr(
+            owner_key,
+            DomAttribute::Value,
+            Some(DomAttributeValue::String(value.clone())),
+        )?;
+        let _ = self.dispatch_input_event_to_target_key(owner_key, value.clone())?;
+        let _ = self.dispatch_change_event_to_target_key(owner_key, value)?;
+        let _ = self.close_presented_options_popup_for_owner(owner_key, false)?;
+        Ok(true)
+    }
+
+    fn move_presented_options_popup_highlight(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        move_forward: bool,
+    ) -> Result<bool, DomError> {
+        let row_keys = self.presented_options_popup_row_keys(owner_key);
+        if row_keys.is_empty() {
+            return Ok(false);
+        }
+        let current_index = row_keys
+            .iter()
+            .position(|row_key| presented_options_row_is_highlighted(self, *row_key))
+            .unwrap_or(0);
+        let next_index = if move_forward {
+            (current_index + 1).min(row_keys.len() - 1)
+        } else {
+            current_index.saturating_sub(1)
+        };
+        self.highlight_presented_options_popup_row_at_index(owner_key, next_index)?;
+        Ok(true)
+    }
+
+    fn highlight_presented_options_popup_row_at_index(
+        &mut self,
+        owner_key: DomNodeSlotKey,
+        highlighted_index: usize,
+    ) -> Result<(), DomError> {
+        let row_keys = self.presented_options_popup_row_keys(owner_key);
+        for (row_index, row_key) in row_keys.into_iter().enumerate() {
+            self.set_presented_options_row_highlight_attrs(
+                row_key,
+                row_index == highlighted_index,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn set_presented_options_row_highlight_attrs(
+        &mut self,
+        row_key: DomNodeSlotKey,
+        highlighted: bool,
+    ) -> Result<(), DomError> {
+        self.set_attr(
+            row_key,
+            DomAttribute::PresentedOptionsHighlighted,
+            highlighted.then_some(DomAttributeValue::Bool(true)),
+        )?;
+        self.set_attr(
+            row_key,
+            DomAttribute::Custom("background-color".to_string()),
+            highlighted.then(|| DomAttributeValue::String("#273754".to_string())),
+        )
+    }
+
+    fn resolve_presented_options_owner_key_from_target(
+        &self,
+        target_key: DomNodeSlotKey,
+    ) -> Option<DomNodeSlotKey> {
+        let mut current_key = Some(target_key);
+        while let Some(key) = current_key {
+            let node = self.node(key)?;
+            if let Some(element) = node.as_element()
+                && (element.tag == DomTag::Select
+                    || element.behavior().present_options_behavior
+                        != DomElementPresentOptionsBehavior::None)
+            {
+                return Some(key);
+            }
+            current_key = node.parent_key();
+        }
+        None
+    }
+
+    fn resolve_select_owner_key_from_target(
+        &self,
+        target_key: DomNodeSlotKey,
+    ) -> Option<DomNodeSlotKey> {
+        let mut current_key = Some(target_key);
+        while let Some(key) = current_key {
+            let node = self.node(key)?;
+            if node
+                .as_element()
+                .is_some_and(|element| element.tag == DomTag::Select)
+            {
+                return Some(key);
+            }
+            current_key = node.parent_key();
+        }
+        None
+    }
+
+    fn resolve_presented_options_row_key_from_target(
+        &self,
+        target_key: DomNodeSlotKey,
+    ) -> Option<DomNodeSlotKey> {
+        let mut current_key = Some(target_key);
+        while let Some(key) = current_key {
+            if presented_options_role_value(self, key) == Some(PRESENTED_OPTIONS_ROLE_ROW) {
+                return Some(key);
+            }
+            current_key = self.node(key).and_then(DomNode::parent_key);
+        }
+        None
+    }
+
+    pub(crate) fn resolve_presented_options_datalist_key_for_owner(
+        &self,
+        owner_key: DomNodeSlotKey,
+    ) -> Option<DomNodeSlotKey> {
+        let owner = self.node(owner_key)?.as_element()?;
+        let list_id = owner
+            .attr(&DomAttribute::List)
+            .and_then(string_attr_value)?;
+        let (list_key, list_node) = self.get_element_by_id(list_id)?;
+        let list_element = list_node.as_element()?;
+        if list_element.tag != DomTag::Datalist {
+            return None;
+        }
+        Some(list_key)
+    }
+
+    fn owner_keys_with_presented_options_popup(&self) -> Vec<DomNodeSlotKey> {
+        self.nodes
+            .iter()
+            .filter_map(|(key, node)| {
+                let element = node.as_element()?;
+                if element.tag != DomTag::Select
+                    && element.behavior().present_options_behavior
+                        == DomElementPresentOptionsBehavior::None
+                {
+                    return None;
+                }
+                self.presented_options_popup_shell_key(key).map(|_| key)
+            })
+            .collect()
+    }
+
+    fn presented_options_popup_scroll_key(
+        &self,
+        owner_key: DomNodeSlotKey,
+    ) -> Option<DomNodeSlotKey> {
+        let shell_key = self.presented_options_popup_shell_key(owner_key)?;
+        collect_direct_child_element_keys(self, shell_key)
+            .into_iter()
+            .find(|key| {
+                presented_options_role_value(self, *key) == Some(PRESENTED_OPTIONS_ROLE_SCROLL)
+            })
+    }
+
+    fn presented_options_popup_is_closing_for_owner(&self, owner_key: DomNodeSlotKey) -> bool {
+        self.presented_options_popup_shell_key(owner_key)
+            .and_then(|shell_key| presented_options_popup_state(self, shell_key))
+            .is_some_and(|state| state == PRESENTED_OPTIONS_STATE_CLOSING)
+    }
+
+    fn highlighted_presented_options_source_index_for_owner(
+        &self,
+        owner_key: DomNodeSlotKey,
+    ) -> Option<usize> {
+        let row_key = self.presented_options_highlighted_row_key(owner_key)?;
+        presented_options_row_source_index(self, row_key)
+    }
+
+    fn set_presented_options_popup_state(
+        &mut self,
+        shell_key: DomNodeSlotKey,
+        state: &str,
+    ) -> Result<(), DomError> {
+        self.set_attr(
+            shell_key,
+            DomAttribute::PresentedOptionsState,
+            Some(DomAttributeValue::String(state.to_string())),
+        )
+    }
+
+    fn set_presented_options_popup_opacity(
+        &mut self,
+        shell_key: DomNodeSlotKey,
+        opacity: f32,
+    ) -> Result<(), DomError> {
+        self.set_attr(
+            shell_key,
+            DomAttribute::Custom("opacity".to_string()),
+            Some(DomAttributeValue::Float(opacity)),
+        )
+    }
+}
+
 fn range_drag_subtree_point(session: &ActiveRangeDragSession, root_point: PointPx) -> PointPx {
     PointPx {
         x_px: root_point.x_px + session.root_to_subtree_point_offset.x_px,
@@ -4424,11 +5338,12 @@ mod tests {
 
     use super::*;
     use bevy::{
+        image::Image,
         input::{
             ButtonState,
             keyboard::{Key, KeyCode, KeyboardInput},
         },
-        prelude::{Entity, Vec2, World},
+        prelude::{Assets, Entity, Transform, Vec2, World},
         sprite::Sprite,
     };
 
@@ -5144,5 +6059,389 @@ mod tests {
                 text.base.box_model.border_box.height_px = height_px;
             }
         }
+    }
+
+    fn install_direct_gpu_support(world: &mut World) {
+        world.init_resource::<Assets<Image>>();
+        world.insert_resource(LayerPool::new(LayerConfig::default()));
+        world.init_resource::<LayerPoolRenderJobQueue>();
+        world.insert_resource(UiDomRenderSupport::direct_gpu());
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= 0.001,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    fn append_select(root: &mut RootDom) -> DomNodeSlotKey {
+        let select = root.create_element(DomTag::Select).expect("select");
+        let first_option = root.create_element(DomTag::Option).expect("first option");
+        let second_option = root.create_element(DomTag::Option).expect("second option");
+        let first_text = root.create_text_node("alpha").expect("first text");
+        let second_text = root.create_text_node("beta").expect("second text");
+        root.append_child(root.root, select).expect("append select");
+        root.append_child(select, first_option)
+            .expect("append first option");
+        root.append_child(select, second_option)
+            .expect("append second option");
+        root.append_child(first_option, first_text)
+            .expect("append first text");
+        root.append_child(second_option, second_text)
+            .expect("append second text");
+        root.set_attr_str(first_option, "value", "alpha")
+            .expect("set first option value");
+        root.set_attr_str(second_option, "value", "beta")
+            .expect("set second option value");
+        root.set_attr_str(select, "width", "120px").expect("width");
+        root.set_attr_str(select, "height", "28px").expect("height");
+        select
+    }
+
+    fn append_select_to_parent(root: &mut RootDom, parent: DomNodeSlotKey) -> DomNodeSlotKey {
+        let select = root.create_element(DomTag::Select).expect("select");
+        let first_option = root.create_element(DomTag::Option).expect("first option");
+        let second_option = root.create_element(DomTag::Option).expect("second option");
+        let first_text = root.create_text_node("alpha").expect("first text");
+        let second_text = root.create_text_node("beta").expect("second text");
+        root.append_child(parent, select).expect("append select");
+        root.append_child(select, first_option)
+            .expect("append first option");
+        root.append_child(select, second_option)
+            .expect("append second option");
+        root.append_child(first_option, first_text)
+            .expect("append first text");
+        root.append_child(second_option, second_text)
+            .expect("append second text");
+        root.set_attr_str(first_option, "value", "alpha")
+            .expect("set first option value");
+        root.set_attr_str(second_option, "value", "beta")
+            .expect("set second option value");
+        root.set_attr_str(select, "width", "120px").expect("width");
+        root.set_attr_str(select, "height", "28px").expect("height");
+        select
+    }
+
+    fn attach_root_with_size(
+        root: &mut RootDom,
+        world: &mut World,
+        width_px: f32,
+        height_px: f32,
+    ) -> Entity {
+        install_direct_gpu_support(world);
+        let parent = world
+            .spawn((Sprite {
+                custom_size: Some(Vec2::new(width_px, height_px)),
+                ..Default::default()
+            },))
+            .id();
+        root.attach_to_bevy_parent_entity(world, parent, 0.0)
+            .expect("attach root");
+        root.update(world, 0.0, DomPointerUpdate::Unchanged)
+            .expect("present once");
+        parent
+    }
+
+    fn pointer_update(x_px: f32, y_px: f32, primary_button_down: bool) -> DomPointerUpdate {
+        DomPointerUpdate::Set(DomPointerState {
+            x_px,
+            y_px,
+            primary_button_down,
+            scroll_delta_y_px: 0.0,
+        })
+    }
+
+    fn event_names(events: &[DomEvent]) -> Vec<DomEventName> {
+        events.iter().map(|event| event.name).collect()
+    }
+
+    fn input_value(root: &RootDom, input: DomNodeSlotKey) -> String {
+        let element = root
+            .node(input)
+            .and_then(DomNode::as_element)
+            .expect("input element should exist");
+        match element.attrs.attributes.get(&DomAttribute::Value) {
+            Some(DomAttributeValue::String(value)) => value.clone(),
+            other => panic!("expected input string value, got {other:?}"),
+        }
+    }
+
+    struct SelectPopupProof {
+        shell_entity: Entity,
+        shell_box: DomRect,
+        row_keys: Vec<DomNodeSlotKey>,
+        popup_scroll_key: DomNodeSlotKey,
+        popup_scroll_entity: Entity,
+    }
+
+    fn select_popup_proof(root: &RootDom, select: DomNodeSlotKey) -> SelectPopupProof {
+        let shell_key = root
+            .presented_options_popup_shell_key(select)
+            .expect("select popup shell should exist");
+        let shell_entity = root
+            .layer_entity(shell_key)
+            .expect("select popup shell entity");
+        let shell_box = node_box_from_ref(root.node(shell_key).expect("shell")).border_box;
+        let row_keys = root.presented_options_popup_row_keys(select);
+        let first_row_key = row_keys
+            .first()
+            .copied()
+            .expect("popup should contain at least one row");
+        let popup_scroll_key = root
+            .node(first_row_key)
+            .and_then(DomNode::parent_key)
+            .expect("popup row should have a scroll parent");
+        let popup_scroll_entity = root
+            .layer_entity(popup_scroll_key)
+            .expect("popup scroll layer should have a Bevy entity");
+        SelectPopupProof {
+            shell_entity,
+            shell_box,
+            row_keys,
+            popup_scroll_key,
+            popup_scroll_entity,
+        }
+    }
+
+    fn assert_popup_surface_order_and_text(
+        root: &mut RootDom,
+        world: &World,
+        parent: Entity,
+        proof: &SelectPopupProof,
+    ) {
+        assert!(
+            proof.shell_box.height_px >= 56.0,
+            "select popup shell should keep enough height for two rows, got {}",
+            proof.shell_box.height_px
+        );
+        assert_eq!(proof.row_keys.len(), 2);
+        let ordered_surface_entities = world
+            .resource::<LayerPoolRenderJobQueue>()
+            .ordered_surface_entities_for_test(parent.into())
+            .expect("root update should publish retained surface order");
+        assert_eq!(
+            ordered_surface_entities
+                .iter()
+                .position(|entity| *entity == proof.shell_entity.into()),
+            Some(1),
+            "popup shell should be raised above the document layer"
+        );
+        assert_eq!(
+            ordered_surface_entities
+                .iter()
+                .position(|entity| *entity == proof.popup_scroll_entity.into()),
+            Some(2),
+            "popup scroll child should render after its raised shell"
+        );
+        assert_popup_text_runs_inside_scroll_surface(root, proof.popup_scroll_key);
+    }
+
+    fn assert_popup_text_runs_inside_scroll_surface(
+        root: &mut RootDom,
+        popup_scroll_key: DomNodeSlotKey,
+    ) {
+        let mut layer_pool = LayerPool::new(LayerConfig::default());
+        let popup_scroll_plan = build_layer_paint_plan(
+            root,
+            &mut layer_pool,
+            popup_scroll_key,
+            (120.0, 56.0),
+            &InheritedStyleContext::default(),
+        )
+        .expect("popup scroll paint plan");
+        assert_eq!(popup_scroll_plan.text_runs.len(), 2);
+        assert_close(popup_scroll_plan.text_runs[0].position_px[0], 8.0);
+        assert_close(popup_scroll_plan.text_runs[0].position_px[1], 5.0);
+        assert_close(popup_scroll_plan.text_runs[0].size_px[1], 18.0);
+        assert_close(popup_scroll_plan.text_runs[0].line_height_px, 18.0);
+        assert_close(popup_scroll_plan.text_runs[1].position_px[0], 8.0);
+        assert_close(popup_scroll_plan.text_runs[1].position_px[1], 33.0);
+        assert_close(popup_scroll_plan.text_runs[1].size_px[1], 18.0);
+        assert_close(popup_scroll_plan.text_runs[1].line_height_px, 18.0);
+        for text_run in &popup_scroll_plan.text_runs {
+            assert!(
+                text_run.size_px[0] > 0.0 && text_run.size_px[1] > 0.0,
+                "popup option text run should paint with non-zero size: {text_run:?}"
+            );
+            assert!(
+                text_run.position_px[0] >= 0.0
+                    && text_run.position_px[0] < 120.0
+                    && text_run.position_px[1] >= 0.0
+                    && text_run.position_px[1] < 56.0,
+                "popup option text run should paint inside the scroll surface: {text_run:?}"
+            );
+        }
+    }
+
+    fn assert_second_popup_row_mouse_click_commits(
+        root: &mut RootDom,
+        world: &mut World,
+        parent: Entity,
+        select: DomNodeSlotKey,
+        proof: &SelectPopupProof,
+    ) {
+        let second_row_point = PointPx {
+            x_px: 48.0,
+            y_px: 130.0,
+        };
+        let second_row_layer_hit =
+            topmost_attached_layer_hit_from_root_point(root, world, second_row_point)
+                .expect("popup row layer hit should resolve");
+        let second_row_subtree_hit = second_row_layer_hit.and_then(|layer_hit| {
+            hit_test_from_dom_subtree_cluster_local(
+                root,
+                layer_hit.node_key,
+                layer_hit.point,
+                layer_hit.effective_rect,
+            )
+            .expect("popup row subtree hit should resolve")
+        });
+        let root_box = node_box_from_ref(root.node(root.root).expect("root")).border_box;
+        assert_eq!(
+            root.point_event_target_key_from_attached_point(world, parent, second_row_point)
+                .expect("popup row hit target should resolve"),
+            Some(proof.row_keys[1]),
+            "pointer hit target should be the popup row under the cursor; root box: {root_box:?}; shell box: {:?}; layer hit: {second_row_layer_hit:?}; subtree hit: {second_row_subtree_hit:?}",
+            proof.shell_box,
+        );
+        let down_events = root
+            .update(
+                world,
+                0.0,
+                pointer_update(second_row_point.x_px, second_row_point.y_px, true),
+            )
+            .expect("second row down");
+        let target_after_down = root
+            .point_event_target_key_from_attached_point(world, parent, second_row_point)
+            .expect("target after row down should resolve");
+        assert_eq!(
+            target_after_down,
+            Some(proof.row_keys[1]),
+            "popup row should remain the hit target after pointer down; down events: {down_events:?}",
+        );
+        let up_events = root
+            .update(
+                world,
+                0.0,
+                pointer_update(second_row_point.x_px, second_row_point.y_px, false),
+            )
+            .expect("second row up");
+        assert_eq!(
+            input_value(root, select),
+            "beta",
+            "mouse click on a raised popup row should commit the row value; down events: {down_events:?}; up events: {up_events:?}",
+        );
+    }
+
+    #[test]
+    fn pointer_click_opens_select_presented_options_after_click_activation() {
+        let mut root = RootDom::new(RootDomContext::new_gpu());
+        let select = append_select(&mut root);
+        root.set_attr_str(select, "margin-left", "12px")
+            .expect("select margin left");
+        root.set_attr_str(select, "margin-top", "40px")
+            .expect("select margin top");
+        root.set_border_box_for_test(root.root, 0.0, 0.0, 180.0, 180.0);
+        let mut world = World::new();
+        attach_root_with_size(&mut root, &mut world, 180.0, 180.0);
+        root.reset_metrics();
+        let point = PointPx {
+            x_px: 17.0,
+            y_px: 45.0,
+        };
+
+        let _ = root
+            .update(
+                &mut world,
+                0.0,
+                pointer_update(point.x_px, point.y_px, true),
+            )
+            .expect("down");
+        let up_events = root
+            .update(
+                &mut world,
+                0.0,
+                pointer_update(point.x_px, point.y_px, false),
+            )
+            .expect("up");
+
+        assert_eq!(
+            event_names(&up_events),
+            vec![DomEventName::PointerUp, DomEventName::Click]
+        );
+        let shell_key = root
+            .presented_options_popup_shell_key(select)
+            .expect("select popup shell should exist");
+        assert!(
+            root.layer_entity(shell_key).is_some(),
+            "select popup shell should materialize as a layer"
+        );
+        assert!(
+            root.raised_layer_roots().contains(&shell_key),
+            "select popup shell should use raised layer ordering"
+        );
+        let shell_entity = root
+            .layer_entity(shell_key)
+            .expect("select popup shell entity");
+        let shell_transform = world
+            .get::<Transform>(shell_entity)
+            .expect("select popup shell transform");
+        assert_close(shell_transform.translation.x, 12.0);
+        assert_close(shell_transform.translation.y, -68.0);
+    }
+
+    #[test]
+    fn pointer_click_anchors_select_popup_to_nested_owner_box() {
+        let mut root = RootDom::new(RootDomContext::new_gpu());
+        let wrapper = root.create_element(DomTag::Div).expect("wrapper");
+        root.append_child(root.root, wrapper)
+            .expect("append wrapper");
+        root.set_attr_str(wrapper, "display", "block")
+            .expect("wrapper display");
+        root.set_attr_str(wrapper, "margin-left", "31px")
+            .expect("wrapper margin left");
+        root.set_attr_str(wrapper, "margin-top", "53px")
+            .expect("wrapper margin top");
+        root.set_attr_str(wrapper, "padding-left", "9px")
+            .expect("wrapper padding left");
+        root.set_attr_str(wrapper, "padding-top", "7px")
+            .expect("wrapper padding top");
+        root.set_attr_str(root.root, "width", "240px")
+            .expect("root width");
+        root.set_attr_str(root.root, "height", "240px")
+            .expect("root height");
+        let select = append_select_to_parent(&mut root, wrapper);
+        let mut world = World::new();
+        let parent = attach_root_with_size(&mut root, &mut world, 240.0, 240.0);
+        root.reset_metrics();
+        let point = PointPx {
+            x_px: 45.0,
+            y_px: 65.0,
+        };
+
+        let _ = root
+            .update(
+                &mut world,
+                0.0,
+                pointer_update(point.x_px, point.y_px, true),
+            )
+            .expect("down");
+        let _ = root
+            .update(
+                &mut world,
+                0.0,
+                pointer_update(point.x_px, point.y_px, false),
+            )
+            .expect("up");
+
+        let proof = select_popup_proof(&root, select);
+        let shell_transform = world
+            .get::<Transform>(proof.shell_entity)
+            .expect("select popup shell transform");
+        assert_popup_surface_order_and_text(&mut root, &world, parent, &proof);
+        assert_close(shell_transform.translation.x, 40.0);
+        assert_close(shell_transform.translation.y, -88.0);
+        assert_second_popup_row_mouse_click_commits(&mut root, &mut world, parent, select, &proof);
     }
 }
