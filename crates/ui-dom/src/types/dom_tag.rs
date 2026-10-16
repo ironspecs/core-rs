@@ -460,15 +460,7 @@ impl DomTag {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DomAfterAttrWriteIntrinsicUpdate, DomElementBehavior, DomElementEditKind,
-        DomElementIntrinsicKind, DomElementLifecycleBehavior, DomTag, color_value,
-    };
-    use crate::types::element_behaviors::{
-        DomElementAfterClick, DomElementAfterFocus, DomElementOnActivation, DomElementOnBlur,
-        DomElementOnKeyboard, DomElementOnPointer, DomElementPresentOptionsBehavior,
-    };
-    use crate::types::{DomAttribute, DomAttributeValue};
+    use super::*;
     use smallvec::smallvec;
 
     #[test]

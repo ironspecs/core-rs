@@ -709,13 +709,7 @@ fn is_layout_length_attribute(attribute: &DomAttribute) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{DomAttribute, DomAttributeValue, DomError};
-
-    use super::{
-        layout_length_attr_uses_unset, parse_authored_length, parse_class_attr_list,
-        parse_css_color_rgba, parse_style_attr_map, resolve_line_height_px,
-        validate_attribute_value,
-    };
+    use super::*;
 
     fn color(value: &str) -> DomAttributeValue {
         DomAttributeValue::Color(parse_css_color_rgba(value).expect("test color should parse"))
@@ -1347,22 +1341,16 @@ mod tests {
 
     #[test]
     fn authored_length_parser_recognizes_supported_units() {
-        assert_eq!(
-            parse_authored_length("0"),
-            Some(super::AuthoredLength::Px(0.0))
-        );
+        assert_eq!(parse_authored_length("0"), Some(AuthoredLength::Px(0.0)));
         assert_eq!(
             parse_authored_length("12px"),
-            Some(super::AuthoredLength::Px(12.0))
+            Some(AuthoredLength::Px(12.0))
         );
         assert_eq!(
             parse_authored_length("1.5em"),
-            Some(super::AuthoredLength::Em(1.5))
+            Some(AuthoredLength::Em(1.5))
         );
-        assert_eq!(
-            parse_authored_length("unset"),
-            Some(super::AuthoredLength::Unset)
-        );
+        assert_eq!(parse_authored_length("unset"), Some(AuthoredLength::Unset));
     }
 
     #[test]

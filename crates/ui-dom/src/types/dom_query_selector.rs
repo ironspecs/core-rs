@@ -384,8 +384,7 @@ fn tag_name_matches(tag: &crate::types::dom_tag::DomTag, expected: &str) -> bool
 
 #[cfg(test)]
 mod tests {
-    use super::parse_selector;
-    use crate::types::DomError;
+    use super::*;
 
     #[test]
     fn parse_selector_accepts_supported_shapes() {

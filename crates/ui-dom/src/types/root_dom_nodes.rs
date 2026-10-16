@@ -22,6 +22,9 @@ use collections::metrics::{MetricHistoryEntry, MetricHistoryStore, MetricName, M
 use parking_lot::Mutex;
 use slotmap::SlotMap;
 
+#[cfg(test)]
+use crate::types::dom_tag::DomTag;
+
 /// Number of retained node-store metric history entries.
 pub const ROOT_DOM_NODES_METRIC_HISTORY_CAPACITY: usize = 128;
 
@@ -246,8 +249,7 @@ impl ExactSizeIterator for RootDomNodesMetricHistoryIter {}
 
 #[cfg(test)]
 mod tests {
-    use super::{ROOT_DOM_NODES_METRIC_NAMES, RootDomNodes, RootDomNodesMetricName};
-    use crate::types::{DomNode, DomTag};
+    use super::*;
 
     #[test]
     fn root_dom_nodes_metric_name_indices_are_unique_and_in_bounds() {

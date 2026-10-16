@@ -18,6 +18,15 @@ use crate::types::dom_node::DomNode;
 use crate::types::dom_node::DomNodeSlotKey;
 use crate::types::root_dom::RootDom;
 
+#[cfg(test)]
+use crate::types::dom_tag::DomTag;
+#[cfg(test)]
+use crate::types::root_dom_context::RootDomContext;
+#[cfg(test)]
+use crate::types::root_dom_fragment::RootDomFragment;
+#[cfg(test)]
+use crate::types::root_dom_metrics::RootDomMetricName;
+
 pub struct DomEventListenerContext<'a> {
     root_dom: &'a mut RootDom,
     dispatch: &'a mut DomEventDispatchContext,
@@ -188,16 +197,13 @@ pub(crate) trait DomEventListenerOwner {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{
-        DomEventListenerOwner, DomEventName, DomTag, RootDom, RootDomContext, RootDomFragment,
-        RootDomMetricName,
-    };
+    use super::*;
 
-    fn noop_listener(_context: &mut crate::types::DomEventListenerContext<'_>) {}
+    fn noop_listener(_context: &mut DomEventListenerContext<'_>) {}
 
     fn assert_listener_api_deduplicates_and_removes(
         owner: &mut impl DomEventListenerOwner,
-        target: crate::types::DomNodeSlotKey,
+        target: DomNodeSlotKey,
     ) {
         owner
             .add_event_listener(target, DomEventName::Click, noop_listener, None)

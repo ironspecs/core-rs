@@ -222,7 +222,7 @@ pub(crate) const DOM_EVENT_DESCRIPTORS: [DomEventDescriptor; DomEventName::COUNT
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{DomEventName, dom_event::DomEventDetailKind};
+    use super::*;
 
     #[test]
     fn descriptor_array_covers_every_event_name_once() {

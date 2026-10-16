@@ -352,10 +352,7 @@ impl DomEvent {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{
-        DomEvent, DomEventDetail, DomEventDispatchContext, DomEventName, DomFocusEvent,
-        DomKeyboardEvent, DomModifierState, DomMouseButton, DomMouseEvent,
-    };
+    use super::*;
 
     #[test]
     fn constructor_uses_canonical_policy() {

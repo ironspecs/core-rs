@@ -26,6 +26,9 @@ use crate::types::dom_attr_parse::style_attr_allows_property;
 use crate::types::dom_node::DomNodeSlotKey;
 use crate::types::{DomAttribute, DomAttributeValue};
 
+#[cfg(test)]
+use crate::types::DomError;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DomTransitionState {
     pub active: BTreeMap<DomAttribute, DomTransition>,
@@ -574,11 +577,7 @@ fn cubic_bezier_value(t: f32, point1: f32, point2: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DomTimingFunction, DomTransitionSpec, transition_longhand_values_from_shorthand,
-        transition_spec_for_attribute,
-    };
-    use crate::types::{DomAttribute, DomAttributeValue, DomError};
+    use super::*;
 
     #[test]
     fn transition_shorthand_feeds_longhands() {
@@ -710,7 +709,7 @@ mod tests {
     }
 
     fn spec_from_longhands(
-        longhands: &super::TransitionLonghandValues,
+        longhands: &TransitionLonghandValues,
         target_attribute: &DomAttribute,
     ) -> Option<DomTransitionSpec> {
         transition_spec_for_attribute(

@@ -60,8 +60,7 @@ const _: () = assert!(DomEventName::COUNT <= EventListenerNameBits::CAPACITY);
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::EventListenerNameBits;
-    use crate::types::DomEventName;
+    use super::*;
 
     #[test]
     fn sync_event_name_to_event_listener_sets_bit_when_bucket_has_entries() {
