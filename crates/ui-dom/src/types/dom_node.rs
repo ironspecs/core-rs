@@ -47,7 +47,6 @@
 //!
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::domains::layer_ops::TextRunId;
 use crate::domains::paint::{measure_text_intrinsic, measure_text_intrinsic_with_font_size};
 use crate::types::dom_attr_parse::{
     layout_length_attr_uses_unset, parse_class_attr_list, parse_style_attr_map,
@@ -61,6 +60,7 @@ use crate::types::dom_event::{DomEventListener, DomEventListenerOptions, DomEven
 use crate::types::dom_node_base::DomNodeBase;
 use crate::types::dom_pseudo_state::DomPseudoState;
 use crate::types::dom_tag::{DomElementStateStyleDeclarations, DomTag};
+pub use crate::types::dom_text_node::DomTextNode;
 use crate::types::dom_transition::DomTransition;
 use crate::types::element_behaviors::{
     commit_intrinsic_after_style_recompute, compute_intrinsic_on_create,
@@ -223,13 +223,6 @@ pub(crate) enum LoweredImageSourceKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DomTextNode {
-    pub base: DomNodeBase,
-    text_run_id_hint: Option<TextRunId>,
-    data: Arc<str>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub enum DomNode {
     Document(DomDocumentNode),
     DocumentFragment(DomDocumentFragmentNode),
@@ -330,50 +323,6 @@ pub(crate) fn validate_document_like_attr_target(attribute: &DomAttribute) -> Re
         return Err(DomError::InvalidAttributeTarget);
     }
     Ok(())
-}
-
-impl DomTextNode {
-    /// Returns the document root key that owns this text node.
-    ///
-    /// This is the same ownership anchor used by element and document nodes.
-    /// Text nodes expose it directly so ownership checks can stay uniform
-    /// across node kinds.
-    #[must_use]
-    pub fn owner_document_key(&self) -> DomNodeSlotKey {
-        self.base.owner_document_key
-    }
-
-    #[must_use]
-    pub fn data(&self) -> &str {
-        self.data.as_ref()
-    }
-
-    #[must_use]
-    pub(crate) fn data_arc(&self) -> Arc<str> {
-        self.data.clone()
-    }
-
-    #[must_use]
-    pub(crate) fn text_run_id_hint(&self) -> Option<TextRunId> {
-        self.text_run_id_hint
-    }
-
-    #[must_use]
-    pub(crate) fn new(owner_document_key: DomNodeSlotKey, data: Arc<str>) -> Self {
-        Self {
-            base: DomNodeBase::new(owner_document_key),
-            text_run_id_hint: None,
-            data,
-        }
-    }
-
-    pub(crate) fn set_data(&mut self, data: Arc<str>) {
-        self.data = data;
-    }
-
-    pub(crate) fn set_text_run_id_hint(&mut self, text_run_id_hint: Option<TextRunId>) {
-        self.text_run_id_hint = text_run_id_hint;
-    }
 }
 
 impl DomNode {

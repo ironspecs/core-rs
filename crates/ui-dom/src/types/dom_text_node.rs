@@ -1,0 +1,71 @@
+//! Authored text node record inside a root-owned DOM store.
+//!
+//! This file owns the `DomTextNode` struct and its `impl` blocks. Its purpose
+//! is to keep authored text content, the owner document key, and the retained
+//! paint-time text-run id hint in one honest record without owning the
+//! document store or tree mutation policy.
+//!
+//! Invariants and rules:
+//!
+//! - this file owns only the `DomTextNode` struct and its `impl` blocks
+//! - every `DomTextNode` is owned by exactly one document root key
+//! - text nodes reject element-style attributes (`id`, `class`, `style`)
+//! - the text-run id hint is a paint-time cache and is cleared whenever text
+//!   content changes
+
+use std::sync::Arc;
+
+use crate::domains::layer_ops::TextRunId;
+use crate::types::dom_node::DomNodeSlotKey;
+use crate::types::dom_node_base::DomNodeBase;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DomTextNode {
+    pub base: DomNodeBase,
+    text_run_id_hint: Option<TextRunId>,
+    data: Arc<str>,
+}
+
+impl DomTextNode {
+    /// Returns the document root key that owns this text node.
+    ///
+    /// This is the same ownership anchor used by element and document nodes.
+    /// Text nodes expose it directly so ownership checks can stay uniform
+    /// across node kinds.
+    #[must_use]
+    pub fn owner_document_key(&self) -> DomNodeSlotKey {
+        self.base.owner_document_key
+    }
+
+    #[must_use]
+    pub fn data(&self) -> &str {
+        self.data.as_ref()
+    }
+
+    #[must_use]
+    pub(crate) fn data_arc(&self) -> Arc<str> {
+        self.data.clone()
+    }
+
+    #[must_use]
+    pub(crate) fn text_run_id_hint(&self) -> Option<TextRunId> {
+        self.text_run_id_hint
+    }
+
+    #[must_use]
+    pub(crate) fn new(owner_document_key: DomNodeSlotKey, data: Arc<str>) -> Self {
+        Self {
+            base: DomNodeBase::new(owner_document_key),
+            text_run_id_hint: None,
+            data,
+        }
+    }
+
+    pub(crate) fn set_data(&mut self, data: Arc<str>) {
+        self.data = data;
+    }
+
+    pub(crate) fn set_text_run_id_hint(&mut self, text_run_id_hint: Option<TextRunId>) {
+        self.text_run_id_hint = text_run_id_hint;
+    }
+}
