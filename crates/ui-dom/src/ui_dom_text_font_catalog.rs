@@ -35,3 +35,35 @@ impl UiDomTextFontCatalog {
         &self.ui_sans_handles
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_reports_handles_in_order_and_groups_by_ui_sans() {
+        let mut assets = ::bevy::asset::Assets::<UiDomFontAsset>::default();
+        let first_handle = assets.add(UiDomFontAsset {
+            bytes: std::sync::Arc::from(&b"a"[..]),
+        });
+        let second_handle = assets.add(UiDomFontAsset {
+            bytes: std::sync::Arc::from(&b"a"[..]),
+        });
+
+        let catalog = UiDomTextFontCatalog {
+            ui_sans_handles: vec![first_handle.clone(), second_handle.clone()],
+        };
+
+        assert_eq!(
+            catalog.ui_sans_handles(),
+            [first_handle.clone(), second_handle.clone()]
+        );
+
+        let required_by_family = catalog.required_asset_ids_by_family();
+        assert_eq!(required_by_family.len(), 1);
+        assert_eq!(
+            required_by_family.get(&TextFontFamilyId::UiSans),
+            Some(&vec![first_handle.id(), second_handle.id()])
+        );
+    }
+}

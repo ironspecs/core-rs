@@ -30,3 +30,29 @@ impl UiDomTextFontExtractState {
         self.extracted_font_asset_ids.insert(asset_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_extracted_dedups_only_marked_assets() {
+        let mut assets = ::bevy::asset::Assets::<UiDomFontAsset>::default();
+        let first = assets
+            .add(UiDomFontAsset {
+                bytes: std::sync::Arc::from(&b"a"[..]),
+            })
+            .id();
+        let second = assets
+            .add(UiDomFontAsset {
+                bytes: std::sync::Arc::from(&b"a"[..]),
+            })
+            .id();
+
+        let mut state = UiDomTextFontExtractState::default();
+        assert!(!state.already_extracted(first));
+        state.mark_extracted(first);
+        assert!(state.already_extracted(first));
+        assert!(!state.already_extracted(second));
+    }
+}

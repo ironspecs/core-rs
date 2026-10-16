@@ -25,3 +25,14 @@ impl UiDomRenderSupport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_gpu_reports_available_and_default_reports_unavailable() {
+        assert!(UiDomRenderSupport::direct_gpu().direct_gpu_executor_available);
+        assert!(!UiDomRenderSupport::default().direct_gpu_executor_available);
+    }
+}
