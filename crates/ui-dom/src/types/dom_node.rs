@@ -74,6 +74,20 @@ use serde::{Deserialize, Serialize};
 use slotmap::new_key_type;
 use ui_icons::UiIconId;
 
+#[cfg(test)]
+use crate::types::dom_event::{
+    DomEvent, DomEventDetail, DomEventPhase, DomModifierState, DomMouseButton, DomMouseEvent,
+};
+#[cfg(test)]
+use crate::types::dom_tag::DomElementEditKind;
+#[cfg(test)]
+use crate::types::element_behaviors::{input_default_width_sample, measured_text_width_px};
+#[cfg(test)]
+use crate::types::{
+    DomElementIntrinsicKind, DomEventListenerContext, DomOverflowWrap, DomWhiteSpace, DomWordBreak,
+    RootDom, RootDomContext, parse_css_color_rgba,
+};
+
 new_key_type! {
     pub struct DomNodeSlotKey;
 }
@@ -1845,17 +1859,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use super::{DomNode, DomNodeSlotKey, attribute_invalidation};
-    use crate::types::dom_event::{
-        DomEvent, DomEventDetail, DomEventDispatchContext, DomEventListenerOptions, DomEventName,
-        DomEventPhase, DomModifierState, DomMouseButton, DomMouseEvent,
-    };
-    use crate::types::dom_tag::{DomElementEditKind, DomTag};
-    use crate::types::element_behaviors::{input_default_width_sample, measured_text_width_px};
-    use crate::types::{
-        DomAttribute, DomAttributeNode, DomAttributeValue, DomElementIntrinsicKind, DomError,
-        DomIntrinsic, DomWhiteSpace, parse_css_color_rgba,
-    };
+    use super::*;
     fn assert_f32_eq(actual: f32, expected: f32) {
         assert!(
             (actual - expected).abs() <= f32::EPSILON,
@@ -2381,8 +2385,8 @@ mod tests {
             20.0,
             None,
             DomWhiteSpace::Normal,
-            crate::types::DomOverflowWrap::Normal,
-            crate::types::DomWordBreak::Normal,
+            DomOverflowWrap::Normal,
+            DomWordBreak::Normal,
         );
 
         assert!(intrinsic_changed);
@@ -2410,8 +2414,8 @@ mod tests {
             20.0,
             None,
             DomWhiteSpace::Normal,
-            crate::types::DomOverflowWrap::Normal,
-            crate::types::DomWordBreak::Normal,
+            DomOverflowWrap::Normal,
+            DomWordBreak::Normal,
         );
 
         assert!(intrinsic_changed);
@@ -2793,7 +2797,7 @@ mod tests {
 
     #[test]
     fn dispatch_event_keeps_unreached_once_listener_registered() {
-        let mut root = crate::types::RootDom::new(crate::types::RootDomContext::new_cpu());
+        let mut root = RootDom::new(RootDomContext::new_cpu());
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Button);
         STOP_CAPTURE_CALLS.store(0, Ordering::SeqCst);
         ONCE_BUBBLE_CALLS.store(0, Ordering::SeqCst);
@@ -2891,13 +2895,13 @@ mod tests {
 
     #[test]
     fn dispatch_event_clears_exact_listener_name_bit_after_once_listener_runs() {
-        let mut root = crate::types::RootDom::new(crate::types::RootDomContext::new_cpu());
+        let mut root = RootDom::new(RootDomContext::new_cpu());
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Button);
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_listener = calls.clone();
         node.add_event_listener(
             DomEventName::Click,
-            crate::types::dom_event::DomEventListener::new(move |_| {
+            DomEventListener::new(move |_| {
                 calls_for_listener.fetch_add(1, Ordering::SeqCst);
             }),
             Some(DomEventListenerOptions {
@@ -2923,13 +2927,13 @@ mod tests {
 
     #[test]
     fn dispatch_target_listeners_clears_exact_listener_name_bit_after_once_listener_runs() {
-        let mut root = crate::types::RootDom::new(crate::types::RootDomContext::new_cpu());
+        let mut root = RootDom::new(RootDomContext::new_cpu());
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Button);
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_listener = calls.clone();
         node.add_event_listener(
             DomEventName::Click,
-            crate::types::dom_event::DomEventListener::new(move |_| {
+            DomEventListener::new(move |_| {
                 calls_for_listener.fetch_add(1, Ordering::SeqCst);
             }),
             Some(DomEventListenerOptions {
@@ -2950,7 +2954,7 @@ mod tests {
     #[test]
     fn snapshot_uses_public_browser_style_variables() {
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.base_mut().intrinsic = DomIntrinsic::Text(crate::types::TextIntrinsic {
+        node.base_mut().intrinsic = DomIntrinsic::Text(TextIntrinsic {
             font_size_px: 16.0,
             min_content_width_px: 24.0,
             max_content_width_px: 48.0,
@@ -2973,7 +2977,7 @@ mod tests {
 
         let encoded =
             serde_json::to_string(&snapshot).expect("canonical node snapshot should serialize");
-        let decoded: crate::types::DomCanonicalSnapshot =
+        let decoded: DomCanonicalSnapshot =
             serde_json::from_str(&encoded).expect("canonical node snapshot should deserialize");
         assert_eq!(decoded, snapshot);
     }
@@ -3001,15 +3005,12 @@ mod tests {
                 (DomAttribute::Custom("color".to_string()), color("#ffffff")),
             ]
         );
-        assert_eq!(
-            snapshot.layout,
-            crate::types::DomCanonicalLayoutSnapshot::default()
-        );
+        assert_eq!(snapshot.layout, DomCanonicalLayoutSnapshot::default());
 
         let encoded = snapshot
             .to_json()
             .expect("canonical node snapshot should serialize");
-        let decoded: crate::types::DomCanonicalSnapshot =
+        let decoded: DomCanonicalSnapshot =
             serde_json::from_str(&encoded).expect("canonical node snapshot should deserialize");
         assert_eq!(decoded, snapshot);
     }
@@ -3030,12 +3031,12 @@ mod tests {
     static STOP_CAPTURE_CALLS: AtomicUsize = AtomicUsize::new(0);
     static ONCE_BUBBLE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    fn stop_capture_listener(context: &mut crate::types::DomEventListenerContext<'_>) {
+    fn stop_capture_listener(context: &mut DomEventListenerContext<'_>) {
         STOP_CAPTURE_CALLS.fetch_add(1, Ordering::SeqCst);
         context.stop_immediate_propagation();
     }
 
-    fn once_bubble_listener(_: &mut crate::types::DomEventListenerContext<'_>) {
+    fn once_bubble_listener(_: &mut DomEventListenerContext<'_>) {
         ONCE_BUBBLE_CALLS.fetch_add(1, Ordering::SeqCst);
     }
 }
