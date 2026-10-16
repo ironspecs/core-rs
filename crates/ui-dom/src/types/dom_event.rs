@@ -1,20 +1,23 @@
-//! Shared DOM-style event details and dispatch context.
+//! Shared DOM-style event payloads and occurrence state.
 //!
 //! This file represents the event vocabulary used by `ui-dom` for local
 //! dispatch and input rebroadcast. Its purpose is to keep event names, phases,
-//! detail payloads, and dispatch-context behavior consistent across roots,
-//! nodes, and tests.
+//! payload shapes, and occurrence state consistent across roots, nodes, and
+//! tests. The `DomEventDetail` payload vocabulary and the listener-facing
+//! `DomEventDispatchContext` live in their own files and are re-exported here.
 //!
 //! Invariants and rules:
 //!
 //! - these types describe event data only; dispatch policy belongs elsewhere
-//! - event detail shapes should stay strict and low-level
+//! - event payload shapes should stay strict and low-level
 //! - app-specific event semantics must not be encoded here
 //!
 //! Advice and code philosophy:
 //!
 //! - prefer explicit event variants over loosely typed maps
 //! - keep these shapes stable so tests and callers can depend on them
+pub use crate::types::dom_event_detail::DomEventDetail;
+pub use crate::types::dom_event_dispatch_context::DomEventDispatchContext;
 pub use crate::types::dom_event_listener::{DomEventListener, DomEventListenerOptions};
 pub use crate::types::dom_event_name::DomEventName;
 use crate::types::{DomAttribute, dom_node::DomNodeSlotKey};
@@ -141,151 +144,10 @@ pub struct DomTransitionEvent {
     pub elapsed_s: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum DomEventDetail {
-    Ui(DomUiEvent),
-    Pointer(DomPointerEvent),
-    Mouse(DomMouseEvent),
-    Wheel(DomWheelEvent),
-    Keyboard(DomKeyboardEvent),
-    Focus(DomFocusEvent),
-    /// Payload for `input` and `change` style text-value events.
-    ValueChange(DomValueChangeEvent),
-    Transition(DomTransitionEvent),
-}
-
-impl DomEventDetail {
-    #[must_use]
-    pub(crate) const fn kind(&self) -> DomEventDetailKind {
-        match self {
-            Self::Ui(_) => DomEventDetailKind::Ui,
-            Self::Pointer(_) => DomEventDetailKind::Pointer,
-            Self::Mouse(_) => DomEventDetailKind::Mouse,
-            Self::Wheel(_) => DomEventDetailKind::Wheel,
-            Self::Keyboard(_) => DomEventDetailKind::Keyboard,
-            Self::Focus(_) => DomEventDetailKind::Focus,
-            Self::ValueChange(_) => DomEventDetailKind::ValueChange,
-            Self::Transition(_) => DomEventDetailKind::Transition,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DomEventPropagationState {
     pub stopped: bool,
     pub immediate_stopped: bool,
-}
-
-/// Browser-shaped listener facade over visitor-owned DOM dispatch state.
-///
-/// Listeners use this to read immutable event data and to control propagation
-/// without mutating the underlying [`DomEvent`] payload.
-pub struct DomEventDispatchContext {
-    event: DomEvent,
-    target_key: Option<DomNodeSlotKey>,
-    current_target_key: Option<DomNodeSlotKey>,
-    phase: DomEventPhase,
-    default_prevented: bool,
-    propagation_stopped: bool,
-    immediate_propagation_stopped: bool,
-}
-
-impl DomEventDispatchContext {
-    /// Returns the immutable event payload being dispatched.
-    #[must_use]
-    pub fn event(&self) -> &DomEvent {
-        &self.event
-    }
-
-    /// Returns the current observable DOM phase for this listener call.
-    #[must_use]
-    pub fn phase(&self) -> DomEventPhase {
-        self.phase
-    }
-
-    /// Returns the stable target node key for the current dispatch.
-    #[must_use]
-    pub fn target_key(&self) -> Option<DomNodeSlotKey> {
-        self.target_key
-    }
-
-    /// Returns the current node key receiving this listener invocation.
-    #[must_use]
-    pub fn current_target_key(&self) -> Option<DomNodeSlotKey> {
-        self.current_target_key
-    }
-
-    /// Returns whether a prior listener has prevented the default action.
-    #[must_use]
-    pub fn default_prevented(&self) -> bool {
-        self.default_prevented
-    }
-
-    /// Prevents the default action when the event is cancelable.
-    pub fn prevent_default(&mut self) {
-        if self.event.cancelable() {
-            self.default_prevented = true;
-        }
-    }
-
-    /// Stops propagation to later nodes after the current listener returns.
-    pub fn stop_propagation(&mut self) {
-        self.propagation_stopped = true;
-    }
-
-    /// Stops later listeners on this node and stops propagation to later nodes.
-    pub fn stop_immediate_propagation(&mut self) {
-        self.immediate_propagation_stopped = true;
-        self.propagation_stopped = true;
-    }
-
-    #[must_use]
-    pub(crate) fn new(event: DomEvent) -> Self {
-        Self {
-            event,
-            target_key: None,
-            current_target_key: None,
-            phase: DomEventPhase::None,
-            default_prevented: false,
-            propagation_stopped: false,
-            immediate_propagation_stopped: false,
-        }
-    }
-
-    pub(crate) fn set_target_key(&mut self, target_key: DomNodeSlotKey) {
-        self.target_key = Some(target_key);
-    }
-
-    pub(crate) fn enter_phase(&mut self, phase: DomEventPhase, current_target_key: DomNodeSlotKey) {
-        self.phase = phase;
-        self.current_target_key = Some(current_target_key);
-        self.immediate_propagation_stopped = false;
-    }
-
-    #[must_use]
-    pub(crate) fn propagation_stopped(&self) -> bool {
-        self.propagation_stopped
-    }
-
-    #[must_use]
-    pub(crate) fn immediate_propagation_stopped(&self) -> bool {
-        self.immediate_propagation_stopped
-    }
-
-    #[must_use]
-    pub(crate) fn finish_with_event(mut self) -> DomEvent {
-        self.phase = DomEventPhase::None;
-        self.current_target_key = None;
-        self.event.default_prevented = self.default_prevented;
-        self.event.propagation = DomEventPropagationState {
-            stopped: self.propagation_stopped,
-            immediate_stopped: self.immediate_propagation_stopped,
-        };
-        self.event.phase = DomEventPhase::None;
-        self.event.target_key = self.target_key;
-        self.event.current_target_key = None;
-        self.event
-    }
 }
 
 /// One concrete DOM event instance.
@@ -396,28 +258,5 @@ mod tests {
                 modifiers: DomModifierState::default(),
             }),
         );
-    }
-
-    #[test]
-    fn prevent_default_consults_descriptor_cancelability() {
-        let mut focus_dispatch = DomEventDispatchContext::new(DomEvent::new(
-            DomEventName::Focus,
-            DomEventDetail::Focus(DomFocusEvent::default()),
-        ));
-        focus_dispatch.prevent_default();
-        assert!(!focus_dispatch.default_prevented());
-
-        let mut click_dispatch = DomEventDispatchContext::new(DomEvent::new(
-            DomEventName::Click,
-            DomEventDetail::Mouse(DomMouseEvent {
-                button: Some(DomMouseButton::Primary),
-                buttons: 1,
-                client_x: 0.0,
-                client_y: 0.0,
-                modifiers: DomModifierState::default(),
-            }),
-        ));
-        click_dispatch.prevent_default();
-        assert!(click_dispatch.default_prevented());
     }
 }

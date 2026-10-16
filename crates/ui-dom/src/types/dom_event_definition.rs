@@ -3,69 +3,19 @@
 //! This file owns the fixed descriptor table for event policy and expected
 //! payload family. These rows are the one source of truth for event-type
 //! behavior; concrete `DomEvent` values remain occurrence-only and must look up
-//! fixed behavior here instead of carrying editable copies.
+//! fixed behavior here instead of carrying editable copies. The policy row
+//! shape (`DomEventBehavior`) and the row builder
+//! (`DomEventDescriptorBuilder`) live in their own files.
 
-use crate::types::{DomEventName, dom_event::DomEventDetailKind};
+use crate::types::dom_event::DomEventDetailKind;
+use crate::types::dom_event_behavior::DomEventBehavior;
+use crate::types::dom_event_descriptor_builder::DomEventDescriptorBuilder;
+use crate::types::dom_event_name::DomEventName;
 
 pub(crate) struct DomEventDescriptor {
     pub name: DomEventName,
     pub dom_name: &'static str,
     pub behavior: DomEventBehavior,
-}
-
-pub(crate) struct DomEventBehavior {
-    pub bubbles: bool,
-    pub cancelable: bool,
-    pub detail_kind: DomEventDetailKind,
-}
-
-impl DomEventBehavior {
-    #[must_use]
-    pub(crate) const fn new(
-        bubbles: bool,
-        cancelable: bool,
-        detail_kind: DomEventDetailKind,
-    ) -> Self {
-        Self {
-            bubbles,
-            cancelable,
-            detail_kind,
-        }
-    }
-}
-
-struct DomEventDescriptorBuilder {
-    descriptor: DomEventDescriptor,
-}
-
-impl DomEventDescriptorBuilder {
-    #[must_use]
-    const fn new(name: DomEventName) -> Self {
-        Self {
-            descriptor: DomEventDescriptor {
-                name,
-                dom_name: "",
-                behavior: DomEventBehavior::new(false, false, DomEventDetailKind::Ui),
-            },
-        }
-    }
-
-    #[must_use]
-    const fn dom_name(mut self, dom_name: &'static str) -> Self {
-        self.descriptor.dom_name = dom_name;
-        self
-    }
-
-    #[must_use]
-    const fn behavior(mut self, behavior: DomEventBehavior) -> Self {
-        self.descriptor.behavior = behavior;
-        self
-    }
-
-    #[must_use]
-    const fn build(self) -> DomEventDescriptor {
-        self.descriptor
-    }
 }
 
 // Canonical built-in event policy rows.

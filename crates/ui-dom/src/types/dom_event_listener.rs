@@ -3,6 +3,8 @@
 //! This file keeps listener callback identity, listener options, and the
 //! common owner-facing listener mutation seam together so detached fragments
 //! and live roots can stay aligned when they both support listener authoring.
+//! The listener-facing callback context (`DomEventListenerContext`) lives in
+//! its own file and is re-exported here.
 
 use std::any::TypeId;
 use std::hash::{Hash, Hasher};
@@ -11,8 +13,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+pub use crate::types::dom_event_listener_context::DomEventListenerContext;
+
 use crate::types::DomError;
-use crate::types::dom_event::{DomEvent, DomEventDispatchContext, DomEventPhase};
+use crate::types::dom_event_dispatch_context::DomEventDispatchContext;
 use crate::types::dom_event_name::DomEventName;
 use crate::types::dom_node::DomNode;
 use crate::types::dom_node::DomNodeSlotKey;
@@ -26,67 +30,6 @@ use crate::types::root_dom_context::RootDomContext;
 use crate::types::root_dom_fragment::RootDomFragment;
 #[cfg(test)]
 use crate::types::root_dom_metrics::RootDomMetricName;
-
-pub struct DomEventListenerContext<'a> {
-    root_dom: &'a mut RootDom,
-    dispatch: &'a mut DomEventDispatchContext,
-}
-
-impl<'a> DomEventListenerContext<'a> {
-    #[must_use]
-    pub(crate) fn new(
-        root_dom: &'a mut RootDom,
-        dispatch: &'a mut DomEventDispatchContext,
-    ) -> Self {
-        Self { root_dom, dispatch }
-    }
-
-    #[must_use]
-    pub fn event(&self) -> &DomEvent {
-        self.dispatch.event()
-    }
-
-    #[must_use]
-    pub fn phase(&self) -> DomEventPhase {
-        self.dispatch.phase()
-    }
-
-    #[must_use]
-    pub fn target_key(&self) -> Option<DomNodeSlotKey> {
-        self.dispatch.target_key()
-    }
-
-    #[must_use]
-    pub fn current_target_key(&self) -> Option<DomNodeSlotKey> {
-        self.dispatch.current_target_key()
-    }
-
-    #[must_use]
-    pub fn default_prevented(&self) -> bool {
-        self.dispatch.default_prevented()
-    }
-
-    pub fn prevent_default(&mut self) {
-        self.dispatch.prevent_default();
-    }
-
-    pub fn stop_propagation(&mut self) {
-        self.dispatch.stop_propagation();
-    }
-
-    pub fn stop_immediate_propagation(&mut self) {
-        self.dispatch.stop_immediate_propagation();
-    }
-
-    #[must_use]
-    pub fn root_dom(&self) -> &RootDom {
-        self.root_dom
-    }
-
-    pub fn root_dom_mut(&mut self) -> &mut RootDom {
-        self.root_dom
-    }
-}
 
 /// One DOM listener callback operating on visitor-owned dispatch state.
 #[derive(Clone)]
