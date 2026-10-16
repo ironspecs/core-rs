@@ -22,6 +22,11 @@ use crate::domains::layout::{layer_kind_for_node, node_box_from_ref, relative_of
 use crate::types::primitives::PointPx;
 use crate::types::{DomAttribute, DomAttributeValue, DomError, DomNodeSlotKey, DomRect, RootDom};
 
+#[cfg(test)]
+use crate::types::{DomNode, DomTag, RootDomContext};
+#[cfg(test)]
+use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DomSubtreeHit {
     pub path: Vec<DomNodeSlotKey>,
@@ -385,11 +390,7 @@ fn rect_contains_point(rect: DomRect, point: PointPx) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::primitives::PointPx;
-    use crate::types::{
-        DomError, DomNode, DomNodeSlotKey, DomRect, DomTag, RootDom, RootDomContext,
-    };
-    use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
+    use super::*;
     use bevy::{image::Image, prelude::*};
 
     #[test]
