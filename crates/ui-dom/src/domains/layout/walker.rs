@@ -43,6 +43,13 @@ use super::style::{
     transform_translate_for_node,
 };
 
+#[cfg(test)]
+use crate::domains::layout::IdentityDomLayoutResolver;
+#[cfg(test)]
+use crate::types::{
+    DomAttribute, DomAttributeValue, DomTag, RootDomContext, RootDomNodesMetricName,
+};
+
 #[must_use]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct LayoutPassResult {
@@ -408,30 +415,13 @@ const fn layout_length_epsilon_px() -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::LayoutPassResult;
-    use super::{node_layout_dirty, relayout_tree, relayout_tree_with_inherited, root_key};
-    use crate::domains::layout::IdentityDomLayoutResolver;
-    use crate::domains::layout::layer_kind_for_node;
-    use crate::domains::visitor::inherited_style::inherited_style_context_from_ancestors;
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomLayerKind, DomNodeSlotKey, DomTag, RootDom,
-        RootDomContext, RootDomNodesMetricName,
-    };
+    use super::*;
 
     fn assert_close(actual: f32, expected: f32) {
         assert!(
             (actual - expected).abs() <= 0.001,
             "expected {expected}, got {actual}"
         );
-    }
-
-    fn attached_div(root: &mut RootDom) -> DomNodeSlotKey {
-        let key = root
-            .create_element(DomTag::Div)
-            .expect("element should insert");
-        root.append_child(root.root, key)
-            .expect("element should attach");
-        key
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -545,29 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn parentless_nodes_resolve_as_unclipped_layers() {
-        let root = RootDom::new(RootDomContext::new_cpu());
-        let layer_kind = layer_kind_for_node(root.nodes.get(root.root).expect("root should exist"));
-        assert_eq!(layer_kind, DomLayerKind::Normal);
-    }
-
-    #[test]
-    fn overflow_hidden_resolves_as_clipped_layer() {
-        let mut root = RootDom::new(RootDomContext::new_cpu());
-        let key = attached_div(&mut root);
-        root.set_attr(
-            key,
-            DomAttribute::Overflow,
-            Some(DomAttributeValue::String("hidden".to_string())),
-        )
-        .expect("overflow");
-        assert_eq!(
-            layer_kind_for_node(root.nodes.get(key).expect("node")),
-            DomLayerKind::Clipped
-        );
-    }
-
-    #[test]
     fn relayout_tree_only_uses_direct_node_store_reads_and_writes() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let document = root_key(&root);
@@ -637,60 +604,6 @@ mod tests {
     }
 
     #[test]
-    fn static_position_does_not_create_a_layer() {
-        let mut root = RootDom::new(RootDomContext::new_cpu());
-        let key = attached_div(&mut root);
-        root.set_attr(
-            key,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("static".to_string())),
-        )
-        .expect("static");
-        assert_eq!(
-            layer_kind_for_node(root.nodes.get(key).expect("node")),
-            DomLayerKind::None
-        );
-    }
-
-    #[test]
-    fn display_none_does_not_create_a_layer() {
-        let mut root = RootDom::new(RootDomContext::new_cpu());
-        let key = attached_div(&mut root);
-        root.set_attr(
-            key,
-            DomAttribute::Display,
-            Some(DomAttributeValue::String("none".to_string())),
-        )
-        .expect("display none");
-        root.set_attr(
-            key,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(4px)".to_string())),
-        )
-        .expect("transform");
-        assert_eq!(
-            layer_kind_for_node(root.nodes.get(key).expect("node")),
-            DomLayerKind::None
-        );
-    }
-
-    #[test]
-    fn relative_position_resolves_as_unclipped_layer() {
-        let mut root = RootDom::new(RootDomContext::new_cpu());
-        let key = attached_div(&mut root);
-        root.set_attr(
-            key,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("relative".to_string())),
-        )
-        .expect("relative");
-        assert_eq!(
-            layer_kind_for_node(root.nodes.get(key).expect("node")),
-            DomLayerKind::Normal
-        );
-    }
-
-    #[test]
     fn tree_walker_block_layout_resolves_width_on_entry_and_height_from_children() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let document = root_key(&root);
@@ -714,8 +627,8 @@ mod tests {
         let mut resolver = IdentityDomLayoutResolver;
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
-        let parent_box = crate::domains::layout::node_box(&root, parent).expect("parent box");
-        let child_box = crate::domains::layout::node_box(&root, child).expect("child box");
+        let parent_box = node_box(&root, parent).expect("parent box");
+        let child_box = node_box(&root, child).expect("child box");
         assert_close(parent_box.border_box.width_px, 100.0);
         assert_close(parent_box.border_box.height_px, 20.0);
         assert_close(child_box.border_box.left_px, 0.0);
@@ -761,7 +674,7 @@ mod tests {
         )
         .expect("layout");
 
-        let child_box = crate::domains::layout::node_box(&root, child).expect("child box");
+        let child_box = node_box(&root, child).expect("child box");
         assert_close(child_box.border_box.width_px, 24.0);
         assert_close(child_box.border_box.height_px, 12.0);
     }
@@ -798,7 +711,7 @@ mod tests {
         let mut resolver = IdentityDomLayoutResolver;
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
-        let b_box = crate::domains::layout::node_box(&root, b).expect("b box");
+        let b_box = node_box(&root, b).expect("b box");
         assert_close(b_box.border_box.left_px, 10.0);
     }
 
@@ -826,7 +739,7 @@ mod tests {
         let mut resolver = IdentityDomLayoutResolver;
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
-        let parent_box = crate::domains::layout::node_box(&root, parent).expect("parent box");
+        let parent_box = node_box(&root, parent).expect("parent box");
         assert_close(parent_box.border_box.height_px, 12.0);
     }
 
@@ -854,7 +767,7 @@ mod tests {
         let mut resolver = IdentityDomLayoutResolver;
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
-        let parent_box = crate::domains::layout::node_box(&root, parent).expect("parent box");
+        let parent_box = node_box(&root, parent).expect("parent box");
         assert_close(parent_box.border_box.height_px, 14.0);
     }
 
@@ -882,7 +795,7 @@ mod tests {
         let mut resolver = IdentityDomLayoutResolver;
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
-        let parent_box = crate::domains::layout::node_box(&root, parent).expect("parent box");
+        let parent_box = node_box(&root, parent).expect("parent box");
         assert_close(parent_box.border_box.height_px, 16.0);
     }
 
@@ -1098,7 +1011,7 @@ mod tests {
         let _ =
             relayout_tree(&mut root, child, (320.0, 320.0), &mut resolver).expect("child layout");
 
-        let child_box = crate::domains::layout::node_box(&root, child).expect("child box");
+        let child_box = node_box(&root, child).expect("child box");
         assert_close(child_box.border_box.left_px, 99.0);
         assert_close(child_box.border_box.top_px, 132.0);
         assert_close(child_box.border_box.width_px, 196.0);
@@ -1151,7 +1064,7 @@ mod tests {
             .expect("resized child layout");
 
         let child_node = root.node(child).expect("child node");
-        let child_box = crate::domains::layout::node_box(&root, child).expect("child box");
+        let child_box = node_box(&root, child).expect("child box");
 
         assert_close(child_node.layout().available_width_px, 900.0);
         assert_close(child_box.border_box.left_px, 679.0);

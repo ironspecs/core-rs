@@ -543,7 +543,8 @@ mod tests {
         InheritedStyleContext, inherited_context_from_node,
     };
     use crate::types::{
-        DomAttribute, DomAttributeValue, DomLayerKind, DomNode, DomNodeSlotKey, DomTag,
+        DomAttribute, DomAttributeValue, DomLayerKind, DomNode, DomNodeSlotKey, DomTag, RootDom,
+        RootDomContext,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -560,6 +561,15 @@ mod tests {
 
     fn div_node() -> DomNode {
         DomNode::element(test_owner_document_key(), DomTag::Div)
+    }
+
+    fn attached_div(root: &mut RootDom) -> DomNodeSlotKey {
+        let key = root
+            .create_element(DomTag::Div)
+            .expect("element should insert");
+        root.append_child(root.root, key)
+            .expect("element should attach");
+        key
     }
 
     fn resolved_node_style(node: &DomNode) -> super::NodeStyle {
@@ -747,6 +757,51 @@ mod tests {
         )
         .expect("overflow clip");
         assert_eq!(layer_kind_for_node(&clip), DomLayerKind::Clipped);
+    }
+
+    #[test]
+    fn parentless_nodes_resolve_as_unclipped_layers() {
+        let root = RootDom::new(RootDomContext::new_cpu());
+        let layer_kind = layer_kind_for_node(root.nodes.get(root.root).expect("root should exist"));
+        assert_eq!(layer_kind, DomLayerKind::Normal);
+    }
+
+    #[test]
+    fn static_position_does_not_create_a_layer() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let key = attached_div(&mut root);
+        root.set_attr(
+            key,
+            DomAttribute::Position,
+            Some(DomAttributeValue::String("static".to_string())),
+        )
+        .expect("static");
+        assert_eq!(
+            layer_kind_for_node(root.nodes.get(key).expect("node")),
+            DomLayerKind::None
+        );
+    }
+
+    #[test]
+    fn display_none_does_not_create_a_layer() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let key = attached_div(&mut root);
+        root.set_attr(
+            key,
+            DomAttribute::Display,
+            Some(DomAttributeValue::String("none".to_string())),
+        )
+        .expect("display none");
+        root.set_attr(
+            key,
+            DomAttribute::Transform,
+            Some(DomAttributeValue::String("translateX(4px)".to_string())),
+        )
+        .expect("transform");
+        assert_eq!(
+            layer_kind_for_node(root.nodes.get(key).expect("node")),
+            DomLayerKind::None
+        );
     }
 
     #[test]
