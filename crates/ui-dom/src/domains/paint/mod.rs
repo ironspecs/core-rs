@@ -28,6 +28,21 @@ use crate::types::{
 };
 
 #[cfg(test)]
+use crate::StyleRuleOrigin;
+#[cfg(test)]
+use crate::domains::layer_ops::{ImagePaintId, TextAlign, TextWrapMode};
+#[cfg(test)]
+use crate::domains::layer_pool::LayerConfig;
+#[cfg(test)]
+use crate::domains::layout::{IdentityDomLayoutResolver, relayout_tree};
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
+use crate::types::dom_node::DomTextNode;
+#[cfg(test)]
+use crate::types::{PixelDensity, RootDomContext};
+
+#[cfg(test)]
 pub(crate) use crate::domains::layer_ops::{IconPaintOp, ImagePaintOp};
 pub(crate) use crate::domains::layer_ops::{LayerPaintPlan, RectPaintOp, TextRunPaintOp};
 pub(crate) use mark_dirty::{
@@ -663,24 +678,8 @@ fn text_intrinsic_from_metrics(font_size_px: f32, metrics: &TextIntrinsicMetrics
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use ui_icons::UiIconId;
-
-    use crate::StyleRuleOrigin;
-    use crate::domains::layer_ops::ImagePaintId;
-    use crate::domains::layer_pool::{LayerConfig, LayerPool};
-    use crate::domains::layout::{IdentityDomLayoutResolver, node_box_from_ref, relayout_tree};
-    use crate::domains::visitor::inherited_style::InheritedStyleContext;
-    use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomIntrinsic, DomNode, DomNodeSlotKey, DomTag,
-        PixelDensity, RootDom, RootDomContext,
-    };
-
-    use super::{
-        IconPaintOp, ImagePaintOp, LayerPaintPlan, RectPaintOp, TextRunPaintOp,
-        build_layer_paint_plan, clear_paint_repaint_state_for_painted_layer,
-        layer_tree_needs_paint,
-    };
 
     fn assert_close(actual: f32, expected: f32) {
         assert!(
@@ -1168,10 +1167,7 @@ mod tests {
             text.color_rgba,
             [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0, 1.0],
         );
-        assert_eq!(
-            text.wrap_mode,
-            crate::domains::layer_ops::TextWrapMode::None
-        );
+        assert_eq!(text.wrap_mode, TextWrapMode::None);
         assert!(text.size_px[0] > 0.0);
         assert!(text.size_px[1] > 0.0);
     }
@@ -1238,10 +1234,7 @@ mod tests {
         assert_eq!(text_runs.len(), 1);
         assert_close(text_runs[0].position_px[0], 8.0);
         assert_close(text_runs[0].position_px[1], 5.0);
-        assert_eq!(
-            text_runs[0].wrap_mode,
-            crate::domains::layer_ops::TextWrapMode::None
-        );
+        assert_eq!(text_runs[0].wrap_mode, TextWrapMode::None);
     }
 
     #[test]
@@ -1276,10 +1269,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Center
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Center);
     }
 
     #[test]
@@ -1323,10 +1313,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Center
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Center);
     }
 
     #[test]
@@ -1370,10 +1357,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Justified
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Justified);
     }
 
     #[test]
@@ -1417,10 +1401,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Right
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Right);
     }
 
     #[test]
@@ -1457,10 +1438,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Right
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Right);
     }
 
     #[test]
@@ -1506,10 +1484,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Left
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Left);
     }
 
     #[test]
@@ -1558,10 +1533,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Right
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Right);
     }
 
     #[test]
@@ -1613,10 +1585,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Right
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Right);
     }
 
     #[test]
@@ -1648,10 +1617,7 @@ mod tests {
         let text_runs = text_ops(&plan);
 
         assert_eq!(text_runs.len(), 1);
-        assert_eq!(
-            text_runs[0].alignment,
-            crate::domains::layer_ops::TextAlign::Justified
-        );
+        assert_eq!(text_runs[0].alignment, TextAlign::Justified);
     }
 
     #[test]
@@ -1933,7 +1899,7 @@ mod tests {
         );
         context
             .load_stylesheet(
-                crate::domains::style::StyleRuleOrigin::new("theme", 0),
+                StyleRuleOrigin::new("theme", 0),
                 ".primary:focus-visible { font-size: 10px; outline-color: #ff3366; outline-width: 0.5em; }",
             )
             .expect("outline stylesheet");
@@ -2016,7 +1982,7 @@ mod tests {
         );
         context
             .load_stylesheet(
-                crate::domains::style::StyleRuleOrigin::new("theme", 0),
+                StyleRuleOrigin::new("theme", 0),
                 ".accent:focus { caret-color: #ff3366; }",
             )
             .expect("caret stylesheet");
@@ -2122,7 +2088,7 @@ mod tests {
         assert_eq!(
             root.node(text_key)
                 .and_then(DomNode::as_text)
-                .and_then(crate::types::dom_node::DomTextNode::text_run_id_hint),
+                .and_then(DomTextNode::text_run_id_hint),
             Some(first_text_run_id)
         );
 
@@ -2138,7 +2104,7 @@ mod tests {
         assert_eq!(
             root.node(text_key)
                 .and_then(DomNode::as_text)
-                .and_then(crate::types::dom_node::DomTextNode::text_run_id_hint),
+                .and_then(DomTextNode::text_run_id_hint),
             Some(text.text_run_id)
         );
     }
