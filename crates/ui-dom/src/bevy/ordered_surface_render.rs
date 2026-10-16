@@ -42,6 +42,9 @@ use bevy::{
 
 use crate::{domains::LayerPoolRenderExecutor, render_plugin::UiDomBaseMaterial};
 
+#[cfg(test)]
+use crate::domains::LayerConfig;
+
 type DrawUiDomSurfaceMaterial = (
     SetItemPipeline,
     SetMesh2dViewBindGroup<0>,
@@ -418,12 +421,7 @@ mod tests {
         render::{sync_world::MainEntity, view::RenderVisibleEntities},
     };
 
-    use crate::domains::{LayerConfig, LayerPoolRenderExecutor};
-
-    use super::{
-        VisibleUiDomSurfaceScratch, collect_visible_ui_dom_surfaces_and_attached_root_parents,
-        sort_attached_root_parents_by_z_order,
-    };
+    use super::*;
 
     #[test]
     fn collect_visible_ui_dom_surfaces_and_attached_root_parents_collects_unique_parents() {

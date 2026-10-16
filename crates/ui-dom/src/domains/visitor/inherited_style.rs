@@ -17,6 +17,9 @@ use crate::types::{
     text_direction_from_attr_value, white_space_from_attr_value, word_break_from_attr_value,
 };
 
+#[cfg(test)]
+use crate::types::{DomTag, RootDomContext, RootDomContextConfig, parse_css_color_rgba};
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct InheritedStyleContext {
     pub(crate) color: Option<DomAttributeValue>,
@@ -314,12 +317,7 @@ fn resolve_font_size_px_from_value(value: &DomAttributeValue, font_size_px: f32)
 mod tests {
     use std::sync::Arc;
 
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomTag, RootDom, RootDomContext, RootDomContextConfig,
-        parse_css_color_rgba,
-    };
-
-    use super::inherited_style_context_from_ancestors;
+    use super::*;
 
     fn color(value: &str) -> DomAttributeValue {
         DomAttributeValue::Color(parse_css_color_rgba(value).expect("test color should parse"))
@@ -470,10 +468,7 @@ mod tests {
 
         let inherited = inherited_style_context_from_ancestors(&root, start).expect("climb");
 
-        assert_eq!(
-            inherited.effective_text_align(),
-            crate::types::DomTextAlign::Right
-        );
+        assert_eq!(inherited.effective_text_align(), DomTextAlign::Right);
     }
 
     #[test]
@@ -493,10 +488,7 @@ mod tests {
 
         let inherited = inherited_style_context_from_ancestors(&root, child).expect("climb");
 
-        assert_eq!(
-            inherited.effective_text_align(),
-            crate::types::DomTextAlign::End
-        );
+        assert_eq!(inherited.effective_text_align(), DomTextAlign::End);
     }
 
     #[test]
@@ -516,10 +508,7 @@ mod tests {
 
         let inherited = inherited_style_context_from_ancestors(&root, child).expect("climb");
 
-        assert_eq!(
-            inherited.effective_text_direction(),
-            crate::types::DomTextDirection::Rtl
-        );
+        assert_eq!(inherited.effective_text_direction(), DomTextDirection::Rtl);
     }
 
     #[test]
@@ -545,9 +534,6 @@ mod tests {
 
         let inherited = inherited_style_context_from_ancestors(&root, child).expect("climb");
 
-        assert_eq!(
-            inherited.effective_text_direction(),
-            crate::types::DomTextDirection::Rtl
-        );
+        assert_eq!(inherited.effective_text_direction(), DomTextDirection::Rtl);
     }
 }

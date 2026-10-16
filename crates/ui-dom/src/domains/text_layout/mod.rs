@@ -999,16 +999,7 @@ fn wrapped_text_height_from_buffer(buffer: Buffer) -> f32 {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::types::{
-        DomOverflowWrap, DomTextAlign, DomTextDirection, DomWhiteSpace, DomWordBreak,
-    };
-
-    use super::{
-        DEFAULT_TEXT_FONT_SIZE_PX, TextCaretMap, TextLanguageId, TextLayoutContext,
-        TextLayoutRequest, TextWrapMode, build_wrapped_text_buffer,
-        build_wrapped_text_buffer_and_byte_map, text_caret_map_from_buffer,
-        text_wrap_mode_for_css_intrinsic, text_wrap_mode_for_css_layout,
-    };
+    use super::*;
     use cosmic_text::{Affinity, Buffer, Cursor};
 
     fn default_context() -> TextLayoutContext {

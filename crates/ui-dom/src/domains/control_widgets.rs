@@ -112,9 +112,7 @@ fn solid_rect(rect: DomRect, rgba: [f32; 4], corner_radii_px: [f32; 4]) -> RectP
 
 #[cfg(test)]
 mod tests {
-    use crate::types::DomRect;
-
-    use super::{CheckboxMarkSpec, RangeBarSpec, checkbox_mark_ops, range_bar_ops};
+    use super::*;
 
     fn rect(left_px: f32, top_px: f32, width_px: f32, height_px: f32) -> DomRect {
         DomRect {

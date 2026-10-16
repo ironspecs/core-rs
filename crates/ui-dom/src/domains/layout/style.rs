@@ -38,6 +38,11 @@ use crate::types::{
     DomIntrinsic, DomLayerKind, DomNode, DomRect, parse_authored_length,
 };
 
+#[cfg(test)]
+use crate::domains::visitor::inherited_style::inherited_context_from_node;
+#[cfg(test)]
+use crate::types::{DomNodeSlotKey, DomTag, RootDom, RootDomContext};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LayoutDisplay {
     None,
@@ -535,17 +540,7 @@ fn parse_px(value: Option<&str>) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        LayoutDisplay, PositionMode, intrinsic_box_for_node, layer_kind_for_node, node_style,
-        presented_display, presented_position, transform_translate_for_node,
-    };
-    use crate::domains::visitor::inherited_style::{
-        InheritedStyleContext, inherited_context_from_node,
-    };
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomLayerKind, DomNode, DomNodeSlotKey, DomTag, RootDom,
-        RootDomContext,
-    };
+    use super::*;
 
     fn assert_close(actual: f32, expected: f32) {
         assert!(
@@ -836,7 +831,7 @@ mod tests {
         .expect("translate");
         assert_eq!(
             transform_translate_for_node(&node),
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 8.0,
                 y_px: 12.0,
             }
@@ -849,7 +844,7 @@ mod tests {
         .expect("translateY");
         assert_eq!(
             transform_translate_for_node(&node),
-            crate::types::primitives::PointPx {
+            PointPx {
                 x_px: 0.0,
                 y_px: 5.0,
             }

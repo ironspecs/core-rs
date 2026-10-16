@@ -36,6 +36,9 @@ use crate::domains::{
 pub(crate) use crate::bevy::base_material::UiDomBaseMaterial;
 pub(crate) use crate::bevy::font_assets::UiDomFontAsset;
 
+#[cfg(test)]
+use crate::types::PixelDensity;
+
 /// Reports the GPU paint runtime support installed for `ui-dom`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Resource)]
 pub struct UiDomRenderSupport {
@@ -202,12 +205,7 @@ fn trim_layer_pool_text_render_maintenance(mut executor: ResMut<LayerPoolRenderE
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        LayerPool, LayerPoolRenderExecutor, RenderApp, UiDomBaseMaterial, UiDomRenderPlugin,
-        install_ui_dom_runtime_pair,
-    };
-    use crate::domains::LayerConfig;
-    use crate::types::PixelDensity;
+    use super::*;
     use ::bevy::{
         DefaultPlugins,
         prelude::{App, PluginGroup},

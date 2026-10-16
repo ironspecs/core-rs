@@ -1,6 +1,9 @@
 use crate::domains::layout::{layer_kind_for_node, node_box_from_ref, relative_offset_for_node};
 use crate::types::{DomLayerKind, DomNodeSlotKey, DomPaintState, DomRect, RootDom};
 
+#[cfg(test)]
+use crate::types::{DomAttribute, DomAttributeValue, DomNode, DomTag, RootDomContext};
+
 pub(crate) fn mark_node_dirty_up_to_layout_root(root_dom: &mut RootDom, key: DomNodeSlotKey) {
     let Some(damaged_rect) = node_damage_rect(root_dom, key) else {
         mark_full_repaint_up_to_layout_root(root_dom, key);
@@ -74,16 +77,7 @@ fn is_layout_root_key(root_dom: &RootDom, key: DomNodeSlotKey) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::dom_node::DomPaintState;
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomNode, DomNodeSlotKey, DomRect, DomTag, RootDom,
-        RootDomContext,
-    };
-
-    use super::{
-        mark_full_repaint_up_to_layout_root, mark_node_dirty_up_to_layout_root,
-        mark_rect_dirty_up_to_layout_root,
-    };
+    use super::*;
 
     fn append_element(
         root: &mut RootDom,

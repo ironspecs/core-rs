@@ -245,11 +245,7 @@ mod tests {
 
     use ui_icons::{UiIconDensity, ui_icon_atlas_manifest_asset_path};
 
-    use super::{
-        alpha_mask_bytes_from_image, icon_density_from_pixel_density,
-        validate_ui_icon_atlas_manifest,
-    };
-    use crate::types::PixelDensity;
+    use super::*;
     use bevy::{
         asset::RenderAssetUsages,
         image::Image,
