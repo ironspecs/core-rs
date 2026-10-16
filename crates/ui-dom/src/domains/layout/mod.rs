@@ -20,12 +20,14 @@
 //! - if a helper is not part of the public layout seam, prefer keeping it in
 //!   the narrower private file that owns the concept
 //!
-use crate::types::{DomBoxModel, DomError, DomNode, DomNodeSlotKey};
+use crate::types::{DomBoxModel, DomNode, DomNodeSlotKey};
 
+mod dom_layout_resolver;
 mod flex;
 mod flex_item_source;
 mod flex_wrap_mode;
 mod flow;
+mod identity_dom_layout_resolver;
 mod layout_pass_result;
 mod style;
 mod walker;
@@ -39,20 +41,8 @@ pub struct DomLayoutInput<'a> {
     pub image_size_px: (f32, f32),
 }
 
-/// Measurement seam used by the shared `TreeWalker` when intrinsic node size is needed.
-pub trait DomLayoutResolver {
-    fn measure_box(&mut self, input: DomLayoutInput<'_>) -> Result<DomBoxModel, DomError>;
-}
-
-/// Falls back to the current node-owned box, or the matched image size when geometry is absent.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct IdentityDomLayoutResolver;
-
-impl DomLayoutResolver for IdentityDomLayoutResolver {
-    fn measure_box(&mut self, input: DomLayoutInput<'_>) -> Result<DomBoxModel, DomError> {
-        style::intrinsic_box_for_node(input.node, input.image_size_px)
-    }
-}
+pub use dom_layout_resolver::DomLayoutResolver;
+pub use identity_dom_layout_resolver::IdentityDomLayoutResolver;
 
 pub use walker::{node_box, node_layout_dirty, node_paint_dirty, root_key};
 
