@@ -170,3 +170,36 @@ pub enum DomDebugEvent {
 pub struct DomDebugReport {
     pub(crate) counts: [u64; 16],
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_reports_config_and_tracks_stylesheet_revision() {
+        let context = RootDomContext::new(RootDomContextConfig::gpu());
+        assert_eq!(context.paint_config().backend, PaintBackend::Gpu);
+        assert!(!context.debug_capture_enabled());
+
+        assert!(!context.uses_pseudo_state_styles(DomPseudoState::Hover));
+        assert!(!context.uses_pseudo_state_styles(DomPseudoState::Active));
+        let revision_before = context.style_runtime_revision();
+
+        context
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 0),
+                ".chip:hover { width: 10px; }",
+            )
+            .expect("hover stylesheet should load");
+
+        assert!(context.uses_pseudo_state_styles(DomPseudoState::Hover));
+        assert!(!context.uses_pseudo_state_styles(DomPseudoState::Active));
+        assert!(context.style_runtime_revision() > revision_before);
+
+        let revision_after_load = context.style_runtime_revision();
+        let unloaded = context.unload_stylesheet("theme");
+        assert_eq!(unloaded, 1);
+        assert!(context.style_runtime_revision() > revision_after_load);
+        assert!(!context.uses_pseudo_state_styles(DomPseudoState::Hover));
+    }
+}

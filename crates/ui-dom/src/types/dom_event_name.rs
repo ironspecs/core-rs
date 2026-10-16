@@ -65,3 +65,45 @@ impl DomEventName {
         &DOM_EVENT_DESCRIPTORS[self.index()]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_lookup_returns_matching_rows() {
+        let click = DomEventName::Click.descriptor();
+        assert_eq!(click.name, DomEventName::Click);
+        assert_eq!(click.dom_name, "click");
+        assert!(click.behavior.bubbles);
+        assert!(click.behavior.cancelable);
+
+        let focus = DomEventName::Focus.descriptor();
+        assert!(!focus.behavior.bubbles);
+
+        for name in [
+            DomEventName::PointerDown,
+            DomEventName::PointerUp,
+            DomEventName::PointerMove,
+            DomEventName::PointerEnter,
+            DomEventName::PointerLeave,
+            DomEventName::PointerCancel,
+            DomEventName::Click,
+            DomEventName::DoubleClick,
+            DomEventName::ContextMenu,
+            DomEventName::Wheel,
+            DomEventName::KeyDown,
+            DomEventName::KeyUp,
+            DomEventName::Focus,
+            DomEventName::Blur,
+            DomEventName::FocusIn,
+            DomEventName::FocusOut,
+            DomEventName::Input,
+            DomEventName::Change,
+            DomEventName::TransitionEnd,
+            DomEventName::TransitionCancel,
+        ] {
+            assert_eq!(name.descriptor().name, name);
+        }
+    }
+}

@@ -88,3 +88,63 @@ impl LayerPoolRenderJobQueue {
             .map(Vec::as_slice)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::Entity;
+
+    fn main_entity(bits: u64) -> MainEntity {
+        Entity::from_bits(bits).into()
+    }
+
+    #[test]
+    fn surface_order_jobs_replace_and_detach_per_root() {
+        let mut queue = LayerPoolRenderJobQueue::default();
+        let root_a = main_entity(1);
+        let root_b = main_entity(2);
+        let e1 = main_entity(10);
+        let e2 = main_entity(11);
+        let e3 = main_entity(12);
+        let e4 = main_entity(20);
+
+        queue.replace_root_surface_order(root_a, 1.0, vec![e1, e2]);
+        assert_eq!(
+            queue.ordered_surface_entities_for_test(root_a),
+            Some(&[e1, e2][..])
+        );
+        assert_eq!(queue.queued_job_count_for_test(), 1);
+
+        queue.replace_root_surface_order(root_a, 2.0, vec![e3]);
+        assert_eq!(
+            queue.ordered_surface_entities_for_test(root_a),
+            Some(&[e3][..])
+        );
+        assert_eq!(queue.queued_job_count_for_test(), 1);
+
+        queue.replace_root_surface_order(root_b, 0.5, vec![e4]);
+        assert_eq!(queue.queued_job_count_for_test(), 2);
+        assert_eq!(
+            queue.ordered_surface_entities_for_test(root_a),
+            Some(&[e3][..])
+        );
+        assert_eq!(
+            queue.ordered_surface_entities_for_test(root_b),
+            Some(&[e4][..])
+        );
+
+        queue.detach_root_surface_order(root_a);
+        assert_eq!(queue.ordered_surface_entities_for_test(root_a), None);
+        assert_eq!(
+            queue.ordered_surface_entities_for_test(root_b),
+            Some(&[e4][..])
+        );
+
+        queue.detach_root_surface_order(root_a);
+        assert_eq!(queue.ordered_surface_entities_for_test(root_a), None);
+        assert_eq!(
+            queue.ordered_surface_entities_for_test(root_b),
+            Some(&[e4][..])
+        );
+    }
+}

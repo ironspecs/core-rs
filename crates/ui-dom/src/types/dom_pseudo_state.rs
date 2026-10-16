@@ -43,3 +43,30 @@ impl DomPseudoState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pseudo_state_bit_maps_each_variant_to_a_distinct_bit() {
+        let variants = [
+            DomPseudoState::Hover,
+            DomPseudoState::Active,
+            DomPseudoState::Focus,
+            DomPseudoState::FocusVisible,
+        ];
+        for (index, variant) in variants.iter().copied().enumerate() {
+            assert_ne!(variant.bit(), 0);
+            assert!(variant.bit().is_power_of_two());
+            for other in variants.iter().copied().skip(index + 1) {
+                assert_ne!(variant.bit(), other.bit());
+            }
+        }
+
+        let mut bits = DomPseudoStateBits::default();
+        assert!(!bits.contains(DomPseudoState::Hover));
+        bits.insert(DomPseudoState::Hover);
+        assert!(bits.contains(DomPseudoState::Hover));
+    }
+}

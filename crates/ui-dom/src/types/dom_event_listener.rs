@@ -21,6 +21,15 @@ use crate::types::dom_event_name::DomEventName;
 use crate::types::dom_node::DomNode;
 use crate::types::root_dom::RootDom;
 
+#[cfg(test)]
+use crate::types::RootDomContext;
+#[cfg(test)]
+use crate::types::dom_event::DomEvent;
+#[cfg(test)]
+use crate::types::dom_event::{DomModifierState, DomMouseButton, DomMouseEvent};
+#[cfg(test)]
+use crate::types::dom_event_detail::DomEventDetail;
+
 /// One DOM listener callback operating on visitor-owned dispatch state.
 #[derive(Clone)]
 pub struct DomEventListener {
@@ -105,4 +114,42 @@ pub(crate) fn remove_event_listener_from_node(
     options: Option<DomEventListenerOptions>,
 ) -> bool {
     node.remove_event_listener(event_name, listener, options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noop_listener(_context: &mut DomEventListenerContext<'_>) {}
+
+    #[test]
+    fn listener_new_assigns_unique_ids_and_invoke_calls_the_callback() {
+        let listener_a = DomEventListener::new(|_| {});
+        let listener_b = DomEventListener::new(|_| {});
+        assert_ne!(listener_a, listener_b);
+        assert_eq!(listener_a, listener_a);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_listener = Arc::clone(&calls);
+        let listener = DomEventListener::new(move |_| {
+            calls_for_listener.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let mut root_dom = RootDom::new(RootDomContext::new_cpu());
+        let mut dispatch = DomEventDispatchContext::new(DomEvent::new(
+            DomEventName::Click,
+            DomEventDetail::Mouse(DomMouseEvent {
+                button: Some(DomMouseButton::Primary),
+                buttons: 1,
+                client_x: 0.0,
+                client_y: 0.0,
+                modifiers: DomModifierState::default(),
+            }),
+        ));
+        listener.invoke(&mut root_dom, &mut dispatch);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let from_fn_item = DomEventListener::from(noop_listener);
+        assert!(format!("{from_fn_item:?}").contains("DomEventListener"));
+    }
 }
