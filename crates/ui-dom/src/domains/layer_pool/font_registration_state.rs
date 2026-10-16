@@ -51,3 +51,35 @@ impl FontRegistrationState {
         self.registered_font_asset_ids.insert(asset_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn family_is_ready_only_when_all_required_assets_registered() {
+        let mut state = FontRegistrationState::default();
+        assert!(!state.ready(TextFontFamilyId::UiSans));
+
+        let mut assets = bevy::asset::Assets::<UiDomFontAsset>::default();
+        let id_a = assets
+            .add(UiDomFontAsset {
+                bytes: std::sync::Arc::from(&b"a"[..]),
+            })
+            .id();
+        let id_b = assets
+            .add(UiDomFontAsset {
+                bytes: std::sync::Arc::from(&b"a"[..]),
+            })
+            .id();
+
+        state.set_required_font_asset_ids(TextFontFamilyId::UiSans, vec![id_a, id_b]);
+        assert!(!state.ready(TextFontFamilyId::UiSans));
+
+        state.mark_registered(id_a);
+        assert!(!state.ready(TextFontFamilyId::UiSans));
+
+        state.mark_registered(id_b);
+        assert!(state.ready(TextFontFamilyId::UiSans));
+    }
+}
