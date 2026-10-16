@@ -38,6 +38,7 @@ use crate::types::{
 
 use super::DomLayoutResolver;
 use super::flow::{LayoutContext, relayout_tree_walker_node};
+use super::layout_pass_result::LayoutPassResult;
 use super::style::{
     layer_kind_for_node, layout_dirty_from_ref, node_box_from_ref, paint_dirty_from_ref,
     transform_translate_for_node,
@@ -49,20 +50,6 @@ use crate::domains::layout::IdentityDomLayoutResolver;
 use crate::types::{
     DomAttribute, DomAttributeValue, DomTag, RootDomContext, RootDomNodesMetricName,
 };
-
-#[must_use]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct LayoutPassResult {
-    pub propagate_width_to_parent_layer: bool,
-    pub propagate_height_to_parent_layer: bool,
-}
-
-impl LayoutPassResult {
-    #[must_use]
-    pub(crate) const fn should_propagate_to_parent_layer(self) -> bool {
-        self.propagate_width_to_parent_layer || self.propagate_height_to_parent_layer
-    }
-}
 
 /// Returns whether the shared `TreeWalker` must run layout for this tree root.
 /// This lets composite decide whether one matched DOM tree still needs layout

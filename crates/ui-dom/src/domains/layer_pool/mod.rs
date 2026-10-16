@@ -49,6 +49,7 @@
 //!   retained render payloads into the GPU op-buffer path.
 
 mod external_layer_target;
+mod frozen_layer_config;
 mod layer_config;
 mod layer_lease;
 #[allow(clippy::module_inception)]

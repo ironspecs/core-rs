@@ -26,6 +26,7 @@ use crate::types::{
 
 use super::DomLayoutResolver;
 use super::flex_item_source::FlexItemSource;
+use super::flex_wrap_mode::FlexWrapMode;
 use super::flow::{
     EnteredNodeLayout, FlowSize, InlineFlowState, LayoutContext, auto_content_width_for_exit,
     border_box_height, border_box_width, child_layout_context, content_width_contribution_for_exit,
@@ -47,23 +48,6 @@ use crate::types::{BoxEdgeInsets, DomLayerKind, DomLayoutState, DomTag, RootDomC
 enum FlexAxis {
     Horizontal,
     Vertical,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FlexWrapMode {
-    NoWrap,
-    Wrap,
-    WrapReverse,
-}
-
-impl FlexWrapMode {
-    fn is_wrapping(self) -> bool {
-        self != Self::NoWrap
-    }
-
-    fn is_cross_reversed(self) -> bool {
-        self == Self::WrapReverse
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

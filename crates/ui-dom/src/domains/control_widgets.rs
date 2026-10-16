@@ -2,24 +2,12 @@
 //!
 //! This module deliberately receives final geometry and visual values. It does
 //! not read DOM state, inspect pseudo states, or choose disabled/active colors.
+//! The paint-op accumulator (`ControlWidgetPaintOps`) lives in its own file.
 
-use arrayvec::ArrayVec;
+use super::control_widget_paint_ops::ControlWidgetPaintOps;
 
-use crate::domains::layer_ops::{IconPaintOp, LayerPaintPlan, RectPaintOp};
+use crate::domains::layer_ops::RectPaintOp;
 use crate::types::DomRect;
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ControlWidgetPaintOps {
-    pub(crate) rects: ArrayVec<RectPaintOp, 8>,
-    pub(crate) icons: ArrayVec<IconPaintOp, 4>,
-}
-
-impl ControlWidgetPaintOps {
-    pub(crate) fn append_to_plan(self, plan: &mut LayerPaintPlan) {
-        plan.rects.extend(self.rects);
-        plan.icons.extend(self.icons);
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RangeBarSpec {

@@ -1,4 +1,4 @@
-//! Shared inherited-style context and ancestor climber for retained visitors.
+//! Shared inherited-style ancestor climber for retained visitors.
 //!
 //! This module owns one upward seed walk that retained visitors can reuse at
 //! their root boundary. The climber is intentionally small and strict:
@@ -7,60 +7,26 @@
 //! - it gathers only the inherited values currently shared by style/layout
 //! - it stops as soon as all tracked inherited values are known
 //! - it does not recompute per-node maps or allocate traversal history
+//!
+//! The resolved value set (`InheritedStyleContext`) lives in its own file and
+//! is re-exported here.
 
 use crate::domains::text_layout::DEFAULT_TEXT_FONT_SIZE_PX;
 use crate::types::dom_node::{DomNode, DomNodeSlotKey};
 use crate::types::{
-    AuthoredLength, DomAttribute, DomAttributeValue, DomError, DomOverflowWrap, DomTextAlign,
-    DomTextDirection, DomWhiteSpace, DomWordBreak, RootDom, overflow_wrap_from_attr_value,
-    parse_authored_length, resolve_line_height_px, text_align_from_attr_value,
-    text_direction_from_attr_value, white_space_from_attr_value, word_break_from_attr_value,
+    AuthoredLength, DomAttribute, DomAttributeValue, DomError, RootDom,
+    overflow_wrap_from_attr_value, parse_authored_length, resolve_line_height_px,
+    text_align_from_attr_value, text_direction_from_attr_value, white_space_from_attr_value,
+    word_break_from_attr_value,
 };
 
+pub(crate) use super::inherited_style_context::InheritedStyleContext;
+
 #[cfg(test)]
-use crate::types::{DomTag, RootDomContext, RootDomContextConfig, parse_css_color_rgba};
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct InheritedStyleContext {
-    pub(crate) color: Option<DomAttributeValue>,
-    pub(crate) font_size_px: Option<f32>,
-    pub(crate) line_height_px: Option<f32>,
-    pub(crate) text_align: Option<DomTextAlign>,
-    pub(crate) text_direction: Option<DomTextDirection>,
-    pub(crate) white_space: Option<DomWhiteSpace>,
-    pub(crate) overflow_wrap: Option<DomOverflowWrap>,
-    pub(crate) word_break: Option<DomWordBreak>,
-}
-
-impl InheritedStyleContext {
-    pub(crate) fn effective_font_size_px(&self) -> f32 {
-        self.font_size_px.unwrap_or(DEFAULT_TEXT_FONT_SIZE_PX)
-    }
-
-    pub(crate) fn effective_white_space(&self) -> DomWhiteSpace {
-        self.white_space.unwrap_or_default()
-    }
-
-    pub(crate) fn effective_overflow_wrap(&self) -> DomOverflowWrap {
-        self.overflow_wrap.unwrap_or_default()
-    }
-
-    pub(crate) fn effective_word_break(&self) -> DomWordBreak {
-        self.word_break.unwrap_or_default()
-    }
-
-    pub(crate) fn effective_line_height_px(&self) -> Option<f32> {
-        self.line_height_px
-    }
-
-    pub(crate) fn effective_text_align(&self) -> DomTextAlign {
-        self.text_align.unwrap_or_default()
-    }
-
-    pub(crate) fn effective_text_direction(&self) -> DomTextDirection {
-        self.text_direction.unwrap_or_default()
-    }
-}
+use crate::types::{
+    DomTag, DomTextAlign, DomTextDirection, RootDomContext, RootDomContextConfig,
+    parse_css_color_rgba,
+};
 
 pub(crate) fn inherited_style_context_from_ancestors(
     root_dom: &RootDom,

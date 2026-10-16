@@ -16,6 +16,7 @@
 //! - keep domain grouping simple and descriptive
 //! - surface shared runtime seams, not migration clutter
 pub mod composite;
+pub(crate) mod control_widget_paint_ops;
 pub(crate) mod control_widgets;
 pub(crate) mod hit_test;
 pub(crate) mod icon_atlas;
@@ -28,6 +29,7 @@ pub(crate) mod paint;
 pub mod render_ops;
 pub mod style;
 pub(crate) mod text_layout;
+pub(crate) mod validated_ui_icon_atlas_lookup;
 pub(crate) mod visitor;
 
 pub use crate::types::{

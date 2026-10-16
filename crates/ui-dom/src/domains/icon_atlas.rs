@@ -9,6 +9,9 @@
 //!   Bevy assets
 //! - packed icon interiors must match the retained design-box size exactly
 //! - runtime atlas lookup stays keyed by `UiIconId` and retained density
+//!
+//! The validated lookup table (`ValidatedUiIconAtlasLookup`) lives in its own
+//! file and is re-exported here.
 
 use std::sync::Arc;
 
@@ -20,17 +23,14 @@ use ui_icons::{UiIconDensity, UiIconId};
 use crate::bevy::icon_assets::UiIconAtlasManifestAsset;
 use crate::types::PixelDensity;
 
+pub(crate) use super::validated_ui_icon_atlas_lookup::ValidatedUiIconAtlasLookup;
+
 #[derive(Clone)]
 pub(crate) struct ValidatedUiIconAtlasManifest {
     pub(crate) atlas_width_px: u32,
     pub(crate) atlas_height_px: u32,
     pub(crate) design_box_size_px: u32,
     pub(crate) lookup: ValidatedUiIconAtlasLookup,
-}
-
-#[derive(Clone)]
-pub(crate) struct ValidatedUiIconAtlasLookup {
-    entries: Arc<[ValidatedUiIconAtlasEntry]>,
 }
 
 #[derive(Clone, Copy)]
@@ -62,23 +62,6 @@ struct RawUiIconRect {
     min_y_px: u32,
     width_px: u32,
     height_px: u32,
-}
-
-impl ValidatedUiIconAtlasLookup {
-    #[must_use]
-    pub(crate) fn entry(&self, icon_id: UiIconId) -> &ValidatedUiIconAtlasEntry {
-        &self.entries[icon_id.dense_index()]
-    }
-}
-
-#[cfg(test)]
-impl ValidatedUiIconAtlasLookup {
-    #[must_use]
-    pub(crate) fn from_entries_for_tests(entries: Vec<ValidatedUiIconAtlasEntry>) -> Self {
-        Self {
-            entries: Arc::<[ValidatedUiIconAtlasEntry]>::from(entries),
-        }
-    }
 }
 
 pub(crate) fn icon_density_from_pixel_density(pixel_density: PixelDensity) -> UiIconDensity {

@@ -5,18 +5,19 @@
 //!
 //! The public install input stays here because both `LayerPool` and
 //! `LayerPoolRenderExecutor` freeze copies from the same retained-layer policy.
-//! The crate-private frozen wrapper keeps installed copies read-only after
-//! construction without inventing a second public configuration concept.
+//! The crate-private frozen wrapper (`FrozenLayerConfig`) lives in its own file
+//! and is re-exported here.
 //!
 //! Strict invariants:
 //! - `LayerConfig` is an install input, not a live synchronization channel
-//! - `FrozenLayerConfig` is crate-private and read-only after construction
 //! - retained-layer density must be chosen before install and replaced only by
 //!   creating new owners
 
 use bevy::prelude::Resource;
 
 use crate::types::PixelDensity;
+
+pub(crate) use super::frozen_layer_config::FrozenLayerConfig;
 
 /// Immutable retained-layer policy shared across one `ui-dom` GPU install.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Resource)]
@@ -36,20 +37,5 @@ impl LayerConfig {
 impl Default for LayerConfig {
     fn default() -> Self {
         Self::new(PixelDensity::X1)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct FrozenLayerConfig(LayerConfig);
-
-impl FrozenLayerConfig {
-    #[must_use]
-    pub(crate) const fn new(layer_config: LayerConfig) -> Self {
-        Self(layer_config)
-    }
-
-    #[must_use]
-    pub(crate) const fn pixel_density(self) -> PixelDensity {
-        self.0.pixel_density
     }
 }

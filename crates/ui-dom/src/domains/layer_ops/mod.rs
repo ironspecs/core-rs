@@ -7,14 +7,16 @@
 mod icon;
 mod rect;
 mod text_run;
+mod text_run_signature;
 
 pub(crate) use crate::domains::text_layout::{
     TextAlign, TextFontFamilyId, TextLanguageId, TextWrapMode,
 };
 pub use icon::IconPaintOp;
 pub use rect::RectPaintOp;
+pub(crate) use text_run::TextRunId;
 pub use text_run::TextRunPaintOp;
-pub(crate) use text_run::{TextRunId, TextRunSignature};
+pub(crate) use text_run_signature::TextRunSignature;
 
 /// Stable retained SVG placeholder identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

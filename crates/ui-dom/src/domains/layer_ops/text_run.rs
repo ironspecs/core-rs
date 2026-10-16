@@ -1,29 +1,9 @@
-use std::sync::Arc;
-
 use slotmap::new_key_type;
 
-use crate::domains::text_layout::{TextAlign, TextFontFamilyId, TextLanguageId, TextWrapMode};
+use crate::domains::text_layout::{TextAlign, TextWrapMode};
 
 new_key_type! {
     pub(crate) struct TextRunId;
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct TextRunSignature {
-    pub(crate) text: Arc<str>,
-    pub(crate) language_hint_id: TextLanguageId,
-    pub(crate) font_family_id: TextFontFamilyId,
-}
-
-impl TextRunSignature {
-    #[must_use]
-    pub(crate) fn from_text(text: Arc<str>) -> Self {
-        Self {
-            language_hint_id: TextLanguageId::from_text_hint(text.as_ref()),
-            font_family_id: TextFontFamilyId::UiSans,
-            text,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

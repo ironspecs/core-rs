@@ -10,6 +10,7 @@
 //! - visitors should prefer direct execution over temporary collections
 pub(crate) mod event_target;
 pub(crate) mod inherited_style;
+pub(crate) mod inherited_style_context;
 pub(crate) mod pseudo_state;
 pub(crate) mod scroll;
 pub(crate) mod style_recompute;
