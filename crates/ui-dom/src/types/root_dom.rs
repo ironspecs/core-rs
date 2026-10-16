@@ -92,6 +92,11 @@ use crate::types::{
 use crate::types::{RootDomMetricHistoryIter, RootDomMetricName, RootDomMetrics};
 use slotmap::SlotMap;
 
+#[cfg(test)]
+use crate::types::dom_attr_node::DomAttributeNode;
+#[cfg(test)]
+use crate::{LayerConfig, UiDomRenderSupport, domains::LayerPoolRenderJobQueue};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PointerEventDispatchResult {
     target: DomPointEventTarget,
@@ -3625,14 +3630,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    use super::{DomPointerUpdate, RootDom};
-    use crate::types::dom_attr_node::DomAttributeNode;
-    use crate::types::{
-        DomAttribute, DomAttributeValue, DomError, DomEvent, DomEventDetail, DomEventListener,
-        DomEventListenerOptions, DomEventName, DomFocusEvent, DomNode, DomSelection, DomTag,
-        RootDomContext, TextSelection, TextSelectionDirection,
-    };
-    use crate::{LayerConfig, LayerPool, UiDomRenderSupport, domains::LayerPoolRenderJobQueue};
+    use super::*;
     use bevy::{
         input::{
             ButtonState,
@@ -3828,7 +3826,7 @@ mod tests {
         root.blur();
 
         assert_eq!(root.focused_element_key(), None);
-        assert_eq!(root.selection(), crate::types::DomSelection::None);
+        assert_eq!(root.selection(), DomSelection::None);
         assert_eq!(popup_state(&root, fixture.owner_key), Some("closing"));
     }
 
@@ -4186,8 +4184,8 @@ mod tests {
     }
 
     struct PresentedOptionsFixture {
-        owner_key: crate::types::DomNodeSlotKey,
-        option_keys: [crate::types::DomNodeSlotKey; 3],
+        owner_key: DomNodeSlotKey,
+        option_keys: [DomNodeSlotKey; 3],
     }
 
     fn append_select_with_options(root: &mut RootDom) -> PresentedOptionsFixture {
@@ -4290,10 +4288,10 @@ mod tests {
         }
     }
 
-    fn element_value(root: &RootDom, key: crate::types::DomNodeSlotKey) -> String {
+    fn element_value(root: &RootDom, key: DomNodeSlotKey) -> String {
         root.nodes
             .get(key)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .and_then(|element| element.attr(&DomAttribute::Value))
             .and_then(|value| match value {
                 DomAttributeValue::String(value) => Some(value.clone()),
@@ -4305,10 +4303,10 @@ mod tests {
             .expect("element value should stay string")
     }
 
-    fn popup_state(root: &RootDom, owner_key: crate::types::DomNodeSlotKey) -> Option<&str> {
+    fn popup_state(root: &RootDom, owner_key: DomNodeSlotKey) -> Option<&str> {
         root.presented_options_popup_shell_key(owner_key)
             .and_then(|shell_key| root.nodes.get(shell_key))
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .and_then(|element| element.attr(&DomAttribute::PresentedOptionsState))
             .and_then(|value| match value {
                 DomAttributeValue::String(value) => Some(value.as_str()),
@@ -4321,7 +4319,7 @@ mod tests {
 
     fn set_box(
         root: &mut RootDom,
-        key: crate::types::DomNodeSlotKey,
+        key: DomNodeSlotKey,
         left_px: f32,
         top_px: f32,
         width_px: f32,
@@ -4329,25 +4327,25 @@ mod tests {
     ) {
         let node = root.nodes.get_mut(key).expect("node should exist");
         match node {
-            crate::types::DomNode::Document(document) => {
+            DomNode::Document(document) => {
                 document.base.box_model.border_box.left_px = left_px;
                 document.base.box_model.border_box.top_px = top_px;
                 document.base.box_model.border_box.width_px = width_px;
                 document.base.box_model.border_box.height_px = height_px;
             }
-            crate::types::DomNode::DocumentFragment(fragment) => {
+            DomNode::DocumentFragment(fragment) => {
                 fragment.base.box_model.border_box.left_px = left_px;
                 fragment.base.box_model.border_box.top_px = top_px;
                 fragment.base.box_model.border_box.width_px = width_px;
                 fragment.base.box_model.border_box.height_px = height_px;
             }
-            crate::types::DomNode::Element(element) => {
+            DomNode::Element(element) => {
                 element.base.box_model.border_box.left_px = left_px;
                 element.base.box_model.border_box.top_px = top_px;
                 element.base.box_model.border_box.width_px = width_px;
                 element.base.box_model.border_box.height_px = height_px;
             }
-            crate::types::DomNode::Text(text) => {
+            DomNode::Text(text) => {
                 text.base.box_model.border_box.left_px = left_px;
                 text.base.box_model.border_box.top_px = top_px;
                 text.base.box_model.border_box.width_px = width_px;
