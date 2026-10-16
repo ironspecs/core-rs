@@ -3,7 +3,8 @@
 //! This file represents the box-model data used to move layout results into
 //! paint, hit testing, and presentation. Its purpose is to keep geometry facts
 //! small, explicit, and reusable across the crate without embedding layout
-//! policy into the shapes themselves.
+//! policy into the shapes themselves. The box snapshot (`DomBoxModel`) lives in
+//! its own file and is re-exported here.
 //!
 //! Invariants and rules:
 //!
@@ -17,7 +18,7 @@
 //! - push interpretation upward into layout/paint/composite code
 use serde::{Deserialize, Serialize};
 
-use crate::types::primitives::DomRect;
+pub use crate::types::dom_box_model::DomBoxModel;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct BoxEdgeInsets {
@@ -25,44 +26,4 @@ pub struct BoxEdgeInsets {
     pub top_px: f32,
     pub right_px: f32,
     pub bottom_px: f32,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
-pub struct DomBoxModel {
-    pub border_box: DomRect,
-    pub margin: BoxEdgeInsets,
-    pub border: BoxEdgeInsets,
-    pub padding: BoxEdgeInsets,
-}
-
-impl DomBoxModel {
-    /// Creates one geometry-only box model that paint can interpret later.
-    ///
-    /// This constructor exists so callers can build an explicit box snapshot
-    /// without depending on layout internals. It is intended for shared geometry
-    /// setup, not for hiding layout policy inside the type.
-    #[must_use]
-    pub fn new(
-        border_box: DomRect,
-        margin: BoxEdgeInsets,
-        border: BoxEdgeInsets,
-        padding: BoxEdgeInsets,
-    ) -> Self {
-        Self {
-            border_box,
-            margin,
-            border,
-            padding,
-        }
-    }
-
-    /// Provides the zero/default geometry state for nodes without effective layout.
-    ///
-    /// This is the canonical empty box used before layout has assigned real
-    /// geometry or when a node has no effective size. Callers should prefer it
-    /// over inventing ad hoc zero rectangles.
-    #[must_use]
-    pub fn zero() -> Self {
-        Self::default()
-    }
 }

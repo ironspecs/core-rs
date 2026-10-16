@@ -17,6 +17,9 @@
 //! - if a behavior is not shared across apps, do not teach it to this file
 use smallvec::{SmallVec, smallvec};
 
+pub use crate::types::dom_after_attr_write_intrinsic_update::DomAfterAttrWriteIntrinsicUpdate;
+
+use crate::types::dom_element_descriptor_builder::DomElementDescriptorBuilder;
 use crate::types::element_behaviors::{
     DomElementAfterClick, DomElementAfterFocus, DomElementIntrinsicKind, DomElementOnActivation,
     DomElementOnBlur, DomElementOnKeyboard, DomElementOnPointer, DomElementPresentOptionsBehavior,
@@ -57,25 +60,6 @@ pub enum DomElementLifecycleBehavior {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub enum DomAfterAttrWriteIntrinsicUpdate {
-    #[default]
-    None,
-    AttributeList(SmallVec<[DomAttribute; 4]>),
-}
-
-impl DomAfterAttrWriteIntrinsicUpdate {
-    #[must_use]
-    pub fn matches(&self, attribute: &DomAttribute) -> bool {
-        match self {
-            Self::None => false,
-            Self::AttributeList(attributes) => {
-                attributes.iter().any(|candidate| candidate == attribute)
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DomElementBehavior {
     pub focusable: bool,
     pub active_pseudo: bool,
@@ -109,76 +93,6 @@ pub struct DomElementDescriptor {
     pub default_attrs: DomAttrs,
     pub behavior: DomElementBehavior,
     pub state_style_declarations: DomElementStateStyleDeclarations,
-}
-
-#[derive(Clone, Debug)]
-struct DomElementDescriptorBuilder {
-    descriptor: DomElementDescriptor,
-}
-
-impl DomElementDescriptorBuilder {
-    #[must_use]
-    fn new() -> Self {
-        Self {
-            descriptor: DomElementDescriptor {
-                default_attrs: DomAttrs::default(),
-                behavior: DomElementBehavior::default(),
-                state_style_declarations: DomElementStateStyleDeclarations::default(),
-            },
-        }
-    }
-
-    #[must_use]
-    fn display(self, value: &str) -> Self {
-        self.attr(
-            DomAttribute::Display,
-            DomAttributeValue::String(value.to_string()),
-        )
-    }
-
-    #[must_use]
-    fn behavior(mut self, behavior: DomElementBehavior) -> Self {
-        self.descriptor.behavior = behavior;
-        self
-    }
-
-    #[must_use]
-    fn attr(mut self, attribute: DomAttribute, value: DomAttributeValue) -> Self {
-        self.descriptor
-            .default_attrs
-            .attributes
-            .insert(attribute, value);
-        self
-    }
-
-    #[must_use]
-    fn hover_style(mut self, declarations: DomStyleDeclarationList) -> Self {
-        self.descriptor.state_style_declarations.hover = declarations;
-        self
-    }
-
-    #[must_use]
-    fn active_style(mut self, declarations: DomStyleDeclarationList) -> Self {
-        self.descriptor.state_style_declarations.active = declarations;
-        self
-    }
-
-    #[must_use]
-    fn focus_style(mut self, declarations: DomStyleDeclarationList) -> Self {
-        self.descriptor.state_style_declarations.focus = declarations;
-        self
-    }
-
-    #[must_use]
-    fn focus_visible_style(mut self, declarations: DomStyleDeclarationList) -> Self {
-        self.descriptor.state_style_declarations.focus_visible = declarations;
-        self
-    }
-
-    #[must_use]
-    fn build(self) -> DomElementDescriptor {
-        self.descriptor
-    }
 }
 
 fn with_default_field_state_styles(

@@ -1,7 +1,11 @@
 //! Shared pseudo-state input and flags for `ui-dom`.
 //!
 //! This file keeps the public pointer-state input and element pseudo-state flag
-//! types in one place without owning any root mutation policy.
+//! types in one place without owning any root mutation policy. The compact
+//! bit-set (`DomPseudoStateBits`) lives in its own file and is re-exported
+//! here.
+
+pub use crate::types::dom_pseudo_state_bits::DomPseudoStateBits;
 
 /// Public pointer facts used to update root-owned pseudo-state.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -29,33 +33,13 @@ pub enum DomPseudoState {
     FocusVisible = 1 << 3,
 }
 
-/// Bit-set of the current element pseudo-state flags.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DomPseudoStateBits(u8);
-
 impl DomPseudoState {
-    fn bit(self) -> u8 {
+    pub(crate) fn bit(self) -> u8 {
         match self {
             Self::Hover => 1,
             Self::Active => 1 << 1,
             Self::Focus => 1 << 2,
             Self::FocusVisible => 1 << 3,
         }
-    }
-}
-
-impl DomPseudoStateBits {
-    /// Returns whether this bit-set includes the provided pseudo-state.
-    #[must_use]
-    pub fn contains(self, pseudo_state: DomPseudoState) -> bool {
-        self.0 & pseudo_state.bit() != 0
-    }
-
-    pub(crate) fn insert(&mut self, pseudo_state: DomPseudoState) {
-        self.0 |= pseudo_state.bit();
-    }
-
-    pub(crate) fn remove(&mut self, pseudo_state: DomPseudoState) {
-        self.0 &= !pseudo_state.bit();
     }
 }

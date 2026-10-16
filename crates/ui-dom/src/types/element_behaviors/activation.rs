@@ -8,6 +8,7 @@ use bevy::{
     prelude::{Entity, World},
 };
 
+use super::dom_event_dispatch_outcome::DomEventDispatchOutcome;
 use crate::domains::layout::node_box_from_ref;
 use crate::domains::visitor::event_target::{
     DomPointEventTarget, dispatch_event_to_target_and_finish, topmost_event_target_from_point,
@@ -93,37 +94,6 @@ pub(crate) struct ActiveRangeDragSession {
     pub(crate) root_to_subtree_point_offset: PointPx,
     pub(crate) focus_entry_value: String,
     pub(crate) dirty: bool,
-}
-
-pub(crate) enum DomEventDispatchOutcome {
-    NotDispatched,
-    Dispatched(DomEvent),
-}
-
-impl DomEventDispatchOutcome {
-    #[must_use]
-    pub(crate) fn default_prevented(&self) -> bool {
-        match self {
-            Self::NotDispatched => false,
-            Self::Dispatched(event) => event.default_prevented,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn into_sink_eligible_event(self) -> Option<DomEvent> {
-        match self {
-            Self::Dispatched(event) if !event.default_prevented && !event.propagation.stopped => {
-                Some(event)
-            }
-            Self::NotDispatched | Self::Dispatched(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn into_sink_eligible_bubbled_event(self) -> Option<DomEvent> {
-        self.into_sink_eligible_event()
-            .filter(crate::types::DomEvent::bubbles)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

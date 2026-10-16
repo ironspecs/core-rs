@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use slotmap::SlotMap;
 
 use crate::types::dom_node::{DomNode, DomNodeSlotKey};
+use crate::types::simple_selector::SimpleSelector;
 use crate::types::{DomAttributeNode, DomError};
 
 #[derive(Clone, Copy)]
@@ -10,19 +11,6 @@ pub(crate) struct DomQuerySelectorStore<'a> {
     pub(crate) root: DomNodeSlotKey,
     pub(crate) nodes: &'a SlotMap<DomNodeSlotKey, DomNode>,
     pub(crate) id_lookup: &'a HashMap<String, DomNodeSlotKey>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SimpleSelector {
-    id: Option<String>,
-    classes: Vec<String>,
-    tag: Option<String>,
-}
-
-impl SimpleSelector {
-    fn is_pure_id_selector(&self) -> bool {
-        self.id.is_some() && self.tag.is_none() && self.classes.is_empty()
-    }
 }
 
 pub(crate) fn query_selector<'a>(

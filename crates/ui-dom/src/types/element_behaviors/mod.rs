@@ -1,17 +1,17 @@
 //! Element behavior definitions that sit between tags/attrs and lifecycle execution.
 
 mod activation;
+mod dom_event_dispatch_outcome;
 mod intrinsic_size;
 mod paint;
 mod present_options;
 
-pub(crate) use activation::{
-    ActiveRangeDragSession, DomEventDispatchOutcome, PressedPointerClickTarget,
-};
+pub(crate) use activation::{ActiveRangeDragSession, PressedPointerClickTarget};
 pub use activation::{
     DomElementAfterClick, DomElementAfterFocus, DomElementOnActivation, DomElementOnBlur,
     DomElementOnKeyboard, DomElementOnPointer,
 };
+pub(crate) use dom_event_dispatch_outcome::DomEventDispatchOutcome;
 pub use intrinsic_size::DomElementIntrinsicKind;
 pub(crate) use intrinsic_size::{
     commit_intrinsic_after_style_recompute, compute_intrinsic_on_create,
