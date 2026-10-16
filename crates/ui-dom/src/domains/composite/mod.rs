@@ -5,6 +5,10 @@
 //! Bevy layer hierarchy in DOM order. Retained surface order is published once
 //! per attached root after those passes.
 
+pub(crate) mod bevy_layer;
+
+pub(crate) use bevy_layer::BevyLayer;
+
 use bevy::{
     asset::{Assets, Handle, RenderAssetUsages},
     camera::visibility::RenderLayers,
@@ -72,17 +76,6 @@ struct LayerPresentationInputs {
     effective_clip_world: Vec4,
     scroll_offset_y_px: f32,
     opacity: f32,
-}
-
-#[derive(Component, Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BevyLayer {
-    dom_node_slot_key: DomNodeSlotKey,
-}
-
-impl BevyLayer {
-    pub(crate) fn dom_node_slot_key(self) -> DomNodeSlotKey {
-        self.dom_node_slot_key
-    }
 }
 
 #[derive(Component, Clone)]

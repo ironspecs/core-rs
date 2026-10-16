@@ -1,10 +1,11 @@
+mod text_font_catalog;
+mod text_language_id;
+mod text_layout_config;
+mod text_layout_context;
+mod text_layout_request;
 pub(crate) mod text_render;
 
-use std::{
-    borrow::Cow,
-    cell::RefCell,
-    sync::{Arc, OnceLock},
-};
+use std::{borrow::Cow, cell::RefCell};
 
 use cosmic_text::{
     Attrs, Buffer, FontSystem, LayoutRun, Metrics as CosmicMetrics, Shaping,
@@ -16,66 +17,20 @@ use crate::types::{
     text_layout_input_and_byte_map_for_white_space, text_layout_input_for_white_space,
 };
 
+pub(crate) use text_font_catalog::TextFontCatalog;
+pub(crate) use text_language_id::TextLanguageId;
+pub(crate) use text_layout_config::TextLayoutConfig;
+pub(crate) use text_layout_context::TextLayoutContext;
+pub(crate) use text_layout_request::TextLayoutRequest;
+
 pub(crate) const DEFAULT_TEXT_FONT_SIZE_PX: f32 = 14.0;
 const WORD_JOINER: char = '\u{2060}';
 const ZERO_WIDTH_SPACE: char = '\u{200B}';
 const SOFT_HYPHEN: char = '\u{00AD}';
 
-const IBM_PLEX_SANS_BYTES: &[u8] =
-    include_bytes!("../../../../../assets/fonts/vendor/ibm-plex/IBMPlexSans-Variable.ttf");
-const SOURCE_HAN_SANS_J_BYTES: &[u8] =
-    include_bytes!("../../../../../assets/fonts/vendor/source-han-sans/SourceHanSansJ-Regular.otf");
-const SOURCE_HAN_SANS_SC_BYTES: &[u8] = include_bytes!(
-    "../../../../../assets/fonts/vendor/source-han-sans/SourceHanSansSC-Regular.otf"
-);
-const SOURCE_HAN_SANS_K_BYTES: &[u8] =
-    include_bytes!("../../../../../assets/fonts/vendor/source-han-sans/SourceHanSansK-Regular.otf");
-
 thread_local! {
     static REPO_TEXT_LAYOUT_CONTEXT: RefCell<TextLayoutContext> =
         RefCell::new(TextLayoutContext::new(TextLayoutConfig::repo_default()));
-}
-
-static REPO_TEXT_FONT_CATALOG: OnceLock<TextFontCatalog> = OnceLock::new();
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum TextLanguageId {
-    English,
-    Japanese,
-    SimplifiedChinese,
-    Korean,
-    Thai,
-}
-
-impl TextLanguageId {
-    #[must_use]
-    pub(crate) fn from_text_hint(text: &str) -> Self {
-        if text
-            .chars()
-            .any(|character| ('\u{0e00}'..='\u{0e7f}').contains(&character))
-        {
-            return Self::Thai;
-        }
-        if text
-            .chars()
-            .any(|character| ('\u{ac00}'..='\u{d7af}').contains(&character))
-        {
-            return Self::Korean;
-        }
-        if text
-            .chars()
-            .any(|character| ('\u{3040}'..='\u{30ff}').contains(&character))
-        {
-            return Self::Japanese;
-        }
-        if text
-            .chars()
-            .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character))
-        {
-            return Self::SimplifiedChinese;
-        }
-        Self::English
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -97,56 +52,6 @@ pub enum TextAlign {
     Center,
     Right,
     Justified,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct TextLayoutRequest<'a> {
-    pub(crate) text: &'a str,
-    pub(crate) white_space: DomWhiteSpace,
-    pub(crate) word_break: DomWordBreak,
-    pub(crate) font_family_id: TextFontFamilyId,
-    pub(crate) language_hint_id: TextLanguageId,
-    pub(crate) font_size_px: f32,
-    pub(crate) line_height_px: Option<f32>,
-    pub(crate) width_px: Option<f32>,
-    pub(crate) wrap_mode: TextWrapMode,
-    pub(crate) alignment: TextAlign,
-}
-
-impl<'a> TextLayoutRequest<'a> {
-    #[must_use]
-    pub(crate) fn for_text(text: &'a str, font_size_px: f32) -> Self {
-        Self {
-            text,
-            white_space: DomWhiteSpace::Normal,
-            word_break: DomWordBreak::Normal,
-            font_family_id: TextFontFamilyId::UiSans,
-            language_hint_id: TextLanguageId::from_text_hint(text),
-            font_size_px,
-            line_height_px: None,
-            width_px: None,
-            wrap_mode: TextWrapMode::Word,
-            alignment: TextAlign::Left,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn for_text_with_white_space(
-        text: &'a str,
-        font_size_px: f32,
-        white_space: DomWhiteSpace,
-    ) -> Self {
-        Self {
-            white_space,
-            word_break: DomWordBreak::Normal,
-            wrap_mode: text_wrap_mode_for_css_layout(
-                white_space,
-                DomOverflowWrap::Normal,
-                DomWordBreak::Normal,
-            ),
-            ..Self::for_text(text, font_size_px)
-        }
-    }
 }
 
 pub(crate) fn text_align_for_css_value(
@@ -233,140 +138,6 @@ pub(crate) struct TextCaretLayout {
     pub(crate) x_px: f32,
     pub(crate) y_px: f32,
     pub(crate) height_px: f32,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct TextFontCatalog {
-    ui_sans_font_sources: Vec<Arc<Vec<u8>>>,
-}
-
-impl TextFontCatalog {
-    #[must_use]
-    pub(crate) fn repo_default() -> Self {
-        REPO_TEXT_FONT_CATALOG
-            .get_or_init(|| Self {
-                ui_sans_font_sources: vec![
-                    Arc::new(IBM_PLEX_SANS_BYTES.to_vec()),
-                    Arc::new(SOURCE_HAN_SANS_J_BYTES.to_vec()),
-                    Arc::new(SOURCE_HAN_SANS_SC_BYTES.to_vec()),
-                    Arc::new(SOURCE_HAN_SANS_K_BYTES.to_vec()),
-                ],
-            })
-            .clone()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct TextLayoutConfig {
-    font_catalog: TextFontCatalog,
-}
-
-impl TextLayoutConfig {
-    #[must_use]
-    pub(crate) fn repo_default() -> Self {
-        Self {
-            font_catalog: TextFontCatalog::repo_default(),
-        }
-    }
-}
-
-pub(crate) struct TextLayoutContext {
-    font_system: FontSystem,
-}
-
-impl TextLayoutContext {
-    #[must_use]
-    pub(crate) fn new(config: TextLayoutConfig) -> Self {
-        let mut font_system = FontSystem::new();
-        font_system
-            .db_mut()
-            .set_sans_serif_family(text_render::repo_default_sans_serif_family_name());
-        install_text_font_catalog(&mut font_system, config.font_catalog);
-        Self { font_system }
-    }
-
-    #[must_use]
-    pub(crate) fn measure_intrinsic(
-        &mut self,
-        request: &TextLayoutRequest<'_>,
-    ) -> TextIntrinsicMetrics {
-        let line_height_px = effective_line_height_px(&mut self.font_system, request);
-        let max_content_width_px =
-            build_text_buffer(&mut self.font_system, request, line_height_px, None, None)
-                .layout_runs()
-                .fold(0.0f32, |width_px, run| width_px.max(run.line_w));
-        let min_content_width_px = build_text_buffer(
-            &mut self.font_system,
-            request,
-            line_height_px,
-            Some(0.0),
-            None,
-        )
-        .layout_runs()
-        .fold(0.0f32, |width_px, run| width_px.max(run.line_w));
-        TextIntrinsicMetrics {
-            min_content_width_px,
-            max_content_width_px,
-            line_height_px,
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[must_use]
-    pub(crate) fn layout_wrapped_text(
-        &mut self,
-        request: &TextLayoutRequest<'_>,
-    ) -> WrappedTextLayout {
-        wrapped_text_layout_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
-    }
-
-    #[must_use]
-    pub(crate) fn measure_wrapped_text_height(&mut self, request: &TextLayoutRequest<'_>) -> f32 {
-        wrapped_text_height_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
-    }
-
-    #[must_use]
-    pub(crate) fn layout_text_caret(
-        &mut self,
-        request: &TextLayoutRequest<'_>,
-        scalar_offset: usize,
-    ) -> TextCaretLayout {
-        let (buffer, transformed_text, transformed_to_original_byte) =
-            build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
-        text_caret_layout_from_buffer(
-            request.text,
-            &transformed_text,
-            &transformed_to_original_byte,
-            scalar_offset,
-            &buffer,
-        )
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[must_use]
-    pub(crate) fn layout_text_caret_map(
-        &mut self,
-        request: &TextLayoutRequest<'_>,
-    ) -> TextCaretMap {
-        let (buffer, transformed_text, transformed_to_original_byte) =
-            build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
-        text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[must_use]
-    pub(crate) fn layout_text_caret_stop_byte_index_at_point(
-        &mut self,
-        request: &TextLayoutRequest<'_>,
-        x_px: f32,
-        y_px: f32,
-    ) -> usize {
-        let (buffer, transformed_text, transformed_to_original_byte) =
-            build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
-        let caret_map =
-            text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer);
-        text_caret_stop_byte_index_from_map(&caret_map, x_px, y_px)
-    }
 }
 
 pub(crate) fn with_repo_text_layout_context<R>(
@@ -476,7 +247,7 @@ fn white_space_suppresses_soft_wrap(white_space: DomWhiteSpace) -> bool {
     matches!(white_space, DomWhiteSpace::Nowrap | DomWhiteSpace::Pre)
 }
 
-fn build_wrapped_text_buffer(
+pub(super) fn build_wrapped_text_buffer(
     font_system: &mut FontSystem,
     request: &TextLayoutRequest<'_>,
 ) -> Buffer {
@@ -490,7 +261,7 @@ fn build_wrapped_text_buffer(
     )
 }
 
-fn build_wrapped_text_buffer_and_byte_map(
+pub(super) fn build_wrapped_text_buffer_and_byte_map(
     font_system: &mut FontSystem,
     request: &TextLayoutRequest<'_>,
 ) -> (Buffer, String, Vec<usize>) {
@@ -672,7 +443,7 @@ fn push_keep_all_mapped_char(
     transformed_to_original_byte[transformed.len()] = original_end_byte_index;
 }
 
-fn text_caret_layout_from_buffer(
+pub(super) fn text_caret_layout_from_buffer(
     text: &str,
     transformed_text: &str,
     transformed_to_original_byte: &[usize],
@@ -684,7 +455,7 @@ fn text_caret_layout_from_buffer(
     text_caret_layout_from_map(text, scalar_offset, &caret_map)
 }
 
-fn text_caret_map_from_buffer(
+pub(super) fn text_caret_map_from_buffer(
     transformed_text: &str,
     transformed_to_original_byte: &[usize],
     buffer: &Buffer,
@@ -879,7 +650,11 @@ fn unicode_scalar_offset_for_byte_index(text: &str, byte_index: usize) -> usize 
     panic!("text byte index should stay aligned to a unicode scalar boundary");
 }
 
-fn text_caret_stop_byte_index_from_map(caret_map: &TextCaretMap, x_px: f32, y_px: f32) -> usize {
+pub(super) fn text_caret_stop_byte_index_from_map(
+    caret_map: &TextCaretMap,
+    x_px: f32,
+    y_px: f32,
+) -> usize {
     nearest_caret_stop_for_point(caret_map, x_px, y_px).byte_index
 }
 
@@ -954,7 +729,10 @@ fn text_layout_attrs(request: &TextLayoutRequest<'_>) -> Attrs<'static> {
     ))
 }
 
-fn install_text_font_catalog(font_system: &mut FontSystem, font_catalog: TextFontCatalog) {
+pub(super) fn install_text_font_catalog(
+    font_system: &mut FontSystem,
+    font_catalog: TextFontCatalog,
+) {
     for font_source in font_catalog.ui_sans_font_sources {
         font_system
             .db_mut()
@@ -964,7 +742,7 @@ fn install_text_font_catalog(font_system: &mut FontSystem, font_catalog: TextFon
 
 #[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::needless_pass_by_value)]
-fn wrapped_text_layout_from_buffer(buffer: Buffer) -> WrappedTextLayout {
+pub(super) fn wrapped_text_layout_from_buffer(buffer: Buffer) -> WrappedTextLayout {
     let mut width_px: f32 = 0.0;
     let mut height_px: f32 = 0.0;
     let mut lines = Vec::new();
@@ -986,7 +764,7 @@ fn wrapped_text_layout_from_buffer(buffer: Buffer) -> WrappedTextLayout {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn wrapped_text_height_from_buffer(buffer: Buffer) -> f32 {
+pub(super) fn wrapped_text_height_from_buffer(buffer: Buffer) -> f32 {
     let mut height_px: f32 = 0.0;
     for run in buffer.layout_runs() {
         height_px += run.line_height;
@@ -1011,13 +789,6 @@ mod tests {
         request: &TextLayoutRequest<'_>,
     ) -> Buffer {
         build_wrapped_text_buffer(&mut context.font_system, request)
-    }
-
-    fn assert_non_empty_caret_lines(caret_map: &TextCaretMap) {
-        assert!(!caret_map.lines.is_empty());
-        for line in &caret_map.lines {
-            assert!(!line.stops.is_empty());
-        }
     }
 
     #[test]
@@ -1045,226 +816,6 @@ mod tests {
         assert_eq!(
             super::text_align_for_css_value(DomTextAlign::Left, DomTextDirection::Rtl),
             super::TextAlign::Left
-        );
-    }
-
-    #[test]
-    fn intrinsic_width_for_rtmp_server_matches_single_line_wrapped_text_width() {
-        let mut context = default_context();
-        let request = TextLayoutRequest::for_text("RTMP Server", DEFAULT_TEXT_FONT_SIZE_PX);
-        let intrinsic = context.measure_intrinsic(&request);
-        let wrapped_text = context.layout_wrapped_text(&TextLayoutRequest {
-            line_height_px: Some(intrinsic.line_height_px),
-            width_px: Some(intrinsic.max_content_width_px),
-            ..request
-        });
-
-        assert_eq!(wrapped_text.line_count, 1);
-    }
-
-    #[test]
-    fn intrinsic_width_for_session_state_matches_single_line_wrapped_text_width() {
-        let mut context = default_context();
-        let request = TextLayoutRequest::for_text("Session State", DEFAULT_TEXT_FONT_SIZE_PX);
-        let intrinsic = context.measure_intrinsic(&request);
-        let wrapped_text = context.layout_wrapped_text(&TextLayoutRequest {
-            line_height_px: Some(intrinsic.line_height_px),
-            width_px: Some(intrinsic.max_content_width_px),
-            ..request
-        });
-
-        assert_eq!(wrapped_text.line_count, 1);
-    }
-
-    #[test]
-    fn japanese_wrapped_text_height_grows_when_width_is_constrained() {
-        let mut context = default_context();
-        let request = TextLayoutRequest::for_text("シーンを選択", DEFAULT_TEXT_FONT_SIZE_PX);
-        let intrinsic = context.measure_intrinsic(&request);
-        let wrapped_text = context.layout_wrapped_text(&TextLayoutRequest {
-            line_height_px: Some(intrinsic.line_height_px),
-            width_px: Some(intrinsic.max_content_width_px - 1.0),
-            ..request
-        });
-
-        assert_eq!(request.language_hint_id, TextLanguageId::Japanese);
-        assert!(wrapped_text.line_count > 1);
-        assert!(wrapped_text.height_px > intrinsic.line_height_px);
-    }
-
-    #[test]
-    fn japanese_keep_all_stays_single_line_when_width_is_constrained() {
-        let mut context = default_context();
-        let request =
-            TextLayoutRequest::for_text("窓ぎわのトットちゃん", DEFAULT_TEXT_FONT_SIZE_PX);
-        let intrinsic = context.measure_intrinsic(&request);
-        let constrained_width_px = (intrinsic.max_content_width_px - 1.0).max(1.0);
-        let normal_wrapped_text = context.layout_wrapped_text(&TextLayoutRequest {
-            width_px: Some(constrained_width_px),
-            ..request.clone()
-        });
-        let keep_all_wrapped_text = context.layout_wrapped_text(&TextLayoutRequest {
-            width_px: Some(constrained_width_px),
-            word_break: DomWordBreak::KeepAll,
-            wrap_mode: text_wrap_mode_for_css_layout(
-                DomWhiteSpace::Normal,
-                DomOverflowWrap::Normal,
-                DomWordBreak::KeepAll,
-            ),
-            ..request
-        });
-
-        assert!(
-            normal_wrapped_text.line_count > 1,
-            "Japanese normal wrap should still break under a narrow width",
-        );
-        assert_eq!(
-            keep_all_wrapped_text.line_count, 1,
-            "word-break:keep-all should suppress implicit Japanese intra-word wraps",
-        );
-    }
-
-    #[test]
-    fn japanese_keep_all_still_breaks_at_zero_width_space() {
-        let mut context = default_context();
-        let first_segment_request =
-            TextLayoutRequest::for_text("窓ぎわの", DEFAULT_TEXT_FONT_SIZE_PX);
-        let first_segment_width_px = context
-            .measure_intrinsic(&first_segment_request)
-            .max_content_width_px;
-        let keep_all_request = TextLayoutRequest {
-            text: "窓ぎわの\u{200b}トットちゃん",
-            width_px: Some(first_segment_width_px),
-            word_break: DomWordBreak::KeepAll,
-            wrap_mode: text_wrap_mode_for_css_layout(
-                DomWhiteSpace::Normal,
-                DomOverflowWrap::Normal,
-                DomWordBreak::KeepAll,
-            ),
-            ..TextLayoutRequest::for_text("窓ぎわの\u{200b}トットちゃん", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-
-        let wrapped_text = context.layout_wrapped_text(&keep_all_request);
-
-        assert_eq!(
-            wrapped_text.line_count, 2,
-            "word-break:keep-all should preserve explicit zero-width-space breaks",
-        );
-    }
-
-    #[test]
-    fn thai_intrinsic_width_matches_single_line_wrapped_text_width() {
-        let mut context = default_context();
-        let request = TextLayoutRequest::for_text("เลือกฉาก", DEFAULT_TEXT_FONT_SIZE_PX);
-        let intrinsic = context.measure_intrinsic(&request);
-        let wrapped_text = context.layout_wrapped_text(&TextLayoutRequest {
-            line_height_px: Some(intrinsic.line_height_px),
-            width_px: Some(intrinsic.max_content_width_px),
-            wrap_mode: TextWrapMode::WordOrGlyph,
-            ..request
-        });
-
-        assert_eq!(request.language_hint_id, TextLanguageId::Thai);
-        assert_eq!(wrapped_text.line_count, 1);
-    }
-
-    #[test]
-    fn thai_default_wrap_grows_when_width_is_constrained() {
-        let mut context = default_context();
-        let request = TextLayoutRequest {
-            text: "สถานะเซสชันกำลังทำงานและมีรายละเอียดเพิ่มเติม",
-            width_px: Some(36.0),
-            ..TextLayoutRequest::for_text(
-                "สถานะเซสชันกำลังทำงานและมีรายละเอียดเพิ่มเติม",
-                DEFAULT_TEXT_FONT_SIZE_PX,
-            )
-        };
-
-        let wrapped_text = context.layout_wrapped_text(&request);
-
-        assert_eq!(request.language_hint_id, TextLanguageId::Thai);
-        assert!(
-            wrapped_text.line_count > 1,
-            "Thai default wrapping should grow when the available width is constrained",
-        );
-    }
-
-    #[test]
-    fn wrapped_text_height_measurement_matches_full_wrapped_text_layout_height() {
-        let mut context = default_context();
-        let request = TextLayoutRequest {
-            text: "Diagnostics Menu",
-            width_px: Some(48.0),
-            ..TextLayoutRequest::for_text("Diagnostics Menu", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-
-        let wrapped_text_height_px = context.measure_wrapped_text_height(&request);
-        let wrapped_text = context.layout_wrapped_text(&request);
-
-        assert_eq!(wrapped_text_height_px, wrapped_text.height_px);
-        assert!(wrapped_text.line_count > 1);
-    }
-
-    #[test]
-    fn caret_map_builds_ordered_stops_for_single_line_text() {
-        let mut context = default_context();
-        let request = TextLayoutRequest::for_text("Test", DEFAULT_TEXT_FONT_SIZE_PX);
-
-        let caret_map = context.layout_text_caret_map(&request);
-
-        assert_eq!(caret_map.lines.len(), 1);
-        let line = &caret_map.lines[0];
-        assert_eq!(line.stops.first().map(|stop| stop.byte_index), Some(0));
-        assert_eq!(
-            line.stops.last().map(|stop| stop.byte_index),
-            Some(request.text.len())
-        );
-        for window in line.stops.windows(2) {
-            assert!(window[0].x_px <= window[1].x_px);
-        }
-    }
-
-    #[test]
-    fn caret_map_keeps_original_end_offset_when_normal_collapses_spaces() {
-        let mut context = default_context();
-        let request = TextLayoutRequest::for_text_with_white_space(
-            "A    B",
-            DEFAULT_TEXT_FONT_SIZE_PX,
-            DomWhiteSpace::Normal,
-        );
-
-        let caret_map = context.layout_text_caret_map(&request);
-        let line = caret_map
-            .lines
-            .first()
-            .expect("single-line collapsed-space text should keep one line");
-
-        assert_eq!(
-            line.stops.last().map(|stop| stop.byte_index),
-            Some(request.text.len()),
-            "collapsed-space caret map should still end at the original text byte length",
-        );
-    }
-
-    #[test]
-    fn caret_map_keeps_original_end_offset_when_break_spaces_preserves_runs() {
-        let mut context = default_context();
-        let request = TextLayoutRequest::for_text_with_white_space(
-            "A    B",
-            DEFAULT_TEXT_FONT_SIZE_PX,
-            DomWhiteSpace::BreakSpaces,
-        );
-
-        let caret_map = context.layout_text_caret_map(&request);
-        let line = caret_map
-            .lines
-            .first()
-            .expect("single-line preserved-space text should keep one line");
-
-        assert_eq!(
-            line.stops.last().map(|stop| stop.byte_index),
-            Some(request.text.len()),
-            "preserved-space caret map should still end at the original text byte length",
         );
     }
 
@@ -1355,137 +906,6 @@ mod tests {
         assert_eq!(caret.x_px, wrapped_line_start_stop.x_px);
         assert_eq!(caret.y_px, wrapped_line.top_px);
         assert_eq!(caret.height_px, wrapped_line.height_px);
-    }
-
-    #[test]
-    fn default_wrap_does_not_split_ascii_words_into_glyph_columns() {
-        let mut context = default_context();
-        let word_request = TextLayoutRequest::for_text("Alpha", DEFAULT_TEXT_FONT_SIZE_PX);
-        let word_width_px = context
-            .measure_intrinsic(&word_request)
-            .max_content_width_px;
-        let request = TextLayoutRequest {
-            text: "Alpha Beta",
-            width_px: Some((word_width_px - 1.0).max(1.0)),
-            ..TextLayoutRequest::for_text("Alpha Beta", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-
-        let wrapped_text = context.layout_wrapped_text(&request);
-
-        assert_eq!(
-            wrapped_text.line_count, 2,
-            "default wrap should keep each ASCII word intact and move it to its own line when the line is narrower than the word",
-        );
-    }
-
-    #[test]
-    fn break_word_falls_back_to_glyph_breaks_only_after_word_wrap_overflow() {
-        let mut context = default_context();
-        let word_request = TextLayoutRequest::for_text("AlphaBeta", DEFAULT_TEXT_FONT_SIZE_PX);
-        let word_width_px = context
-            .measure_intrinsic(&word_request)
-            .max_content_width_px;
-        let constrained_width_px = (word_width_px - 1.0).max(1.0);
-        let normal_request = TextLayoutRequest {
-            text: "AlphaBeta",
-            width_px: Some(constrained_width_px),
-            wrap_mode: text_wrap_mode_for_css_layout(
-                DomWhiteSpace::Normal,
-                DomOverflowWrap::Normal,
-                DomWordBreak::Normal,
-            ),
-            ..TextLayoutRequest::for_text("AlphaBeta", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-        let break_word_request = TextLayoutRequest {
-            text: "AlphaBeta",
-            width_px: Some(constrained_width_px),
-            wrap_mode: text_wrap_mode_for_css_layout(
-                DomWhiteSpace::Normal,
-                DomOverflowWrap::BreakWord,
-                DomWordBreak::Normal,
-            ),
-            ..TextLayoutRequest::for_text("AlphaBeta", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-
-        let normal_layout = context.layout_wrapped_text(&normal_request);
-        let break_word_layout = context.layout_wrapped_text(&break_word_request);
-
-        assert_eq!(
-            normal_layout.line_count, 1,
-            "normal word wrapping should keep an unbreakable ASCII word on one overflowing line",
-        );
-        assert!(
-            break_word_layout.line_count > 1,
-            "break-word should enable emergency glyph fallback after the normal word wrap path overflows",
-        );
-    }
-
-    #[test]
-    fn anywhere_changes_min_content_width_but_break_word_does_not() {
-        let mut context = default_context();
-        let break_word_request = TextLayoutRequest {
-            wrap_mode: text_wrap_mode_for_css_intrinsic(
-                DomWhiteSpace::Normal,
-                DomOverflowWrap::BreakWord,
-                DomWordBreak::Normal,
-            ),
-            ..TextLayoutRequest::for_text("AlphaBeta", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-        let anywhere_request = TextLayoutRequest {
-            wrap_mode: text_wrap_mode_for_css_intrinsic(
-                DomWhiteSpace::Normal,
-                DomOverflowWrap::Anywhere,
-                DomWordBreak::Normal,
-            ),
-            ..TextLayoutRequest::for_text("AlphaBeta", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-
-        let break_word_intrinsic = context.measure_intrinsic(&break_word_request);
-        let anywhere_intrinsic = context.measure_intrinsic(&anywhere_request);
-
-        assert!(
-            anywhere_intrinsic.min_content_width_px < break_word_intrinsic.min_content_width_px,
-            "Blink and Gecko treat anywhere as a real min-content break opportunity, while break-word stays on the normal word-wrap min-content path",
-        );
-    }
-
-    #[test]
-    fn caret_map_builds_non_empty_lines_for_wrapped_text() {
-        let mut context = default_context();
-        let request = TextLayoutRequest {
-            text: "Runtime Diagnostics Menu",
-            width_px: Some(64.0),
-            ..TextLayoutRequest::for_text("Runtime Diagnostics Menu", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-
-        let caret_map = context.layout_text_caret_map(&request);
-
-        assert!(caret_map.lines.len() > 1);
-        assert_non_empty_caret_lines(&caret_map);
-    }
-
-    #[test]
-    fn caret_point_lookup_uses_nearest_stop_on_nearest_line() {
-        let mut context = default_context();
-        let request = TextLayoutRequest {
-            text: "Session Diagnostics",
-            width_px: Some(56.0),
-            ..TextLayoutRequest::for_text("Session Diagnostics", DEFAULT_TEXT_FONT_SIZE_PX)
-        };
-        let caret_map = context.layout_text_caret_map(&request);
-        let target_line = &caret_map.lines[1];
-        let target_stop = target_line
-            .stops
-            .last()
-            .expect("wrapped text line should expose a last stop");
-
-        let byte_index = context.layout_text_caret_stop_byte_index_at_point(
-            &request,
-            target_stop.x_px,
-            target_line.top_px + (target_line.height_px / 2.0),
-        );
-
-        assert_eq!(byte_index, target_stop.byte_index);
     }
 
     #[test]
