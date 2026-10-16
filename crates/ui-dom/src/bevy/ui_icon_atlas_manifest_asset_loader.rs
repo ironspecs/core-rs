@@ -44,3 +44,14 @@ impl AssetLoader for UiIconAtlasManifestAssetLoader {
         &["json"]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icon_manifest_loader_advertises_json_extension() {
+        let loader = UiIconAtlasManifestAssetLoader;
+        assert_eq!(loader.extensions(), ["json"]);
+    }
+}

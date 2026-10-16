@@ -60,3 +60,25 @@ impl Material2d for UiDomBaseMaterial {
         AlphaMode2d::Blend
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bevy::{asset::Handle, image::Image, math::Vec4, sprite_render::AlphaMode2d};
+
+    use super::*;
+
+    #[test]
+    fn new_material_is_unclipped_full_uv_with_authored_opacity() {
+        let texture = Handle::<Image>::default();
+        let material = UiDomBaseMaterial::new(texture.clone(), 0.5);
+
+        assert_eq!(material.color_texture, texture);
+        assert_eq!(
+            material.uniform.clip_world,
+            Vec4::new(-1_000_000.0, -1_000_000.0, 1_000_000.0, 1_000_000.0)
+        );
+        assert_eq!(material.uniform.uv_window, Vec4::new(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(material.uniform.color, Vec4::new(1.0, 1.0, 1.0, 0.5));
+        assert!(matches!(material.alpha_mode(), AlphaMode2d::Blend));
+    }
+}

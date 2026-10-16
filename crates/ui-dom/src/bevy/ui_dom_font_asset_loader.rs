@@ -43,3 +43,14 @@ impl AssetLoader for UiDomFontAssetLoader {
         &["ttf", "otf"]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_loader_advertises_ttf_and_otf_extensions() {
+        let loader = UiDomFontAssetLoader;
+        assert_eq!(loader.extensions(), ["ttf", "otf"]);
+    }
+}
