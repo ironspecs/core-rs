@@ -24,3 +24,18 @@ impl BevyLayer {
         self.dom_node_slot_key
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bevy_layer_reports_its_dom_slot_key() {
+        let mut keys = slotmap::SlotMap::with_key();
+        let key: DomNodeSlotKey = keys.insert(());
+        let layer = BevyLayer {
+            dom_node_slot_key: key,
+        };
+        assert_eq!(layer.dom_node_slot_key(), key);
+    }
+}

@@ -49,3 +49,35 @@ impl TextLanguageId {
         Self::English
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_text_hint_detects_each_supported_language() {
+        assert_eq!(
+            TextLanguageId::from_text_hint("Settings"),
+            TextLanguageId::English
+        );
+        assert_eq!(
+            TextLanguageId::from_text_hint("メニュー"),
+            TextLanguageId::Japanese
+        );
+        assert_eq!(
+            TextLanguageId::from_text_hint("메뉴"),
+            TextLanguageId::Korean
+        );
+        assert_eq!(TextLanguageId::from_text_hint("เมนู"), TextLanguageId::Thai);
+        assert_eq!(
+            TextLanguageId::from_text_hint("颜色"),
+            TextLanguageId::SimplifiedChinese
+        );
+        // Mixed ASCII + kana resolves Japanese: kana (U+3040..U+30FF) is
+        // checked before Han (U+4E00..U+9FFF), and ASCII has no script range.
+        assert_eq!(
+            TextLanguageId::from_text_hint("メニュー Settings"),
+            TextLanguageId::Japanese
+        );
+    }
+}

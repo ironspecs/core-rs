@@ -44,3 +44,24 @@ impl TextFontCatalog {
             .clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_default_catalog_is_a_populated_singleton() {
+        let catalog = TextFontCatalog::repo_default();
+        assert!(!catalog.ui_sans_font_sources.is_empty());
+
+        let again = TextFontCatalog::repo_default();
+        assert_eq!(
+            catalog.ui_sans_font_sources.len(),
+            again.ui_sans_font_sources.len()
+        );
+        assert_eq!(
+            catalog.ui_sans_font_sources[0].len(),
+            again.ui_sans_font_sources[0].len()
+        );
+    }
+}

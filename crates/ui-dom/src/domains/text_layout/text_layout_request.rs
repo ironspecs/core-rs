@@ -65,3 +65,31 @@ impl<'a> TextLayoutRequest<'a> {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_constructors_capture_text_and_wrap_policy() {
+        let request = TextLayoutRequest::for_text("abc", 14.0);
+        assert_eq!(request.text, "abc");
+        assert_eq!(request.white_space, DomWhiteSpace::Normal);
+        assert_eq!(request.word_break, DomWordBreak::Normal);
+        assert_eq!(request.font_family_id, TextFontFamilyId::UiSans);
+        assert_eq!(request.language_hint_id, TextLanguageId::English);
+        assert_eq!(request.font_size_px, 14.0);
+        assert_eq!(request.line_height_px, None);
+        assert_eq!(request.width_px, None);
+        assert_eq!(request.wrap_mode, TextWrapMode::Word);
+        assert_eq!(request.alignment, TextAlign::Left);
+
+        let explicit_white_space = DomWhiteSpace::Pre;
+        let request =
+            TextLayoutRequest::for_text_with_white_space("abc", 14.0, explicit_white_space);
+        assert_eq!(request.text, "abc");
+        assert_eq!(request.white_space, explicit_white_space);
+        assert_eq!(request.wrap_mode, TextWrapMode::None);
+    }
+}
