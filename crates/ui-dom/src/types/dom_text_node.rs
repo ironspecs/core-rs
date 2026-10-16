@@ -10,8 +10,9 @@
 //! - this file owns only the `DomTextNode` struct and its `impl` blocks
 //! - every `DomTextNode` is owned by exactly one document root key
 //! - text nodes reject element-style attributes (`id`, `class`, `style`)
-//! - the text-run id hint is a paint-time cache and is cleared whenever text
-//!   content changes
+//! - the text-run id hint is a paint-time cache; `set_data` only replaces the
+//!   text and preserves the hint — clearing it on content change is the
+//!   root-owned call-site protocol, not this record's behavior
 
 use std::sync::Arc;
 
