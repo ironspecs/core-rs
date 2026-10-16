@@ -20,6 +20,9 @@ use crate::element_controls::{
 use crate::types::DomAttribute;
 use crate::types::dom_node::DomElementNode;
 
+#[cfg(test)]
+use crate::types::{DomAttributeValue, DomNode, DomNodeSlotKey, DomTag};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ResolvedNumericControl {
     kind: NumericControlKind,
@@ -146,5 +149,103 @@ impl ResolvedNumericControl {
         let snapped_value_px =
             ((value_px - step_base_px) / self.step_value).round() * self.step_value + step_base_px;
         snapped_value_px.clamp(minimum_value_px, maximum_value_px)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input_with_type(input_type: &str) -> DomElementNode {
+        let mut node = DomNode::element(DomNodeSlotKey::default(), DomTag::Input);
+        node.set_attr(
+            DomAttribute::Type,
+            Some(DomAttributeValue::String(input_type.to_string())),
+        )
+        .expect("type");
+        let DomNode::Element(element) = node else {
+            panic!("input should create an element node");
+        };
+        element
+    }
+
+    fn number_input_with(value: f32, min: f32, max: f32, step: f32) -> DomElementNode {
+        let mut node = DomNode::element(DomNodeSlotKey::default(), DomTag::Input);
+        node.set_attr(
+            DomAttribute::Type,
+            Some(DomAttributeValue::String("number".to_string())),
+        )
+        .expect("type");
+        node.set_attr(
+            DomAttribute::Value,
+            Some(DomAttributeValue::String(value.to_string())),
+        )
+        .expect("value");
+        node.set_attr(
+            DomAttribute::Min,
+            Some(DomAttributeValue::String(min.to_string())),
+        )
+        .expect("min");
+        node.set_attr(
+            DomAttribute::Max,
+            Some(DomAttributeValue::String(max.to_string())),
+        )
+        .expect("max");
+        node.set_attr(
+            DomAttribute::Step,
+            Some(DomAttributeValue::String(step.to_string())),
+        )
+        .expect("step");
+        let DomNode::Element(element) = node else {
+            panic!("input should create an element node");
+        };
+        element
+    }
+
+    #[test]
+    fn numeric_control_steps_and_clamps_values() {
+        let control = ResolvedNumericControl::new(
+            &number_input_with(4.0, 0.0, 10.0, 2.0),
+            NumericControlKind::Number,
+        );
+        assert_eq!(
+            control.stepped_value_string(NumericStepDirection::Increment),
+            "6"
+        );
+        assert_eq!(
+            control.stepped_value_string(NumericStepDirection::Decrement),
+            "2"
+        );
+
+        let at_max = ResolvedNumericControl::new(
+            &number_input_with(10.0, 0.0, 10.0, 2.0),
+            NumericControlKind::Number,
+        );
+        assert_eq!(
+            at_max.stepped_value_string(NumericStepDirection::Increment),
+            "10"
+        );
+
+        let at_min = ResolvedNumericControl::new(
+            &number_input_with(0.0, 0.0, 10.0, 2.0),
+            NumericControlKind::Number,
+        );
+        assert_eq!(
+            at_min.stepped_value_string(NumericStepDirection::Decrement),
+            "0"
+        );
+
+        assert_eq!(control.value_string_from_fraction(0.0), "0");
+        assert_eq!(control.value_string_from_fraction(1.0), "10");
+    }
+
+    #[test]
+    fn number_step_math_uses_default_step() {
+        let node = input_with_type("number");
+        let control = ResolvedNumericControl::new(&node, NumericControlKind::Number);
+        assert_eq!(
+            control.stepped_value_string(NumericStepDirection::Increment),
+            "1"
+        );
     }
 }

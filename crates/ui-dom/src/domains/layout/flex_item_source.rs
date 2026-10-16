@@ -24,3 +24,29 @@ impl FlexItemSource {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_slot_key() -> DomNodeSlotKey {
+        let mut keys = slotmap::SlotMap::with_key();
+        keys.insert(())
+    }
+
+    #[test]
+    fn anonymous_inline_group_wraps_one_contiguous_run() {
+        let group_key = new_slot_key();
+        let item_key = new_slot_key();
+
+        let anonymous_group = FlexItemSource::AnonymousInlineGroup(group_key);
+        let block_item = FlexItemSource::BlockItem(item_key);
+
+        // Both variants report their slot key as the single flex item identity.
+        assert_eq!(anonymous_group.key(), group_key);
+        assert_eq!(block_item.key(), item_key);
+
+        // The anonymous-group item is a distinct item kind from a block item.
+        assert_ne!(anonymous_group, block_item);
+    }
+}

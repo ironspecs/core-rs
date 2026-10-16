@@ -351,16 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn number_step_math_uses_default_step() {
-        let node = input_with_type("number");
-        let control = ResolvedNumericControl::new(&node, NumericControlKind::Number);
-        assert_eq!(
-            control.stepped_value_string(NumericStepDirection::Increment),
-            "1"
-        );
-    }
-
-    #[test]
     fn range_defaults_stay_slider_shaped() {
         let (width_px, height_px) = range_default_preferred_size_px(16.0);
         assert!(width_px > height_px);

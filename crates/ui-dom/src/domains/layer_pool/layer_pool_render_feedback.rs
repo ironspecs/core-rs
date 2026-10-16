@@ -55,3 +55,30 @@ impl LayerPoolRenderFeedback {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feedback_empties_applies_and_clears() {
+        let mut feedback = LayerPoolRenderFeedback::default();
+        assert!(feedback.is_empty());
+
+        feedback.shared_render_state_created = 3;
+        assert!(!feedback.is_empty());
+
+        let mut pool = LayerPool::new(LayerConfig::default());
+        let baseline = pool.count(LayerPoolMetricName::SharedRenderStateCreated);
+        assert_eq!(baseline, 0);
+
+        feedback.apply_to(&mut pool);
+        assert_eq!(
+            pool.count(LayerPoolMetricName::SharedRenderStateCreated),
+            baseline + 3
+        );
+
+        feedback.clear();
+        assert!(feedback.is_empty());
+    }
+}
