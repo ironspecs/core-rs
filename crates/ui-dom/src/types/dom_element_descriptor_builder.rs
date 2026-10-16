@@ -81,3 +81,68 @@ impl DomElementDescriptorBuilder {
         self.descriptor
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smallvec::smallvec;
+
+    #[test]
+    fn builder_chains_to_a_descriptor_with_exact_fields() {
+        let behavior = DomElementBehavior {
+            focusable: true,
+            active_pseudo: true,
+            ..DomElementBehavior::default()
+        };
+
+        let hover = smallvec![(
+            DomAttribute::Custom("background-color".to_string()),
+            DomAttributeValue::Color([0.1, 0.2, 0.3, 1.0]),
+        )];
+        let active = smallvec![(
+            DomAttribute::Custom("background-color".to_string()),
+            DomAttributeValue::Color([0.4, 0.5, 0.6, 1.0]),
+        )];
+        let focus = smallvec![(
+            DomAttribute::Custom("outline-color".to_string()),
+            DomAttributeValue::Color([0.7, 0.8, 0.9, 1.0]),
+        )];
+        let focus_visible = smallvec![(
+            DomAttribute::Custom("outline-color".to_string()),
+            DomAttributeValue::Color([1.0, 1.0, 1.0, 1.0]),
+        )];
+
+        let descriptor = DomElementDescriptorBuilder::new()
+            .display("block")
+            .behavior(behavior.clone())
+            .attr(
+                DomAttribute::Type,
+                DomAttributeValue::String("button".to_string()),
+            )
+            .hover_style(hover.clone())
+            .active_style(active.clone())
+            .focus_style(focus.clone())
+            .focus_visible_style(focus_visible.clone())
+            .build();
+
+        assert_eq!(
+            descriptor
+                .default_attrs
+                .attributes
+                .get(&DomAttribute::Display),
+            Some(&DomAttributeValue::String("block".to_string()))
+        );
+        assert_eq!(
+            descriptor.default_attrs.attributes.get(&DomAttribute::Type),
+            Some(&DomAttributeValue::String("button".to_string()))
+        );
+        assert_eq!(descriptor.behavior, behavior);
+        assert_eq!(descriptor.state_style_declarations.hover, hover);
+        assert_eq!(descriptor.state_style_declarations.active, active);
+        assert_eq!(descriptor.state_style_declarations.focus, focus);
+        assert_eq!(
+            descriptor.state_style_declarations.focus_visible,
+            focus_visible
+        );
+    }
+}

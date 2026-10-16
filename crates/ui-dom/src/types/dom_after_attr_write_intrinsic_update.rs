@@ -33,3 +33,24 @@ impl DomAfterAttrWriteIntrinsicUpdate {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smallvec::smallvec;
+
+    #[test]
+    fn matches_only_for_intrinsic_relevant_attributes() {
+        let none = DomAfterAttrWriteIntrinsicUpdate::None;
+        assert!(!none.matches(&DomAttribute::Width));
+        assert!(!none.matches(&DomAttribute::Class));
+
+        let relevant = DomAfterAttrWriteIntrinsicUpdate::AttributeList(smallvec![
+            DomAttribute::Width,
+            DomAttribute::Height,
+        ]);
+        assert!(relevant.matches(&DomAttribute::Width));
+        assert!(relevant.matches(&DomAttribute::Height));
+        assert!(!relevant.matches(&DomAttribute::Class));
+    }
+}

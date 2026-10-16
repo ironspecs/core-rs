@@ -55,3 +55,48 @@ impl DomBoxModel {
         Self::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn box_model_zero_and_new_report_expected_edges() {
+        let zero = DomBoxModel::zero();
+        assert_eq!(zero.border_box, DomRect::default());
+        assert_eq!(zero.margin, BoxEdgeInsets::default());
+        assert_eq!(zero.border, BoxEdgeInsets::default());
+        assert_eq!(zero.padding, BoxEdgeInsets::default());
+
+        let border_box = DomRect {
+            left_px: 1.0,
+            top_px: 2.0,
+            width_px: 100.0,
+            height_px: 40.0,
+        };
+        let margin = BoxEdgeInsets {
+            left_px: 4.0,
+            top_px: 5.0,
+            right_px: 6.0,
+            bottom_px: 7.0,
+        };
+        let border = BoxEdgeInsets {
+            left_px: 1.0,
+            top_px: 1.0,
+            right_px: 1.0,
+            bottom_px: 1.0,
+        };
+        let padding = BoxEdgeInsets {
+            left_px: 8.0,
+            top_px: 9.0,
+            right_px: 10.0,
+            bottom_px: 11.0,
+        };
+
+        let authored = DomBoxModel::new(border_box, margin, border, padding);
+        assert_eq!(authored.border_box, border_box);
+        assert_eq!(authored.margin, margin);
+        assert_eq!(authored.border, border);
+        assert_eq!(authored.padding, padding);
+    }
+}

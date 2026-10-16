@@ -31,3 +31,27 @@ impl DomPseudoStateBits {
         self.0 &= !pseudo_state.bit();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bits_insert_contains_remove_round_trip() {
+        let mut bits = DomPseudoStateBits::default();
+        assert!(!bits.contains(DomPseudoState::Hover));
+        assert!(!bits.contains(DomPseudoState::Active));
+
+        bits.insert(DomPseudoState::Hover);
+        assert!(bits.contains(DomPseudoState::Hover));
+        assert!(!bits.contains(DomPseudoState::Active));
+
+        bits.insert(DomPseudoState::Active);
+        assert!(bits.contains(DomPseudoState::Hover));
+        assert!(bits.contains(DomPseudoState::Active));
+
+        bits.remove(DomPseudoState::Hover);
+        assert!(!bits.contains(DomPseudoState::Hover));
+        assert!(bits.contains(DomPseudoState::Active));
+    }
+}

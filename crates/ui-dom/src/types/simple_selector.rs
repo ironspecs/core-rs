@@ -22,3 +22,39 @@ impl SimpleSelector {
         self.id.is_some() && self.tag.is_none() && self.classes.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_pure_id_selector_only_for_bare_id() {
+        let bare_id = SimpleSelector {
+            id: Some("app".to_string()),
+            classes: Vec::new(),
+            tag: None,
+        };
+        assert!(bare_id.is_pure_id_selector());
+
+        let id_plus_class = SimpleSelector {
+            id: Some("app".to_string()),
+            classes: vec!["card".to_string()],
+            tag: None,
+        };
+        assert!(!id_plus_class.is_pure_id_selector());
+
+        let tag_only = SimpleSelector {
+            id: None,
+            classes: Vec::new(),
+            tag: Some("div".to_string()),
+        };
+        assert!(!tag_only.is_pure_id_selector());
+
+        let no_id = SimpleSelector {
+            id: None,
+            classes: vec!["card".to_string()],
+            tag: Some("div".to_string()),
+        };
+        assert!(!no_id.is_pure_id_selector());
+    }
+}
