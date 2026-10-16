@@ -49,7 +49,6 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::domains::layer_ops::TextRunId;
 use crate::domains::paint::{measure_text_intrinsic, measure_text_intrinsic_with_font_size};
-use crate::types::box_model::DomBoxModel;
 use crate::types::dom_attr_parse::{
     layout_length_attr_uses_unset, normalize_attribute_value, parse_class_attr_list,
     parse_style_attr_map, validate_attribute_value,
@@ -57,14 +56,14 @@ use crate::types::dom_attr_parse::{
 #[cfg(test)]
 use crate::types::dom_event::DomEventDispatchContext;
 use crate::types::dom_event::{DomEventListener, DomEventListenerOptions, DomEventName};
+use crate::types::dom_node_base::DomNodeBase;
 use crate::types::dom_pseudo_state::{DomPseudoState, DomPseudoStateBits};
 use crate::types::dom_tag::{DomElementBehavior, DomElementStateStyleDeclarations, DomTag};
-use crate::types::dom_transition::{DomTransition, DomTransitionState};
+use crate::types::dom_transition::DomTransition;
 use crate::types::element_behaviors::{
     commit_intrinsic_after_style_recompute, compute_intrinsic_on_create,
     preview_intrinsic_after_attr_write,
 };
-use crate::types::event_listener_name_bits::EventListenerNameBits;
 use crate::types::{
     DomAttribute, DomAttributeNode, DomAttributeValue, DomAttrs, DomCanonicalLayoutSnapshot,
     DomCanonicalSnapshot, DomCanonicalStyleSnapshot, DomError,
@@ -138,10 +137,10 @@ impl DomPaintState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DomStyleObject {
     pub dirty: bool,
-    hover_declarations: DomElementStateStyleDeclarationsField,
-    active_declarations: DomElementStateStyleDeclarationsField,
-    focus_declarations: DomElementStateStyleDeclarationsField,
-    focus_visible_declarations: DomElementStateStyleDeclarationsField,
+    pub(crate) hover_declarations: DomElementStateStyleDeclarationsField,
+    pub(crate) active_declarations: DomElementStateStyleDeclarationsField,
+    pub(crate) focus_declarations: DomElementStateStyleDeclarationsField,
+    pub(crate) focus_visible_declarations: DomElementStateStyleDeclarationsField,
 }
 
 type DomElementStateStyleDeclarationsField = crate::types::dom_tag::DomStyleDeclarationList;
@@ -218,26 +217,6 @@ pub enum DomIntrinsic {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DomNodeBase {
-    /// Stable identity of the document that created this node.
-    pub owner_document_key: DomNodeSlotKey,
-    pub box_model: DomBoxModel,
-    pub intrinsic: DomIntrinsic,
-    pub layout: DomLayoutState,
-    pub paint: DomPaintState,
-    pub style: DomStyleObject,
-    transitions: DomTransitionState,
-    parent_key: Option<DomNodeSlotKey>,
-    first_child_key: Option<DomNodeSlotKey>,
-    last_child_key: Option<DomNodeSlotKey>,
-    prev_sibling_key: Option<DomNodeSlotKey>,
-    next_sibling_key: Option<DomNodeSlotKey>,
-    event_listeners: BTreeMap<DomEventName, Vec<DomEventListenerRegistration>>,
-    /// Exact event-name listener presence for non-bubbling dispatch gates.
-    exact_listener_name_bits: EventListenerNameBits,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct DomElementNode {
     pub base: DomNodeBase,
     pub tag: DomTag,
@@ -290,7 +269,7 @@ pub enum DomNode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct DomEventListenerRegistration {
+pub(crate) struct DomEventListenerRegistration {
     listener: DomEventListener,
     options: DomEventListenerOptions,
 }
@@ -375,40 +354,6 @@ pub(crate) struct DomTransitionSyncResult {
 pub(crate) struct FinishedDomTransition {
     pub attribute: DomAttribute,
     pub elapsed_s: f64,
-}
-
-impl DomNodeBase {
-    #[must_use]
-    pub(crate) fn new(owner_document_key: DomNodeSlotKey) -> Self {
-        Self {
-            owner_document_key,
-            box_model: DomBoxModel::zero(),
-            intrinsic: DomIntrinsic::None,
-            layout: DomLayoutState {
-                dirty: true,
-                layer_kind: DomLayerKind::None,
-                layer_order: LayerOrder::Normal,
-                available_width_px: 0.0,
-                available_height_px: 0.0,
-                width_px: 0.0,
-                height_px: 0.0,
-                content_height_px: 0.0,
-            },
-            paint: DomPaintState::FullLayerRepaint,
-            style: DomStyleObject {
-                dirty: true,
-                ..DomStyleObject::default()
-            },
-            transitions: DomTransitionState::default(),
-            parent_key: None,
-            first_child_key: None,
-            last_child_key: None,
-            prev_sibling_key: None,
-            next_sibling_key: None,
-            event_listeners: BTreeMap::new(),
-            exact_listener_name_bits: EventListenerNameBits::default(),
-        }
-    }
 }
 
 impl DomElementNode {
