@@ -33,6 +33,10 @@ mod numeric;
 mod render_plugin;
 #[allow(unpredictable_function_pointer_comparisons)]
 pub mod types;
+mod ui_dom_render_plugin;
+mod ui_dom_render_support;
+mod ui_dom_text_font_catalog;
+mod ui_dom_text_font_extract_state;
 
 pub use domains::*;
 pub use render_plugin::*;

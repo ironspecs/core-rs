@@ -6,11 +6,9 @@
 //! retained surface-order policy live under `domains/layer_pool/`, and
 //! icon-atlas schema validation stays under `domains/icon_atlas.rs`.
 
-use std::collections::HashSet;
-
 use ::bevy::{
     app::SubApp,
-    asset::{AssetApp, AssetEventSystems, AssetId, AssetServer, Handle},
+    asset::{AssetApp, AssetEventSystems, AssetServer},
     prelude::*,
     render::{
         ExtractSchedule, Render, RenderApp, RenderSystems,
@@ -23,75 +21,23 @@ use ::bevy::{
     },
 };
 
-use crate::bevy::base_material::load_base_material_shader;
 use crate::bevy::font_assets::UiDomFontAssetLoader;
 use crate::bevy::icon_assets::{UiIconAtlasManifestAsset, UiIconAtlasManifestAssetLoader};
 use crate::bevy::ordered_surface_render::install_ui_dom_ordered_surface_render_runtime;
 use crate::domains::{
     LayerConfig, LayerPool, LayerPoolRenderExecutor, LayerPoolRenderJobQueue,
     apply_layer_pool_render_work, extract_layer_pool_render_work, text_layout,
-    text_layout::TextFontFamilyId,
 };
 
 pub(crate) use crate::bevy::base_material::UiDomBaseMaterial;
 pub(crate) use crate::bevy::font_assets::UiDomFontAsset;
+pub use crate::ui_dom_render_plugin::UiDomRenderPlugin;
+pub use crate::ui_dom_render_support::UiDomRenderSupport;
+pub(crate) use crate::ui_dom_text_font_catalog::UiDomTextFontCatalog;
+pub(crate) use crate::ui_dom_text_font_extract_state::UiDomTextFontExtractState;
 
 #[cfg(test)]
 use crate::types::PixelDensity;
-
-/// Reports the GPU paint runtime support installed for `ui-dom`.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Resource)]
-pub struct UiDomRenderSupport {
-    /// True when `ui-dom` has a direct GPU layer-paint executor wired up.
-    pub direct_gpu_executor_available: bool,
-}
-
-impl UiDomRenderSupport {
-    #[must_use]
-    pub fn direct_gpu() -> Self {
-        Self {
-            direct_gpu_executor_available: true,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Resource)]
-pub(crate) struct UiDomTextFontCatalog {
-    ui_sans_handles: Vec<Handle<UiDomFontAsset>>,
-}
-
-impl UiDomTextFontCatalog {
-    #[must_use]
-    pub(crate) fn required_asset_ids_by_family(
-        &self,
-    ) -> std::collections::HashMap<TextFontFamilyId, Vec<AssetId<UiDomFontAsset>>> {
-        std::collections::HashMap::from([(
-            TextFontFamilyId::UiSans,
-            self.ui_sans_handles.iter().map(Handle::id).collect(),
-        )])
-    }
-
-    #[must_use]
-    pub(crate) fn ui_sans_handles(&self) -> &[Handle<UiDomFontAsset>] {
-        &self.ui_sans_handles
-    }
-}
-
-#[derive(Default, Resource)]
-pub(crate) struct UiDomTextFontExtractState {
-    extracted_font_asset_ids: HashSet<AssetId<UiDomFontAsset>>,
-}
-
-impl UiDomTextFontExtractState {
-    #[must_use]
-    pub(crate) fn already_extracted(&self, asset_id: AssetId<UiDomFontAsset>) -> bool {
-        self.extracted_font_asset_ids.contains(&asset_id)
-    }
-
-    pub(crate) fn mark_extracted(&mut self, asset_id: AssetId<UiDomFontAsset>) {
-        self.extracted_font_asset_ids.insert(asset_id);
-    }
-}
 
 #[derive(Resource)]
 struct UiDomMainRuntimeInstalled;
@@ -167,27 +113,6 @@ fn install_ui_dom_surface_material_support(app: &mut App) {
         );
 }
 
-/// Installs the direct GPU paint runtime used by `ui-dom`.
-#[derive(Clone, Debug)]
-pub struct UiDomRenderPlugin {
-    layer_config: LayerConfig,
-}
-
-impl UiDomRenderPlugin {
-    /// Installs `ui-dom` GPU rendering with one fixed retained-layer policy.
-    #[must_use]
-    pub const fn new(layer_config: LayerConfig) -> Self {
-        Self { layer_config }
-    }
-}
-
-impl Plugin for UiDomRenderPlugin {
-    fn build(&self, app: &mut App) {
-        load_base_material_shader(app);
-        install_ui_dom_runtime_pair(app, self.layer_config);
-    }
-}
-
 #[allow(clippy::needless_pass_by_value)]
 fn load_ui_dom_text_fonts(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(UiDomTextFontCatalog {
@@ -248,19 +173,6 @@ mod tests {
                 .resource::<LayerPoolRenderExecutor>()
                 .pixel_density(),
             PixelDensity::X4
-        );
-    }
-
-    #[test]
-    fn plugin_build_installs_runtime_pair() {
-        let mut app = App::new();
-        app.add_plugins(DefaultPlugins.build().disable::<WindowPlugin>());
-
-        app.add_plugins(UiDomRenderPlugin::new(LayerConfig::new(PixelDensity::X2)));
-
-        assert_eq!(
-            app.world().resource::<LayerPool>().pixel_density(),
-            PixelDensity::X2
         );
     }
 }
