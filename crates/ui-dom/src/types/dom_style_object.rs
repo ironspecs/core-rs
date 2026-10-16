@@ -57,3 +57,38 @@ impl DomStyleObject {
         !self.pseudo_state_declarations(pseudo_state).is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smallvec::smallvec;
+
+    #[test]
+    fn style_object_stores_and_reports_state_declarations() {
+        let mut object = DomStyleObject::default();
+
+        assert!(!object.has_pseudo_state_declarations(DomPseudoState::Hover));
+
+        object.set_state_style_declarations(DomElementStateStyleDeclarations {
+            hover: smallvec![(
+                DomAttribute::Width,
+                DomAttributeValue::String("10px".to_string()),
+            )],
+            ..DomElementStateStyleDeclarations::default()
+        });
+
+        assert!(object.has_pseudo_state_declarations(DomPseudoState::Hover));
+        assert_eq!(
+            object.pseudo_state_declarations(DomPseudoState::Hover),
+            &[(
+                DomAttribute::Width,
+                DomAttributeValue::String("10px".to_string())
+            )]
+        );
+        assert!(
+            object
+                .pseudo_state_declarations(DomPseudoState::Active)
+                .is_empty()
+        );
+    }
+}

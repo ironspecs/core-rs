@@ -69,3 +69,37 @@ impl DomTextNode {
         self.text_run_id_hint = text_run_id_hint;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_owner_document_key() -> DomNodeSlotKey {
+        let mut keys = slotmap::SlotMap::with_key();
+        keys.insert(())
+    }
+
+    fn test_text_run_id() -> TextRunId {
+        let mut ids = slotmap::SlotMap::with_key();
+        ids.insert(())
+    }
+
+    #[test]
+    fn text_node_replaces_data_and_preserves_run_hint() {
+        let mut node = DomTextNode::new(test_owner_document_key(), "hello".into());
+
+        assert_eq!(node.data(), "hello");
+        assert_eq!(node.data_arc().as_ref(), "hello");
+        assert!(node.text_run_id_hint().is_none());
+
+        let hint = test_text_run_id();
+        node.set_text_run_id_hint(Some(hint));
+        assert_eq!(node.text_run_id_hint(), Some(hint));
+
+        // `set_data` replaces the text but does NOT clear the hint: clearing
+        // is the root-owned protocol at call sites, not this record's job.
+        node.set_data("world".into());
+        assert_eq!(node.data(), "world");
+        assert_eq!(node.text_run_id_hint(), Some(hint));
+    }
+}

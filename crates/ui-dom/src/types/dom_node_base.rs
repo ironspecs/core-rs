@@ -78,3 +78,33 @@ impl DomNodeBase {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_owner_document_key() -> DomNodeSlotKey {
+        let mut keys = slotmap::SlotMap::with_key();
+        keys.insert(())
+    }
+
+    #[test]
+    fn new_base_starts_dirty_with_owner_key_and_empty_links() {
+        let owner_key = test_owner_document_key();
+        let base = DomNodeBase::new(owner_key);
+
+        assert_eq!(base.owner_document_key, owner_key);
+        assert_eq!(base.box_model, DomBoxModel::zero());
+        assert_eq!(base.intrinsic, DomIntrinsic::None);
+        // A freshly created node must get its first layout and paint pass, so
+        // the base is born dirty in both domains. This is the actual contract.
+        assert!(base.layout.dirty);
+        assert!(base.paint.is_dirty());
+        assert!(base.parent_key.is_none());
+        assert!(base.first_child_key.is_none());
+        assert!(base.last_child_key.is_none());
+        assert!(base.prev_sibling_key.is_none());
+        assert!(base.next_sibling_key.is_none());
+        assert!(base.event_listeners.is_empty());
+    }
+}

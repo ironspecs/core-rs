@@ -75,3 +75,31 @@ impl AttributeInvalidation {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalidation_bits_set_report_and_merge() {
+        let layout_only = AttributeInvalidation::default().with_layout();
+        assert!(layout_only.layout());
+        assert!(!layout_only.paint());
+        assert!(!layout_only.style());
+        assert!(!layout_only.layer_membership());
+
+        let layout_paint_style = layout_only.with_paint().with_style();
+        assert!(layout_paint_style.layout());
+        assert!(layout_paint_style.paint());
+        assert!(layout_paint_style.style());
+        assert!(!layout_paint_style.layer_membership());
+
+        let merged = AttributeInvalidation::default()
+            .with_layout()
+            .merge(AttributeInvalidation::default().with_layer_membership());
+        assert!(merged.layout());
+        assert!(merged.layer_membership());
+        assert!(!merged.paint());
+        assert!(!merged.style());
+    }
+}

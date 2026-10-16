@@ -14,6 +14,9 @@
 
 use arrayvec::ArrayVec;
 
+#[cfg(test)]
+use crate::types::DomRect;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum DomPaintState {
     #[default]
@@ -26,5 +29,20 @@ impl DomPaintState {
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         !matches!(self, Self::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_state_dirty_only_when_repaint_marked() {
+        assert!(!DomPaintState::None.is_dirty());
+        assert!(DomPaintState::FullLayerRepaint.is_dirty());
+
+        let mut damaged = ArrayVec::<DomRect, 8>::new();
+        damaged.push(DomRect::default());
+        assert!(DomPaintState::DamagedRectsRepaint(damaged).is_dirty());
     }
 }

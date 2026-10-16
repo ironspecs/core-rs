@@ -93,3 +93,37 @@ impl DomAttributeNode for DomDocumentFragmentNode {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_owner_document_key() -> DomNodeSlotKey {
+        let mut keys = slotmap::SlotMap::with_key();
+        keys.insert(())
+    }
+
+    #[test]
+    fn fragment_node_rejects_id_but_accepts_other_attrs() {
+        let mut node = DomDocumentFragmentNode::new(test_owner_document_key());
+
+        let error = DomAttributeNode::set_attr(
+            &mut node,
+            DomAttribute::Id,
+            Some(DomAttributeValue::String("x".into())),
+        )
+        .expect_err("fragment node should reject the id attribute");
+        assert_eq!(error, DomError::InvalidAttributeTarget);
+
+        DomAttributeNode::set_attr(
+            &mut node,
+            DomAttribute::Width,
+            Some(DomAttributeValue::String("100px".into())),
+        )
+        .expect("fragment node should accept width");
+        assert_eq!(
+            DomAttributeNode::attr(&node, &DomAttribute::Width),
+            Some(&DomAttributeValue::String("100px".into()))
+        );
+    }
+}
