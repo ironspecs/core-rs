@@ -94,3 +94,39 @@ fn history_next_index<const HISTORY_CAPACITY: usize>(current: usize) -> usize {
     }
     current + 1
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TestMetricName {
+        First,
+        Second,
+        Third,
+        Fourth,
+    }
+
+    #[test]
+    fn history_ring_preserves_oldest_to_newest_and_overwrites_oldest_at_capacity() {
+        const HISTORY_CAPACITY: usize = 3;
+        let mut store = MetricHistoryStore::<TestMetricName, HISTORY_CAPACITY>::default();
+
+        store.record(TestMetricName::First);
+        store.record(TestMetricName::Second);
+        store.record(TestMetricName::Third);
+        store.record(TestMetricName::Fourth);
+
+        assert_eq!(store.history().len(), HISTORY_CAPACITY);
+
+        let names: Vec<TestMetricName> = store.history().map(|entry| entry.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                TestMetricName::Second,
+                TestMetricName::Third,
+                TestMetricName::Fourth,
+            ]
+        );
+    }
+}

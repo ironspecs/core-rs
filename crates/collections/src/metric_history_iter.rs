@@ -42,3 +42,44 @@ impl<Name: Copy, const HISTORY_CAPACITY: usize> ExactSizeIterator
     for MetricHistoryIter<'_, Name, HISTORY_CAPACITY>
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TestMetricName {
+        First,
+        Second,
+        Third,
+    }
+
+    #[test]
+    fn iter_yields_oldest_to_newest_with_exact_len() {
+        let mut store = MetricHistoryStore::<TestMetricName, 4>::default();
+        store.record(TestMetricName::First);
+        store.record(TestMetricName::Second);
+        store.record(TestMetricName::Third);
+
+        let mut iter = store.history();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(
+            iter.next().map(|entry| entry.name),
+            Some(TestMetricName::First)
+        );
+        assert_eq!(
+            iter.next().map(|entry| entry.name),
+            Some(TestMetricName::Second)
+        );
+        assert_eq!(
+            iter.next().map(|entry| entry.name),
+            Some(TestMetricName::Third)
+        );
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.len(), 0);
+
+        let empty = MetricHistoryStore::<TestMetricName, 4>::default();
+        assert_eq!(empty.history().len(), 0);
+        assert_eq!(empty.history().next(), None);
+    }
+}

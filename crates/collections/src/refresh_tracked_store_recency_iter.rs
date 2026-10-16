@@ -51,3 +51,22 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recency_iter_yields_most_recent_first() {
+        let mut store = RefreshTrackedStore::<u32, &'static str>::new();
+        let _ = store.store(1, "one");
+        let _ = store.store(2, "two");
+        let _ = store.store(3, "three");
+
+        let keys: Vec<u32> = store.iter_recency().map(|item| *item.key()).collect();
+        assert_eq!(keys, vec![3, 2, 1]);
+
+        let empty = RefreshTrackedStore::<u32, &'static str>::new();
+        assert!(empty.iter_recency().next().is_none());
+    }
+}

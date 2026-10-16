@@ -58,3 +58,38 @@ impl<Name: MetricName, const N: usize> MetricSnapshot<Name, N> {
             .expect("metric counter should not overflow");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TestMetricName {
+        Alpha,
+        Beta,
+    }
+
+    impl MetricName for TestMetricName {
+        fn index(self) -> usize {
+            match self {
+                Self::Alpha => 0,
+                Self::Beta => 1,
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_counts_reflect_from_counts_and_increment() {
+        let mut snapshot = MetricSnapshot::<TestMetricName, 2>::from_counts([3, 7]);
+
+        assert_eq!(snapshot.count(TestMetricName::Alpha), 3);
+        assert_eq!(snapshot.count(TestMetricName::Beta), 7);
+        assert_eq!(snapshot.raw_counts(), [3, 7]);
+        assert_eq!(snapshot.raw_counts().iter().sum::<u64>(), 10);
+
+        snapshot.increment(TestMetricName::Alpha);
+
+        assert_eq!(snapshot.count(TestMetricName::Alpha), 4);
+        assert_eq!(snapshot.raw_counts().iter().sum::<u64>(), 11);
+    }
+}

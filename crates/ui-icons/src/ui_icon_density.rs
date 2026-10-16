@@ -47,3 +47,36 @@ impl UiIconDensity {
         UI_ICON_DESIGN_BOX_PX * self.multiplier()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn density_variants_report_stable_multipliers_suffixes_and_design_box() {
+        assert_eq!(UiIconDensity::X1.multiplier(), 1);
+        assert_eq!(UiIconDensity::X2.multiplier(), 2);
+        assert_eq!(UiIconDensity::X4.multiplier(), 4);
+
+        assert_eq!(UiIconDensity::X1.file_suffix(), "x1");
+        assert_eq!(UiIconDensity::X2.file_suffix(), "x2");
+        assert_eq!(UiIconDensity::X4.file_suffix(), "x4");
+
+        assert_eq!(UiIconDensity::X1.design_box_size_px(), 24);
+        assert_eq!(UiIconDensity::X2.design_box_size_px(), 48);
+        assert_eq!(UiIconDensity::X4.design_box_size_px(), 96);
+
+        assert_eq!(
+            UiIconDensity::X1.design_box_size_px(),
+            UI_ICON_DESIGN_BOX_PX
+        );
+        assert_eq!(
+            UiIconDensity::X2.design_box_size_px(),
+            UI_ICON_DESIGN_BOX_PX * 2
+        );
+        assert_eq!(
+            UiIconDensity::X4.design_box_size_px(),
+            UI_ICON_DESIGN_BOX_PX * 4
+        );
+    }
+}
