@@ -150,7 +150,7 @@ and absolute within `crates/`:
 4. **Visitor, not batch** — algorithms complete work during traversal;
    no batch-style accumulation with its extra accesses. This rule is
    architectural: it is enforced by metrics/history contract tests
-   (e.g. `crates/ui-dom/tests/perf_metric_contract.rs`), not by the
+   (e.g. `crates/ui-dom/tests/perf_metric.rs`), not by the
    lint. Any change that moves those pins is a performance change and
    is reviewed as one, in its own commit.
 5. **Definition and impl in the same file** — a type's `impl` blocks live

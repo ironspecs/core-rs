@@ -15,7 +15,7 @@ use ui_dom::{
 
 #[test]
 fn canonical_style_snapshot_fixture_matches_public_wire_shape() {
-    let fixture = include_str!("fixtures/canonical_contract/style_snapshot.json");
+    let fixture = include_str!("fixtures/canonical_serde/style_snapshot.json");
     let snapshot: DomCanonicalStyleSnapshot =
         serde_json::from_str(fixture).expect("style fixture should deserialize");
     let expected = DomCanonicalStyleSnapshot {
@@ -41,7 +41,7 @@ fn canonical_style_snapshot_fixture_matches_public_wire_shape() {
 
 #[test]
 fn canonical_layout_snapshot_fixture_matches_public_wire_shape() {
-    let fixture = include_str!("fixtures/canonical_contract/layout_snapshot.json");
+    let fixture = include_str!("fixtures/canonical_serde/layout_snapshot.json");
     let snapshot: DomCanonicalLayoutSnapshot =
         serde_json::from_str(fixture).expect("layout fixture should deserialize");
     let expected = DomCanonicalLayoutSnapshot {
@@ -68,7 +68,7 @@ fn canonical_layout_snapshot_fixture_matches_public_wire_shape() {
 
 #[test]
 fn canonical_snapshot_fixture_matches_public_wire_shape() {
-    let fixture = include_str!("fixtures/canonical_contract/node_snapshot.json");
+    let fixture = include_str!("fixtures/canonical_serde/node_snapshot.json");
     let snapshot: DomCanonicalSnapshot =
         serde_json::from_str(fixture).expect("node fixture should deserialize");
     let expected = DomCanonicalSnapshot {

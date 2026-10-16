@@ -76,9 +76,9 @@ Known boundary split:
 - `src/domains/composite/mod.rs` tests must still prove clipped-layer
   presentation size, because rendered popup height can diverge from retained
   layout if that seam goes stale.
-- Metric and allocation contracts do not live in `layout_proofs/`; they live in
-  `tests/perf_metric_contract.rs` (work-site and node-store counters) and
-  `tests/perf_allocation_contract.rs` (allocator windows).
+- Metric and allocation pins do not live in `layout_proofs/`; they live in
+  `tests/perf_metric.rs` (work-site and node-store counters) and
+  `tests/perf_allocation.rs` (allocator windows).
 - Pointer and interaction coverage does not live in `layout_proofs/`.
   - Attached event targeting: `src/domains/visitor/event_target.rs`
   - Hover and active pseudo-state targeting: `src/domains/visitor/pseudo_state.rs`

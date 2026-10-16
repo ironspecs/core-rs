@@ -239,7 +239,7 @@ performance change that review cannot see.
 **Enforcement:** performance invariants are enforced by measurement,
 not by syntax. Crates pin the access pattern of performance-sensitive
 operations with metrics/history contract tests (see
-`crates/ui-dom/tests/perf_metric_contract.rs`: scenario through the
+`crates/ui-dom/tests/perf_metric.rs`: scenario through the
 public API, then exact assertion of metric names, counts, and
 node-access totals). Any change to an algorithm's access pattern moves
 those pins — which is precisely the signal that the change is a
