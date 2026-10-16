@@ -49,6 +49,13 @@ use super::style::{
 };
 use super::{DomLayoutInput, DomLayoutResolver};
 
+#[cfg(test)]
+use crate::domains::layout::walker::relayout_tree;
+#[cfg(test)]
+use crate::domains::layout::{IdentityDomLayoutResolver, node_box};
+#[cfg(test)]
+use crate::types::{BoxEdgeInsets, DomAttribute, DomAttributeValue, RootDomContext};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LayoutSolverKind {
     Block,
@@ -1880,25 +1887,7 @@ fn write_node_box(node: &mut DomNode, next_box: DomBoxModel) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BoxSides, LayoutContext, LayoutDisplay, LayoutSolverKind, border_box_height,
-        border_box_width, clamp_length, content_size_property_style, display_is_inline_outer,
-        layout_flow_size, node_defers_child_width_to_intrinsic_inline_measurement,
-        positioned_axis_absolute_offset, relayout_tree_walker_node, resolve_content_width,
-        resolve_local_left, resolve_local_top, resolve_local_top_without_height,
-        resolve_node_content_width, resolved_content_size_px, separate_tree_flow_size,
-        solver_kind_for_display,
-    };
-    use crate::domains::layout::IdentityDomLayoutResolver;
-    use crate::domains::layout::style::{NodeStyle, node_style};
-    use crate::domains::layout::walker::relayout_tree;
-    use crate::domains::visitor::inherited_style::{
-        InheritedStyleContext, inherited_context_from_node,
-    };
-    use crate::types::{
-        BoxEdgeInsets, DomAttribute, DomAttributeValue, DomBoxModel, DomNode, DomNodeSlotKey,
-        DomRect, DomTag, RootDom, RootDomContext,
-    };
+    use super::*;
 
     fn test_owner_document_key() -> DomNodeSlotKey {
         let mut keys = slotmap::SlotMap::with_key();
@@ -2524,7 +2513,7 @@ mod tests {
         assert_close(clamp_length(40.0, Some(24.0), Some(30.0)), 30.0);
 
         let mut style: NodeStyle = resolved_node_style(&div_node());
-        style.position = crate::domains::layout::style::PositionMode::Static;
+        style.position = PositionMode::Static;
         let flow = layout_flow_size(
             style,
             DomBoxModel {
@@ -2624,7 +2613,7 @@ mod tests {
     #[test]
     fn resolved_content_size_uses_fixed_top_bottom_anchors_for_auto_height() {
         let mut style: NodeStyle = resolved_node_style(&div_node());
-        style.position = crate::domains::layout::style::PositionMode::Fixed;
+        style.position = PositionMode::Fixed;
         style.top_px = Some(0.0);
         style.bottom_px = Some(0.0);
 
@@ -2637,7 +2626,7 @@ mod tests {
     #[test]
     fn resolved_content_size_subtracts_vertical_non_content_from_anchored_auto_height() {
         let mut style: NodeStyle = resolved_node_style(&div_node());
-        style.position = crate::domains::layout::style::PositionMode::Fixed;
+        style.position = PositionMode::Fixed;
         style.top_px = Some(0.0);
         style.bottom_px = Some(0.0);
         style.sides.margin.top_px = 5.0;
@@ -2672,8 +2661,7 @@ mod tests {
             &mut resolver,
         )
         .expect("normal width relayout");
-        let normal_width_box =
-            crate::domains::layout::node_box(&width_root, width_img_key).expect("normal width box");
+        let normal_width_box = node_box(&width_root, width_img_key).expect("normal width box");
         assert_close(separate_width_flow.width_px, 320.0);
         assert_close(separate_width_flow.height_px, 180.0);
         assert_close(normal_width_box.border_box.width_px, 320.0);
@@ -2695,8 +2683,7 @@ mod tests {
             &mut resolver,
         )
         .expect("normal height relayout");
-        let normal_height_box = crate::domains::layout::node_box(&height_root, height_img_key)
-            .expect("normal height box");
+        let normal_height_box = node_box(&height_root, height_img_key).expect("normal height box");
         assert_close(separate_height_flow.width_px, 80.0);
         assert_close(separate_height_flow.height_px, 45.0);
         assert_close(normal_height_box.border_box.width_px, 80.0);
