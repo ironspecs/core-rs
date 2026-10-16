@@ -28,6 +28,13 @@ use crate::domains::layer_hit::visit_attached_layer_hits_from_root_point;
 use crate::types::primitives::PointPx;
 use crate::types::{DomError, DomNodeSlotKey, RootDom};
 
+#[cfg(test)]
+use crate::types::{
+    DomNode, DomPointerState, DomPointerUpdate, DomPseudoState, DomTag, RootDomContext,
+};
+#[cfg(test)]
+use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, StyleRuleOrigin, UiDomRenderSupport};
+
 pub(crate) fn apply_vertical_scroll_from_point(
     root_dom: &mut RootDom,
     world: &World,
@@ -53,13 +60,8 @@ pub(crate) fn apply_vertical_scroll_from_point(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use bevy::{image::Image, prelude::*};
-
-    use crate::StyleRuleOrigin;
-    use crate::types::{
-        DomNode, DomPointerState, DomPointerUpdate, DomTag, RootDom, RootDomContext,
-    };
-    use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
 
     fn install_direct_gpu_support(world: &mut World) {
         world.init_resource::<Assets<Image>>();
@@ -137,10 +139,8 @@ mod tests {
 
         assert!(
             root.node(top_overlay)
-                .and_then(crate::types::DomNode::as_element)
-                .is_some_and(
-                    |element| element.has_pseudo_state(crate::types::DomPseudoState::Hover)
-                ),
+                .and_then(DomNode::as_element)
+                .is_some_and(|element| element.has_pseudo_state(DomPseudoState::Hover)),
             "wheel update should still resolve hover from the top overlay after scroll ownership falls through",
         );
         assert!(
@@ -574,7 +574,7 @@ mod tests {
 
     fn set_box(
         root: &mut RootDom,
-        key: crate::types::DomNodeSlotKey,
+        key: DomNodeSlotKey,
         left_px: f32,
         top_px: f32,
         width_px: f32,
@@ -609,7 +609,7 @@ mod tests {
         }
     }
 
-    fn set_content_height(root: &mut RootDom, key: crate::types::DomNodeSlotKey, height_px: f32) {
+    fn set_content_height(root: &mut RootDom, key: DomNodeSlotKey, height_px: f32) {
         let node = root.nodes.get_mut(key).expect("node should exist");
         match node {
             DomNode::Document(document) => document.base.layout.content_height_px = height_px,
@@ -658,7 +658,7 @@ mod tests {
     fn stylesheet_scroll_fixture(
         class_name: &str,
         overflow_rule: &str,
-    ) -> (World, RootDom, crate::types::DomNodeSlotKey) {
+    ) -> (World, RootDom, DomNodeSlotKey) {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         root.context()
             .load_stylesheet(
