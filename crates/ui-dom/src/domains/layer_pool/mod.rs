@@ -139,6 +139,10 @@ pub(crate) use layer_pool_render_executor::LayerPoolRenderExecutor;
 pub(crate) use layer_pool_render_job_queue::LayerPoolRenderJobQueue;
 
 #[cfg(test)]
+use crate::domains::icon_atlas::ValidatedUiIconAtlasLookup;
+#[cfg(test)]
+use crate::domains::layer_ops::LayerPaintPlan;
+#[cfg(test)]
 use crate::domains::render_ops::{RenderOpsHandler, register_render_ops_handler};
 
 const LAYER_POOL_HISTORY_CAPACITY: usize = 128;
@@ -1776,23 +1780,7 @@ fn create_layer_surface_image(world: &mut World, image_size_px: (u32, u32)) -> H
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::layer_pool_text_render as text_render;
-    use super::{
-        CacheKey, LayerLease, LayerPool, LayerPoolApplyError, LayerPoolMetricName, LayerPoolPolicy,
-        LayerPoolRenderExecutor, LayerPoolRenderJob, LayerPoolRenderJobQueue, TextLanguageId,
-        TextRunPaintOp, TextRunSignature, icon_uv_window, pixel_density_scale,
-    };
-    use super::{RenderOpsHandler, StagedLayerApply, register_render_ops_handler};
-    use crate::domains::LayerConfig;
-    use crate::domains::icon_atlas::{
-        ValidatedUiIconAtlasEntry, ValidatedUiIconAtlasLookup, ValidatedUiIconAtlasManifest,
-    };
-    use crate::domains::layer_ops::{IconPaintOp, LayerPaintPlan};
-    use crate::domains::paint::RectPaintOp;
-    use crate::domains::text_layout;
-    use crate::domains::text_layout::TextWrapMode;
-    use crate::numeric::i32_to_f32;
-    use crate::render_plugin::UiDomRenderSupport;
-    use crate::types::PixelDensity;
+    use super::*;
     use bevy::{
         prelude::{Entity, World},
         render::sync_world::MainEntity,
@@ -2438,28 +2426,28 @@ mod tests {
     fn text_run_repo_font_preference_uses_language_specific_repo_families() {
         assert_eq!(
             text_layout::text_render::preferred_repo_font_family(
-                crate::domains::layer_ops::TextFontFamilyId::UiSans,
+                TextFontFamilyId::UiSans,
                 TextLanguageId::English,
             ),
             CosmicFamily::Name(text_layout::text_render::repo_default_sans_serif_family_name())
         );
         assert_eq!(
             text_layout::text_render::preferred_repo_font_family(
-                crate::domains::layer_ops::TextFontFamilyId::UiSans,
+                TextFontFamilyId::UiSans,
                 TextLanguageId::Japanese,
             ),
             CosmicFamily::Name("Source Han Sans")
         );
         assert_eq!(
             text_layout::text_render::preferred_repo_font_family(
-                crate::domains::layer_ops::TextFontFamilyId::UiSans,
+                TextFontFamilyId::UiSans,
                 TextLanguageId::SimplifiedChinese,
             ),
             CosmicFamily::Name("Source Han Sans SC")
         );
         assert_eq!(
             text_layout::text_render::preferred_repo_font_family(
-                crate::domains::layer_ops::TextFontFamilyId::UiSans,
+                TextFontFamilyId::UiSans,
                 TextLanguageId::Korean,
             ),
             CosmicFamily::Name("Source Han Sans K")
