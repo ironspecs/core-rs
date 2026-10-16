@@ -13,6 +13,13 @@ use crate::types::{
     DomSystemModifierState, RootDom,
 };
 
+#[cfg(test)]
+use crate::types::{
+    DomAttribute, DomAttributeValue, DomEventListenerContext, DomEventListenerOptions,
+    DomEventPhase, DomNode, DomNodeSlotKey, DomPointerUpdate, DomSelection, DomTag, RootDomContext,
+    TextSelection, TextSelectionDirection,
+};
+
 /// Dispatches one Bevy keyboard input through the focused DOM element and
 /// runs root-owned default keyboard behavior for accepted events.
 ///
@@ -154,12 +161,7 @@ mod tests {
         prelude::World,
     };
 
-    use crate::types::{
-        DomEventListenerContext, DomEventListenerOptions, DomEventName, DomEventPhase,
-        DomPointerUpdate, DomTag, RootDom, RootDomContext,
-    };
-
-    use super::dispatch_bevy_keyboard_input_from_focus_and_apply_default_behavior;
+    use super::*;
 
     #[test]
     fn dispatches_keyboard_event_along_focused_path() {
@@ -272,7 +274,7 @@ mod tests {
         );
         assert_eq!(
             result.expect_err("stale focus should fail"),
-            crate::types::DomError::InvalidNodeKey
+            DomError::InvalidNodeKey
         );
     }
 
@@ -494,11 +496,11 @@ mod tests {
         assert_eq!(element_value(&root, input), "éa");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 2,
                 selection_end: 2,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
 
@@ -537,11 +539,11 @@ mod tests {
         assert_eq!(element_value(&root, input), "a");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 1,
                 selection_end: 1,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
 
@@ -573,11 +575,11 @@ mod tests {
         assert_eq!(element_value(&root, input), "🙂");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 0,
                 selection_end: 0,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
 
@@ -671,8 +673,8 @@ mod tests {
         root.set_attr_str(input, "value", "hello").expect("value");
         root.set_attr(
             input,
-            crate::types::DomAttribute::ReadOnly,
-            Some(crate::types::DomAttributeValue::Bool(true)),
+            DomAttribute::ReadOnly,
+            Some(DomAttributeValue::Bool(true)),
         )
         .expect("readonly attr");
         root.focus(input).expect("focus");
@@ -754,11 +756,11 @@ mod tests {
         assert_eq!(element_value(&root, input), "é🙂");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 1,
                 selection_end: 1,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
 
@@ -802,11 +804,11 @@ mod tests {
         assert_eq!(element_value(&root, input), "é🙂");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 1,
                 selection_end: 1,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
     }
@@ -829,11 +831,11 @@ mod tests {
         assert!(accepted);
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 0,
                 selection_end: 0,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
 
@@ -847,11 +849,11 @@ mod tests {
         assert!(accepted);
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 3,
                 selection_end: 3,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
     }
@@ -878,11 +880,11 @@ mod tests {
         assert_eq!(element_value(&root, input), "hello");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 4,
                 selection_end: 5,
-                selection_direction: crate::types::TextSelectionDirection::Backward,
+                selection_direction: TextSelectionDirection::Backward,
             })
         );
 
@@ -904,8 +906,8 @@ mod tests {
         root.set_attr_str(input, "value", "hello").expect("value");
         root.set_attr(
             input,
-            crate::types::DomAttribute::ReadOnly,
-            Some(crate::types::DomAttributeValue::Bool(true)),
+            DomAttribute::ReadOnly,
+            Some(DomAttributeValue::Bool(true)),
         )
         .expect("readonly attr");
         root.focus(input).expect("focus");
@@ -922,11 +924,11 @@ mod tests {
         assert_eq!(element_value(&root, input), "hello");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: input,
                 selection_start: 4,
                 selection_end: 4,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
     }
@@ -942,7 +944,7 @@ mod tests {
             .expect("input node")
             .add_event_listener(
                 DomEventName::Input,
-                |context: &mut crate::types::DomEventListenerContext<'_>| {
+                |context: &mut DomEventListenerContext<'_>| {
                     context.stop_propagation();
                 },
                 None,
@@ -1028,11 +1030,11 @@ mod tests {
         assert_eq!(element_value(&root, textarea), "hello\n");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: textarea,
                 selection_start: 6,
                 selection_end: 6,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
 
@@ -1089,11 +1091,11 @@ mod tests {
         assert_eq!(element_value(&root, textarea), "h\n");
         assert_eq!(
             root.selection(),
-            crate::types::DomSelection::TextSelected(crate::types::TextSelection {
+            DomSelection::TextSelected(TextSelection {
                 target_element: textarea,
                 selection_start: 2,
                 selection_end: 2,
-                selection_direction: crate::types::TextSelectionDirection::None,
+                selection_direction: TextSelectionDirection::None,
             })
         );
 
@@ -1117,8 +1119,8 @@ mod tests {
             .expect("value");
         root.set_attr(
             textarea,
-            crate::types::DomAttribute::ReadOnly,
-            Some(crate::types::DomAttributeValue::Bool(true)),
+            DomAttribute::ReadOnly,
+            Some(DomAttributeValue::Bool(true)),
         )
         .expect("readonly attr");
         root.focus(textarea).expect("focus");
@@ -1341,35 +1343,28 @@ mod tests {
         }
     }
 
-    fn element_value(root: &RootDom, key: crate::types::DomNodeSlotKey) -> String {
+    fn element_value(root: &RootDom, key: DomNodeSlotKey) -> String {
         let element = root
             .nodes
             .get(key)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("value target should stay an element");
-        match element
-            .attrs
-            .attributes
-            .get(&crate::types::DomAttribute::Value)
-        {
-            Some(crate::types::DomAttributeValue::String(value)) => value.clone(),
+        match element.attrs.attributes.get(&DomAttribute::Value) {
+            Some(DomAttributeValue::String(value)) => value.clone(),
             None => panic!("editable value attribute should exist"),
             Some(_) => panic!("editable value attribute should stay string"),
         }
     }
 
-    fn element_checked(root: &RootDom, key: crate::types::DomNodeSlotKey) -> bool {
+    fn element_checked(root: &RootDom, key: DomNodeSlotKey) -> bool {
         let element = root
             .nodes
             .get(key)
-            .and_then(crate::types::DomNode::as_element)
+            .and_then(DomNode::as_element)
             .expect("checked target should stay an element");
         matches!(
-            element
-                .attrs
-                .attributes
-                .get(&crate::types::DomAttribute::Checked),
-            Some(crate::types::DomAttributeValue::Bool(true))
+            element.attrs.attributes.get(&DomAttribute::Checked),
+            Some(DomAttributeValue::Bool(true))
         )
     }
 
@@ -1386,7 +1381,7 @@ mod tests {
     }
 
     fn assert_keyboard_payload_listener(context: &mut DomEventListenerContext<'_>) {
-        if let crate::types::DomEventDetail::Keyboard(keyboard) = &context.event().detail {
+        if let DomEventDetail::Keyboard(keyboard) = &context.event().detail {
             assert_eq!(keyboard.key, "A");
             assert_eq!(keyboard.code, "KeyA");
             assert!(keyboard.repeat);
@@ -1400,7 +1395,7 @@ mod tests {
     }
 
     fn assert_enter_keyboard_payload_listener(context: &mut DomEventListenerContext<'_>) {
-        if let crate::types::DomEventDetail::Keyboard(keyboard) = &context.event().detail {
+        if let DomEventDetail::Keyboard(keyboard) = &context.event().detail {
             assert_eq!(keyboard.key, "Enter");
             assert_eq!(keyboard.code, "Enter");
             return;
