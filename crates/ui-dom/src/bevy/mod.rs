@@ -20,3 +20,8 @@ pub(crate) mod base_material;
 pub(crate) mod font_assets;
 pub(crate) mod icon_assets;
 pub(crate) mod ordered_surface_render;
+pub(crate) mod ordered_transparent_pass_node;
+pub(crate) mod ordered_transparent_ui_dom_surfaces_by_view;
+pub(crate) mod ui_dom_base_material;
+pub(crate) mod ui_dom_font_asset_loader;
+pub(crate) mod ui_icon_atlas_manifest_asset_loader;

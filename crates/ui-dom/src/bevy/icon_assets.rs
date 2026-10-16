@@ -1,57 +1,30 @@
 //! Bevy icon-atlas asset glue for `ui-dom` retained icon rendering.
 //!
-//! This file exists because `ui-dom` needs Bevy-loaded icon-atlas manifest and
-//! image handles, but the raw asset type, asset loader, and asset-server
-//! request shape are host glue rather than domain ownership. Manifest schema
+//! This file owns the raw `UiIconAtlasManifestAsset` type and the asset-server request helpers;
+//! the asset loader lives in `ui_icon_atlas_manifest_asset_loader.rs`. Manifest schema
 //! validation stays in `domains/icon_atlas.rs`.
 //!
 //! Strict invariants:
-//! - this file owns only the raw Bevy icon-atlas asset and request helpers
-//! - icon-atlas schema validation and density policy do not belong here
-//! - the helper here requests committed icon-atlas assets; it does not inspect
-//!   or validate their contents
+//! - this file owns only the raw Bevy icon-atlas asset and request helpers.
+//! - icon-atlas schema validation and density policy do not belong here.
+//! - the helper here requests committed icon-atlas assets; it does not inspect or validate their
+//!   contents.
 
 use std::sync::Arc;
 
-use ::bevy::asset::io::Reader;
 use ::bevy::{
-    asset::{Asset, AssetLoader, AssetServer, LoadContext},
+    asset::{Asset, AssetServer},
     image::Image,
     prelude::Handle,
     reflect::TypePath,
 };
 use ui_icons::{UiIconDensity, ui_icon_atlas_manifest_asset_path, ui_icon_atlas_png_asset_path};
 
+pub(crate) use crate::bevy::ui_icon_atlas_manifest_asset_loader::UiIconAtlasManifestAssetLoader;
+
 #[derive(Asset, TypePath, Clone, Debug)]
 pub(crate) struct UiIconAtlasManifestAsset {
     pub(crate) json: Arc<str>,
-}
-
-#[derive(Default, TypePath)]
-pub(crate) struct UiIconAtlasManifestAssetLoader;
-
-impl AssetLoader for UiIconAtlasManifestAssetLoader {
-    type Asset = UiIconAtlasManifestAsset;
-    type Settings = ();
-    type Error = std::io::Error;
-
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _settings: &Self::Settings,
-        _load_context: &mut LoadContext<'_>,
-    ) -> Result<Self::Asset, Self::Error> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        let json = String::from_utf8(bytes).map_err(std::io::Error::other)?;
-        Ok(UiIconAtlasManifestAsset {
-            json: Arc::<str>::from(json),
-        })
-    }
-
-    fn extensions(&self) -> &[&str] {
-        &["json"]
-    }
 }
 
 #[derive(Clone)]
