@@ -41,3 +41,42 @@ impl OrderedTransparentUiDomSurfacesByView {
         self.items_by_view.get(view).map(Vec::as_slice)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use bevy::prelude::Entity;
+
+    #[test]
+    fn views_are_created_empty_on_first_access() {
+        let mut store = OrderedTransparentUiDomSurfacesByView::default();
+        let view_a = RetainedViewEntity::new(Entity::from_bits(1).into(), None, 0);
+
+        assert!(store.items_for_view(&view_a).is_none());
+        let _ = store.items_for_view_mut(view_a);
+        assert!(
+            store
+                .items_for_view(&view_a)
+                .is_some_and(<[Transparent2d]>::is_empty)
+        );
+    }
+
+    #[test]
+    fn clear_live_views_drops_dead_views_and_keeps_live_ones() {
+        let mut store = OrderedTransparentUiDomSurfacesByView::default();
+        let view_a = RetainedViewEntity::new(Entity::from_bits(1).into(), None, 0);
+        let view_b = RetainedViewEntity::new(Entity::from_bits(2).into(), None, 0);
+        let _ = store.items_for_view_mut(view_a);
+        let _ = store.items_for_view_mut(view_b);
+
+        store.clear_live_views(&std::collections::HashSet::from([view_a]));
+
+        assert!(
+            store
+                .items_for_view(&view_a)
+                .is_some_and(<[Transparent2d]>::is_empty)
+        );
+        assert!(store.items_for_view(&view_b).is_none());
+    }
+}
