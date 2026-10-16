@@ -31,6 +31,7 @@ pub mod domains;
 mod element_controls;
 mod numeric;
 mod render_plugin;
+mod resolved_numeric_control;
 #[allow(unpredictable_function_pointer_comparisons)]
 pub mod types;
 mod ui_dom_render_plugin;
