@@ -48,6 +48,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::domains::paint::{measure_text_intrinsic, measure_text_intrinsic_with_font_size};
+pub(crate) use crate::types::attribute_invalidation::AttributeInvalidation;
 use crate::types::dom_attr_parse::{
     layout_length_attr_uses_unset, parse_class_attr_list, parse_style_attr_map,
 };
@@ -58,8 +59,9 @@ pub use crate::types::dom_element_node::DomElementNode;
 use crate::types::dom_event::DomEventDispatchContext;
 use crate::types::dom_event::{DomEventListener, DomEventListenerOptions, DomEventName};
 use crate::types::dom_node_base::DomNodeBase;
-use crate::types::dom_pseudo_state::DomPseudoState;
-use crate::types::dom_tag::{DomElementStateStyleDeclarations, DomTag};
+pub use crate::types::dom_paint_state::DomPaintState;
+pub use crate::types::dom_style_object::DomStyleObject;
+use crate::types::dom_tag::DomTag;
 pub use crate::types::dom_text_node::DomTextNode;
 use crate::types::dom_transition::DomTransition;
 use crate::types::element_behaviors::{
@@ -117,62 +119,6 @@ pub struct DomLayoutState {
     pub height_px: f32,
     /// Retained child-content extent before viewport height clamping.
     pub content_height_px: f32,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum DomPaintState {
-    #[default]
-    None,
-    FullLayerRepaint,
-    DamagedRectsRepaint(ArrayVec<crate::types::DomRect, 8>),
-}
-
-impl DomPaintState {
-    #[must_use]
-    pub fn is_dirty(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DomStyleObject {
-    pub dirty: bool,
-    pub(crate) hover_declarations: DomElementStateStyleDeclarationsField,
-    pub(crate) active_declarations: DomElementStateStyleDeclarationsField,
-    pub(crate) focus_declarations: DomElementStateStyleDeclarationsField,
-    pub(crate) focus_visible_declarations: DomElementStateStyleDeclarationsField,
-}
-
-type DomElementStateStyleDeclarationsField = crate::types::dom_tag::DomStyleDeclarationList;
-
-impl DomStyleObject {
-    pub(crate) fn set_state_style_declarations(
-        &mut self,
-        declarations: DomElementStateStyleDeclarations,
-    ) {
-        self.hover_declarations = declarations.hover;
-        self.active_declarations = declarations.active;
-        self.focus_declarations = declarations.focus;
-        self.focus_visible_declarations = declarations.focus_visible;
-    }
-
-    #[must_use]
-    pub(crate) fn pseudo_state_declarations(
-        &self,
-        pseudo_state: DomPseudoState,
-    ) -> &[(DomAttribute, DomAttributeValue)] {
-        match pseudo_state {
-            DomPseudoState::Hover => self.hover_declarations.as_slice(),
-            DomPseudoState::Active => self.active_declarations.as_slice(),
-            DomPseudoState::Focus => self.focus_declarations.as_slice(),
-            DomPseudoState::FocusVisible => self.focus_visible_declarations.as_slice(),
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn has_pseudo_state_declarations(&self, pseudo_state: DomPseudoState) -> bool {
-        !self.pseudo_state_declarations(pseudo_state).is_empty()
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -240,69 +186,6 @@ pub(crate) struct DomEventListenerRegistration {
 pub(crate) struct DomDispatchedEventListener {
     pub(crate) listener: DomEventListener,
     pub(crate) options: DomEventListenerOptions,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AttributeInvalidation {
-    bits: u8,
-}
-
-impl AttributeInvalidation {
-    const LAYOUT: u8 = 1 << 0;
-    const PAINT: u8 = 1 << 1;
-    const STYLE: u8 = 1 << 2;
-    const LAYER_MEMBERSHIP: u8 = 1 << 3;
-
-    #[must_use]
-    pub(crate) const fn with_layout(mut self) -> Self {
-        self.bits |= Self::LAYOUT;
-        self
-    }
-
-    #[must_use]
-    pub(crate) const fn with_paint(mut self) -> Self {
-        self.bits |= Self::PAINT;
-        self
-    }
-
-    #[must_use]
-    pub(crate) const fn with_style(mut self) -> Self {
-        self.bits |= Self::STYLE;
-        self
-    }
-
-    #[must_use]
-    pub(crate) const fn with_layer_membership(mut self) -> Self {
-        self.bits |= Self::LAYER_MEMBERSHIP;
-        self
-    }
-
-    #[must_use]
-    pub(crate) const fn layout(self) -> bool {
-        self.bits & Self::LAYOUT != 0
-    }
-
-    #[must_use]
-    pub(crate) const fn paint(self) -> bool {
-        self.bits & Self::PAINT != 0
-    }
-
-    #[must_use]
-    pub(crate) const fn style(self) -> bool {
-        self.bits & Self::STYLE != 0
-    }
-
-    #[must_use]
-    pub(crate) const fn layer_membership(self) -> bool {
-        self.bits & Self::LAYER_MEMBERSHIP != 0
-    }
-
-    #[must_use]
-    pub(crate) const fn merge(self, other: Self) -> Self {
-        Self {
-            bits: self.bits | other.bits,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

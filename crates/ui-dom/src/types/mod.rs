@@ -17,6 +17,7 @@
 //!
 //! - keep shared types low-level and composable
 //! - put behavior in the owning modules; keep these shapes literal
+mod attribute_invalidation;
 pub mod box_model;
 pub mod dom_after_attr_write_intrinsic_update;
 pub mod dom_attr_node;
@@ -40,9 +41,11 @@ pub mod dom_event_name;
 pub mod dom_node;
 pub mod dom_node_base;
 mod dom_ops;
+pub mod dom_paint_state;
 pub mod dom_pseudo_state;
 pub mod dom_pseudo_state_bits;
 mod dom_query_selector;
+pub mod dom_style_object;
 pub mod dom_tag;
 pub mod dom_text_node;
 pub mod dom_transition;
@@ -81,8 +84,10 @@ pub use dom_event_listener::*;
 pub use dom_event_name::*;
 pub use dom_node::*;
 pub use dom_node_base::*;
+pub use dom_paint_state::*;
 pub use dom_pseudo_state::*;
 pub use dom_pseudo_state_bits::*;
+pub use dom_style_object::*;
 pub use dom_tag::*;
 pub use dom_text_node::*;
 pub use dom_transition::*;
