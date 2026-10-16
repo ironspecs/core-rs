@@ -52,6 +52,17 @@ use crate::types::{
     DomNodeSlotKey, RootDom, RootDomMetricName,
 };
 
+#[cfg(test)]
+use crate::domains::LayerConfig;
+#[cfg(test)]
+use crate::domains::layout::{node_box, relative_offset_for_node};
+#[cfg(test)]
+use crate::domains::style::StyleRuleOrigin;
+#[cfg(test)]
+use crate::render_plugin::UiDomRenderSupport;
+#[cfg(test)]
+use crate::types::{DomTag, PixelDensity, RootDomContext, RootDomFragment};
+
 #[derive(Clone, Copy)]
 struct LayerPresentationInputs {
     layer_root_key: DomNodeSlotKey,
@@ -1349,15 +1360,7 @@ mod tests {
         prelude::{Entity, Transform, Vec2, Vec4, World},
     };
 
-    use crate::{
-        domains::layout::relative_offset_for_node,
-        domains::style::StyleRuleOrigin,
-        domains::{LayerConfig, LayerPool, LayerPoolRenderJobQueue},
-        render_plugin::{UiDomBaseMaterial, UiDomRenderSupport},
-        types::{DomNodeSlotKey, DomTag, PixelDensity, RootDom, RootDomContext, RootDomFragment},
-    };
-
-    use super::{UiDomLayerPresentation, unclipped_world_rect, update};
+    use super::*;
 
     struct PopupCompositeScenario {
         root: RootDom,
@@ -1615,9 +1618,7 @@ mod tests {
         let toolbar_transform = world
             .get::<Transform>(toolbar_entity)
             .expect("toolbar transform");
-        let toolbar_box = crate::domains::layout::node_box(&root, toolbar)
-            .expect("toolbar box")
-            .border_box;
+        let toolbar_box = node_box(&root, toolbar).expect("toolbar box").border_box;
         let toolbar_layout = root.node(toolbar).expect("toolbar node").layout();
         let toolbar_offset = relative_offset_for_node(&root, toolbar);
 
@@ -1716,9 +1717,7 @@ mod tests {
         let toolbar_transform = world
             .get::<Transform>(toolbar_entity)
             .expect("toolbar transform");
-        let toolbar_box = crate::domains::layout::node_box(&root, toolbar)
-            .expect("toolbar box")
-            .border_box;
+        let toolbar_box = node_box(&root, toolbar).expect("toolbar box").border_box;
         let toolbar_layout = root.node(toolbar).expect("toolbar node").layout();
 
         assert_close(toolbar_layout.available_width_px, 320.0);
@@ -1805,9 +1804,7 @@ mod tests {
         let toolbar_transform = world
             .get::<Transform>(toolbar_entity)
             .expect("toolbar transform");
-        let toolbar_box = crate::domains::layout::node_box(&root, toolbar)
-            .expect("toolbar box")
-            .border_box;
+        let toolbar_box = node_box(&root, toolbar).expect("toolbar box").border_box;
         let toolbar_layout = root.node(toolbar).expect("toolbar node").layout();
 
         assert_close(toolbar_layout.available_width_px, 320.0);
@@ -1884,9 +1881,7 @@ mod tests {
         let toolbar_transform = world
             .get::<Transform>(toolbar_entity)
             .expect("toolbar transform");
-        let toolbar_box = crate::domains::layout::node_box(&root, toolbar)
-            .expect("toolbar box")
-            .border_box;
+        let toolbar_box = node_box(&root, toolbar).expect("toolbar box").border_box;
         let toolbar_layout = root.node(toolbar).expect("toolbar node").layout();
 
         assert_close(toolbar_layout.available_width_px, 900.0);
@@ -1966,9 +1961,7 @@ mod tests {
         let panel_transform = world
             .get::<Transform>(panel_entity)
             .expect("panel transform");
-        let panel_box = crate::domains::layout::node_box(&root, panel)
-            .expect("panel box")
-            .border_box;
+        let panel_box = node_box(&root, panel).expect("panel box").border_box;
         let panel_layout = root.node(panel).expect("panel node").layout();
 
         assert_close(panel_layout.available_height_px, 320.0);
@@ -2043,9 +2036,7 @@ mod tests {
         let panel_transform = world
             .get::<Transform>(panel_entity)
             .expect("panel transform");
-        let panel_box = crate::domains::layout::node_box(&root, panel)
-            .expect("panel box")
-            .border_box;
+        let panel_box = node_box(&root, panel).expect("panel box").border_box;
         let panel_layout = root.node(panel).expect("panel node").layout();
 
         assert_close(panel_layout.available_width_px, 320.0);
@@ -2955,7 +2946,7 @@ mod tests {
         let retained_image_height_px =
             presentation_image_height_px(&scenario.world, clipped_entity);
         let uv_window = presentation_material_uniform(&scenario.world, clipped_entity);
-        let live_box = crate::domains::layout::node_box(&scenario.root, scenario.clipped_root)
+        let live_box = node_box(&scenario.root, scenario.clipped_root)
             .expect("clipped root should expose a box");
         let live_height_px = live_box.border_box.height_px;
 
@@ -3017,7 +3008,7 @@ mod tests {
         let retained_image_height_px =
             presentation_image_height_px(&scenario.world, clipped_entity);
         let uv_window = presentation_material_uniform(&scenario.world, clipped_entity);
-        let live_box = crate::domains::layout::node_box(&scenario.root, scenario.clipped_root)
+        let live_box = node_box(&scenario.root, scenario.clipped_root)
             .expect("clipped root should expose a box");
         let live_height_px = live_box.border_box.height_px;
 
