@@ -35,12 +35,18 @@ pub mod dom_tag;
 pub mod dom_transition;
 pub mod element_behaviors;
 mod event_listener_name_bits;
+pub mod paint_config;
+pub mod pixel_density;
 pub mod primitives;
 pub mod root_dom;
 pub mod root_dom_context;
+pub mod root_dom_context_config;
 pub mod root_dom_fragment;
+pub mod root_dom_metric_name;
 pub mod root_dom_metrics;
 pub mod root_dom_nodes;
+pub mod root_dom_nodes_metric_history_iter;
+pub mod root_dom_nodes_metric_name;
 mod white_space;
 
 pub use box_model::*;
@@ -57,12 +63,18 @@ pub use dom_pseudo_state::*;
 pub use dom_tag::*;
 pub use dom_transition::*;
 pub use element_behaviors::DomElementIntrinsicKind;
+pub use paint_config::*;
+pub use pixel_density::*;
 pub use primitives::*;
 pub use root_dom::*;
 pub use root_dom_context::*;
+pub use root_dom_context_config::*;
 pub use root_dom_fragment::*;
+pub use root_dom_metric_name::*;
 pub use root_dom_metrics::*;
 pub use root_dom_nodes::*;
+pub use root_dom_nodes_metric_history_iter::*;
+pub use root_dom_nodes_metric_name::*;
 pub(crate) use white_space::{
     DomOverflowWrap, DomTextAlign, DomTextDirection, DomWhiteSpace, DomWordBreak,
     overflow_wrap_from_attr_value, parse_text_align_keyword, parse_text_direction_keyword,

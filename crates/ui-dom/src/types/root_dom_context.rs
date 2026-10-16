@@ -6,9 +6,15 @@
 //! creation. Its purpose is to keep backend selection and shared style runtime
 //! policy explicit instead of hiding them in paint globals or per-root one-off
 //! state. It also carries the shared render-ops staging handler that owns one
-//! tick's outgoing paint ops until the render-world handoff.
+//! tick's outgoing paint ops until the render-world handoff. The paint policy
+//! (`PaintConfig`), pixel density (`PixelDensity`), and context configuration
+//! (`RootDomContextConfig`) live in their own files and are re-exported here.
 
 use std::sync::{Arc, Mutex};
+
+pub use crate::types::paint_config::PaintConfig;
+pub use crate::types::pixel_density::PixelDensity;
+pub use crate::types::root_dom_context_config::RootDomContextConfig;
 
 use crate::domains::style::{StyleRuleOrigin, StyleRuntime};
 use crate::types::{DomError, DomPseudoState};
@@ -20,73 +26,6 @@ pub enum PaintBackend {
     Cpu,
     /// Paint into the owned Bevy layer texture through the retained GPU compositor.
     Gpu,
-}
-
-/// Selects the pixel density for owned layer textures.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PixelDensity {
-    /// One texture pixel per authored pixel.
-    X1 = 1,
-    /// Two texture pixels per authored pixel.
-    X2 = 2,
-    /// Four texture pixels per authored pixel.
-    X4 = 4,
-}
-
-impl PixelDensity {
-    #[must_use]
-    pub fn multiplier(self) -> usize {
-        match self {
-            Self::X1 => 1,
-            Self::X2 => 2,
-            Self::X4 => 4,
-        }
-    }
-}
-
-/// Immutable paint policy shared by every `RootDom` using one context.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PaintConfig {
-    /// Preferred execution target for retained layer paint.
-    pub backend: PaintBackend,
-}
-
-impl PaintConfig {
-    #[must_use]
-    pub const fn new(backend: PaintBackend) -> Self {
-        Self { backend }
-    }
-}
-
-/// Configures one shared `RootDomContext`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RootDomContextConfig {
-    /// Shared retained paint policy for all roots using this context.
-    pub paint: PaintConfig,
-    /// Enables controlled debug-only output capture.
-    pub debug_capture_enabled: bool,
-}
-
-impl RootDomContextConfig {
-    #[must_use]
-    pub const fn new(paint: PaintConfig, debug_capture_enabled: bool) -> Self {
-        Self {
-            paint,
-            debug_capture_enabled,
-        }
-    }
-
-    /// Builds a CPU paint context config with no DOM-owned density policy.
-    #[must_use]
-    pub const fn cpu() -> Self {
-        Self::new(PaintConfig::new(PaintBackend::Cpu), false)
-    }
-
-    /// Builds a GPU paint context config with no DOM-owned density policy.
-    #[must_use]
-    pub const fn gpu() -> Self {
-        Self::new(PaintConfig::new(PaintBackend::Gpu), false)
-    }
 }
 
 /// Shared cross-root runtime context for `ui-dom`.

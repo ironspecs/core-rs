@@ -3,7 +3,10 @@
 //! This file owns the proxy type that stands in for `RootDom`'s node slotmap.
 //! Its purpose is to preserve the existing node-store method surface while
 //! attaching one separate metrics tally dedicated only to node-store
-//! operations.
+//! operations. The node-store metric name vocabulary
+//! (`RootDomNodesMetricName`) and the retained-history iterator
+//! (`RootDomNodesMetricHistoryIter`) live in their own files and are
+//! re-exported here.
 //!
 //! Invariants and rules:
 //!
@@ -18,62 +21,18 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::dom_node::{DomNode, DomNodeSlotKey};
-use collections::metrics::{MetricHistoryEntry, MetricHistoryStore, MetricName, MetricSnapshot};
+use collections::metrics::{MetricHistoryEntry, MetricHistoryStore, MetricSnapshot};
 use parking_lot::Mutex;
 use slotmap::SlotMap;
+
+pub use crate::types::root_dom_nodes_metric_history_iter::RootDomNodesMetricHistoryIter;
+pub use crate::types::root_dom_nodes_metric_name::RootDomNodesMetricName;
 
 #[cfg(test)]
 use crate::types::dom_tag::DomTag;
 
 /// Number of retained node-store metric history entries.
 pub const ROOT_DOM_NODES_METRIC_HISTORY_CAPACITY: usize = 128;
-
-/// Names one root node-store metric counter.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum RootDomNodesMetricName {
-    ContainsKey,
-    Get,
-    GetMut,
-    Insert,
-    InsertWithKey,
-    IsEmpty,
-    Remove,
-}
-
-pub(crate) const ROOT_DOM_NODES_METRIC_NAMES: [RootDomNodesMetricName; 7] = [
-    RootDomNodesMetricName::ContainsKey,
-    RootDomNodesMetricName::Get,
-    RootDomNodesMetricName::GetMut,
-    RootDomNodesMetricName::Insert,
-    RootDomNodesMetricName::InsertWithKey,
-    RootDomNodesMetricName::IsEmpty,
-    RootDomNodesMetricName::Remove,
-];
-
-impl RootDomNodesMetricName {
-    /// Number of defined node-store metric names.
-    pub const COUNT: usize = ROOT_DOM_NODES_METRIC_NAMES.len();
-
-    /// Returns the fixed counter index for this metric.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        match self {
-            Self::ContainsKey => 0,
-            Self::Get => 1,
-            Self::GetMut => 2,
-            Self::Insert => 3,
-            Self::InsertWithKey => 4,
-            Self::IsEmpty => 5,
-            Self::Remove => 6,
-        }
-    }
-}
-
-impl MetricName for RootDomNodesMetricName {
-    fn index(self) -> usize {
-        RootDomNodesMetricName::index(self)
-    }
-}
 
 /// Snapshot copy of root node-store metric counter values.
 pub type RootDomNodesMetrics =
@@ -84,14 +43,6 @@ pub type RootDomNodesMetricHistoryEntry = MetricHistoryEntry<RootDomNodesMetricN
 
 type RootDomNodesMetricHistoryStore =
     MetricHistoryStore<RootDomNodesMetricName, ROOT_DOM_NODES_METRIC_HISTORY_CAPACITY>;
-
-/// Snapshot-backed iterator over retained root node-store metric history.
-#[derive(Clone, Debug)]
-pub struct RootDomNodesMetricHistoryIter {
-    entries: [Option<RootDomNodesMetricHistoryEntry>; ROOT_DOM_NODES_METRIC_HISTORY_CAPACITY],
-    index: usize,
-    len: usize,
-}
 
 /// Proxy for `RootDom`'s node slot store with dedicated node-store metrics.
 #[derive(Debug)]
@@ -227,47 +178,9 @@ impl DerefMut for RootDomNodes {
     }
 }
 
-impl Iterator for RootDomNodesMetricHistoryIter {
-    type Item = RootDomNodesMetricHistoryEntry;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.len {
-            return None;
-        }
-        let entry = self.entries[self.index];
-        self.index += 1;
-        entry
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.len - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for RootDomNodesMetricHistoryIter {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn root_dom_nodes_metric_name_indices_are_unique_and_in_bounds() {
-        let mut seen_indices = [false; RootDomNodesMetricName::COUNT];
-
-        for name in ROOT_DOM_NODES_METRIC_NAMES {
-            let index = name.index();
-            assert!(index < RootDomNodesMetricName::COUNT);
-            assert_eq!(ROOT_DOM_NODES_METRIC_NAMES[index], name);
-            assert!(
-                !seen_indices[index],
-                "metric index should be assigned to exactly one metric"
-            );
-            seen_indices[index] = true;
-        }
-
-        assert!(seen_indices.into_iter().all(|seen| seen));
-    }
 
     #[test]
     fn root_dom_nodes_counts_tracked_operations() {
