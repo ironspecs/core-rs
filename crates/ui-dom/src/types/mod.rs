@@ -582,9 +582,7 @@ pub(crate) fn parse_authored_value_input(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use super::{DomAttribute, DomAttributeValue, DomAttrs, parse_authored_value_input};
+    use super::*;
 
     #[test]
     fn dom_attribute_recognizes_new_text_and_form_names() {
@@ -768,10 +766,10 @@ mod tests {
             .expect("canonical style attrs should deserialize");
         assert_eq!(deserialized_attrs, attrs);
 
-        let layout = crate::types::DomLayoutState {
+        let layout = DomLayoutState {
             dirty: false,
-            layer_kind: crate::types::DomLayerKind::Normal,
-            layer_order: crate::types::LayerOrder::Raised,
+            layer_kind: DomLayerKind::Normal,
+            layer_order: LayerOrder::Raised,
             available_width_px: 320.0,
             available_height_px: 180.0,
             width_px: 120.0,
@@ -780,11 +778,11 @@ mod tests {
         };
         let serialized_layout =
             serde_json::to_string(&layout).expect("canonical layout should serialize");
-        let deserialized_layout: crate::types::DomLayoutState =
+        let deserialized_layout: DomLayoutState =
             serde_json::from_str(&serialized_layout).expect("canonical layout should deserialize");
         assert_eq!(deserialized_layout, layout);
 
-        let intrinsic = crate::types::DomIntrinsic::Text(crate::types::TextIntrinsic {
+        let intrinsic = DomIntrinsic::Text(TextIntrinsic {
             font_size_px: 16.0,
             min_content_width_px: 48.0,
             max_content_width_px: 96.0,
@@ -793,9 +791,8 @@ mod tests {
         });
         let serialized_intrinsic =
             serde_json::to_string(&intrinsic).expect("canonical intrinsic should serialize");
-        let deserialized_intrinsic: crate::types::DomIntrinsic =
-            serde_json::from_str(&serialized_intrinsic)
-                .expect("canonical intrinsic should deserialize");
+        let deserialized_intrinsic: DomIntrinsic = serde_json::from_str(&serialized_intrinsic)
+            .expect("canonical intrinsic should deserialize");
         assert_eq!(deserialized_intrinsic, intrinsic);
     }
 }
