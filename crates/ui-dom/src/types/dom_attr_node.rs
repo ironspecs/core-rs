@@ -1,7 +1,13 @@
 use std::collections::BTreeMap;
 
 #[cfg(test)]
-use crate::types::dom_node::{DomDocumentFragmentNode, DomDocumentNode, DomElementNode};
+use crate::types::dom_node::{
+    DomDocumentFragmentNode, DomDocumentNode, DomElementNode, DomNodeSlotKey,
+};
+#[cfg(test)]
+use crate::types::dom_tag::DomTag;
+#[cfg(test)]
+use crate::types::parse_css_color_rgba;
 use crate::types::{
     DomAttribute, DomAttributeValue, DomAttrs, DomError, parse_authored_value_input,
 };
@@ -45,12 +51,7 @@ pub trait DomAttributeNode {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::dom_node::DomNodeSlotKey;
-    use crate::types::{
-        DomAttribute, DomAttributeNode, DomAttributeValue, DomError, parse_css_color_rgba,
-    };
-
-    use super::{DomDocumentFragmentNode, DomDocumentNode, DomElementNode};
+    use super::*;
 
     fn test_owner_document_key() -> DomNodeSlotKey {
         let mut keys = slotmap::SlotMap::with_key();
@@ -142,10 +143,7 @@ mod tests {
 
     #[test]
     fn trait_attr_reads_id_and_style_on_element_nodes() {
-        let mut node = DomElementNode::new(
-            test_owner_document_key(),
-            crate::types::dom_tag::DomTag::Div,
-        );
+        let mut node = DomElementNode::new(test_owner_document_key(), DomTag::Div);
 
         DomAttributeNode::set_attr(
             &mut node,
@@ -169,14 +167,8 @@ mod tests {
 
     #[test]
     fn element_trait_reports_intrinsic_update_attrs_from_descriptor_behavior() {
-        let img = DomElementNode::new(
-            test_owner_document_key(),
-            crate::types::dom_tag::DomTag::Img,
-        );
-        let div = DomElementNode::new(
-            test_owner_document_key(),
-            crate::types::dom_tag::DomTag::Div,
-        );
+        let img = DomElementNode::new(test_owner_document_key(), DomTag::Img);
+        let div = DomElementNode::new(test_owner_document_key(), DomTag::Div);
 
         assert!(DomAttributeNode::after_attr_write_updates_intrinsic(
             &img,
