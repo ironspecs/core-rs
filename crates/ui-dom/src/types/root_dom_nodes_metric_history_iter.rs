@@ -15,6 +15,13 @@ use crate::types::root_dom_nodes::{
     ROOT_DOM_NODES_METRIC_HISTORY_CAPACITY, RootDomNodesMetricHistoryEntry,
 };
 
+#[cfg(test)]
+use crate::types::dom_node::DomNode;
+#[cfg(test)]
+use crate::types::dom_tag::DomTag;
+#[cfg(test)]
+use crate::types::root_dom_nodes::{RootDomNodes, RootDomNodesMetricName};
+
 /// Snapshot-backed iterator over retained root node-store metric history.
 #[derive(Clone, Debug)]
 pub struct RootDomNodesMetricHistoryIter {
@@ -43,3 +50,31 @@ impl Iterator for RootDomNodesMetricHistoryIter {
 }
 
 impl ExactSizeIterator for RootDomNodesMetricHistoryIter {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_iter_yields_oldest_to_newest_with_exact_len() {
+        let mut nodes = RootDomNodes::with_key();
+        let root = nodes.insert_with_key(DomNode::document);
+        let child = nodes.insert(DomNode::element(root, DomTag::Div));
+        assert!(nodes.get(root).is_some());
+        assert!(nodes.contains_key(child));
+
+        let history = nodes.history();
+        assert_eq!(history.len(), 4);
+
+        let names: Vec<_> = history.map(|entry| entry.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                RootDomNodesMetricName::InsertWithKey,
+                RootDomNodesMetricName::Insert,
+                RootDomNodesMetricName::Get,
+                RootDomNodesMetricName::ContainsKey,
+            ]
+        );
+    }
+}

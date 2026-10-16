@@ -26,3 +26,17 @@ impl PaintConfig {
         Self { backend }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_config_new_stores_backend() {
+        let config = PaintConfig::new(PaintBackend::Gpu);
+        assert_eq!(config.backend, PaintBackend::Gpu);
+
+        let config = PaintConfig::new(PaintBackend::Cpu);
+        assert_eq!(config.backend, PaintBackend::Cpu);
+    }
+}

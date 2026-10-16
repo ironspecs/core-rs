@@ -30,3 +30,15 @@ impl PixelDensity {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pixel_density_multiplier_matches_variant() {
+        assert_eq!(PixelDensity::X1.multiplier(), 1);
+        assert_eq!(PixelDensity::X2.multiplier(), 2);
+        assert_eq!(PixelDensity::X4.multiplier(), 4);
+    }
+}

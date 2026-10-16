@@ -42,3 +42,22 @@ impl RootDomContextConfig {
         Self::new(PaintConfig::new(PaintBackend::Gpu), false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_config_presets_carry_expected_paint_and_debug_flags() {
+        let cpu = RootDomContextConfig::cpu();
+        assert_eq!(cpu.paint.backend, PaintBackend::Cpu);
+        assert!(!cpu.debug_capture_enabled);
+
+        let gpu = RootDomContextConfig::gpu();
+        assert_eq!(gpu.paint.backend, PaintBackend::Gpu);
+        assert!(!gpu.debug_capture_enabled);
+
+        let configured = RootDomContextConfig::new(PaintConfig::new(PaintBackend::Gpu), true);
+        assert!(configured.debug_capture_enabled);
+    }
+}
