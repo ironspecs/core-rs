@@ -132,3 +132,169 @@ impl LayerPoolRenderState {
         self.icon.atlas.is_some()
     }
 }
+
+#[cfg(test)]
+use crate::domains::layer_ops::{LayerPaintPlan, RectPaintOp};
+#[cfg(test)]
+use crate::domains::{LayerConfig, LayerLease, LayerPool};
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bevy::asset::Handle;
+    use bevy::image::Image;
+    use bevy::prelude::World;
+    use bevy::render::{
+        render_resource::{Sampler, Texture},
+        renderer::{RenderDevice, RenderQueue, WgpuWrapper},
+        texture::GpuImage,
+    };
+    use bevy::tasks::block_on;
+
+    use super::*;
+
+    fn noop_render_device_and_queue() -> (RenderDevice, RenderQueue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::NOOP,
+            backend_options: wgpu::BackendOptions {
+                noop: wgpu::NoopBackendOptions { enable: true },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("noop adapter should exist");
+        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("noop device should be granted");
+        let render_device = RenderDevice::from(device);
+        let render_queue = RenderQueue(Arc::new(WgpuWrapper::new(queue)));
+        (render_device, render_queue)
+    }
+
+    fn noop_gpu_image(render_device: &RenderDevice) -> GpuImage {
+        let size = wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        };
+        let texture = render_device
+            .wgpu_device()
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("ui_dom_test_noop_surface"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+        let texture = Texture::from(texture);
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = Sampler::from(
+            render_device
+                .wgpu_device()
+                .create_sampler(&wgpu::SamplerDescriptor::default()),
+        );
+        GpuImage {
+            texture,
+            texture_view,
+            texture_format: wgpu::TextureFormat::Rgba8Unorm,
+            texture_view_format: None,
+            sampler,
+            size,
+            mip_level_count: 1,
+            had_data: false,
+        }
+    }
+
+    fn single_rect_op() -> RectPaintOp {
+        RectPaintOp {
+            position_px: [0.0, 0.0],
+            size_px: [8.0, 8.0],
+            fill_rgba: [1.0, 1.0, 1.0, 1.0],
+            corner_radii_px: [0.0; 4],
+            border_widths_px: [0.0; 4],
+            border_top_rgba: [0.0; 4],
+            border_right_rgba: [0.0; 4],
+            border_bottom_rgba: [0.0; 4],
+            border_left_rgba: [0.0; 4],
+        }
+    }
+
+    fn lease_in_world() -> LayerLease {
+        let mut world = World::new();
+        world.insert_resource(LayerPool::new(LayerConfig::default()));
+        LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 10.0, 10.0))
+    }
+
+    fn staged_apply(lease: LayerLease, plan: LayerPaintPlan) -> StagedLayerApply {
+        StagedLayerApply {
+            lease,
+            image_handle: Handle::<Image>::default(),
+            layer_zero_in_image_px: [0.0, 0.0],
+            plan,
+        }
+    }
+
+    #[test]
+    fn render_state_constructs_all_five_pipelines() {
+        let (render_device, _render_queue) = noop_render_device_and_queue();
+        let state = LayerPoolRenderState::new(
+            &render_device,
+            FrozenLayerConfig::new(LayerConfig::new(PixelDensity::X1)),
+        );
+        assert!(!state.icon_atlas_is_ready());
+    }
+
+    #[test]
+    fn apply_plan_with_one_rect_repaints_into_noop_surface() {
+        let (render_device, render_queue) = noop_render_device_and_queue();
+        let mut state = LayerPoolRenderState::new(
+            &render_device,
+            FrozenLayerConfig::new(LayerConfig::new(PixelDensity::X1)),
+        );
+        let gpu_image = noop_gpu_image(&render_device);
+        let lease = lease_in_world();
+
+        let single_rect_apply = staged_apply(
+            lease,
+            LayerPaintPlan {
+                rects: vec![single_rect_op()],
+                ..LayerPaintPlan::default()
+            },
+        );
+        let result = state.apply_plan_to_surface(
+            &render_device,
+            &render_queue,
+            &gpu_image,
+            PixelDensity::X1,
+            &single_rect_apply,
+        );
+        assert!(result.text_runs_ready);
+        assert!(
+            !result.rect_buffer_grew,
+            "the rect instance buffer starts at capacity 1, so one rect does not grow it"
+        );
+
+        let two_rect_apply = staged_apply(
+            lease,
+            LayerPaintPlan {
+                rects: vec![single_rect_op(), single_rect_op()],
+                ..LayerPaintPlan::default()
+            },
+        );
+        let result = state.apply_plan_to_surface(
+            &render_device,
+            &render_queue,
+            &gpu_image,
+            PixelDensity::X1,
+            &two_rect_apply,
+        );
+        assert!(result.rect_buffer_grew);
+    }
+}

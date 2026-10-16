@@ -29,7 +29,7 @@ smallvec = "1.15.1"
 slotmap = "1.0.7"
 tracing.workspace = true
 ui-icons = { path = "../ui-icons" }
-wgpu.workspace = true
+wgpu = { workspace = true, features = ["noop"] }
 
 [dev-dependencies]
 naga = { version = "27.0.3", features = ["wgsl-in"] }

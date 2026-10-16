@@ -100,3 +100,53 @@ impl ViewNode for OrderedTransparentPassNode {
         Ok(())
     }
 }
+
+#[cfg(test)]
+use crate::bevy::ordered_surface_render::{
+    OrderedTransparentPassLabel, install_ui_dom_ordered_surface_render_runtime,
+};
+
+#[cfg(test)]
+mod tests {
+    use bevy::{
+        DefaultPlugins,
+        core_pipeline::core_2d::graph::{Core2d, Node2d},
+        prelude::{App, PluginGroup},
+        render::{
+            RenderApp,
+            render_graph::{Edge, RenderGraph, RenderLabel},
+        },
+        window::WindowPlugin,
+    };
+
+    use super::*;
+
+    #[test]
+    fn ordered_transparent_pass_node_is_wired_into_core2d_render_graph() {
+        let mut app = App::new();
+        app.add_plugins(DefaultPlugins.build().disable::<WindowPlugin>());
+
+        let render_app = app.get_sub_app_mut(RenderApp).expect("render app");
+        install_ui_dom_ordered_surface_render_runtime(render_app);
+
+        let render_graph = render_app.world().resource::<RenderGraph>();
+        let core2d_graph = render_graph
+            .get_sub_graph(Core2d)
+            .expect("Core2d sub graph should exist");
+
+        assert!(
+            core2d_graph
+                .get_node_state(OrderedTransparentPassLabel)
+                .is_ok(),
+            "the ordered transparent pass node should be registered in the Core2d graph"
+        );
+        assert!(core2d_graph.has_edge(&Edge::NodeEdge {
+            output_node: Node2d::MainTransparentPass.intern(),
+            input_node: OrderedTransparentPassLabel.intern(),
+        }));
+        assert!(core2d_graph.has_edge(&Edge::NodeEdge {
+            output_node: OrderedTransparentPassLabel.intern(),
+            input_node: Node2d::EndMainPass.intern(),
+        }));
+    }
+}

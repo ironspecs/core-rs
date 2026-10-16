@@ -188,3 +188,129 @@ impl TextRunRenderState {
             .mark_registered(font_asset.asset_id);
     }
 }
+
+#[cfg(test)]
+use crate::domains::layer_ops::TextLanguageId;
+#[cfg(test)]
+use crate::domains::layer_pool::layer_pool_text_render::create_text_run_render_state;
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
+    use bevy::tasks::block_on;
+    use slotmap::SlotMap;
+
+    use super::*;
+
+    fn noop_render_device_and_queue() -> (RenderDevice, RenderQueue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::NOOP,
+            backend_options: wgpu::BackendOptions {
+                noop: wgpu::NoopBackendOptions { enable: true },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("noop adapter should exist");
+        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("noop device should be granted");
+        let render_device = RenderDevice::from(device);
+        let render_queue = RenderQueue(Arc::new(WgpuWrapper::new(queue)));
+        (render_device, render_queue)
+    }
+
+    fn fresh_text_run_render_state() -> (RenderDevice, TextRunRenderState) {
+        let (render_device, _render_queue) = noop_render_device_and_queue();
+        let state = create_text_run_render_state(&render_device, PixelDensity::X1);
+        (render_device, state)
+    }
+
+    #[test]
+    fn render_state_constructs_pipelines_and_starts_without_ready_family() {
+        let (_render_device, state) = fresh_text_run_render_state();
+        assert!(state.run_bank.is_empty());
+        assert!(state.pending_lease_dependencies.is_empty());
+        assert!(
+            !state
+                .font_registration_state
+                .ready(TextFontFamilyId::UiSans)
+        );
+    }
+
+    #[test]
+    fn apply_text_run_change_populates_and_remove_clears_run_bank() {
+        let (_render_device, mut state) = fresh_text_run_render_state();
+        let mut text_run_ids = SlotMap::with_key();
+        let text_run_id = text_run_ids.insert(());
+        state.apply_text_run_change(ExtractedTextRunRecord {
+            text_run_id,
+            text: Arc::<str>::from("Settings"),
+            language_hint_id: TextLanguageId::English,
+            font_family_id: TextFontFamilyId::UiSans,
+        });
+
+        assert_eq!(
+            state
+                .run_bank
+                .get(text_run_id)
+                .map(|record| record.text.as_ref()),
+            Some("Settings")
+        );
+        assert_eq!(
+            state
+                .run_bank
+                .get(text_run_id)
+                .map(|record| record.language_hint_id),
+            Some(TextLanguageId::English)
+        );
+
+        state.remove_run_record(text_run_id);
+        assert!(state.run_bank.get(text_run_id).is_none());
+    }
+
+    #[test]
+    fn register_font_asset_makes_family_ready_when_required() {
+        let (_render_device, mut state) = fresh_text_run_render_state();
+        let mut assets = bevy::asset::Assets::<UiDomFontAsset>::default();
+        let id_a = assets
+            .add(UiDomFontAsset {
+                bytes: Arc::from(&b"a"[..]),
+            })
+            .id();
+        let id_b = assets
+            .add(UiDomFontAsset {
+                bytes: Arc::from(&b"b"[..]),
+            })
+            .id();
+
+        state.set_required_font_asset_ids(TextFontFamilyId::UiSans, vec![id_a, id_b]);
+        assert!(
+            !state
+                .font_registration_state
+                .ready(TextFontFamilyId::UiSans)
+        );
+
+        state.register_font_asset(ExtractedFontAssetRecord {
+            asset_id: id_a,
+            bytes: Arc::from(&b"a"[..]),
+        });
+        assert!(
+            !state
+                .font_registration_state
+                .ready(TextFontFamilyId::UiSans)
+        );
+
+        state.register_font_asset(ExtractedFontAssetRecord {
+            asset_id: id_b,
+            bytes: Arc::from(&b"b"[..]),
+        });
+        assert!(
+            state
+                .font_registration_state
+                .ready(TextFontFamilyId::UiSans)
+        );
+    }
+}
