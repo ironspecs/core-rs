@@ -3,7 +3,8 @@
 //! This file keeps the listener-facing callback context that borrows the
 //! listener's root and dispatch state so detached fragments and live roots can
 //! stay aligned when they both support listener authoring. The listener itself
-//! and the listener-owner contract live in `dom_event_listener.rs`.
+//! lives in `dom_event_listener.rs`, and the listener-owner contract lives in
+//! `dom_event_listener_owner.rs`.
 
 use crate::types::dom_event::{DomEvent, DomEventPhase};
 use crate::types::dom_event_dispatch_context::DomEventDispatchContext;

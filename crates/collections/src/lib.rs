@@ -21,6 +21,7 @@
 pub mod lru_cache;
 pub mod metric_history_iter;
 pub mod metric_history_store;
+pub mod metric_name;
 pub mod metric_snapshot;
 pub mod metrics;
 pub mod refresh_tracked_store;

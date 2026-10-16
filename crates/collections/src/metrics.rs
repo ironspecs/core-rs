@@ -1,11 +1,11 @@
 //! Shared fixed-size metrics storage support.
 //!
-//! This file owns the generic enum-addressed metric owner (`Metrics`), the
-//! metric-name contract (`MetricName`), and the retained-history entry shape
-//! (`MetricHistoryEntry`) so multiple crates can share one canonical tally
-//! without tying metric meaning to a specific runtime domain. The counter
-//! snapshot, history store, and history iterator are re-exported here from
-//! their own files.
+//! This file owns the generic enum-addressed metric owner (`Metrics`) and the
+//! retained-history entry shape (`MetricHistoryEntry`) so multiple crates can
+//! share one canonical tally without tying metric meaning to a specific
+//! runtime domain. The metric-name contract (`MetricName`), counter snapshot,
+//! history store, and history iterator are re-exported here from their own
+//! files.
 //!
 //! Strict invariants:
 //! - metric names must resolve to stable counter indexes
@@ -17,13 +17,8 @@ use std::time::Duration;
 
 pub use crate::metric_history_iter::MetricHistoryIter;
 pub use crate::metric_history_store::MetricHistoryStore;
+pub use crate::metric_name::MetricName;
 pub use crate::metric_snapshot::MetricSnapshot;
-
-/// Mechanical contract for enum-addressed metrics storage.
-pub trait MetricName: Copy {
-    /// Returns the fixed counter index for this metric.
-    fn index(self) -> usize;
-}
 
 /// One retained metric increment event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
