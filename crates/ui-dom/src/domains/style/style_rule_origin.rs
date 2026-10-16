@@ -27,3 +27,17 @@ impl StyleRuleOrigin {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_stores_key_and_priority() {
+        let origin = StyleRuleOrigin::new("theme", 3);
+        assert_eq!(origin.key, "theme");
+        assert_eq!(origin.priority, 3);
+
+        assert_eq!(StyleRuleOrigin::new("user", -1).priority, -1);
+    }
+}

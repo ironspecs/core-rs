@@ -39,3 +39,17 @@ impl Default for LayerConfig {
         Self::new(PixelDensity::X1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_config_reports_its_density() {
+        assert_eq!(
+            LayerConfig::new(PixelDensity::X4).pixel_density,
+            PixelDensity::X4,
+        );
+        assert_eq!(LayerConfig::default().pixel_density, PixelDensity::X1,);
+    }
+}

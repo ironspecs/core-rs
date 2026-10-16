@@ -102,3 +102,26 @@ impl MetricName for LayerPoolMetricName {
         LayerPoolMetricName::index(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metric_name_indices_are_unique_and_in_bounds() {
+        let mut seen_indices = [false; LayerPoolMetricName::COUNT];
+
+        for name in LAYER_POOL_METRIC_NAMES {
+            let index = name.index();
+            assert!(index < LayerPoolMetricName::COUNT);
+            assert_eq!(LAYER_POOL_METRIC_NAMES[index], name);
+            assert!(
+                !seen_indices[index],
+                "metric index should be assigned to exactly one metric"
+            );
+            seen_indices[index] = true;
+        }
+
+        assert!(seen_indices.into_iter().all(|seen| seen));
+    }
+}

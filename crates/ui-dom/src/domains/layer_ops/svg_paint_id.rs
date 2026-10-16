@@ -25,3 +25,18 @@ impl SvgPaintId {
         Self(stable_placeholder_id(icon_name))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_name_is_stable_and_name_sensitive() {
+        assert_eq!(SvgPaintId::from_name("menu"), SvgPaintId::from_name("menu"));
+        assert_ne!(
+            SvgPaintId::from_name("menu"),
+            SvgPaintId::from_name("settings"),
+        );
+        assert_ne!(SvgPaintId::from_name("a"), SvgPaintId::from_name("b"));
+    }
+}

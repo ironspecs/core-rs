@@ -29,3 +29,18 @@ impl LayerRect {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_tuple_maps_fields_in_order() {
+        let rect = LayerRect::from_tuple((1.0, 2.0, 30.0, 40.0));
+        assert_eq!(rect.origin_x, 1.0);
+        assert_eq!(rect.origin_y, 2.0);
+        assert_eq!(rect.width, 30.0);
+        assert_eq!(rect.height, 40.0);
+    }
+}
