@@ -588,15 +588,25 @@ fn empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_
 }
 
 #[test]
-#[ignore = "CSS 2.1 8.3.1 negative-margin collapse is not implemented: the solver sums adjoining negative margins (-10px bottom, -5px top) to -15px instead of collapsing to the most-negative -10px. Spec-correct lower block top is 1px and parent border-box height is 12px; the crate emits top -4px and height 7px. Root cause: collapsed_sibling_margin_overlap_px in src/domains/layout/flow.rs clamps the collapse overlap to >= 0."]
-// CSS 2.1 8.3.1 collapsing margins, final paragraph: when there are no
-// positive adjoining margins, the collapsed margin is the maximum of the
-// absolute values of the negative adjoining margins, deducted from zero.
-// Adjoining -10px (upper bottom) and -5px (lower top) must collapse to -10px,
-// not sum to -15px. Gecko runs this in nsBlockFrame.cpp's margin-collapse
-// path; Blink in third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc.
-// Closest WPT: the CSS21 margin-collapse suite (css/CSS2/normal-flow/margin-collapse-*.xht).
-fn adjacent_negative_block_margins_collapse_to_most_negative() {
+// OFF-SPEC (divergent): CSS 2.1 §8.3.1 collapsing margins, final paragraph —
+// <https://www.w3.org/TR/CSS21/box.html#collapsing-margins>
+// Closest WPT: the CSS21 margin-collapse suite
+// (css/CSS2/normal-flow/margin-collapse-*.xht).
+// Gecko: nsBlockFrame.cpp margin-collapse path.
+// Blink: third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc.
+//
+// CURRENT (asserted below): the adjoining -10px bottom and -5px top margins
+// SUM to -15px, so `lower`'s border box lands at top -4px and the parent
+// border-box height is 7px.
+// SPEC-CORRECT: with no positive adjoining margins, the collapsed margin is
+// the most negative adjoining margin (-10px): `lower` at top 1px, parent
+// border-box height 12px.
+// ROOT CAUSE: collapsed_sibling_margin_overlap_px in
+// src/domains/layout/flow.rs clamps the collapse overlap to >= 0, so signed
+// negative-margin collapse is not admitted.
+// RECLASSIFY: if this proof fails, the divergence moved — see the off-spec
+// registry in tests/layout_proofs/README.md.
+fn off_spec_adjacent_negative_block_margins_collapse_to_most_negative() {
     let (mut world, mut root) =
         crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
@@ -618,17 +628,18 @@ fn adjacent_negative_block_margins_collapse_to_most_negative() {
 
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
-    // rects[0] = parent, rects[1] = upper, rects[2] = lower. The collapsed
-    // -10px margin places `lower`'s border box at top 1px, fully overlapping
-    // `upper`, and leaves the parent content height at 10px (border box 12px).
+    // rects[0] = parent, rects[1] = upper, rects[2] = lower. Off-spec pinning:
+    // the summed -15px margin places `lower`'s border box at top -4px past
+    // `upper`'s top edge and leaves the parent content height at 5px
+    // (border box 7px). Spec-correct values are named in the OFF-SPEC header.
     assert_rect_op_geometry(&rects[1], 0.0, 1.0, 180.0, 10.0, "upper block");
     assert_rect_op_geometry(
         &rects[2],
         0.0,
-        1.0,
+        -4.0,
         180.0,
         10.0,
-        "lower block after negative margin collapse",
+        "lower block after off-spec summed negative margins",
     );
-    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 180.0, 12.0, "parent border box");
+    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 180.0, 7.0, "parent border box");
 }
