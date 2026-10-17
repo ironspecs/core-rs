@@ -1,0 +1,72 @@
+# Forgejo Actions — PR quality gate for core-rs.
+#
+# Runner-owned: LXC from the baked bookworm-act image; docker comes from the
+# bake. No secrets: this repo's gate is fully self-contained (workspace crates
+# and vendored assets are in-tree; no sibling checkouts).
+#
+# Gate stages mirror the local contract in AGENTS.md and the Justfile:
+#   fmt --check · clippy -D warnings · test --workspace · xtask lint · build
+name: gate
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  BUILDKIT_PROGRESS: plain
+
+jobs:
+  gate:
+    name: gate
+    runs-on: bookworm
+    steps:
+      - name: Environment
+        run: |
+          set -euo pipefail
+          systemctl start docker
+          echo "date_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "uname: $(uname -a)"
+          echo "docker_client: $(docker version --format '{{.Client.Version}}')"
+          echo "docker_server: $(docker version --format '{{.Server.Version}}')"
+          echo "cache_df: $(df -h /cache 2>/dev/null | tail -1 || echo 'no /cache mount')"
+
+      # PR head SHA (not a synthetic merge commit) — FF-only identity.
+      - name: Checkout
+        uses: https://forgejo.softwarepatterns.com/actions/checkout@v7
+        with:
+          path: ironspecs/core-rs
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Builder image
+        working-directory: ironspecs/core-rs
+        run: |
+          set -euo pipefail
+          # shellcheck source=docker/versions.env
+          source docker/versions.env
+          DOCKER_BUILDKIT=1 docker build \
+            -f docker/builder/Dockerfile \
+            --build-arg "SCCACHE_VERSION=${SCCACHE_VERSION}" \
+            -t core-rs-builder:latest \
+            docker/builder
+
+      - name: Quality gate
+        working-directory: ironspecs/core-rs
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${PWD}:/app" \
+            -v /cache/core-rs-sccache:/cache/sccache \
+            -v /cache/core-rs-cargo:/cache/cargo \
+            core-rs-builder:latest \
+            bash -c 'set -euo pipefail
+              echo "gate: fmt --check"
+              cargo fmt --all --check
+              echo "gate: clippy (-D warnings)"
+              cargo clippy --workspace --all-targets --all-features -- -D warnings
+              echo "gate: test --workspace"
+              cargo test --workspace
+              echo "gate: xtask lint"
+              cargo xtask lint
+              echo "gate: build --workspace"
+              cargo build --workspace
+            '
