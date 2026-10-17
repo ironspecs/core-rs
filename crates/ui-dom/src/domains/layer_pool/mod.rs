@@ -2255,6 +2255,10 @@ mod tests {
     fn render_buffer_keeps_rtmp_server_single_line_at_intrinsic_width() {
         let (text_run, run_record) = text_run_at_intrinsic_width("RTMP Server");
         let mut font_system = text_render::create_text_run_font_system();
+        text_layout::install_text_font_catalog(
+            &mut font_system,
+            text_layout::TextFontCatalog::repo_default(),
+        );
         let cached_buffer =
             text_render::build_text_buffer(&mut font_system, &run_record, &text_run);
 
@@ -2265,6 +2269,10 @@ mod tests {
     fn render_buffer_keeps_session_state_single_line_at_intrinsic_width() {
         let (text_run, run_record) = text_run_at_intrinsic_width("Session State");
         let mut font_system = text_render::create_text_run_font_system();
+        text_layout::install_text_font_catalog(
+            &mut font_system,
+            text_layout::TextFontCatalog::repo_default(),
+        );
         let cached_buffer =
             text_render::build_text_buffer(&mut font_system, &run_record, &text_run);
 
