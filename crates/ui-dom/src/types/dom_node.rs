@@ -1878,10 +1878,12 @@ mod tests {
         let mut node = DomNode::text(test_owner_document_key(), "hello".into());
         node.after_create_intrinsic_update()
             .expect("text create intrinsic should measure");
-        match node.intrinsic() {
-            DomIntrinsic::Text(_) => {}
-            other => panic!("text should keep text intrinsic after create, got {other:?}"),
-        }
+        let DomIntrinsic::Text(_) = node.intrinsic() else {
+            panic!(
+                "text should keep text intrinsic after create, got {:?}",
+                node.intrinsic()
+            )
+        };
 
         let intrinsic_changed = node.after_style_recompute_intrinsic_update(
             20.0,
@@ -1903,10 +1905,12 @@ mod tests {
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Input);
         node.after_create_intrinsic_update()
             .expect("input create intrinsic should measure");
-        match node.intrinsic() {
-            DomIntrinsic::ElementDefaultPreferredSize(_) => {}
-            other => panic!("input should start with preferred-size intrinsic, got {other:?}"),
-        }
+        let DomIntrinsic::ElementDefaultPreferredSize(_) = node.intrinsic() else {
+            panic!(
+                "input should start with preferred-size intrinsic, got {:?}",
+                node.intrinsic()
+            )
+        };
 
         let intrinsic_changed = node.after_style_recompute_intrinsic_update(
             20.0,
