@@ -157,6 +157,63 @@ targeted repaint or deletion (open question 11).
   but the pass walks everything under a dirty root even when one
   declaration changed.
 
+## Layer lifecycle boundaries: creation, destruction, and the preservation list (2026-10-17)
+
+**Scope rule:** the layer creation/destruction algorithms, the hit-test
+and scroll algorithms, and the popup behavior are *preserved*, not
+redesigned. The style system redesign touches this area at exactly one
+seam: **what triggers layer-membership re-evaluation when a style change
+flips a membership attribute.**
+
+**The membership vocabulary (today).** Five attributes carry layer
+consequences (`attribute_changes_layer_membership`): `display`,
+`overflow`, `transform`, `isolate`, `position`. `layer_kind_for_node`
+derives the node's layer kind from current attrs; the composite stage's
+lifecycle reconciliation creates or destroys Bevy-backed layers to match
+(layer-first scheduling, `composite/mod.rs`).
+
+**Current trigger mechanics (write-time).** Every attr write computes the
+previous and next layer kind inside `set_attr_internal`; a change marks
+the node and walks the consequences: the *previous* layer root's
+remainder is dirtied (`mark_previous_layer_dirty_when_membership_changes`),
+newly connected layer roots are queued
+(`queue_newly_connected_layer_roots_in_subtree`), and the next update's
+lifecycle reconciliation performs the actual create/destroy. Transitions
+receive the same treatment on the scheduler path (per-attribute
+membership checks for active transitions).
+
+**The redesign consequence (S1/A7).** In the new model, style-driven
+presentation writes no longer pass through per-attribute write-time
+detection: membership-relevant properties (`display`, `position`,
+`overflow`, `isolate`, `transform`) resolve into the computed groups
+during the style pass. The trigger therefore **migrates from the write
+path to the group-diff classification**: A7's static table gains a
+membership row — a box-group change (or transform-slot change) forces
+`layer_kind_for_node` re-evaluation, and a kind change feeds the same
+three consequences as today: previous-layer remainder dirtied, new-root
+queue, lifecycle reconciliation on the same update. Observable behavior
+is pinned unchanged: a style change that turns an element into a layer
+root presents the layer by the end of that update, and destroying one
+dirties the previous remainder identically.
+
+**Preservation list (do not redesign):**
+
+- **Lifecycle reconciliation** (`composite/mod.rs`): layer-first
+  creation/removal against the live Bevy layer hierarchy.
+- **Hit test and scroll:** `domains/hit_test.rs`, `domains/layer_hit.rs`,
+  `domains/visitor/event_target.rs` (point → topmost target), and
+  `domains/visitor/scroll.rs` + `apply_vertical_scroll_to_layer_root`
+  (scroll application, viewport/content-height math). Behavior preserved
+  verbatim.
+- **Popup behavior** for context menus (browser-unique clamp/placement
+  behavior): pinned by `popup_menus.rs` (fixed-row clamp math) and
+  `popup_text_rows.rs` (text-row popup layout: growth, shrink, absolute
+  positioning, wrapped rows).
+- **Acceptance surface:** `fixed_layers.rs`, `popup_menus.rs`,
+  `popup_text_rows.rs`, `transitions.rs` proofs, plus the hit/scroll
+  unit tests in the files above. Any redesign change that moves these is
+  a regression by definition.
+
 ## The spec and the Blink/Gecko approach
 
 The user's direction has direct spec backing; browsers solved exactly P1/P2
@@ -329,6 +386,11 @@ re-matching selectors when inputs are unchanged.
   implementation shape remains free (documented Rust/Bevy-justified
   mechanics are fine). This resolves open questions 2, 3, 4, 6, and 7: the
   observable answers are the spec's answers.
+- **D7 (2026-10-17).** Damage rects are **preserved**, and targeted
+  repaint is a goal, not a deletion candidate: the win is animation on
+  large surfaces where only a small region is animating. The rect-pass
+  unconditional-clear decision lands with the consumption design
+  (approach I).
 
 ## Vocabulary divisions (the "one bag" enumerated)
 
@@ -1083,9 +1145,9 @@ test.
    measures poorly.
 7. Inheritance channels: observable behavior is spec inheritance; channel
    unification is internal freedom (D6) — decide with the store design.
-8. Fate of public `apply_styles`: unused by any consumer and bypasses
-   D1–D3 — demote to `pub(crate)` in the redesign (no migration cost
-   observed).
+8. ~~Fate of public `apply_styles`~~ — DECIDED (2026-10-17): demote to
+   `pub(crate)` in the redesign. Unused by any consumer, bypasses D1–D3,
+   no migration cost observed.
 9. ~~Successor for `compute_style_map`~~ — reframed by the browser
    reality: `getComputedStyle` is a debug/inspection tool in Gecko and
    Blink. It performs real work on demand, is not cheap, and is not
@@ -1101,9 +1163,11 @@ test.
     intrinsic measurement, never the cascade. No presentational-hint
     tier is owed unless true presentational attributes are admitted
     later.
-11. Damage rects: consume for targeted repaint or delete (approach I) —
-    decided together with the rect-pass unconditional-clear item, the
-    largest known perf item in the crate.
+11. ~~Damage rects: consume or delete~~ — DECIDED (D7, 2026-10-17):
+    preserved, and targeted repaint is a goal (animation on large
+    surfaces with small animated regions). The remaining design work is
+    the consumption side (approach I) and the rect-pass
+    unconditional-clear decision that lands with it.
 
 ## Learnings log
 
@@ -1195,3 +1259,16 @@ test.
   Every redesigned step names its Blink/Gecko algorithm shape and its
   divergence justification. A11 shows the inline-precedence fix is
   algorithmic (re-fold from sources), not storage bookkeeping.
+- **2026-10-17 — `apply_styles` demotion agreed** (open question 8
+  closed): `pub(crate)` in the redesign, zero consumer migration cost.
+- **2026-10-17 — Damage rects preserved, targeted repaint is a goal
+  (D7).** The driver is animation on large surfaces with small animated
+  regions; deletion is off the table, and the rect-pass
+  unconditional-clear decision now has a consumption design attached to
+  it (approach I).
+- **2026-10-17 — The layer lifecycle has exactly one redesign seam.**
+  Creation/destruction algorithms, hit-test, scroll, and popup behavior
+  are preserved wholesale; the only thing that moves is the *trigger* —
+  membership re-evaluation migrates from per-attribute write-time
+  detection to the group-diff classification (A7 gains a membership row),
+  because style-driven writes no longer pass through the write path.
