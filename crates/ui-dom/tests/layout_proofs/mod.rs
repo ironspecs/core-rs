@@ -5,6 +5,7 @@
 //! close to one spec claim or one crate-owned layout invariant.
 
 mod block_inline;
+mod cascade;
 mod content_height;
 mod fixed_layers;
 mod flex_layout;

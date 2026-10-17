@@ -395,6 +395,32 @@ pub fn assert_rect_op_geometry(
     assert_close(rect.size_px[1], height_px, &format!("{label} height"));
 }
 
+/// Asserts one rect op's fill color via the file's `assert_close` tolerance.
+/// `expected_rgba` is the normalized `[red, green, blue, alpha]` channel set;
+/// the per-channel labels are derived from `label`.
+pub fn assert_rect_op_fill(rect: &RectPaintOp, expected_rgba: [f32; 4], label: &str) {
+    assert_close(
+        rect.fill_rgba[0],
+        expected_rgba[0],
+        &format!("{label} fill red"),
+    );
+    assert_close(
+        rect.fill_rgba[1],
+        expected_rgba[1],
+        &format!("{label} fill green"),
+    );
+    assert_close(
+        rect.fill_rgba[2],
+        expected_rgba[2],
+        &format!("{label} fill blue"),
+    );
+    assert_close(
+        rect.fill_rgba[3],
+        expected_rgba[3],
+        &format!("{label} fill alpha"),
+    );
+}
+
 fn install_direct_gpu_support(world: &mut World) {
     world.init_resource::<Assets<Image>>();
     world.insert_resource(LayerPool::new(LayerConfig::default()));
