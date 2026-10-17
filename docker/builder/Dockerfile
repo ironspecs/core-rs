@@ -14,7 +14,9 @@
 #   /cache/sccache   SCCACHE_DIR
 #   /cache/cargo     CARGO_HOME
 
-FROM rust:1.97.1-bookworm
+ARG RUST_VERSION=1.97.1
+
+FROM rust:${RUST_VERSION}-bookworm
 
 ARG SCCACHE_VERSION=v0.10.0
 

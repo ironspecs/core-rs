@@ -45,6 +45,7 @@ jobs:
           source docker/versions.env
           DOCKER_BUILDKIT=1 docker build \
             -f docker/builder/Dockerfile \
+            --build-arg "RUST_VERSION=${RUST_VERSION}" \
             --build-arg "SCCACHE_VERSION=${SCCACHE_VERSION}" \
             -t core-rs-builder:latest \
             docker/builder
