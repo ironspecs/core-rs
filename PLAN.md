@@ -5,6 +5,27 @@ and learnings, not decisions: nothing here is agreed unless marked **DECIDED**
 (and dated). Approaches stay listed with their trade-offs until one is chosen;
 the chosen one gets its own design pass before any implementation.
 
+**Reading map (2026-10-17, self-contained edition).** This document is
+written to be implementable by a reader with no conversation context:
+
+1. **Root problems** (P1–P3) — what is broken for consumers, with the
+   proofs that pin it.
+2. **Decided constraints** (D1–D8) — the settled ground rules.
+3. **Current architecture, verified** — background, invalidation
+   boundaries, and layer-lifecycle boundaries: how the system works today,
+   including its coarseness points (C1–C3) and preservation lists.
+4. **Spec conformance contract** — the exact observable semantics we are
+   bound to, and **engine data structures** — how Blink/Gecko/Servo
+   actually store style data (source-verified).
+5. **Vocabulary divisions** and the **presentation value table** — the
+   property registry, with conformance gaps flagged.
+6. **Proposals with adoption assessments** (A–J, S1) and the
+   **algorithms** (A0–A11) — what we would build, what it costs, and the
+   verdict shape for each.
+7. **The decision record** — the substrate choice and what was deferred.
+8. **Open questions** (deliberately open), the **implementation spine**,
+   and proof obligations.
+
 Historical note: comments in `domains/render_ops/`, `tests/render_ops_staging.rs`,
 `tests/perf_metric.rs`, and `tests/perf_allocation.rs` reference `PLAN.md §x.y`
 anchors. Those point to a previous planning document that no longer exists in
@@ -139,8 +160,18 @@ re-dirty layout/paint per their static class. Intrinsic remeasurement
 machinery is real and unit-tested (`paint/mark_dirty.rs`), but the paint
 stage repaints full layers and the rect pass unconditionally clears the
 whole surface per layer per apply — the largest known performance item in
-the crate, previously backlogged. Any invalidation redesign must decide
-targeted repaint or deletion (open question 11).
+the crate, previously backlogged. D7 settles the verdict: the machinery
+stays, targeted repaint is a goal (animation on large surfaces), and the
+consumption design is approach I.
+
+**Learning (2026-10-17): phantom dirties were real.** The removed
+`generation` counters on intrinsic state were not just dead weight: the
+preferred-size and icon construction paths compared them, so every style
+recompute manufactured layout/paint work for form controls and icon
+images. Equality-over-measured-fields fixed it, and no perf pin moved
+(the pinned scenarios did not cover those node kinds). Lesson carried
+into the redesign: change detection must always be over *measured
+content*, never over counters or versions.
 
 **Coarseness points the redesign should attack:**
 
@@ -391,6 +422,14 @@ re-matching selectors when inputs are unchanged.
   large surfaces where only a small region is animating. The rect-pass
   unconditional-clear decision lands with the consumption design
   (approach I).
+- **D8 (2026-10-17).** **Preserve all functionality.** Nothing clients
+  use is removed; where behavior is reinterpreted we bias toward
+  Gecko/Blink semantics. Load-bearing example: transition styling via
+  pseudo-state rules (`:hover`/`:active`/`:focus`) — a pseudo-state flip
+  restyles the element, the style pass applies transition longhands for
+  scheduling, the value change schedules the transition, and the
+  transition overlay presents intermediate values until completion.
+  That chain is preserved end-to-end.
 
 ## Vocabulary divisions (the "one bag" enumerated)
 
@@ -417,9 +456,10 @@ seams for any data-structure approach:
 
 ## Possible approaches for algorithm and data structures
 
-Not mutually exclusive; a coherent design likely composes one from each row.
-Each entry names its Blink/Gecko analog, what it fixes, its risks, and what
-it does to the off-spec registry.
+Not mutually exclusive; a coherent design composes one from each row.
+Each entry names its Blink/Gecko analog, what it fixes, its risks, what
+it does to the off-spec registry, and — dated 2026-10-17 — a **verdict**
+with the reasoning an adopter needs.
 
 ### A. Inline-style declaration store per element (css-style-attr analog)
 
@@ -447,6 +487,12 @@ attrs become a pure **computed projection** written only by the style pass.
   with crate-side validation (`set("width", "10px")`-class ergonomics),
   with typed builder sugar optional above it. It replaces `set_attr*` for
   presentation properties; content attributes keep `set_attr*`.
+- **Verdict (2026-10-17): ADOPT** — the centerpiece; D1–D3 require it and
+  its acceptance test already runs (off-spec, waiting to flip). Adopting
+  gives P1+P2's fix and the unload-restore behavior for free (A11). Costs:
+  the hard-break migration (D5, accepted) and the S1 substrate beneath it.
+  Without it: the redesign's main user-visible bug stays. Lands together
+  with B and C on S1.
 
 ### B. Typed value model at declaration time (Typed OM analog)
 
@@ -467,6 +513,13 @@ matching, storage, and consumers all carry typed values instead of strings.
   declaration-parse time inside the store, so the cascade and all
   consumers only ever see longhands. The shorthand divergence resolves as
   a by-product of adopting B, not as separate work.
+- **Verdict (2026-10-17): ADOPT** — but never alone: A's store is where
+  typed values live, so A and B land as one work item ("the declaration
+  store"). The value table (below) is its registry. Adopting gives the
+  end of re-parse-per-consumer and the shorthand fix by construction.
+  Costs: the largest surface area (every consumer touched) and strict
+  allocation discipline on the parse path. Without it: A would store
+  strings and the fold would re-parse per node — pointless.
 
 ### C. Split the attribute vocabulary by role
 
@@ -480,6 +533,12 @@ longhands — so "settable" and "presented" stop sharing one namespace.
   write (only presentation).
 - *Risks:* large mechanical migration across the public API; naming must be
   settled before implementation (see "Value-stage vocabulary").
+- **Verdict (2026-10-17): ADOPT** — a prerequisite, not a choice: B's
+  `PresentationProperty` enum *is* the split. Adopting gives a type system
+  in which the style pass can only write presentation and consumers can
+  only declare it — the "one bag" confusion ends structurally. Costs: the
+  mechanical migration (large but behavior-preserving; the proof suite is
+  the gate). Without it: B has no closed property vocabulary to type.
 
 ### D. Provenance-layered storage on the node
 
@@ -488,10 +547,12 @@ stylesheet-pass, inherited, behavior — instead of one flattened attr map, so
 removal of any layer restores the next.
 - *Analog:* Blink/Gecko's separation of declarations from computed style;
   Gecko's rule tree shares declaration blocks structurally.
-- *Fixes:* the delete-instead-of-restore half of P1 even without A; makes
-  `style_pass_attrs_by_node` ownership obsolete or explicit.
-- *Risks:* overlaps heavily with A — likely absorbed into A rather than
-  done alone; per-node memory shape must respect sparse styling.
+- **Verdict (2026-10-17): ABSORBED — do not adopt separately.** A11 made
+  the layering algorithmic: the pass re-folds winners from current
+  sources, so restore-not-delete falls out of the cascade itself and
+  `style_pass_attrs_by_node` dies by construction. What survives of D is
+  the *principle* (provenance is visible in the fold order), not a
+  storage layer.
 
 ### E. Sparse declaration storage shape
 
@@ -501,10 +562,11 @@ property vocabulary (pooled declaration blocks, small-map structures, or
 interned property ids).
 - *Analog:* Servo's shared `PropertyDeclarationBlock` storage; Blink's
   property-id-indexed sets.
-- *Fixes:* P3's sparse/growth inefficiency.
-- *Risks:* interning/pooling must not violate the zero-allocation doctrine
-  on the emission path; read-side ergonomics for consumers stay public-API
-  stable where possible.
+- **Verdict (2026-10-17): ABSORBED into S1.** The sparse answer is
+  S1's concrete shape: unstyled nodes carry `decl: None` and initial
+  groups; styled nodes carry a SmallVec block plus inline Copy groups.
+  The remaining judgment — arena crate and whether the group split earns
+  its keep — is measurement, pinned by counters (open question 6).
 
 ### F. Cascade tier growth path (how the absent features slot in)
 
@@ -516,6 +578,12 @@ rules, replacing ad-hoc behavior styling) → animation tier → cascade
 layers. The sorting structure should be designed now so these are additive
 (a wider precedence key), not a rework. Observable behavior at each stage
 is pinned first; internal mechanics stay free per D6.
+- **Verdict (2026-10-17): ADOPT THE STRUCTURE, DEFER THE STAGES.** The
+  precedence key is widened in the declaration-store design so importance,
+  a UA tier, an animation tier, and layers are additive later; no stage
+  ships until a consumer needs it (open question 5 stays open on
+  purpose). The first structural tenant is the behavior sheet, placed in
+  the fold below author rules and inline style.
 
 ### G. Declaration-drop parsing (spec error handling)
 
@@ -524,6 +592,12 @@ forward-compatible error handling: malformed declarations are dropped,
 parsing continues, and the drop is reported by metric, not silence.
 Replaces today's whole-sheet rejection. Registry: new `off_spec_*` pin of
 the current behavior first; reclassify on landing.
+- **Verdict (2026-10-17): ADOPT FIRST.** Small, spec-backed
+  (CSS 2.1 §4.1.7, css-style-attr §3), independent of every other
+  proposal, and the acceptance spine's opening move: pin the current
+  whole-sheet rejection as off-spec, then land drop-and-continue. Adopt
+  before the declaration store so the store is born with the correct
+  parse contract.
 
 ### H. Difference-computed dirty classification
 
@@ -533,16 +607,25 @@ time (Gecko change-hint / Blink style-difference shape): a change whose
 used effect is nil dirties nothing; a paint-class change never dirties
 layout. This is coarseness point C2's fix. Cheaper variant: keep static
 classes but add used-effect short-circuits at known hot properties.
+- **Verdict (2026-10-17): ADOPT — and it is already designed.** S1's
+  group-diff classification (A7) is H at group granularity: six `Copy`
+  compares map to layout/paint/font-descendant classes, with the
+  layer-membership row added (see the layer-lifecycle section). Adopting
+  costs nothing beyond S1; without it, C2 stands.
 
 ### I. Damage-rect consumption
 
-Decide the write-only damage machinery (previously backlogged): consume
-it for targeted repaint — the rect pass already stages ops, and its
-unconditional per-layer surface clear is the largest known perf item in
-the crate — or delete it. The style redesign determines the producer side
-(what damage a style change emits); the rect-pass clear decision lands
-with the consumer side. Gate: the perf pins in
-`perf_metric.rs`/`perf_allocation.rs`.
+D7 settled the verdict: the machinery is preserved and targeted repaint
+is a goal — animation on large surfaces with small animated regions is
+the driver. Remaining design work: the consumption side (the rect pass
+reads damage buckets and repaints only damaged regions) and the
+unconditional per-layer clear decision that lands with it (the largest
+known perf item in the crate). The style redesign determines the
+producer side (what damage a style change emits: A7's paint-class row).
+Gate: the perf pins in `perf_metric.rs`/`perf_allocation.rs`.
+- **Verdict (2026-10-17): ADOPT AS A STAGED GOAL.** It is not part of
+  the style-landing work item; it follows, consuming A7's damage output.
+  Deleting the machinery is off the table (D7).
 
 ### J. Scoped style propagation and matched-rule caching
 
@@ -553,6 +636,12 @@ rule sets per element (Blink matched-properties cache / Servo
 `rule_cache`) so re-matching is skipped when the rule store and element
 state are unchanged. Must respect the zero-allocation metrics doctrine,
 with metric counters pinned before and after.
+- **Verdict (2026-10-17): DEFER — evidence gate.** C1/C3 are real
+  coarseness points, but the dirty-bit doctrine plus subtree scoping may
+  already be adequate for real workloads, and caching adds an
+  invalidation surface that must be proof-gated. The deciding evidence:
+  style-pass counters (nodes visited vs. nodes changed) measured *after*
+  the declaration store lands. Do not build it speculatively.
 
 ## Value-stage vocabulary (proposed naming to settle)
 
@@ -585,53 +674,81 @@ This mapping is why D1–D3 are safe: the node-level store already *is* the
 computed stage. What is missing is the declaration stage for programmatic
 input and an explicit specified/defaulting stage.
 
-## Emerging candidate shapes (NOT decided — recorded for the design pass)
+## The decision record (2026-10-17)
 
-Correction, 2026-10-17: an earlier draft of this section proposed "a
-single declaration-block abstraction." The source research above rules
-that out: the engines run families of structures, and our candidates are
-families too, differing in how much of the engine shape we adopt.
+What the variant exploration settled, and what it deliberately left open.
 
-**Variant 1 — Servo-like:** ordered declaration vectors with parallel
-importance bits and arena-shared blocks (for both stylesheet rules and
-inline style); computed style split into inheritance-grouped structs
-interned and shared across nodes (substrate: proposal S1 — its COW
-substrate is superseded); difference-computed dirty hints (H). Maximal
-memory elegance and sharing; largest migration; most new machinery (id
-sets, intern discipline, rule cache).
+- **Substrate: proposal S1, adopted as the leading candidate.** Its
+  verdict shape is measurement: decl-arena and allocation counters pinned
+  before/after, with the flattened-attrs fallback (below) retained if the
+  group split measures poorly.
+- **Variant 1 (Servo-like):** its essence — inheritance-grouped computed
+  structs — is adopted *inside* S1, without COW. Its excesses (interning
+  arenas, id-set machinery, rule cache) are dropped or deferred.
+- **Variant 2 (Blink-like):** its distinct piece — matched-rule caching —
+  is deferred per proposal J's evidence gate. Everything else of value in
+  V2 is S1.
+- **Variant 3 (minimal evolution):** retained as the fallback branch. If
+  S1's counters reject the group split, V3 is the landing shape: the
+  inline declaration store (A+B) still lands, but the flattened attr map
+  stays as the computed store and H/J/I are re-scoped to it.
+- **Left open on purpose:** open question 5 (tier admissions — staged by
+  consumer need) and open question 6 (sparse-storage final call —
+  decided by counters). See the open-questions preamble.
 
-**Variant 2 — Blink-like:** typed parsed declarations in per-source
-stores; a computed store partitioned by inheritance with per-feature
-groups; matched-rule caching against a dirty-scoped element set (J);
-damage-aware paint propagation (I). Strong recompute economics; mid
-migration; caching adds invalidation surface we must proof-gate.
+## Implementation spine
 
-**Variant 3 — Minimal evolution (closest to today):** keep the flattened
-per-node attr map as the computed store; add the inline declaration store
-beside the existing rule store, both with typed values (B); keep static
-per-attribute dirty classes but scope style propagation (J) and consume
-damage rects (I). Smallest break from the codebase; leaves memory/sharing
-wins on the table; the attr vocabulary split (C) is still required.
+The landing order, each step gated by the full suite (fmt, clippy,
+workspace tests, `cargo xtask lint`) plus the listed proof obligation:
 
-All three share the decided skeleton: declaration stores per source → one
-cascade pass (D2) → computed projection on the node, resolved only when
-dirty at the style stage (D3) → used projections derived per frame. The
-choice among them is about the computed store's physical shape and the
-invalidation economics, and it gates on open questions 6 and 11.
-
-The acceptance spine is unchanged: G's error-handling pin first, then
-A's inline-precedence acceptance test; every variant is judged against
-the same suite.
+1. **Registry honesty first.** Pin the declaration-error-handling
+   divergence (`off_spec_*`, G) and the font-family inheritance gap
+   (divergence candidate 3) as running proofs. No behavior change.
+2. **The declaration store (A+B+C on S1).** `PresentationProperty`
+   vocabulary split (C), typed `DeclValue` parsing with drop-and-continue
+   semantics (B+G, shorthand expansion at parse), the arena-backed
+   `DeclStore` for rule blocks and inline blocks, and the `style_mut`
+   API (D5). Gate: cascade families and stylesheet-lifecycle proofs
+   unchanged in outcome; new drop-count metric pinned; G's proof
+   relabels on-spec.
+3. **The computed projection.** Winners fold (A4), the six inline
+   groups (S1), defaulting/inheritance resolution (A5/A6), group-diff
+   classification with the layer-membership row (A7/H), `style_mut`
+   writes flowing through the one cascade timing (D2/D3). Gate: the
+   full suite unchanged; `off_spec_direct_attr_write...` relabels
+   on-spec (A's acceptance test); `style_pass_attrs_by_node` deleted
+   (A11); `apply_styles` demoted to `pub(crate)` (open question 8).
+4. **Measurement checkpoint.** Counters before/after: decl-arena live
+   blocks, style-pass nodes visited vs. changed, allocation pins. This
+   checkpoint decides open question 6 and whether proposal J ever
+   wakes up.
+5. **Staged followers, each its own work item:** damage-rect
+   consumption (I, per D7); matched-rule caching (J, only if step 4's
+   evidence demands it); tier admissions (F stages, per consumer need);
+   font-family inheritance fix (with the candidate-3 pin relabeling).
 
 ## Proposal S1 — arena-resident style storage with view accessors (2026-10-17)
 
-**Status: PROPOSED, not decided.** This section replaces the Arc/COW
-substrate implied by Variant 1. COW is old-Rust; this crate already runs
-better patterns — `SlotMap` arenas with generational keys (rules, nodes,
-layer slots), validated leases (the layer pool), and borrow-view
-discipline (`as_*` accessors that hand out views, never ownership or
-clones — the `Option::as_ref` / `as_slice` / `SlotMap::get` standard).
-S1 applies those patterns to the whole style-data family.
+**Status: PROPOSED, not decided.** The physical substrate for the
+redesign, built from patterns this crate already runs: arena stores with
+generational keys (rules, nodes, layer slots), validated leases (the
+layer pool), and borrow-view discipline (`as_*` accessors that hand out
+views, never ownership or clones — the `Option::as_ref` / `as_slice` /
+`SlotMap::get` standard). Two placement rules, each with its rationale:
+
+- **Declarations live in an arena.** Rule blocks and per-element inline
+  blocks are fetched only during the style pass, so indirection there
+  costs nothing on the visit. The arena crate is a category choice
+  (slab / generational-arena / slotmap-class), decided by measurement —
+  not a SlotMap default.
+- **Computed style travels with the node.** `DomNodeBase` already
+  inlines `box_model`, `intrinsic`, `layout`, `paint`, `style`, and
+  `transitions`, so a visitor holding the node has everything on one
+  fetch (visit locality). Computed groups follow the same rule: inline
+  in the node record, replacing the presentation half of today's
+  flattened attrs. An earlier draft of this proposal keyed computed
+  groups into a side arena; it was rejected because layout, paint, and
+  text passes would pay a second lookup per node per visit.
 
 ### S1.1 The structures (signatures, not final code)
 
@@ -661,9 +778,10 @@ rules and per-element inline style):
     // StyleRule holds DeclBlockKey instead of an embedded attr_map.
     // An element's inline style is its DeclBlockKey (None when never written).
 
-Computed side — inheritance-grouped, interned, immutable:
+Computed side — inheritance-grouped, typed, stored inline in the node
+record (beside `box_model`, `layout`, `paint` in `DomNodeBase`):
 
-    // Inherited groups (seed from parent keys during the pass):
+    // Inherited groups (seed from the parent's group during the pass):
     struct ComputedFontGroup  { size_px: f32, line_height_px: Option<f32>,
                                 family: TextKey, weight: u16, style: FontStyleKw }
     struct ComputedTextGroup  { align: TextAlignKw, direction: DirectionKw,
@@ -681,27 +799,14 @@ Computed side — inheritance-grouped, interned, immutable:
                                 caret_color, opacity }
     // Every field typed; lengths resolved to px at style time where the
     // grammar allows (em resolves against the element's own font size —
-    // computable without layout). Nearly all groups are plain Copy.
+    // computable without layout). All groups are small plain Copy structs:
+    // shared by value, compared by value, no refcounting or COW anywhere.
 
-    struct ComputedGroups { font: GroupKey, text: GroupKey, color: GroupKey,
-                            box_: GroupKey, flex: GroupKey, visual: GroupKey }
-    // 6 × 8-byte generational keys = 48 bytes per element node, replacing
-    // the presentation half of the flattened attr map.
-
-    struct ComputedStyleStore {
-        fonts:   InternArena<ComputedFontGroup>,
-        texts:   InternArena<ComputedTextGroup>,
-        colors:  InternArena<ComputedColorGroup>,
-        boxes:   InternArena<ComputedBoxGroup>,
-        flexes:  InternArena<ComputedFlexGroup>,
-        visuals: InternArena<ComputedVisualGroup>,
+    // The node's presentation state becomes:
+    struct NodePresentation {
+        decl: Option<DeclBlockKey>,   // inline style block, arena-resident
+        computed: ComputedGroups,     // the six groups, inline by value
     }
-    // InternArena = SlotMap<K, T> + hash→keys intern table. Groups are
-    // immutable once interned: mutation is intern-new-and-rekey on the node.
-    //
-    // (Storage location REVISED in S1.5: these groups live inline in the
-    // node record; the interning arenas are dropped. Group definitions
-    // stand; only placement changed.)
 
 Text-valued properties (`font-family`, `transform`) intern their strings
 in a small string arena (`TextKey`), or stay stringly node attrs until
@@ -741,37 +846,36 @@ Computed reads (the `as_*` standard: borrows, no ownership, no clones):
 
 The style pass per dirty element (D2/D3 mechanics, visitor doctrine):
 
-    1. seed inherited keys from parent (ancestor seed at layer roots — unchanged)
+    1. seed inherited groups from the parent's groups (ancestor seed at
+       layer roots — unchanged mechanics)
     2. fold declarations into a stack-local fixed array:
          winners: [Option<(DeclValue, Precedence)>; PRESENTATION_PROPERTY_COUNT]
        source order: behavior sheet (UA-ish tier) → matched rules sorted by
        (origin.priority, specificity, order) → inline block (top specificity)
     3. resolve the six groups from winners + inherited seeds
-    4. intern each group → the node's new group keys
-    5. diff old vs new keys (six u64 compares) → classify dirties:
+    4. diff old vs new groups (six memcmp-cheap Copy compares) → classify:
          box_/flex changed  → mark layout+paint
          visual/color       → mark paint only (damage rect)
          font/text          → mark layout+paint, remeasure text intrinsics,
                                and mark children style-dirty (inherited seeds moved)
-    6. clear the style bit
+    5. clear the style bit
 
 ### S1.3 Flow diagrams
 
 Storage topology:
 
-    DeclStore (SlotMap)                ComputedStyleStore (interned arenas)
-    ┌───────────────┐                  ┌──────────────────────────────┐
-    │ K1: rule blk  │◄─── StyleRule    │ fonts   F7  {14.0, 18.0, …}  │
-    │ K2: rule blk  │     {decl: K1}   │ texts   T3  {start, ltr, …}  │
-    │ K3: row blk   │◄─── node inline  │ colors  C9  {#f7f9ff…}       │
-    └───────▲───────┘                  │ boxes   B2  {flex, 180×…}    │
-            │                          │ flexes  X1  {row, grow 1, …} │
-    node: { decl: K3,                  │ visuals V5  {bg #2A313D, …}  │
-            computed: {F42,T3,C9,      └───────▲──────────────────────┘
-                       B2,X1,V5} }             │ interned by content hash
-                                               │
+    DeclStore arena (style pass only)     DomNode record (one fetch per visit)
+    ┌───────────────┐                     ┌────────────────────────────────────┐
+    │ K1: rule blk  │◄─── StyleRule       │ base: style, layout, paint,        │
+    │ K2: rule blk  │     { decl: K1 }    │       box_model, intrinsic,        │
+    │ K3: row blk   │◄─── node decl key   │       transitions, links           │
+    └───────────────┘                     │ computed: font, text, color,       │
+                                          │           box_, flex, visual       │
+                                          │   (inline Copy structs, typed)     │
+                                          └────────────────────────────────────┘
+
     read: root.computed_style(node).as_visual().background_rgba
-          → &[f32; 4]  (borrow; no clone, no ownership)
+          → &[f32; 4]  (borrow into the node; zero indirection)
 
 Write → invalidation flow (the P2 timing fix):
 
@@ -783,127 +887,73 @@ Write → invalidation flow (the P2 timing fix):
         ▼  mark style-dirty: row → … → layer root   (ONE bit per node)
         │  (layout/paint NOT marked here — the pass classifies)
         ▼
-    next update → style pass: winners fold → resolve → intern → rekey row
+    next update → style pass: winners fold → resolve groups → write inline
         │
-        ▼  key diff: visual changed; box_/flex/font/text/color unchanged
+        ▼  group diff: visual changed; box_/flex/font/text/color unchanged
         ▼
     paint-only dirty + damage rect; layout never touched
 
 Inheritance flow (unifies the two current channels):
 
-    parent  { font: F7, text: T3, color: C9, … }
-        │   DFS carries parent's inherited keys
+    parent  { font, text, color, … }   (by value)
+        │   DFS carries the parent's inherited groups
         ▼
     child winners { font-size: 20px }
-        font  = intern(F7 with size_px = 20.0) → F42   (new group)
-        text  = T3          (key copy — no recompute, no clone)
-        color = C9          (key copy)
+        font  = parent.font with size_px = 20.0   (new value, copied)
+        text  = parent.text                        (Copy)
+        color = parent.color                       (Copy)
         ▼
-    grandchild, no declarations: font F42, text T3, color C9 (all key copies)
+    grandchild, no declarations: all three groups copied verbatim
 
 ### S1.4 Tradeoffs, made visible
 
-| axis | today (flattened attrs) | Arc+COW groups (rejected) | S1 arena + views |
+| axis | today (flattened attrs) | Arc+COW groups (rejected) | S1 (arena decls, inline computed) |
 |---|---|---|---|
-| node presentation storage | BTreeMap + heap strings | 6 Arc ptrs + refcount | 6 u64 keys, no atomics |
+| node presentation storage | BTreeMap + heap strings | 6 Arc ptrs + refcount | six inline Copy groups (styled nodes only) |
 | inline write cost | normalize, map insert, static dirty class | COW clone-on-write | block upsert + one style bit |
-| read path | `presented_attr(...).cloned()` | Arc deref | borrow view, zero clones |
-| recompute diff | per-attr compare in `set_attr_internal` | deep group equality | six key compares |
-| inheritance | materialize strings into child attrs + context carry | Arc clone per group | key copy per group |
-| N identical rows | N full maps | N ptrs + 1 shared group | N keys + 1 interned group |
-| shared-data mutation | n/a | AtomicBool COW dance | forbidden (interned immutable) |
-| reclamation | node drop frees map | refcount | ~~append-only arenas; epoch/trim policy~~ superseded in S1.5 (no computed arena) |
-| stale access | n/a | Arc keeps alive | generational key rejects |
+| read path | `presented_attr(...).cloned()` | Arc deref | borrow into the node, zero clones |
+| recompute diff | per-attr compare in `set_attr_internal` | deep group equality | six memcmp-cheap Copy compares |
+| inheritance | materialize strings into child attrs + context carry | Arc clone per group | value-copy of small groups |
+| N identical rows | N full maps | N ptrs + 1 shared group | N compact inline copies (sharing sacrificed for visit locality) |
+| shared-data mutation | n/a | AtomicBool COW dance | none exists (groups are values) |
+| reclamation | node drop frees map | refcount | node drop frees its groups; decl blocks die with their owner |
+| stale access | n/a | Arc keeps alive | generational keys on the declaration side |
 
 Costs S1 must answer for, honestly:
 
-- **Interning overhead:** hash + lookup per group per recomputed node. The
-  bet: themed UIs share groups heavily (rows of identical items), so hits
-  dominate. Verdict comes from counters (intern hit/miss, live groups per
-  arena — enum-indexed, zero-alloc), pinned before and after.
-- **Whole-group granularity:** a one-property font change interns a new
-  font group. Groups are small `Copy` structs; acceptable, but it means
-  group boundaries are a real design decision (they are the dirty
-  classification classes — H becomes "which keys moved").
-- **Append-only arenas:** distinct-style growth is bounded by the product
-  of themes × states, small for retained UIs, but an epoch/trim policy is
-  owed (candidate: trim on stylesheet unload epochs; decide at design).
+- **Sharing sacrificed for visit locality:** identical computed groups
+  are not shared across nodes. The bet: compact typed `Copy` groups (no
+  BTreeMap nodes, no heap strings) keep per-node cost low enough that
+  sharing is unnecessary for real workloads. Verdict from the
+  intrinsic-memory and allocation pins, before and after.
+- **Whole-group granularity:** group boundaries are a real design
+  decision — they are the dirty classification classes (H becomes
+  "which groups moved"). A one-property font change copies the font
+  group; groups are small, so this is acceptable.
 - **Snapshot contract:** canonical snapshots serialize *resolved
-  projections*, never keys (session-local). Another v0.6.0-class contract
-  note.
+  projections*, never arena keys (session-local). Another v0.6.0-class
+  contract note.
 - **Transition overlay merge:** `as_box()`/`as_visual()` merge the
   per-node transition overlay at view level; the merge mechanics are a
   design detail, not settled here.
+- **Declaration arena crate choice:** slab / generational-arena /
+  slotmap-class — chosen by measurement (allocation counts, lookup
+  cost), with the existing SlotMap rule store as the baseline to beat.
 
-Effect on the variants: S1 is the physical substrate for V1 and V2 (V1's
-"COW sharing" is superseded — the remaining V1 essence is inheritance-
-grouped interned structs; V2 adds matched-rule caching (J) on the same
-substrate). V3 (flattened attrs stay) remains the fallback if interning
-measures poorly. The variant choice collapses to: computed-store
-granularity and caching policy, on one shared substrate.
+Effect on the variants: S1 settles the substrate question — V1's essence
+(inheritance-grouped structs) is adopted without its COW; V2's
+matched-rule caching (J) is an orthogonal later optimization on the same
+substrate; V3 (flattened attrs stay) is the fallback branch if
+measurements reject the group split. The remaining open axis is caching
+policy only.
 
-Proof obligations if S1 is adopted: the full 249-proof suite unchanged in
-observable outcome; new zero-alloc counters (intern hit/miss, live groups,
-style-pass nodes visited) pinned alongside the existing perf pins; the
-cascade families unchanged (observable cascade semantics are identical);
+Proof obligations if S1 is adopted: the full proof suite unchanged in
+observable outcome; new zero-alloc counters (decl-arena live blocks,
+style-pass nodes visited, per-class dirty classifications) pinned
+alongside the existing perf pins; the cascade families unchanged
+(observable cascade semantics are identical);
 `off_spec_direct_attr_write...` relabels on-spec when A lands on this
 substrate.
-
-### S1.5 Revision (2026-10-17, second pass): computed groups travel with the node
-
-**Why the revision:** the visit-locality doctrine, re-read in the code.
-`DomNodeBase` carries `box_model`, `intrinsic`, `layout`, `paint`,
-`style`, and `transitions` *inline in the node record*, so a visitor that
-fetched the node has everything at hand on one fetch — layout, paint,
-and text passes never chase a second pointer. S1's original computed
-side (six keys into a separate interned arena) forces exactly that
-second fetch per node per visit. Rejected.
-
-**Revised placement:** the six computed groups store *inline in the node
-record*, beside the existing bundles (they replace the presentation half
-of today's flattened attrs). The arena survives only on the
-**declaration side** — rule blocks and inline blocks are fetched only
-during the style pass, so indirection there costs nothing on the visit.
-The arena crate is a category choice (slab / generational-arena /
-slotmap-class), decided by measurement, not a SlotMap default.
-
-**Consequences, honestly re-tabulated:**
-
-- Cross-node *sharing* of computed groups is sacrificed. Memory behavior
-  comes from **compactness** instead: typed `Copy` groups (no BTreeMap
-  nodes, no heap strings) — a full computed set lands in the low
-  hundreds of bytes per styled node; unstyled nodes carry only
-  initial-value groups.
-- Inheritance propagates by **value-copy** of the small inherited groups
-  down the DFS (same flow as S1.3's diagram, minus the arena). Group
-  equality replaces key equality for the dirty classification: six
-  memcmp-cheap `Copy` compares per recomputed node. Approach H survives.
-- The append-only/epoch problem **disappears** — no computed arena to
-  trim.
-- `as_*` views now borrow *into the node* — the cheapest possible read,
-  fully doctrine-compliant.
-
-Revised topology:
-
-    DeclStore arena (style pass only)     DomNode record (one fetch per visit)
-    ┌───────────────┐                     ┌────────────────────────────────────┐
-    │ K1: rule blk  │◄─── StyleRule       │ base: style, layout, paint,        │
-    │ K2: rule blk  │     { decl: K1 }    │       box_model, intrinsic,        │
-    │ K3: row blk   │◄─── node inline     │       transitions, links           │
-    └───────────────┘                     │ computed: font, text, color,       │
-                                          │           box_, flex, visual       │
-                                          │   (inline Copy structs, typed)     │
-                                          └────────────────────────────────────┘
-
-    read: root.computed_style(node).as_visual().background_rgba
-          → &[f32; 4]  (borrow into the node; zero indirection)
-
-**What did not change:** the declaration-side arena and typed `DeclValue`;
-the winners fold; dirty classification by group difference; the
-write→invalidation and cascade flows; the variant collapse (granularity
-and caching policy remain the open axes). The "N identical rows" row of
-S1.4's table now reads: N compact inline copies — still far below N
-BTreeMaps with heap strings.
 
 ## The presentation value table (approach B, enumerated from source 2026-10-17)
 
@@ -1085,7 +1135,7 @@ walk parents to the layout root pushing the rect into each bucket
 already-full ancestor. Analog: none claimed — browsers invalidate visual
 rects through compositing structures we do not have. Documented
 mechanics divergence, justified by the retained-layer/Bevy world;
-consumption decision is open question 11.
+consumption design is approach I (verdict: staged goal, per D7).
 
 ### A10 — Inline block upsert (Servo `prepare_for_update` shape)
 
@@ -1123,6 +1173,12 @@ test.
 | A9 damage | O(depth) per dirty node | paint counters |
 
 ## Open questions
+
+Questions 5 and 6 remain open **deliberately**: answering them now would
+box the design into solutions without evidence (D8 biases us to
+preserving functionality, not to guessing). Question 5 is staged
+admission driven by actual consumer need; question 6 is decided by S1's
+counters after the substrate lands. Everything else is resolved.
 
 1. ~~Migration contract~~ — DECIDED (D5): hard break, string ergonomics
    preserved.
@@ -1168,107 +1224,3 @@ test.
     surfaces with small animated regions). The remaining design work is
     the consumption side (approach I) and the rect-pass
     unconditional-clear decision that lands with it.
-
-## Learnings log
-
-- **2026-10-17 — Phantom dirties were real.** The removed `generation`
-  counters weren't just dead weight: the preferred-size and icon paths
-  compared them, so every style recompute manufactured layout/paint work for
-  form controls and icon images. Equality-over-measured-fields fixed it; no
-  perf pins moved (the pinned scenarios didn't cover those node kinds).
-- **2026-10-17 — Two divergences pinned, now the redesign's acceptance
-  tests.** Timing-dependent direct-write precedence (P1) and shorthand
-  coexistence (P3's shorthand face) are running `off_spec_*` proofs; any
-  chosen approach must relabel them, and the suite will catch accidental
-  movement.
-- **2026-10-17 — Browsers confirm the user's direction.** Programmatic
-  styling in Blink/Gecko is a declaration store plus a dirty bit resolved in
-  the same rendering update as stylesheets (D1–D3 are the spec shape, not an
-  invention).
-- **2026-10-17 — Two-channel inheritance is pinned architecture,** not a
-  bug: four properties materialize into descendant attrs, four are
-  context-carried into text intrinsics. Unify or formalize (open question 7).
-- **2026-10-17 — The transition overlay is already spec-ordered.**
-  `presented_attr` consults active transitions before stored attrs, which is
-  observably the §6.1 tier-1 position. Not every divergence candidate is
-  real; verify the observable before designing mechanics.
-- **2026-10-17 — New divergence discovered: declaration error handling.**
-  Browsers drop malformed declarations and continue (CSS 2.1 §4.1.7,
-  css-style-attr §3); we reject the entire stylesheet on the first bad
-  declaration. Users would report this as a bug per D6. Registry candidate;
-  pin before parser redesign (approach G).
-- **2026-10-17 — Consumer evidence for D5.** `stream-pro2` themes via 100+
-  direct presentation writes (constants and raw strings mixed), and uses
-  `compute_style_map` as a measurement probe; `apply_styles` has zero
-  external callers. The migration cost concentrates in `set_attr_str`
-  presentation writes.
-- **2026-10-17 — Shorthand expansion has exactly one honest home.**
-  Cascade §3 ("as if expanded in place") puts expansion at declaration
-  time; any design that expands later duplicates the point. This collapses
-  approach B's shorthand work into the declaration store itself.
-- **2026-10-17 — The engines run families, not shapes.** Servo's
-  declaration block is an ordered `ThinVec` + importance bit-vector +
-  property-id set + COW atomic; Blink's computed style is a generated
-  base plus per-feature group structs; Gecko shares per-topic structs via
-  the rule tree. The durable principles: declaration order matters,
-  membership checks are separate from storage, sharing is copy-on-write,
-  change detection lives at the declaration level, and dirtiness is
-  classified from the actual difference.
-- **2026-10-17 — Our invalidation is value-diff driven but statically
-  classified.** `set_attr_internal`'s same-value short-circuit filters
-  no-op writes; the *class* of dirtiness is a compile-time property of
-  the attribute. The engine moves we lack: classify from the used-effect
-  difference (C2/H), scope the recompute set (C1/C3/J), and consume
-  damage rects (I).
-- **2026-10-17 — Damage rects are a tested producer with no consumer.**
-  The bounded-8-rect propagation to layout roots works and is unit
-  tested; nothing repaints from it, and the rect pass clears the whole
-  surface per layer per apply regardless. Producer exists; the consumer
-  decision is open question 11.
-- **2026-10-17 — COW is superseded before it was ever adopted.** The
-  crate already runs the better patterns: SlotMap arenas with
-  generational keys, validated leases, and `as_*` borrow-view discipline.
-  Proposal S1 applies them to the style-data family and turns the
-  style-difference problem into six key compares per node — the cheap
-  version of the engines' change-hint classification. The honest new
-  costs it introduces: interning overhead (counter-measured), whole-group
-  granularity (group boundaries = dirty classes), and an owed epoch/trim
-  policy for append-only arenas.
-- **2026-10-17 — Debug queries inherit browser pricing.**
-  `getComputedStyle` does on-demand work in Gecko and Blink and is not
-  cheap; it is a debug tool, not an internals read. Our successor query
-  is likewise an on-demand recalc, which frees the computed store from
-  serving debug traffic.
-- **2026-10-17 — Visit locality corrected S1 (see S1.5).**
-  `DomNodeBase` inlines style/layout/paint/box_model/intrinsic/
-  transitions so visitors have everything on one fetch; a side arena for
-  computed groups would add a second fetch per node per visit. Computed
-  groups moved inline; the arena survives for declarations only, its
-  crate a category choice by measurement; the epoch/trim problem
-  evaporated with the computed arena.
-- **2026-10-17 — "img hints" are the intrinsic system,** with its own
-  loading lifecycles (create → attr-write preview → style-recompute
-  commit). Sizing hints feed intrinsic measurement; they never enter
-  the cascade. Open question 10 closed.
-- **2026-10-17 — Two more conformance gaps surfaced by the value
-  table:** `font-family`/`font-weight`/`font-style` inherit in CSS but
-  are absent from the closed transmitting set (divergence candidate 3),
-  and the `transition` shorthand is rejected in stylesheet declarations
-  (quirk; browsers accept it). Both recorded with the table.
-- **2026-10-17 — Algorithms are now first-class in this document.**
-  Every redesigned step names its Blink/Gecko algorithm shape and its
-  divergence justification. A11 shows the inline-precedence fix is
-  algorithmic (re-fold from sources), not storage bookkeeping.
-- **2026-10-17 — `apply_styles` demotion agreed** (open question 8
-  closed): `pub(crate)` in the redesign, zero consumer migration cost.
-- **2026-10-17 — Damage rects preserved, targeted repaint is a goal
-  (D7).** The driver is animation on large surfaces with small animated
-  regions; deletion is off the table, and the rect-pass
-  unconditional-clear decision now has a consumption design attached to
-  it (approach I).
-- **2026-10-17 — The layer lifecycle has exactly one redesign seam.**
-  Creation/destruction algorithms, hit-test, scroll, and popup behavior
-  are preserved wholesale; the only thing that moves is the *trigger* —
-  membership re-evaluation migrates from per-attribute write-time
-  detection to the group-diff classification (A7 gains a membership row),
-  because style-driven writes no longer pass through the write path.
