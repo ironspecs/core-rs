@@ -1,10 +1,26 @@
 //! Allocation contract tests for the `ui-dom` retained pipeline.
 //!
-//! This target installs a counting global allocator and pins the exact
-//! allocator activity of one warmed update per scenario. It exists so that
-//! correctness fixes can prove zero added allocations: any change that adds
+//! This target installs a counting global allocator and pins the per-window
+//! allocation, deallocation, and reallocation counts of one warmed update
+//! per scenario. Counts are platform-stable, so a correctness fix that adds
 //! allocator traffic to a pinned window breaks the contract and must be
 //! justified in the test comment when the pin is updated.
+//!
+//! Leak detection comes from the pinned deallocation counts: a leaked
+//! allocation shows up as fewer deallocations than the pin, and free counts
+//! are platform-stable even where freed sizes differ (e.g. std `Mutex` is 40
+//! bytes under glibc vs 4 bytes under `os_unfair_lock`).
+//!
+//! Exact byte totals are informational-only: they are reported in failure
+//! messages, never pinned, because they are platform-fragile (std `Mutex`
+//! is 40 bytes under glibc vs 4 bytes under `os_unfair_lock`; dependency
+//! type sizes shift with feature flags). The C1 clone removal's −128 bytes
+//! was a one-time measurement recorded in commit `0f7a807`; its durable pin
+//! is the −1 allocation count.
+//!
+//! The measurement story is two layers: semantic work-site counters are
+//! pinned in `tests/perf_metric.rs` under the repo's `metrics()` pattern;
+//! raw allocator counts are pinned here.
 //!
 //! All windows live in one test so they run sequentially: `stats_alloc`
 //! counts process-wide allocator activity, so windows must not overlap with
@@ -32,10 +48,32 @@ fn pointer_at(x_px: f32, y_px: f32) -> DomPointerUpdate {
     })
 }
 
-fn assert_window_stats(label: &str, expected: Stats, actual: Stats) {
+/// The pinned, platform-stable facts of one update window: counts only.
+/// Byte totals are platform-dependent (std `Mutex` is 40 bytes under glibc
+/// vs 4 bytes under `os_unfair_lock`, dependency type sizes vary with
+/// feature flags) and are reported in failure messages, never pinned.
+#[derive(Clone, Copy, Debug)]
+struct WindowPin {
+    allocations: usize,
+    deallocations: usize,
+    reallocations: usize,
+}
+
+fn assert_window_stats(label: &str, expected: WindowPin, actual: Stats) {
     assert_eq!(
-        actual, expected,
-        "{label}: allocator activity drifted from the pinned baseline",
+        actual.allocations, expected.allocations,
+        "{label}: allocation count drifted from the pinned baseline (bytes: {} allocated / {} deallocated)",
+        actual.bytes_allocated, actual.bytes_deallocated,
+    );
+    assert_eq!(
+        actual.deallocations, expected.deallocations,
+        "{label}: deallocation count drifted from the pinned baseline (bytes: {} allocated / {} deallocated)",
+        actual.bytes_allocated, actual.bytes_deallocated,
+    );
+    assert_eq!(
+        actual.reallocations, expected.reallocations,
+        "{label}: reallocation count drifted from the pinned baseline (bytes: {} reallocated)",
+        actual.bytes_reallocated,
     );
 }
 
@@ -58,13 +96,10 @@ fn allocation_windows_match_baseline_after_warmup() {
     support::assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
     assert_window_stats(
         "steady-state update",
-        Stats {
+        WindowPin {
             allocations: 2,
             deallocations: 2,
             reallocations: 0,
-            bytes_allocated: 40,
-            bytes_deallocated: 40,
-            bytes_reallocated: 0,
         },
         region.change(),
     );
@@ -89,15 +124,14 @@ fn allocation_windows_match_baseline_after_warmup() {
     support::assert_root_dom_update(&mut world, &mut root, 0.048, pointer_at(10.0, 10.0));
     assert_window_stats(
         "hover-on update",
-        Stats {
+        WindowPin {
             // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
-            // −1 allocation, −128 bytes in this window.
+            // −1 allocation. The −128 bytes was a one-time macOS measurement
+            // recorded in commit 0f7a807; the durable pin is the −1
+            // allocation count.
             allocations: 59,
             deallocations: 59,
             reallocations: 0,
-            bytes_allocated: 5888,
-            bytes_deallocated: 5888,
-            bytes_reallocated: 0,
         },
         region.change(),
     );
@@ -134,15 +168,14 @@ fn allocation_windows_match_baseline_after_warmup() {
     support::assert_root_dom_update(&mut world, &mut root, 0.032, DomPointerUpdate::Unchanged);
     assert_window_stats(
         "append+update",
-        Stats {
+        WindowPin {
             // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
-            // −1 allocation, −128 bytes in this window.
+            // −1 allocation. The −128 bytes was a one-time macOS measurement
+            // recorded in commit 0f7a807; the durable pin is the −1
+            // allocation count.
             allocations: 68,
             deallocations: 66,
             reallocations: 2,
-            bytes_allocated: 14169,
-            bytes_deallocated: 8180,
-            bytes_reallocated: 5440,
         },
         region.change(),
     );
@@ -167,13 +200,10 @@ fn allocation_windows_match_baseline_after_warmup() {
     support::assert_root_dom_update(&mut world, &mut root, 0.032, DomPointerUpdate::Unchanged);
     assert_window_stats(
         "class-toggle update",
-        Stats {
+        WindowPin {
             allocations: 26,
             deallocations: 27,
             reallocations: 0,
-            bytes_allocated: 3661,
-            bytes_deallocated: 3672,
-            bytes_reallocated: 0,
         },
         region.change(),
     );
@@ -197,19 +227,17 @@ fn allocation_windows_match_baseline_after_warmup() {
     support::assert_root_dom_update(&mut world, &mut root, 0.032, DomPointerUpdate::Unchanged);
     assert_window_stats(
         "text-rewrap update",
-        Stats {
+        WindowPin {
             // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
             // −2 allocations, −2 deallocations. The plan owns one rect Vec and
-            // one text-run Vec; the −1 reallocation / −768 reallocated bytes is
-            // the allocator's second-order response to the removed allocations
-            // (a shaping buffer growth shifts from realloc-in-place to a fresh
-            // alloc), not a separate production change.
+            // one text-run Vec; the −1 reallocation is the allocator's
+            // second-order response to the removed allocations (a shaping
+            // buffer growth shifts from realloc-in-place to a fresh alloc), not
+            // a separate production change. (The −768 reallocated bytes was a
+            // one-time measurement and is not pinned.)
             allocations: 163,
             deallocations: 151,
             reallocations: 26,
-            bytes_allocated: 91632,
-            bytes_deallocated: 32621,
-            bytes_reallocated: 8736,
         },
         region.change(),
     );
