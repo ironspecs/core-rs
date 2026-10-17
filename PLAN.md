@@ -426,18 +426,29 @@ re-matching selectors when inputs are unchanged.
   customers/clients; the styling API may break, and users love
   string-based attribute setting over enums. Local scans (100+ direct
   presentation writes in `stream-pro2`) are illustrative, not the basis.
-  **Enforcement point (specified in review, 2026-10-17):** post-split,
-  `set_attr*` on a *presentation* property fails fast with a typed
-  `DomError` naming `style_mut` — loud at runtime, rule-honest, never a
-  silent route and never a panic (boundary data). Content attributes keep
-  `set_attr*` unchanged. Because callers are string-keyed, the compiler
-  cannot flag the ~100+ known call sites; the enforcement error plus the
-  migration artifact are the whole conversion story.
+  **Enforcement point (specified in review, 2026-10-17):** two paths with
+  different loudness. The typed `set_attr(DomAttribute::Width, ...)` loses
+  its presentation variants entirely at the split — a **compile break**,
+  which converts most known call sites at compile time (the good news).
+  Only the string-keyed `set_attr_str(key, "width", ...)` needs the
+  runtime contract: it fails fast with a typed `DomError` naming
+  `style_mut` — loud, rule-honest, never a silent route and never a panic
+  (boundary data). Content attributes keep both `set_attr*` forms
+  unchanged.
   **Release mechanics:** the break ships behind a version bump (v0.6.0
   candidate, given the canonical-snapshot break already on main) with a
-  `MIGRATION.md` at repo root (what changed, the enforcement error, the
-  `style_mut` mapping per call-site pattern) and a sister PR converting
-  the known consumer call sites. Both are spine steps below.
+  `MIGRATION.md` at repo root and a sister PR converting the known
+  consumer call sites. `MIGRATION.md` carries the **parse-tightening
+  table** — every property whose accepted input tightens under B, with
+  today's tolerated input and tomorrow's grammar: `isolate` (any
+  bool/string → `auto` | `isolate`), `overflow` (free string → closed
+  keyword table), the flex keyword families (free string → closed sets),
+  `transform` (free string → typed translate functions), `font-weight`
+  (free string → keyword | 100–900), `outline-width`/`outline-offset`
+  (px string → Length), `border-radius` (string → four longhands), `gap`
+  (standalone property → shorthand of row/column-gap). Each row is a
+  D8-vs-fail-closed adjudication of the same class, and the admission
+  policy (D6) is the valve for anything consumers hit beyond it.
 - **D6 (2026-10-17, scoped in review).** Browser-conformance principle:
   **inputs, outputs, and timings match browser behavior *for the admitted
   vocabulary*.** Any observable deviance from Blink/Gecko semantics
@@ -811,7 +822,9 @@ specified in its own section and attached to steps 2 and 3.
    attribute entirely (`text_layout_request.rs`); plumbing the computed
    family into the font catalog is its own task with its own proofs.
 6. **Release.** Version bump (v0.6.0 candidate) with `MIGRATION.md`
-   (the API mapping, the enforcement error, the snapshot-contract
+   (the API mapping, the two enforcement paths — compile break for the
+   typed `set_attr` variants, runtime `DomError` for `set_attr_str` —
+   the **parse-tightening table** from D5, and the snapshot-contract
    notes) and a sister PR converting the known consumer call sites
    (~100+ presentation `set_attr_str` uses in `stream-pro2`).
 
@@ -908,7 +921,15 @@ record (beside `box_model`, `layout`, `paint` in `DomNodeBase`):
     struct NodePresentation {
         decl: Option<DeclBlockKey>,   // inline style block, arena-resident
         computed: ComputedGroups,     // the seven groups, inline by value
+        transition_config: TransitionConfig,  // resolved longhands, inline
     }
+    // transition_config: the scheduler-facing slot, written by the pass
+    // from winners (step 3), read by the transition scheduler when a value
+    // change arrives. It is NOT a computed group and NOT diff-classified:
+    // config changes schedule nothing by themselves (today's longhand
+    // writes dirty nothing either). D8's pseudo-state→transition chain
+    // depends on it — stylesheet rules, never just the inline block,
+    // supply these longhands, so the cascaded result must persist here.
 
 Text-valued properties (`font-family`, `transform`) intern their strings
 in a small string arena (`TextKey`), or stay stringly node attrs until
@@ -960,7 +981,11 @@ Computed reads (the `as_*` standard: borrows, no ownership, no clones):
     // The debug successor to `compute_style_map` is a separate on-demand
     // recalc query (open question 9), NOT a read over this view.
 
-The style pass per dirty element (D2/D3 mechanics, visitor doctrine):
+The style pass per visited element in a running pass (D2/D3 mechanics,
+visitor doctrine). The pass resolves EVERY element in the dirty subtree —
+the DFS is ungated below the entry, which is exactly why inheritance
+propagation needs no children-marking row (and why a pass rooted above a
+nested layer boundary crosses it):
 
     1. seed inherited groups from the parent's groups (ancestor seed at
        layer roots — unchanged mechanics)
@@ -968,7 +993,9 @@ The style pass per dirty element (D2/D3 mechanics, visitor doctrine):
          winners: [Option<(DeclValue, Precedence)>; PRESENTATION_PROPERTY_COUNT]
        source order: behavior sheet (UA-ish tier) → matched rules sorted by
        (origin.priority, specificity, order) → inline block (top specificity)
-    3. resolve the seven groups from winners + inherited seeds
+    3. resolve the seven groups from winners + inherited seeds, and route
+       the four transition-config longhands to the node's scheduler slot
+       (S1.1; not a group, not diff-classified)
     4. diff old vs new groups (seven memcmp-cheap Copy compares) → classify:
          box_ changed       → mark layout+paint + layer-membership re-eval
          flex changed       → mark layout+paint
@@ -977,13 +1004,12 @@ The style pass per dirty element (D2/D3 mechanics, visitor doctrine):
          font/text          → mark layout+paint + remeasure text intrinsics
     5. clear the style bit
 
-    (Inheritance propagation needs NO children-marking row: the pass walks
-    the full dirty subtree, so every visited descendant is re-seeded from
-    its parent during the same pass — A5. A pass started above a nested
-    layer boundary crosses it (`style_recompute_crosses_nested_layer_
-    boundaries`); a clean nested layer root is a strong no-op even when
-    ancestors change (`..._clean_layer_is_strong_noop_even_when_ancestor_
-    changes`). Both pins hold unchanged.)
+    (Entry-gate vs propagation, pinned: the gate lives at the layer root —
+    a pass invoked at a clean nested root is a no-op
+    (`..._clean_layer_is_strong_noop_even_when_ancestor_changes`). But a
+    pass rooted above crosses nested boundaries and re-seeds everything
+    inside (`style_recompute_crosses_nested_layer_boundaries`). Both
+    behaviors hold unchanged.)
 
 ### S1.3 Flow diagrams
 
@@ -1007,7 +1033,7 @@ Write → invalidation flow (the P2 timing fix):
 
     root.style_mut(row).set("background-color", "#2A313D")?
         │
-        ▼  typed parse; malformed → dropped + metric (G)
+        ▼  typed parse; malformed → typed DomError (strict set contract)
     DeclStore: upsert into row's DeclBlock
         │
         ▼  mark style-dirty: row → … → layer root   (ONE bit per node)
@@ -1035,7 +1061,7 @@ Inheritance flow (unifies the two current channels):
 
 | axis | today (flattened attrs) | Arc+COW groups (rejected) | S1 (arena decls, inline computed) |
 |---|---|---|---|
-| node presentation storage | BTreeMap + heap strings | 6 Arc ptrs + refcount | seven inline Copy groups (styled nodes only) |
+| node presentation storage | BTreeMap + heap strings | 6 Arc ptrs + refcount | seven inline Copy groups (every element node) |
 | inline write cost | normalize, map insert, static dirty class | COW clone-on-write | block upsert + one style bit |
 | read path | `presented_attr(...).cloned()` | Arc deref | borrow into the node, zero clones |
 | recompute diff | per-attr compare in `set_attr_internal` | deep group equality | seven memcmp-cheap Copy compares |
@@ -1088,12 +1114,14 @@ on-spec when A lands on this substrate.
 
 ## Structural compliance (added in review, 2026-10-17)
 
-The redesign introduces ~17 behavior-bearing types. This repository's
+The redesign introduces ~25 behavior-bearing files. This repository's
 structural rules are mechanical and absolute; the plan budgets them
 here, attached to spine steps. Rule 1 (a behavior type lives in its own
 snake_case file), rule 2 (every behavior file has a real inline test
 module), rule 5 (impls live in the type's file), and `mod.rs` holds no
-behavior-bearing types.
+behavior-bearing types. Impl-light data types that carry no behavior
+(the text-intern `TextKey`, the `PropertySet` bitset, the `Precedence`
+record) fold into `decl_value.rs` rather than earning their own files.
 
 **New files (step 2, declaration side):** `presentation_property.rs`
 (the closed vocabulary + admission-table metadata: grammar, group,
@@ -1107,11 +1135,11 @@ measurement), `style_mut.rs` (the two write contracts), and
 `computed_color_group.rs`, `computed_box_group.rs`,
 `computed_flex_group.rs`, `computed_visual_group.rs`,
 `computed_transform_group.rs` — plus `computed_groups.rs`,
-`node_presentation.rs`, `computed_style_ref.rs` (+ per-group view types
-in their files), and the group-diff classifier
-(`group_dirty_classification.rs` — A7's static table, prime unit-test
-target). Every file above ships with a real inline test module; the
-winners-fold precedence ordering, keyword grammars, A10 upsert
+`node_presentation.rs`, `computed_style_ref.rs`, one file per group view
+type (seven), `group_dirty_classification.rs` (A7's static table, prime
+unit-test target), and `transition_config.rs` (the scheduler slot, S1.1).
+Every behavior-bearing file above ships with a real inline test module;
+the winners-fold precedence ordering, keyword grammars, A10 upsert
 correctness, and A7's classification table are the named unit-test
 candidates.
 
@@ -1184,7 +1212,7 @@ follow S1's split; "Inherited?" follows CSS — with two gaps flagged
 | `row-gap`, `column-gap` | flex | Length | px today | px f32 |
 | `gap` | flex | shorthand | expands to row-gap+column-gap at parse (B; today it is a standalone attribute — behavior refinement toward CSS) | — |
 | `transform` | transform | Text | `translateX/Y` px functions today; typed at parse with B | translate px [f32; 2] |
-| `transition-property/-duration/-timing-function/-delay` | (overlay) | Text list | comma lists, ms values | feeds the transition scheduler, not a computed group |
+| `transition-property/-duration/-timing-function/-delay` | (scheduler slot) | Text list | comma lists, ms values | persisted on the node by the pass (`transition_config`, S1.1); read by the scheduler on value change; not a computed group, not diff-classified |
 
 Notes and newly surfaced items:
 
@@ -1319,7 +1347,13 @@ perf counters.
 In: a dirty layer root + its ancestor seed. Out: a recomputed subtree,
 cleared bits, emitted counters. Steps: seed from ancestors outside the
 root → DFS, work-on-visit per node (match, fold, resolve, diff, apply,
-remeasure text, clear) → no batch state leaves the pass. Analog: Blink
+remeasure text, clear) → no batch state leaves the pass. The DFS is
+**ungated below the entry**: the gate lives only at the layer root
+(`style_tree_needs_recompute`), and a running pass resolves EVERY node
+in the dirty subtree, crossing nested layer boundaries. This is what
+makes inheritance propagation complete without a children-marking row
+(A7), and it is the pinned current behavior (the crossing and
+strong-noop unit tests). Analog: Blink
 `StyleRecalc` traversal with change propagation; Gecko `RestyleManager`
 pending-restyle flush — phase shape already pinned by
 `stylesheet_lifecycle.rs`. No divergence; structural rule 4 lives here.
@@ -1441,7 +1475,7 @@ points. Every point and its disposition:
 | 1 | `apply_styles` "unused" claim false — it is the recompute pass's write path | **Accepted, fixed.** Background and open question 8 corrected: rewritten/deleted with the old pass in spine step 3, not "demoted." |
 | 1a | Flex grammar column aspirational (free strings today) | **Accepted, fixed.** Flex/overflow/transform rows now say "parsed downstream today; closed table lands with B." |
 | 1b | Short-circuit runs after transition-shorthand expansion | **Accepted, fixed.** Caveat added to the invalidation boundaries. |
-| 2a | A7's children-marking row is internally inconsistent with color inheritance | **Accepted with a correction to the review's premise.** The review's claim that color propagates across nested-layer boundaries *today* is false — the strong-noop unit test pins that it does not. But the verdict stands: the font/text children-marking row was a dead mechanism (the full-subtree pass re-seeds every visited descendant by construction), so it was removed, and the two-tier propagation rule (crosses-nested within a pass; strong-noop for clean nested roots) is now written into A7 and S1.2 with its pins. |
+| 2a | A7's children-marking row is internally inconsistent with color inheritance | **Accepted; the review's premise was correct, and this record's earlier "premise correction" was wrong and is hereby struck.** Color *does* propagate across nested-layer boundaries today — within a running pass: the entry gate lives at the layer root (a pass invoked at a clean nested root is a no-op — the strong-noop pin), while a pass rooted above runs an ungated DOM DFS that crosses the boundary and materializes into the nested subtree (the crossing pin, whose name says exactly this). The children-marking row was redundant for precisely that reason and stays removed. S1.2's pass is retitled "per visited element in a running pass" to close the hazard the wrong correction introduced. |
 | 2b | Overlay merge only in `as_box`/`as_visual` contradicts the transitionable set | **Accepted, fixed.** All seven accessors merge the overlay; today's transitionable set (any style-allowed property except transition-config) is named. |
 | 2c | `isolate` and `transform` homeless | **Accepted, fixed.** `isolate` joins the box group with its CSS grammar; `transform` gets a seventh single-purpose group (paint-class + membership-relevant — it could not live in the box group without changing today's dirty classes). The layer section now names "box-group or transform-group change." |
 | 2d | Shorthand coverage arbitrary; `border-radius` unrepresentable in `DeclValue` | **Accepted, fixed.** Ruling recorded: margin/padding/border shorthands are admission candidates (not in vocabulary today); `gap` becomes a shorthand; `border-radius` expands to four longhand declarations at parse so `DeclValue` stays single-length; `overflow-x/y` noted as admission candidates. |
@@ -1466,3 +1500,23 @@ points. Every point and its disposition:
 The review's closing condition — "until items 1–7 are resolved, this is a
 well-researched problem statement, not the design its spine presupposes" —
 is met: items 1–7 are resolved in the sections named above.
+
+## Second adversarial review adjudication (2026-10-17)
+
+The second review re-verified all 24 dispositions (≈20 confirmed correct),
+refuted one adjudication claim, and caught defects introduced by the
+edits. Dispositions:
+
+| # | Point | Disposition |
+| --- | --- | --- |
+| 2-1 | Adjudication row 2a "corrected" a correct premise | **Accepted, record corrected.** The first review's premise was right: color propagates across nested-layer boundaries within a running pass (ungated DFS below an entry gate that lives at the layer root). My "correction" conflated the entry gate with propagation and has been struck; row 2a above now reads the honest entry. S1.2's pass retitled "per visited element in a running pass" — the propagation guarantee depends on it. |
+| 2-2 | Disposition verification of the other 23 rows | Confirmed by the reviewer; no action. |
+| 2-3a | Write→invalidation diagram showed G semantics on the strict `set` path | **Accepted, fixed.** The diagram now shows the strict typed-error contract. |
+| 2-3b | Tradeoff table: "seven inline Copy groups (styled nodes only)" contradicts inline-everywhere | **Accepted, fixed.** "(every element node)" — matching S1.1, E's reckoning, and visit locality. |
+| 2-3c | "~17 types" undercounts the section's own file list | **Accepted, fixed.** Now "~25 behavior-bearing files," with the impl-light folds (`TextKey`, `PropertySet`, `Precedence`) explicitly assigned to `decl_value.rs`, and `transition_config.rs` added to the list. |
+| 2-4 | Transition-config persistence unspecified | **Accepted, fixed.** `NodePresentation.transition_config`: a scheduler-facing inline slot written by the pass from winners (S1.2 step 3), read by the scheduler on value change, not a group, not diff-classified. This closes the D8-chain hole (stylesheet rules, never just inline blocks, supply the longhands). |
+| 2-5a | Parse-tightening obligations unnamed | **Accepted, fixed.** D5's release mechanics and spine step 6 now carry the parse-tightening table (isolate, overflow, flex keywords, transform, font-weight, outline lengths, border-radius, gap), each row a D8-vs-fail-closed adjudication with the admission policy as valve. |
+| 2-5b | `set_attr` enforcement conflates two paths | **Accepted, fixed.** Typed `set_attr` loses presentation variants at the split (compile break — converts most call sites at compile time); only string-keyed `set_attr_str` needs the runtime `DomError`. |
+
+The second review's closing instruction is honored in the row 2a rewrite
+above: the adjudication table no longer falsifies the record it protects.
