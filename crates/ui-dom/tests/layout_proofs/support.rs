@@ -1,3 +1,29 @@
+//! Shared scenario builders and assertion helpers for the layout proofs.
+//!
+//! This file owns the hermetic GPU fixture (a `RootDom` attached under a
+//! Bevy `World` with direct-GPU support resources), the `assert_append_*`
+//! node builders, the scenario `*_setup` functions with their documented
+//! return-tuple orders, stylesheet loading helpers, and the two assertion
+//! surfaces: retained layout (`assert_node_layout`, `assert_close`) and
+//! staged paint plans (`take_staged_layer_paint_plans`,
+//! `assert_rect_op_geometry`).
+//!
+//! Invariants and rules:
+//!
+//! - proofs build scenarios only through these helpers; new scenario shapes
+//!   grow a named `*_setup` here rather than inline world setup in a proof
+//! - `*_setup` functions document their return tuples as
+//!   `(world, root, ...keys)`; destructured names in proofs must match that
+//!   documented order
+//! - staged plans persist until drained: a proof drains exactly once per
+//!   asserted update via `take_staged_layer_paint_plans`; the document root
+//!   layer is entry zero, and layer-local geometry equals screen geometry in
+//!   single-layer proofs
+//! - all float assertions go through `assert_close` (1e-3 tolerance); proofs
+//!   never compare `f32` directly
+//! - this file is test-only support: it owns no product behavior and asserts
+//!   nothing itself beyond the `assert_*` contract
+
 use bevy::asset::Assets;
 use bevy::image::Image;
 use bevy::prelude::{Vec2, World};

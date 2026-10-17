@@ -1,3 +1,33 @@
+//! Selector grammar, matching, specificity, and cascade ordering for `ui-dom`.
+//!
+//! This file owns the stylesheet block parser (`parse_css_blocks`), the
+//! selector subset parser (`parse_selector`), the selector AST types
+//! (`SimpleSelector`, `RightMostSelector`), `SelectorSpecificity`,
+//! `precedence_tuple`, the `ComputedStyleMap` and `StyleRule` types,
+//! right-to-left selector matching (`selector_matches_node`), the rule
+//! identity hash, and the public query functions consumed by the
+//! style-recompute visitor and `RootDom::compute_style_map`
+//! (`matched_style_rules_for_element`, `apply_pseudo_state_style_declarations`).
+//! Rule storage and every index live in `style_runtime.rs`; this file never
+//! stores rules.
+//!
+//! Invariants and rules:
+//!
+//! - the selector grammar is a closed subset: `#id`, `.class` (multi-class),
+//!   `tag`, `tag.class`, `*`, descendant combinators, and `:hover`, `:active`,
+//!   `:focus`, `:focus-visible`; all other syntax is rejected with
+//!   `DomError::InvalidSelector` at parse time
+//! - matching walks right-to-left with a parent-chain scan per preceding
+//!   compound; the right-most compound is the record `StyleRuntime` indexes
+//! - specificity is the CSS (a, b, c) lexicographic triple via derived `Ord`
+//!   field order; pseudo-classes count into `class`
+//! - cascade precedence is exactly `(origin.priority, specificity, order)`;
+//!   no `!important`, no cascade layers
+//! - declarations stay stringly-typed (`DomAttributeValue`); unit and keyword
+//!   resolution is deferred to consumers and must not appear here
+//! - stylesheet text is boundary data: parse and match failures are typed
+//!   errors, never panics
+
 mod style_rule_origin;
 mod style_runtime;
 

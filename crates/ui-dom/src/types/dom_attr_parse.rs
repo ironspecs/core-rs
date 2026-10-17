@@ -1,3 +1,35 @@
+//! Authored attribute and stylesheet declaration parsing for `ui-dom`.
+//!
+//! This file owns the boundary between authored CSS text and retained
+//! attribute values: the `style`-attribute / stylesheet declaration block
+//! parser (`parse_style_attr_map`), per-attribute validation
+//! (`validate_attribute_value`) and normalization
+//! (`normalize_attribute_value`), the supported length model
+//! (`AuthoredLength`, `parse_authored_length`), the supported color subset
+//! (`parse_css_color_rgba`), line-height resolution (`resolve_line_height_px`),
+//! the class-list parser (`parse_class_attr_list`), and the
+//! `style_attr_allows_property` admission list.
+//!
+//! Invariants and rules:
+//!
+//! - all grammars here are closed subsets: lengths are exactly `px`, `em`,
+//!   `unset`, or bare `0`; colors are `transparent`, 6/8-digit hex,
+//!   `rgb()`/`rgba()`, or the five named colors; `display`, `position`,
+//!   `text-align`, `white-space`, and `line-height` each admit a fixed keyword
+//!   list. Anything outside the subset is a typed `DomError`, never a panic:
+//!   authored text is boundary data
+//! - known color attributes normalize to `DomAttributeValue::Color` at the
+//!   write boundary; validation after that boundary accepts only the
+//!   normalized form
+//! - `parse_style_attr_map` is last-declaration-wins within a block and
+//!   rejects declarations a stylesheet may not carry: no form-state or
+//!   non-style attributes, no `lang`/`dir` (`direction` is admitted), and
+//!   custom properties limited to the admitted list
+//! - declared values stay stringly-typed after parsing; only colors
+//!   normalize, and unit/keyword resolution is deferred to consumers
+//! - `line-height` resolves with a 1px floor; percentages and negative
+//!   values are rejected at validation time
+
 use std::collections::BTreeMap;
 
 use crate::types::{

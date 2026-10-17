@@ -1,4 +1,27 @@
-//! Intrinsic-size behavior definitions for DOM elements.
+//! Intrinsic-size lifecycle for DOM elements: measure on create, preview on
+//! attr write, commit on style recompute.
+//!
+//! This file owns the three intrinsic-state transitions
+//! (`compute_intrinsic_on_create`, `preview_intrinsic_after_attr_write`,
+//! `commit_intrinsic_after_style_recompute`) for text nodes, `img` elements,
+//! and default-preferred-size element controls, plus the measurement helpers
+//! they share. Text measurement itself lives in `domains/paint`; control
+//! preferred sizes come from `element_controls`.
+//!
+//! Invariants and rules:
+//!
+//! - the change-detection contract is the returned `bool`: a commit reports
+//!   whether the retained intrinsic actually changed, and callers mark
+//!   layout/paint dirty from that answer alone
+//! - preview never mutates retained state; it clones the node and measures
+//!   the clone
+//! - measurement failures on already-validated state are internal corruption
+//!   (`.expect`), not boundary errors
+//! - the `generation` field threading in this file is the known wrong-model
+//!   artifact: written here, read by no decision path, and scheduled for
+//!   removal against the canonical-snapshot contract. New code must not read
+//!   or depend on intrinsic generations. See `domains/visitor/README.md` for
+//!   the dirty-bit doctrine
 
 use crate::domains::paint::{
     measure_text_intrinsic, measure_text_intrinsic_with_font_size,

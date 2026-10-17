@@ -1,16 +1,28 @@
 # layout_proofs
 
-These tests are integration-style layout proofs for `ui-dom`.
+These tests are the sealed-module layout proofs for `ui-dom`: hermetic (no
+hardware, no external services; the render world is faked at the established
+noop/manual seam), asserting the module's public promises through `RootDom`
+and the staged render ops surface.
 
 Each proof should follow the same shape:
 
 1. Build a small authored scenario through public `RootDom` APIs.
 2. Run one real `RootDom::update(...)` step.
-3. Assert retained layout results on the affected nodes.
+3. Assert the staged paint plans and retained layout results for the affected
+   nodes.
 
 Guidelines:
 
 - Keep each proof focused on one layout claim.
+- Proof families are table-driven where the claim admits it: one test function
+  driving a table of authored scenarios and expected outcomes, so coverage is
+  enumerable in review.
+- The staged paint plan is the primary measure. Op counts, kinds, order, and
+  geometry are the cost the crate actually pays and the exact handoff the
+  render world draws; a change that moves ops is a real cost change, visible
+  without a GPU. Assert plan contents (`assert_rect_op_geometry` and friends);
+  retained layout assertions (`assert_node_layout`) are secondary.
 - New or changed browser-like claims must name the spec section and closest WPT
   or browser test that defines the expected behavior.
 - New or changed solver-facing claims must name the Gecko and Blink
@@ -25,9 +37,15 @@ Guidelines:
 - Use helpers from `support.rs` instead of duplicating world setup.
 - Scenario setup helpers return tuples in the exact order documented in
   `support.rs`; keep destructured variable names aligned with that order.
-- Assert layout results, not incidental runtime details.
-- When a proof exposes a known bug, prefer an ignored test with a precise note
-  over weakening the assertion until it passes.
+- Assert layout results and staged ops, not incidental runtime details.
+- Known off-spec behavior is pinned by a *running* proof that asserts the
+  current values and is labeled off-spec in its header: spec section, closest
+  WPT oracle, Gecko/Blink implementation files, the spec-correct expected
+  values, and the named production branch that causes the divergence. The
+  proof must fail when the behavior moves in either direction — moving onto
+  spec is the good outcome and means relabeling the proof on-spec. `#[ignore]`
+  is not permitted in this tree; an ignored proof hides divergence movement
+  and lets its expectations rot.
 
 Popup coverage map:
 

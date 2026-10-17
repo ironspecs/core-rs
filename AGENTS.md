@@ -41,8 +41,13 @@ Each Rust `.rs` file must begin with a file-level comment that explains:
 - what the file owns
 - the local invariants and rules for that file
 
-If a task changes crate layout, ownership boundaries, build commands, or shared
-asset ownership, update the affected `README.md` files in the same change.
+Multi-file rules belong in the module `README.md`. Single-file rules belong in
+that file comment.
+
+If a task changes process boundaries, protocols, ownership, crate layout, build
+commands, or shared asset ownership, update the affected module `README.md`
+files in the same change, and update Rust file comments when local file
+responsibilities or invariants changed.
 
 ## Rust quality expectations
 
