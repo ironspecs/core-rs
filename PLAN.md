@@ -90,6 +90,72 @@ contract: `tests/layout_proofs/README.md`.
   **New divergence** — registry candidate; pin with an `off_spec_*` proof
   before the parser is redesigned.
 
+## Current invalidation boundaries (researched 2026-10-17)
+
+How a value change becomes scheduled work today, end to end. This is the
+area flagged for improvement: more specific dirty setting, damage-rect
+consumption, and style-propagation optimization.
+
+**Write-side classification (static, per attribute).** Every attribute
+maps to a fixed `AttributeInvalidation` bit set at compile time:
+layout+paint (`attribute_affects_layout` — box and flex properties,
+font-size/line-height/wrap policies), paint-only
+(`attribute_affects_paint` — colors, transform, text-align, direction,
+widget state), style (`attribute_affects_style_object` — exactly `class`,
+`style`, `line-height`, `text-align`, `direction`, `white-space`,
+`overflow-wrap`, `word-break`), and layer-membership (`display`,
+`overflow`, `transform`, `isolate`, `position`). A write first passes a
+same-value short-circuit (`set_attr_internal` compares the normalized new
+value to the stored one and returns without dirtying), so dirty marking
+is already per-attribute *value-diff* driven — but the *class* of
+dirtiness is static, never computed from the actual used-effect
+difference (a `width` write that cannot change the used size still marks
+layout).
+
+**Upward propagation (layer-root bounded).** Layout and style dirtiness
+walk parents to the enclosing layer root (`mark_dirty_up_to_layer_root`),
+never across the boundary; layout early-exits at an already-dirty
+ancestor, style always reaches the root so the layer-root style bit
+summarizes its subtree. Paint dirtiness walks to the layout root
+(`mark_node_dirty_up_to_layout_root`) carrying a *damage rect* computed
+from the node's current border box: each ancestor accumulates it in a
+bounded 8-rect `ArrayVec` bucket; overflow promotes the whole chain to
+`FullLayerRepaint`; propagation stops at an already-full ancestor or the
+layout root. Pseudo-state changes mark style dirty the same way
+(`pseudo_state.rs`).
+
+**Scheduling.** Composite is layer-first: lifecycle reconciliation, then
+style → layout → paint → composite per live layer in DOM order.
+`style_tree_needs_recompute` reads one bit on the layer root;
+`tree_needs_layout` scans for layout-dirty content. The style recompute
+pass itself crosses nested layer boundaries via the ancestor seed, and
+its writes ride back through `set_attr_internal`, so changed values
+re-dirty layout/paint per their static class. Intrinsic remeasurement
+(text, controls, icons) marks dirty only on real measured change
+(post-`generation`-removal equality).
+
+**Damage rects: written, tested, never consumed.** The bounded-rect
+machinery is real and unit-tested (`paint/mark_dirty.rs`), but the paint
+stage repaints full layers and the rect pass unconditionally clears the
+whole surface per layer per apply — the largest known performance item in
+the crate, previously backlogged. Any invalidation redesign must decide
+targeted repaint or deletion (open question 11).
+
+**Coarseness points the redesign should attack:**
+
+- **C1.** Any style-affecting change dirties the *entire layer-root
+  subtree* for re-matching; there is no per-element scoping and no
+  matched-rule caching (Blink's matched-properties cache / Servo's rule
+  cache have no analog).
+- **C2.** Dirtiness *class* is static per attribute, not computed from
+  the actual style difference (Gecko's change-hint / Blink's
+  style-difference model classifies layout-vs-paint-vs-compositing
+  consequences from the old/new comparison).
+- **C3.** Style recompute folds the full matched map onto every visited
+  element and relies on `set_attr_internal`'s compare to filter; cheap,
+  but the pass walks everything under a dirty root even when one
+  declaration changed.
+
 ## The spec and the Blink/Gecko approach
 
 The user's direction has direct spec backing; browsers solved exactly P1/P2
@@ -183,6 +249,55 @@ semantics D6 binds us to:
   are the explicit defaulting keywords. (Our `unset` length keyword
   exists; the other keywords are currently unsupported.)
 
+## Implementation data structures, source-verified (2026-10-17)
+
+Correction of an earlier framing in this document: the engines do **not**
+run one singular style data shape. They run a *family* of structures with
+distinct roles, and they restructure them constantly. Any candidate for
+us must be a family too.
+
+**Servo/Gecko — `PropertyDeclarationBlock` (the declaration store),
+verbatim from vendored source
+(`servo/components/style/properties/declaration_block.rs`):**
+
+    declarations: ThinVec<PropertyDeclaration>,   // ordered, deduplicated — NOT a map
+    declarations_importance: SmallBitVec,          // parallel !important bits
+    property_ids: PropertyDeclarationIdSet,        // fast membership (longhand bitset + custom name set)
+    immutable: AtomicBool,                         // copy-on-write: set when shared across elements
+
+Structural lessons: declarations keep *source order* (cascade
+order-of-appearance and logical-group rules need it); importance rides a
+parallel bit-vector; a separate id set answers "contains" without
+scanning; the block is *shared* (the style attribute's block too) and
+copied on write; update ops (`prepare_for_update`/`update`) compute
+minimal edits and return *whether anything changed* — change detection
+lives at the declaration level. Shorthands expand at parse into longhand
+drains; serialization reconstructs them per CSSOM rules (logical groups
+included).
+
+**Blink — generated base + feature group structs
+(`third_party/blink/renderer/core/style/`, current main):** a generated
+`ComputedStyleBase` with per-property storage partitioned by inheritance,
+plus hand-written group structs for feature areas
+(`style_cached_data.h`, `style_highlight_data.h`,
+`style_content_alignment_data.h`, `style_self_alignment_data.h`,
+`style_flex_wrap_data.h`, `style_will_change_data.h`, ...). The group set
+changes across versions — the durable constant is *grouping by
+inheritance class and access frequency*, never one shape.
+
+**Gecko — style structs + rule tree:** computed values split into
+per-topic structs (font, color, background, border, box, text, ...) that
+inherit as units and are shared structurally across elements through the
+rule tree (see `stylist.rs`, `rule_tree/` as cited in `cascade.rs`).
+
+**Change classification (both engines):** dirtiness is *computed from the
+old/new style difference*, not statically assigned per property — Gecko's
+change hints (`nsChangeHint.h`, name-level citation; pin at design time:
+repaint-only vs reflow vs frame-reconstruct) and Blink's style-recalc
+change types classify the consequence; matched-declaration caching
+(Blink's matched-properties cache, Servo's `rule_cache`) skips
+re-matching selectors when inputs are unchanged.
+
 ## Decided constraints
 
 - **D1 (2026-10-17).** Programmatic styling methods write to a **different
@@ -203,9 +318,10 @@ semantics D6 binds us to:
   lesson of the existing one: string property names and string values with
   crate-side validation and normalization (the `set_attr_str(key, "width",
   "10px")` ergonomics users love), with typed constants optional above.
-  Consumer evidence: `stream-pro2` themes components through 100+ direct
-  presentation writes across `ui-components` and `remote-app`, using both
-  constants and raw strings.
+  Decision basis: trusting the caller's statement — assume unseen
+  customers/clients; the styling API may break, and users love
+  string-based attribute setting over enums. Local scans (100+ direct
+  presentation writes in `stream-pro2`) are illustrative, not the basis.
 - **D6 (2026-10-17).** Browser-conformance principle: **inputs, outputs,
   and timings match browser behavior.** Any observable deviance from
   Blink/Gecko semantics will be reported by users as a bug. Internal
@@ -346,6 +462,35 @@ parsing continues, and the drop is reported by metric, not silence.
 Replaces today's whole-sheet rejection. Registry: new `off_spec_*` pin of
 the current behavior first; reclassify on landing.
 
+### H. Difference-computed dirty classification
+
+Replace or augment the static per-attribute dirty classes with a
+consequence classification computed from the old/new comparison at apply
+time (Gecko change-hint / Blink style-difference shape): a change whose
+used effect is nil dirties nothing; a paint-class change never dirties
+layout. This is coarseness point C2's fix. Cheaper variant: keep static
+classes but add used-effect short-circuits at known hot properties.
+
+### I. Damage-rect consumption
+
+Decide the write-only damage machinery (previously backlogged): consume
+it for targeted repaint — the rect pass already stages ops, and its
+unconditional per-layer surface clear is the largest known perf item in
+the crate — or delete it. The style redesign determines the producer side
+(what damage a style change emits); the rect-pass clear decision lands
+with the consumer side. Gate: the perf pins in
+`perf_metric.rs`/`perf_allocation.rs`.
+
+### J. Scoped style propagation and matched-rule caching
+
+Attack coarseness points C1/C3: scope recompute to elements whose matched
+set can actually change (selector-aware invalidation, the shape of
+Blink's invalidation sets for class/id changes), and/or cache matched
+rule sets per element (Blink matched-properties cache / Servo
+`rule_cache`) so re-matching is skipped when the rule store and element
+state are unchanged. Must respect the zero-allocation metrics doctrine,
+with metric counters pinned before and after.
+
 ## Value-stage vocabulary (proposed naming to settle)
 
 Candidate adoption of the CSS Cascade §4 ladder, so code names stop
@@ -377,24 +522,42 @@ This mapping is why D1–D3 are safe: the node-level store already *is* the
 computed stage. What is missing is the declaration stage for programmatic
 input and an explicit specified/defaulting stage.
 
-## Emerging candidate shape (NOT decided — recorded for the design pass)
+## Emerging candidate shapes (NOT decided — recorded for the design pass)
 
-The research pushes the approaches toward one coherent composition:
+Correction, 2026-10-17: an earlier draft of this section proposed "a
+single declaration-block abstraction." The source research above rules
+that out: the engines run families of structures, and our candidates are
+families too, differing in how much of the engine shape we adopt.
 
-**a single declaration-block abstraction** — typed values at parse time
-(B), sparse physical storage (E), declaration-drop error handling (G) —
-used for *both* stylesheet rules and the per-element inline style store
-(A); one cascade pass collecting from both stores (D2); the node retaining
-only the computed projection (D3); the precedence key structured wide
-enough for the tier growth path (F); provenance layered so unload restores
-instead of deletes (D). This is, deliberately, the shape Blink and Servo
-already run — the conformance contract (D6) is satisfiable by
-construction, and every internal choice left open by it is ours.
+**Variant 1 — Servo-like:** ordered declaration vectors with parallel
+importance bits and COW sharing (for both stylesheet rules and inline
+style); computed style split into inheritance-grouped structs shared
+across nodes; difference-computed dirty hints (H). Maximal memory
+elegance and sharing; largest migration; most new machinery (id sets,
+COW discipline, rule cache).
 
-Open before it becomes a candidate design: the physical store layout (E's
-decision), the value-type table (B's property registry), the migration
-surface (D5's API), and the proof obligations ordering (G's pin first,
-then A's acceptance test).
+**Variant 2 — Blink-like:** typed parsed declarations in per-source
+stores; a computed store partitioned by inheritance with per-feature
+groups; matched-rule caching against a dirty-scoped element set (J);
+damage-aware paint propagation (I). Strong recompute economics; mid
+migration; caching adds invalidation surface we must proof-gate.
+
+**Variant 3 — Minimal evolution (closest to today):** keep the flattened
+per-node attr map as the computed store; add the inline declaration store
+beside the existing rule store, both with typed values (B); keep static
+per-attribute dirty classes but scope style propagation (J) and consume
+damage rects (I). Smallest break from the codebase; leaves memory/sharing
+wins on the table; the attr vocabulary split (C) is still required.
+
+All three share the decided skeleton: declaration stores per source → one
+cascade pass (D2) → computed projection on the node, resolved only when
+dirty at the style stage (D3) → used projections derived per frame. The
+choice among them is about the computed store's physical shape and the
+invalidation economics, and it gates on open questions 6 and 11.
+
+The acceptance spine is unchanged: G's error-handling pin first, then
+A's inline-precedence acceptance test; every variant is judged against
+the same suite.
 
 ## Open questions
 
@@ -427,6 +590,9 @@ then A's acceptance test).
     presentational semantics that should map at §6.5's weakest tier
     (candidate: `img` width/height sizing hints)? Enumerate before the
     tier model lands.
+11. Damage rects: consume for targeted repaint or delete (approach I) —
+    decided together with the rect-pass unconditional-clear item, the
+    largest known perf item in the crate.
 
 ## Learnings log
 
@@ -465,3 +631,22 @@ then A's acceptance test).
   Cascade §3 ("as if expanded in place") puts expansion at declaration
   time; any design that expands later duplicates the point. This collapses
   approach B's shorthand work into the declaration store itself.
+- **2026-10-17 — The engines run families, not shapes.** Servo's
+  declaration block is an ordered `ThinVec` + importance bit-vector +
+  property-id set + COW atomic; Blink's computed style is a generated
+  base plus per-feature group structs; Gecko shares per-topic structs via
+  the rule tree. The durable principles: declaration order matters,
+  membership checks are separate from storage, sharing is copy-on-write,
+  change detection lives at the declaration level, and dirtiness is
+  classified from the actual difference.
+- **2026-10-17 — Our invalidation is value-diff driven but statically
+  classified.** `set_attr_internal`'s same-value short-circuit filters
+  no-op writes; the *class* of dirtiness is a compile-time property of
+  the attribute. The engine moves we lack: classify from the used-effect
+  difference (C2/H), scope the recompute set (C1/C3/J), and consume
+  damage rects (I).
+- **2026-10-17 — Damage rects are a tested producer with no consumer.**
+  The bounded-8-rect propagation to layout roots works and is unit
+  tested; nothing repaints from it, and the rect pass clears the whole
+  surface per layer per apply regardless. Producer exists; the consumer
+  decision is open question 11.
