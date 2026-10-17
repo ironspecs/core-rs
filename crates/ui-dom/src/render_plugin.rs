@@ -39,6 +39,40 @@ pub(crate) use crate::ui_dom_text_font_extract_state::UiDomTextFontExtractState;
 #[cfg(test)]
 use crate::types::PixelDensity;
 
+#[cfg(test)]
+pub(crate) fn noop_render_creation() -> bevy::render::settings::RenderCreation {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::NOOP,
+        backend_options: wgpu::BackendOptions {
+            noop: wgpu::NoopBackendOptions { enable: true },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let adapter =
+        bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("noop adapter should exist");
+    let adapter_info = adapter.get_info();
+    let (device, queue) =
+        bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("noop device should be granted");
+    bevy::render::settings::RenderCreation::manual(
+        bevy::render::renderer::RenderDevice::from(device),
+        bevy::render::renderer::RenderQueue(std::sync::Arc::new(
+            bevy::render::renderer::WgpuWrapper::new(queue),
+        )),
+        bevy::render::renderer::RenderAdapterInfo(bevy::render::renderer::WgpuWrapper::new(
+            adapter_info,
+        )),
+        bevy::render::renderer::RenderAdapter(std::sync::Arc::new(
+            bevy::render::renderer::WgpuWrapper::new(adapter),
+        )),
+        bevy::render::renderer::RenderInstance(std::sync::Arc::new(
+            bevy::render::renderer::WgpuWrapper::new(instance),
+        )),
+    )
+}
+
 #[derive(Resource)]
 struct UiDomMainRuntimeInstalled;
 
@@ -138,40 +172,6 @@ mod tests {
         sprite_render::Material2dPlugin,
         window::WindowPlugin,
     };
-
-    fn noop_render_creation() -> bevy::render::settings::RenderCreation {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::NOOP,
-            backend_options: wgpu::BackendOptions {
-                noop: wgpu::NoopBackendOptions { enable: true },
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        let adapter = bevy::tasks::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        )
-        .expect("noop adapter should exist");
-        let adapter_info = adapter.get_info();
-        let (device, queue) =
-            bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("noop device should be granted");
-        bevy::render::settings::RenderCreation::manual(
-            bevy::render::renderer::RenderDevice::from(device),
-            bevy::render::renderer::RenderQueue(std::sync::Arc::new(
-                bevy::render::renderer::WgpuWrapper::new(queue),
-            )),
-            bevy::render::renderer::RenderAdapterInfo(bevy::render::renderer::WgpuWrapper::new(
-                adapter_info,
-            )),
-            bevy::render::renderer::RenderAdapter(std::sync::Arc::new(
-                bevy::render::renderer::WgpuWrapper::new(adapter),
-            )),
-            bevy::render::renderer::RenderInstance(std::sync::Arc::new(
-                bevy::render::renderer::WgpuWrapper::new(instance),
-            )),
-        )
-    }
 
     #[test]
     fn install_ui_dom_runtime_pair_requires_render_app() {
