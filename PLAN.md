@@ -80,8 +80,9 @@ contract: `tests/layout_proofs/README.md`.
   `set_attr_str` (validated string ergonomics consumers love),
   `RootDom::apply_styles` (**public but unused by any consumer** — bypasses
   D1–D3; demotion candidate), `RootDom::compute_style_map` (public one-off
-  style query; used by consumers as a measurement probe — 10+ call sites in
-  `stream-pro2`; needs a successor or survival), `RootDom::set_transition`;
+  style query; used by consumers as a measurement/debug probe — 10+ call
+  sites in `stream-pro2`; browser-inherited freedom makes its successor
+  an on-demand debug recalc, see open question 9), `RootDom::set_transition`;
   `RootDomContext::load_stylesheet` / `unload_stylesheet`.
 - **Parse error contract today:** one malformed declaration fails the
   entire `load_stylesheet` / `parse_style_attr_map` call with
@@ -635,6 +636,10 @@ Computed side — inheritance-grouped, interned, immutable:
     }
     // InternArena = SlotMap<K, T> + hash→keys intern table. Groups are
     // immutable once interned: mutation is intern-new-and-rekey on the node.
+    //
+    // (Storage location REVISED in S1.5: these groups live inline in the
+    // node record; the interning arenas are dropped. Group definitions
+    // stand; only placement changed.)
 
 Text-valued properties (`font-family`, `transform`) intern their strings
 in a small string arena (`TextKey`), or stay stringly node attrs until
@@ -668,8 +673,9 @@ Computed reads (the `as_*` standard: borrows, no ownership, no clones):
         fn as_box(&self) -> ComputedBoxView<'_>;       // view may merge transition overlay
         fn as_flex(&self) -> &ComputedFlexGroup;
         fn as_visual(&self) -> ComputedVisualView<'_>;
-        fn snapshot(&self) -> ComputedStyleSnapshot;   // owned, for measurement probes
-    }                                                   // (compute_style_map's successor)
+    }
+    // The debug successor to `compute_style_map` is a separate on-demand
+    // recalc query (open question 9), NOT a read over this view.
 
 The style pass per dirty element (D2/D3 mechanics, visitor doctrine):
 
@@ -744,7 +750,7 @@ Inheritance flow (unifies the two current channels):
 | inheritance | materialize strings into child attrs + context carry | Arc clone per group | key copy per group |
 | N identical rows | N full maps | N ptrs + 1 shared group | N keys + 1 interned group |
 | shared-data mutation | n/a | AtomicBool COW dance | forbidden (interned immutable) |
-| reclamation | node drop frees map | refcount | append-only arenas; needs epoch/trim policy (open) |
+| reclamation | node drop frees map | refcount | ~~append-only arenas; epoch/trim policy~~ superseded in S1.5 (no computed arena) |
 | stale access | n/a | Arc keeps alive | generational key rejects |
 
 Costs S1 must answer for, honestly:
@@ -781,6 +787,62 @@ cascade families unchanged (observable cascade semantics are identical);
 `off_spec_direct_attr_write...` relabels on-spec when A lands on this
 substrate.
 
+### S1.5 Revision (2026-10-17, second pass): computed groups travel with the node
+
+**Why the revision:** the visit-locality doctrine, re-read in the code.
+`DomNodeBase` carries `box_model`, `intrinsic`, `layout`, `paint`,
+`style`, and `transitions` *inline in the node record*, so a visitor that
+fetched the node has everything at hand on one fetch — layout, paint,
+and text passes never chase a second pointer. S1's original computed
+side (six keys into a separate interned arena) forces exactly that
+second fetch per node per visit. Rejected.
+
+**Revised placement:** the six computed groups store *inline in the node
+record*, beside the existing bundles (they replace the presentation half
+of today's flattened attrs). The arena survives only on the
+**declaration side** — rule blocks and inline blocks are fetched only
+during the style pass, so indirection there costs nothing on the visit.
+The arena crate is a category choice (slab / generational-arena /
+slotmap-class), decided by measurement, not a SlotMap default.
+
+**Consequences, honestly re-tabulated:**
+
+- Cross-node *sharing* of computed groups is sacrificed. Memory behavior
+  comes from **compactness** instead: typed `Copy` groups (no BTreeMap
+  nodes, no heap strings) — a full computed set lands in the low
+  hundreds of bytes per styled node; unstyled nodes carry only
+  initial-value groups.
+- Inheritance propagates by **value-copy** of the small inherited groups
+  down the DFS (same flow as S1.3's diagram, minus the arena). Group
+  equality replaces key equality for the dirty classification: six
+  memcmp-cheap `Copy` compares per recomputed node. Approach H survives.
+- The append-only/epoch problem **disappears** — no computed arena to
+  trim.
+- `as_*` views now borrow *into the node* — the cheapest possible read,
+  fully doctrine-compliant.
+
+Revised topology:
+
+    DeclStore arena (style pass only)     DomNode record (one fetch per visit)
+    ┌───────────────┐                     ┌────────────────────────────────────┐
+    │ K1: rule blk  │◄─── StyleRule       │ base: style, layout, paint,        │
+    │ K2: rule blk  │     { decl: K1 }    │       box_model, intrinsic,        │
+    │ K3: row blk   │◄─── node inline     │       transitions, links           │
+    └───────────────┘                     │ computed: font, text, color,       │
+                                          │           box_, flex, visual       │
+                                          │   (inline Copy structs, typed)     │
+                                          └────────────────────────────────────┘
+
+    read: root.computed_style(node).as_visual().background_rgba
+          → &[f32; 4]  (borrow into the node; zero indirection)
+
+**What did not change:** the declaration-side arena and typed `DeclValue`;
+the winners fold; dirty classification by group difference; the
+write→invalidation and cascade flows; the variant collapse (granularity
+and caching policy remain the open axes). The "N identical rows" row of
+S1.4's table now reads: N compact inline copies — still far below N
+BTreeMaps with heap strings.
+
 ## Open questions
 
 1. ~~Migration contract~~ — DECIDED (D5): hard break, string ergonomics
@@ -807,9 +869,14 @@ substrate.
 8. Fate of public `apply_styles`: unused by any consumer and bypasses
    D1–D3 — demote to `pub(crate)` in the redesign (no migration cost
    observed).
-9. Successor for `compute_style_map`: consumers use it as a measurement
-   probe (10+ call sites in `stream-pro2`). It must survive or be replaced
-   by an equivalent computed-value query over the new store.
+9. ~~Successor for `compute_style_map`~~ — reframed by the browser
+   reality: `getComputedStyle` is a debug/inspection tool in Gecko and
+   Blink. It performs real work on demand, is not cheap, and is not
+   wired into the internals' retained state — it recalculates. We
+   inherit that freedom: our successor is an **on-demand debug recalc
+   query**, debug-priced, which does not constrain the computed store's
+   design. Consumers' probe call sites become debug-priced calls; no
+   special read surface is owed.
 10. Presentational-hint tier: do any of our content attributes carry
     presentational semantics that should map at §6.5's weakest tier
     (candidate: `img` width/height sizing hints)? Enumerate before the
@@ -883,3 +950,15 @@ substrate.
   costs it introduces: interning overhead (counter-measured), whole-group
   granularity (group boundaries = dirty classes), and an owed epoch/trim
   policy for append-only arenas.
+- **2026-10-17 — Debug queries inherit browser pricing.**
+  `getComputedStyle` does on-demand work in Gecko and Blink and is not
+  cheap; it is a debug tool, not an internals read. Our successor query
+  is likewise an on-demand recalc, which frees the computed store from
+  serving debug traffic.
+- **2026-10-17 — Visit locality corrected S1 (see S1.5).**
+  `DomNodeBase` inlines style/layout/paint/box_model/intrinsic/
+  transitions so visitors have everything on one fetch; a side arena for
+  computed groups would add a second fetch per node per visit. Computed
+  groups moved inline; the arena survives for declarations only, its
+  crate a category choice by measurement; the epoch/trim problem
+  evaporated with the computed arena.
