@@ -1483,7 +1483,7 @@ points. Every point and its disposition:
 | 2f | A11's dirty-trigger unspecified | **Accepted, fixed.** One sentence: the revision bump marks all layer roots style-dirty (today's mechanism, preserved; scoping is J's deferred optimization). |
 | 2g | `StyleMut::set` silent-Ok reading violates repo rules | **Accepted, fixed.** Two contracts specified: `set` is strict (typed error), `set_all` follows G and returns an explicit `DeclDropReport`. The silent-Ok reading is off the table. |
 | 2h | Font-family staging self-contradictory | **Accepted, fixed.** The pin relabels in step 3 (group-copy inheritance transmits family for free); the real step-5 follower is named: text-layout's hardcoded UiSans family ignores the attribute today. |
-| 3a | Structural rules 1/2/5 unbudgeted | **Accepted, fixed.** The structural-compliance section maps ~17 new files to spine steps and names the unit-test candidates. |
+| 3a | Structural rules 1/2/5 unbudgeted | **Accepted, fixed.** The structural-compliance section maps the new files (~25, corrected in the second review) to spine steps and names the unit-test candidates. |
 | 3b | README updates absent from the spine | **Accepted, fixed.** README rewrites attached to steps 2 and 3; the G landing carries the AGENTS.md amendment. |
 | 3c | D6 unfalsifiable; no admission policy | **Accepted, fixed.** D6 scoped to the admitted vocabulary with a three-part admission policy (named need, spec+engine reference, proof). |
 | 3d | G trades "fail fast" without recording it | **Accepted, fixed.** The scoped exception is adjudicated in G's entry; AGENTS.md gains the amendment when G lands. |
