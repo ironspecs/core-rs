@@ -66,7 +66,6 @@ mod tests {
             width_px: 48.0,
             height_px: 32.0,
             aspect_ratio: 1.5,
-            generation: 0,
         }));
         let img_input = DomLayoutInput {
             node_key: DomNodeSlotKey::default(),

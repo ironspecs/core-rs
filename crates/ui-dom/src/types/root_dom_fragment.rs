@@ -355,10 +355,7 @@ impl RootDomFragment {
         if text_node.data() == text {
             return Ok(());
         }
-        let mut next_intrinsic = measure_text_intrinsic_from_content(text);
-        if let DomIntrinsic::Text(current_intrinsic) = &text_node.base.intrinsic {
-            next_intrinsic.generation = current_intrinsic.generation.wrapping_add(1);
-        }
+        let next_intrinsic = measure_text_intrinsic_from_content(text);
         let next_text = std::sync::Arc::<str>::from(text);
         let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
         let DomNode::Text(text_node) = node else {

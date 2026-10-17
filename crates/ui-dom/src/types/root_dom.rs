@@ -1941,7 +1941,7 @@ impl RootDom {
             crate::domains::visitor::inherited_style::inherited_style_context_from_ancestors(
                 self, key,
             )?;
-        let mut next_intrinsic =
+        let next_intrinsic =
             crate::domains::paint::measure_text_intrinsic_with_font_size_line_height_white_space_and_wrap_policy(
                 text,
                 inherited_context.effective_font_size_px(),
@@ -1950,9 +1950,6 @@ impl RootDom {
                 inherited_context.effective_overflow_wrap(),
                 inherited_context.effective_word_break(),
             );
-        if let DomIntrinsic::Text(current_intrinsic) = &text_node.base.intrinsic {
-            next_intrinsic.generation = current_intrinsic.generation.wrapping_add(1);
-        }
         let next_text = Arc::<str>::from(text);
         {
             let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;

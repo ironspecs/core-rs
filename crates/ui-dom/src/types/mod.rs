@@ -458,7 +458,6 @@ mod tests {
             min_content_width_px: 48.0,
             max_content_width_px: 96.0,
             line_height_px: 20.0,
-            generation: 4,
         });
         let serialized_intrinsic =
             serde_json::to_string(&intrinsic).expect("canonical intrinsic should serialize");

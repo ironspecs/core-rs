@@ -17,11 +17,11 @@
 //!   the clone
 //! - measurement failures on already-validated state are internal corruption
 //!   (`.expect`), not boundary errors
-//! - the `generation` field threading in this file is the known wrong-model
-//!   artifact: written here, read by no decision path, and scheduled for
-//!   removal against the canonical-snapshot contract. New code must not read
-//!   or depend on intrinsic generations. See `domains/visitor/README.md` for
-//!   the dirty-bit doctrine
+//! - change detection is equality over the measured intrinsic fields; the
+//!   removed `generation` counters were write-only and, on the preferred-size
+//!   and icon paths, compared unequal every pass — manufacturing phantom
+//!   layout/paint dirties. See `domains/visitor/README.md` for the dirty-bit
+//!   doctrine
 
 use crate::domains::paint::{
     measure_text_intrinsic, measure_text_intrinsic_with_font_size,
@@ -96,12 +96,8 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
                     == DomElementLifecycleBehavior::ElementControls =>
         {
             let next_intrinsic = DomIntrinsic::ElementDefaultPreferredSize(
-                compute_preferred_size_intrinsic(
-                    element,
-                    inherited_font_size_px,
-                    next_intrinsic_generation(&element.base.intrinsic),
-                )
-                .expect("text control intrinsic should stay validated"),
+                compute_preferred_size_intrinsic(element, inherited_font_size_px)
+                    .expect("text control intrinsic should stay validated"),
             );
             replace_intrinsic_if_changed(node, next_intrinsic)
         }
@@ -113,12 +109,9 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
                     Some(LoweredImageSourceKind::InternalIcon(_))
                 ) =>
         {
-            let next_intrinsic = icon_img_intrinsic_from_attrs(
-                &element.attrs,
-                inherited_font_size_px,
-                next_intrinsic_generation(&element.base.intrinsic),
-            )
-            .expect("icon img intrinsic attrs should stay validated");
+            let next_intrinsic =
+                icon_img_intrinsic_from_attrs(&element.attrs, inherited_font_size_px)
+                    .expect("icon img intrinsic attrs should stay validated");
             replace_intrinsic_if_changed(node, next_intrinsic)
         }
         DomNode::Text(text) => {
@@ -129,7 +122,7 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
                 | DomIntrinsic::Img(_)
                 | DomIntrinsic::ElementDefaultPreferredSize(_) => None,
             };
-            let mut next_intrinsic =
+            let next_intrinsic =
                 measure_text_intrinsic_with_font_size_line_height_white_space_and_wrap_policy(
                     text.data(),
                     inherited_font_size_px,
@@ -138,15 +131,9 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
                     inherited_overflow_wrap,
                     inherited_word_break,
                 );
-            let next_generation = current_intrinsic.as_ref().map_or_else(
-                || next_intrinsic_generation(&text.base.intrinsic),
-                |intrinsic| intrinsic.generation,
-            );
-            next_intrinsic.generation = next_generation;
             if matches!(&current_intrinsic, Some(current) if current == &next_intrinsic) {
                 return false;
             }
-            next_intrinsic.generation = next_intrinsic.generation.wrapping_add(1);
             text.set_text_run_id_hint(None);
             text.base.intrinsic = DomIntrinsic::Text(next_intrinsic);
             true
@@ -165,7 +152,6 @@ fn compute_element_intrinsic_from_current_state(
             let next_intrinsic = compute_preferred_size_intrinsic(
                 element,
                 preferred_size_measurement_font_size_px(&element.base.intrinsic),
-                next_intrinsic_generation(&element.base.intrinsic),
             )?;
             Ok(DomIntrinsic::ElementDefaultPreferredSize(next_intrinsic))
         }
@@ -175,30 +161,22 @@ fn compute_element_intrinsic_from_current_state(
 fn compute_preferred_size_intrinsic(
     element: &DomElementNode,
     font_size_px: f32,
-    generation: u64,
 ) -> Result<ElementDefaultPreferredSizeIntrinsic, DomError> {
     let line_height_px = line_height_px_for_attrs(&element.attrs, font_size_px);
     if element.tag == DomTag::Select {
-        return select_intrinsic_from_current_state(
-            element,
-            font_size_px,
-            line_height_px,
-            generation,
-        );
+        return select_intrinsic_from_current_state(element, font_size_px, line_height_px);
     }
     match resolved_element_control(element) {
         Some(ResolvedElementControl::TextInput) => Ok(text_input_intrinsic_from_current_state(
             element,
             font_size_px,
             line_height_px,
-            generation,
             false,
         )?),
         Some(ResolvedElementControl::Textarea) => Ok(textarea_intrinsic_from_current_state(
             element,
             font_size_px,
             line_height_px,
-            generation,
         )),
         Some(ResolvedElementControl::Checkbox(_)) => {
             let (width_px, height_px) = checkbox_default_preferred_size_px(line_height_px);
@@ -207,14 +185,12 @@ fn compute_preferred_size_intrinsic(
                 width_px,
                 height_px,
                 line_height_px,
-                generation,
             })
         }
         Some(ResolvedElementControl::Number(_)) => Ok(text_input_intrinsic_from_current_state(
             element,
             font_size_px,
             line_height_px,
-            generation,
             true,
         )?),
         Some(ResolvedElementControl::Range(_)) => {
@@ -224,7 +200,6 @@ fn compute_preferred_size_intrinsic(
                 width_px,
                 height_px,
                 line_height_px,
-                generation,
             })
         }
         None => unreachable!(
@@ -263,7 +238,6 @@ fn text_input_intrinsic_from_current_state(
     element: &DomElementNode,
     font_size_px: f32,
     line_height_px: f32,
-    generation: u64,
     include_stepper_buttons: bool,
 ) -> Result<ElementDefaultPreferredSizeIntrinsic, DomError> {
     let input_type = string_attr_value(&element.attrs, &DomAttribute::Type)?.unwrap_or("text");
@@ -278,7 +252,6 @@ fn text_input_intrinsic_from_current_state(
         width_px,
         height_px: line_height_px,
         line_height_px,
-        generation,
     })
 }
 
@@ -286,7 +259,6 @@ fn textarea_intrinsic_from_current_state(
     element: &DomElementNode,
     font_size_px: f32,
     line_height_px: f32,
-    generation: u64,
 ) -> ElementDefaultPreferredSizeIntrinsic {
     let _ = element;
     let width_px = measured_text_width_px(&textarea_default_width_sample(), font_size_px);
@@ -296,7 +268,6 @@ fn textarea_intrinsic_from_current_state(
         width_px,
         height_px: line_height_px * usize_to_f32(row_count),
         line_height_px,
-        generation,
     }
 }
 
@@ -304,7 +275,6 @@ fn select_intrinsic_from_current_state(
     element: &DomElementNode,
     font_size_px: f32,
     line_height_px: f32,
-    generation: u64,
 ) -> Result<ElementDefaultPreferredSizeIntrinsic, DomError> {
     let value =
         single_line_text_for_measurement(string_attr_value(&element.attrs, &DomAttribute::Value)?);
@@ -319,7 +289,6 @@ fn select_intrinsic_from_current_state(
         width_px,
         height_px: line_height_px,
         line_height_px,
-        generation,
     })
 }
 
@@ -378,7 +347,6 @@ const DEFAULT_TEXTAREA_ROWS: usize = 2;
 const DEFAULT_NUMBER_INPUT_COLUMNS: usize = 10;
 
 fn img_intrinsic_from_current_state(element: &DomElementNode) -> Result<DomIntrinsic, DomError> {
-    let generation = next_intrinsic_generation(&element.base.intrinsic);
     if element.tag != DomTag::Img {
         return Ok(DomIntrinsic::None);
     }
@@ -393,11 +361,7 @@ fn img_intrinsic_from_current_state(element: &DomElementNode) -> Result<DomIntri
         element.lowered_image_source_kind(),
         Some(LoweredImageSourceKind::InternalIcon(_))
     ) {
-        return icon_img_intrinsic_from_attrs(
-            &element.attrs,
-            DEFAULT_ICON_INTRINSIC_FONT_SIZE_PX,
-            generation,
-        );
+        return icon_img_intrinsic_from_attrs(&element.attrs, DEFAULT_ICON_INTRINSIC_FONT_SIZE_PX);
     }
     let (width_px, height_px) =
         img_placeholder_dimensions_for_authored_size(authored_width_px, authored_height_px);
@@ -408,14 +372,12 @@ fn img_intrinsic_from_current_state(element: &DomElementNode) -> Result<DomIntri
         width_px,
         height_px,
         aspect_ratio: width_px / height_px,
-        generation,
     }))
 }
 
 fn icon_img_intrinsic_from_attrs(
     attrs: &DomAttrs,
     inherited_font_size_px: f32,
-    generation: u64,
 ) -> Result<DomIntrinsic, DomError> {
     let authored_width_px = parse_optional_pixel_attr_value(attrs, &DomAttribute::Width)?;
     let authored_height_px = parse_optional_pixel_attr_value(attrs, &DomAttribute::Height)?;
@@ -428,7 +390,6 @@ fn icon_img_intrinsic_from_attrs(
         width_px,
         height_px,
         aspect_ratio: 1.0,
-        generation,
     }))
 }
 
@@ -477,15 +438,6 @@ fn validate_img_src(value: &DomAttributeValue) -> Result<(), DomError> {
         | DomAttributeValue::Integer(_)
         | DomAttributeValue::Float(_)
         | DomAttributeValue::Color(_) => Err(DomError::InvalidAttributeValue),
-    }
-}
-
-fn next_intrinsic_generation(current: &DomIntrinsic) -> u64 {
-    match current {
-        DomIntrinsic::Text(metrics) => metrics.generation.wrapping_add(1),
-        DomIntrinsic::Img(metrics) => metrics.generation.wrapping_add(1),
-        DomIntrinsic::ElementDefaultPreferredSize(metrics) => metrics.generation.wrapping_add(1),
-        DomIntrinsic::None | DomIntrinsic::NotMeasured => 0,
     }
 }
 

@@ -48,10 +48,13 @@ invert the ownership the architecture depends on: with dirty bits, state about
 what a pass owes lives on the node; with versions, it must live in the
 ephemeral pass.
 
-The `generation` fields on the `DomIntrinsic` variants are the known
-wrong-model artifact: written on every intrinsic recompute, read by no
-decision path, and scheduled for removal as a labeled changeset against the
-canonical-snapshot contract. The one legitimate counter is
+The `generation` fields on the `DomIntrinsic` variants were removed as a
+labeled changeset against the canonical-snapshot contract: they were written
+on every intrinsic recompute and read by no decision path — worse, the
+preferred-size and icon paths compared them, so every style recompute
+manufactured phantom layout/paint dirties for form controls and icon images.
+Change detection is now plain equality over the measured fields, reported by
+the returned bool. The one legitimate counter is
 `StyleRuntime::revision`: boundary change detection at the shared-context
 seam, with exactly one reader (`RootDom`, once per update), where no
 back-pointer from the shared runtime to its roots can exist.

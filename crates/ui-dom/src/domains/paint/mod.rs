@@ -672,7 +672,6 @@ fn text_intrinsic_from_metrics(font_size_px: f32, metrics: &TextIntrinsicMetrics
         min_content_width_px: metrics.min_content_width_px,
         max_content_width_px: metrics.max_content_width_px,
         line_height_px: metrics.line_height_px,
-        generation: 0,
     }
 }
 

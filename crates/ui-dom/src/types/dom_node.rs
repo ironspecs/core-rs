@@ -128,7 +128,6 @@ pub struct TextIntrinsic {
     pub min_content_width_px: f32,
     pub max_content_width_px: f32,
     pub line_height_px: f32,
-    pub generation: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -136,7 +135,6 @@ pub struct ImgIntrinsic {
     pub width_px: f32,
     pub height_px: f32,
     pub aspect_ratio: f32,
-    pub generation: u64,
 }
 
 /// Default preferred size metrics for intrinsic element controls.
@@ -149,7 +147,6 @@ pub struct ElementDefaultPreferredSizeIntrinsic {
     /// Content-box preferred height for this control.
     pub height_px: f32,
     pub line_height_px: f32,
-    pub generation: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -1763,13 +1760,15 @@ mod tests {
         .expect("placeholder");
         let intrinsic_changed = node.after_attr_write_intrinsic_update(prepared_intrinsic);
 
-        assert!(intrinsic_changed);
+        // Placeholder is not a measured preferred-size field, so a
+        // placeholder-only write must not manufacture a phantom change: the
+        // removed `generation` counter used to make this report `true`.
+        assert!(!intrinsic_changed);
         let DomIntrinsic::ElementDefaultPreferredSize(after) = node.intrinsic() else {
             panic!("input should keep preferred-size intrinsic after attr write");
         };
         assert_f32_eq(after.width_px, before.width_px);
         assert_f32_eq(after.font_size_px, before.font_size_px);
-        assert_eq!(after.generation, before.generation.wrapping_add(1));
     }
 
     #[test]
@@ -1879,10 +1878,10 @@ mod tests {
         let mut node = DomNode::text(test_owner_document_key(), "hello".into());
         node.after_create_intrinsic_update()
             .expect("text create intrinsic should measure");
-        let previous_intrinsic = match node.intrinsic() {
-            DomIntrinsic::Text(intrinsic) => intrinsic.clone(),
+        match node.intrinsic() {
+            DomIntrinsic::Text(_) => {}
             other => panic!("text should keep text intrinsic after create, got {other:?}"),
-        };
+        }
 
         let intrinsic_changed = node.after_style_recompute_intrinsic_update(
             20.0,
@@ -1897,10 +1896,6 @@ mod tests {
             panic!("text should keep text intrinsic after style stage");
         };
         assert_f32_eq(next_intrinsic.font_size_px, 20.0);
-        assert_eq!(
-            next_intrinsic.generation,
-            previous_intrinsic.generation.wrapping_add(1)
-        );
     }
 
     #[test]
@@ -1908,10 +1903,10 @@ mod tests {
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Input);
         node.after_create_intrinsic_update()
             .expect("input create intrinsic should measure");
-        let previous_intrinsic = match node.intrinsic() {
-            DomIntrinsic::ElementDefaultPreferredSize(intrinsic) => intrinsic.clone(),
+        match node.intrinsic() {
+            DomIntrinsic::ElementDefaultPreferredSize(_) => {}
             other => panic!("input should start with preferred-size intrinsic, got {other:?}"),
-        };
+        }
 
         let intrinsic_changed = node.after_style_recompute_intrinsic_update(
             20.0,
@@ -1926,10 +1921,6 @@ mod tests {
             panic!("input should keep preferred-size intrinsic after style stage");
         };
         assert_f32_eq(next_intrinsic.font_size_px, 20.0);
-        assert_eq!(
-            next_intrinsic.generation,
-            previous_intrinsic.generation.wrapping_add(1)
-        );
     }
 
     #[test]
@@ -2435,7 +2426,6 @@ mod tests {
             min_content_width_px: 24.0,
             max_content_width_px: 48.0,
             line_height_px: 20.0,
-            generation: 3,
         });
         node.base_mut().layout.available_width_px = 320.0;
         node.base_mut().layout.available_height_px = 180.0;
