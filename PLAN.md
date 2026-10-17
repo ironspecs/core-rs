@@ -843,6 +843,223 @@ and caching policy remain the open axes). The "N identical rows" row of
 S1.4's table now reads: N compact inline copies — still far below N
 BTreeMaps with heap strings.
 
+## The presentation value table (approach B, enumerated from source 2026-10-17)
+
+The closed presentation vocabulary with its value types, grammars, and
+computed forms — the concrete registry `DeclValue` and the keyword tables
+come from. Grammars are today's closed sets (`dom_attr_parse.rs`); groups
+follow S1's split; "Inherited?" follows CSS — with two gaps flagged
+`(gap)` where our pinned transmitting set disagrees.
+
+### Inherited groups
+
+| Property | Group | DeclValue | Grammar (closed set) | Computed form |
+| --- | --- | --- | --- | --- |
+| `font-size` | font | Length | `0`, px, em (no `unset`) | px f32; em → parent font |
+| `line-height` | font | Length | `normal`, unitless ≥0, px, em | px f32, 1px floor; `normal` → None |
+| `font-family` | font | Text | string list (unparsed) | interned text — inherited in CSS, not transmitted today **(gap)** |
+| `font-weight` | font | Keyword | string today; CSS: `normal`,`bold`,`bolder`,`lighter`,100–900 | keyword **(gap)** |
+| `font-style` | font | Keyword | `normal`, `italic` (CSS adds `oblique`) | keyword **(gap)** |
+| `text-align` | text | Keyword | start, left, center, right, justify→justified, end | keyword |
+| `direction` | text | Keyword | ltr, rtl | keyword |
+| `white-space` | text | Keyword | normal, nowrap, pre, pre-wrap, pre-line, break-spaces | keyword |
+| `overflow-wrap` | text | Keyword | normal, break-word, anywhere | keyword |
+| `word-break` | text | Keyword | normal, break-all, break-word, keep-all | keyword |
+| `color` | color | Color | `transparent`, hex6/8, `rgb`/`rgba`, 5 named | [f32;4] at boundary |
+
+### Non-inherited groups
+
+| Property | Group | DeclValue | Grammar (closed set) | Computed form |
+| --- | --- | --- | --- | --- |
+| `display` | box | Keyword | block, inline, inline-block, none, flex, inline-flex | keyword |
+| `position` | box | Keyword | static, relative, absolute, fixed | keyword |
+| `overflow` | box | Keyword | string today (scroll/clip consumers) | keyword table owed |
+| width/height, min/max w/h, top/left/right/bottom, margin×4, padding×4, border×4 | box | Length | `unset`, `0`, px, em | px f32 (em → own font-size; verify vs CSS Values §em) |
+| `opacity` | visual | Number | 0.0–1.0 | f32 |
+| `background-color`, `border-*-color`×4, `outline-color`, `caret-color` | visual | Color | as `color` | [f32;4] |
+| `outline-width`, `outline-offset` | visual | Length | px string today | px f32 |
+| `border-radius` | visual | Length[4] | per-corner px today | px f32 ×4 |
+| `flex-direction` | flex | Keyword | row, row-reverse, column, column-reverse | keyword |
+| `flex-wrap` | flex | Keyword | nowrap, wrap, wrap-reverse | keyword |
+| `flex-flow` | flex | shorthand | expands to direction+wrap at parse | — |
+| `flex-grow`, `flex-shrink` | flex | Number | ≥0 number | f32 |
+| `flex-basis` | flex | Length/Keyword | auto, content, `0`, px, em | resolved at layout |
+| `flex` | flex | shorthand | expands to grow+shrink+basis at parse | — |
+| `order` | flex | Integer | integer | i64 |
+| `justify-content` | flex | Keyword | start, end, flex-start, flex-end, center, space-between, space-around, space-evenly | keyword |
+| `align-items`, `align-self` | flex | Keyword | alignment keywords + stretch (+ auto for align-self) | keyword |
+| `align-content` | flex | Keyword | alignment + distribution keywords | keyword |
+| `place-content`, `place-items`, `place-self` | flex | shorthand | expands to align/justify pairs at parse | — |
+| `gap`, `row-gap`, `column-gap` | flex | Length | px today | px f32 |
+| `transform` | (paint) | Text | string today (`translateX/Y` parsed downstream) | typed owed |
+| `transition-property/-duration/-timing-function/-delay` | (overlay) | Text list | comma lists, ms values | feeds the transition scheduler, not a computed group |
+
+Notes and newly surfaced items:
+
+- **Quirk (conformance):** the `transition` *shorthand* is rejected in
+  stylesheet declarations today (`style_attr_allows_property`), though
+  browsers accept it; only longhands parse. Fix lands with the value
+  table; registry candidate.
+- **Divergence candidate 3:** `font-family`, `font-weight`, `font-style`
+  are inherited properties per CSS Fonts but absent from the pinned
+  transmitting set (the closed 8). Pin with an `off_spec_*` proof before
+  any inheritance redesign.
+- `dir` (content attribute) and `direction` (presentation property)
+  coexist today; the presentation property wins for text layout. Keep
+  the split: `dir` stays a content attribute.
+- `em` resolution rule (CSS Values §em): `font-size` em resolves against
+  the parent's computed font-size; every other property's em against the
+  element's own. Today's box-length em handling follows the same rule
+  through layout's style projection — verify at implementation.
+
+## Algorithms (2026-10-17)
+
+The missing aspect, recorded: every algorithm the redesigned system runs,
+with inputs, outputs, steps, cost, and its Blink/Gecko algorithm shape.
+The session's prime directive applies: adopt the engines' algorithm
+shapes; diverge only for documented Rust/Bevy memory or performance
+reasons, and only in mechanics, never in observable output.
+
+### A0 — Stylesheet compile (exists; keep)
+
+In: CSS text + origin. Out: compiled rules + index updates. Steps: strip
+block comments → split blocks → parse selector (A2) → parse declarations
+(A1) → dedup by identity hash → insert into the rule store → update
+right-most/origin/identity indexes → bump revision. Cost:
+O(declarations). Analog: Blink `StyleEngine` rule-set insertion; Servo
+`Stylist` update. No divergence.
+
+### A1 — Declaration parse (G + B's expansion point)
+
+In: declaration-list text. Out: typed `Declaration`s + drop count.
+Steps: split top-level `;` → split `name: value` → property lookup in
+the value table → per-property grammar parse → on shorthand, expand to
+longhands in place (Cascade §3) → on malformed, drop the declaration,
+count it, continue (CSS 2.1 §4.1.7). Cost: O(declarations). Analog:
+css-syntax-3 §5.4 consume-a-declaration; Servo's `DeclarationParser`.
+Divergence: hand-rolled closed grammars per property family (justified:
+closed vocabulary, fail-closed, zero backtracking).
+
+### A2 — Selector parse + specificity (exists; keep)
+
+In: selector text. Out: `Vec<SimpleSelector>` + (a,b,c) specificity.
+Closed subset: `#id`, `.class` (+multi), `tag`, `tag.class`, `*`,
+descendant combinator, four pseudo-classes. Specificity counted per
+Selectors §17. Analog: Blink `CSSSelector` specificity. No divergence
+beyond the closed subset (recorded unimplemented).
+
+### A3 — Rule matching (exists; keep)
+
+In: the element's (id, classes, tag) + the rule store. Out: matched
+rules. Steps: right-most inverted-index lookup (id/class/tag/universal
+buckets) → dedup candidates → right-to-left match with a parent-chain
+scan per preceding compound. Cost: O(candidates × tree height). Analog:
+Blink `RuleSet` bucketing + match; Servo `SelectorMap`. Same shape; the
+subset narrows only the combinator vocabulary.
+
+### A4 — The cascade: collect → sort → winners fold (A + F)
+
+In: the node's inline block, matched rule blocks, behavior sheet. Out:
+`winners: [Option<(DeclValue, Precedence)>; PROPERTY_COUNT]` (stack,
+fixed-size, zero-alloc). Steps: fold behavior sheet (UA-ish tier) →
+fold matched rules sorted by (origin.priority, specificity, order) →
+fold the inline block at top specificity (css-style-attr §4); a later or
+higher-precedence declaration takes the slot. Cost: O(declarations
+applied). Analog: Blink `MatchResult` sort-then-apply; Servo's
+`ApplicableDeclarations` cascade. Divergence: slot-array fold instead of
+sorted-vector apply (justified: the closed property vocabulary enables
+O(1) slot indexing; observable order semantics identical — pinned by
+cascade.rs families 1–3).
+
+### A5 — Defaulting and inheritance (Cascade §7; Servo `StyleBuilder` shape)
+
+In: winners + the parent's inherited groups (or ancestor seed). Out: the
+node's six groups. Steps: inherited groups (font, text, color) start as
+a copy of the parent's group, then winners override; non-inherited
+groups start from initial values, then winners override. Analog: Servo's
+`StyleBuilder`, which splits inherited vs reset structs and seeds each
+differently — our six groups are that algorithm applied to our
+vocabulary. No output divergence; today's two-channel materialization
+mechanics are superseded by group copies.
+
+### A6 — Unit resolution (CSS Values §em)
+
+In: typed lengths + font context. Out: px f32 where resolvable without
+layout. Rules: `font-size` em → parent's computed font-size; every
+other property's em → the element's own computed font-size. Current
+algorithm: pending-scale accumulation on the ancestor climb (nearest
+absolute ancestor wins; em scales multiply down the chain) —
+output-equivalent to the spec rule, pinned by cascade.rs's em-chain
+rows. Keep; recorded as mechanics-divergence with identical output.
+
+### A7 — Dirty classification (group diff → hint map) (H)
+
+In: old six groups, new six groups. Out: dirty bits. Steps: compare per
+group (six `Copy` compares) → map changed groups via a static table:
+box/flex → layout+paint; visual/color → paint (+damage rect); font/text
+→ layout+paint + text remeasure + children style-dirty. Analog: Gecko
+`CalcStyleDifference` → change hints (repaint vs reflow vs reconstruct);
+Blink style-recalc change types. Divergence: classified by *group
+identity* rather than per-property difference — coarser, zero-alloc,
+and exact at our group granularity; scheduling outcomes pinned by the
+perf counters.
+
+### A8 — Recompute traversal (exists; keep; doctrine home)
+
+In: a dirty layer root + its ancestor seed. Out: a recomputed subtree,
+cleared bits, emitted counters. Steps: seed from ancestors outside the
+root → DFS, work-on-visit per node (match, fold, resolve, diff, apply,
+remeasure text, clear) → no batch state leaves the pass. Analog: Blink
+`StyleRecalc` traversal with change propagation; Gecko `RestyleManager`
+pending-restyle flush — phase shape already pinned by
+`stylesheet_lifecycle.rs`. No divergence; structural rule 4 lives here.
+
+### A9 — Damage propagation (crate-owned mechanics)
+
+In: a damaged node + its border box. Out: per-ancestor bounded damage
+buckets up to the layout root. Steps: compute the node's damage rect →
+walk parents to the layout root pushing the rect into each bucket
+(capacity 8) → overflow promotes the chain to full repaint → stop at an
+already-full ancestor. Analog: none claimed — browsers invalidate visual
+rects through compositing structures we do not have. Documented
+mechanics divergence, justified by the retained-layer/Bevy world;
+consumption decision is open question 11.
+
+### A10 — Inline block upsert (Servo `prepare_for_update` shape)
+
+In: an inline block + a new declaration. Out: a minimal edit + a changed
+bool. Steps: membership bitset check → update-in-place or append
+preserving source order → return whether the block changed. Cost:
+O(block size); blocks are tiny. Analog: Servo's `DeclarationUpdate`
+machinery (`None` / `Append` / `UpdateInPlace` / `AppendAndRemove`). No
+divergence.
+
+### A11 — Unload/reload: re-fold from sources (D's provenance fix)
+
+In: a stylesheet unload (origin tombstone). Out: affected elements
+recomputed. Algorithm: the pass re-folds winners from the *current
+sources* — inline blocks are element-owned and simply win again where
+the stylesheet previously won, so restore-not-delete falls out of the
+algorithm rather than out of storage bookkeeping.
+`style_pass_attrs_by_node` ownership tracking is deleted by
+construction. Analog: browsers recompute against the current rule set;
+there is nothing to restore *to* except the remaining declarations.
+This is the algorithmic statement of D1's fix — and A's acceptance
+test.
+
+### Cost and observability map
+
+| Algorithm | Cost | Observed by |
+| --- | --- | --- |
+| A0 compile | O(declarations) per load | stylesheet-lifecycle proofs |
+| A1 parse | O(declarations) per block | drop-count metric (new) |
+| A3 match | O(candidates × height) per element | style-pass counters |
+| A4 fold | O(declarations applied) per element | style-pass counters |
+| A5 default | O(groups) per element | — |
+| A7 classify | six compares per element | LayoutUpdated / paint counters |
+| A8 traversal | O(dirty subtree) | StyleUpdated counter, perf pins |
+| A9 damage | O(depth) per dirty node | paint counters |
+
 ## Open questions
 
 1. ~~Migration contract~~ — DECIDED (D5): hard break, string ergonomics
@@ -877,10 +1094,13 @@ BTreeMaps with heap strings.
    query**, debug-priced, which does not constrain the computed store's
    design. Consumers' probe call sites become debug-priced calls; no
    special read surface is owed.
-10. Presentational-hint tier: do any of our content attributes carry
-    presentational semantics that should map at §6.5's weakest tier
-    (candidate: `img` width/height sizing hints)? Enumerate before the
-    tier model lands.
+10. ~~Presentational-hint tier~~ — RESOLVED: what looked like hints are
+    the `intrinsic` system (`DomIntrinsic`, `element_behaviors/
+    intrinsic_size.rs`): img/text/controls carry intrinsic values with
+    their own loading lifecycles, and authored width/height feed
+    intrinsic measurement, never the cascade. No presentational-hint
+    tier is owed unless true presentational attributes are admitted
+    later.
 11. Damage rects: consume for targeted repaint or delete (approach I) —
     decided together with the rect-pass unconditional-clear item, the
     largest known perf item in the crate.
@@ -962,3 +1182,16 @@ BTreeMaps with heap strings.
   groups moved inline; the arena survives for declarations only, its
   crate a category choice by measurement; the epoch/trim problem
   evaporated with the computed arena.
+- **2026-10-17 — "img hints" are the intrinsic system,** with its own
+  loading lifecycles (create → attr-write preview → style-recompute
+  commit). Sizing hints feed intrinsic measurement; they never enter
+  the cascade. Open question 10 closed.
+- **2026-10-17 — Two more conformance gaps surfaced by the value
+  table:** `font-family`/`font-weight`/`font-style` inherit in CSS but
+  are absent from the closed transmitting set (divergence candidate 3),
+  and the `transition` shorthand is rejected in stylesheet declarations
+  (quirk; browsers accept it). Both recorded with the table.
+- **2026-10-17 — Algorithms are now first-class in this document.**
+  Every redesigned step names its Blink/Gecko algorithm shape and its
+  divergence justification. A11 shows the inline-precedence fix is
+  algorithmic (re-fold from sources), not storage bookkeeping.
