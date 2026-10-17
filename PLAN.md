@@ -624,7 +624,8 @@ interned property ids).
 - **Verdict (2026-10-17): ABSORBED into S1 — with the reckoning made
   honest.** The sparse answer is S1's concrete shape, but its "~nothing
   for unstyled nodes" goal is only half-met: unstyled nodes save
-  `decl: None` yet still carry the seven-group inline footprint (and
+  `decl: None` yet still carry the seven-group + config-slot inline
+  footprint (and
   unstyled *descendants* must carry copied inherited groups regardless —
   inheritance). The mitigating truth the earlier verdict missed: today's
   unstyled descendants are not sparse either — each pays four
@@ -921,15 +922,27 @@ record (beside `box_model`, `layout`, `paint` in `DomNodeBase`):
     struct NodePresentation {
         decl: Option<DeclBlockKey>,   // inline style block, arena-resident
         computed: ComputedGroups,     // the seven groups, inline by value
-        transition_config: TransitionConfig,  // resolved longhands, inline
+        transition_longhands: ResolvedTransitionLonghands,
     }
-    // transition_config: the scheduler-facing slot, written by the pass
-    // from winners (step 3), read by the transition scheduler when a value
-    // change arrives. It is NOT a computed group and NOT diff-classified:
-    // config changes schedule nothing by themselves (today's longhand
-    // writes dirty nothing either). D8's pseudo-state→transition chain
-    // depends on it — stylesheet rules, never just the inline block,
-    // supply these longhands, so the cascaded result must persist here.
+    // ResolvedTransitionLonghands: the scheduler-facing slot, written by
+    // the pass from winners (step 3), read by the transition scheduler
+    // when a value change arrives. NOT a computed group and NOT
+    // diff-classified: longhand changes schedule nothing by themselves
+    // (today's longhand writes dirty nothing either — verified: they
+    // appear in none of the invalidation classes). D8's pseudo-state→
+    // transition chain depends on it — stylesheet rules, never just the
+    // inline block, supply these longhands, so the cascaded result must
+    // persist here. (Renamed from an earlier `TransitionConfig` draft:
+    // `DomTransitionConfig` already exists — the resolved spec of one
+    // RUNNING transition, built from this slot's contents.)
+    //
+    // Shape (bounded, matching the damage-rect precedent): the four
+    // longhand lists are fixed-capacity inline lists (capacity 4,
+    // ArrayVec-class) of typed entries — property ids, durations,
+    // timing keywords, delays — parsed once by the pass, never
+    // re-parsed per read. Lists beyond capacity are rejected at
+    // admission (set/set_all contracts + drop metric), revisitable via
+    // the admission policy (D6) if a consumer needs more.
 
 Text-valued properties (`font-family`, `transform`) intern their strings
 in a small string arena (`TextKey`), or stay stringly node attrs until
@@ -994,8 +1007,9 @@ nested layer boundary crosses it):
        source order: behavior sheet (UA-ish tier) → matched rules sorted by
        (origin.priority, specificity, order) → inline block (top specificity)
     3. resolve the seven groups from winners + inherited seeds, and route
-       the four transition-config longhands to the node's scheduler slot
-       (S1.1; not a group, not diff-classified)
+       the four transition longhands into the node's
+       ResolvedTransitionLonghands slot (S1.1; bounded inline lists; not
+       a group, not diff-classified)
     4. diff old vs new groups (seven memcmp-cheap Copy compares) → classify:
          box_ changed       → mark layout+paint + layer-membership re-eval
          flex changed       → mark layout+paint
@@ -1137,7 +1151,8 @@ measurement), `style_mut.rs` (the two write contracts), and
 `computed_transform_group.rs` — plus `computed_groups.rs`,
 `node_presentation.rs`, `computed_style_ref.rs`, one file per group view
 type (seven), `group_dirty_classification.rs` (A7's static table, prime
-unit-test target), and `transition_config.rs` (the scheduler slot, S1.1).
+unit-test target), and `resolved_transition_longhands.rs` (the scheduler
+slot, S1.1).
 Every behavior-bearing file above ships with a real inline test module;
 the winners-fold precedence ordering, keyword grammars, A10 upsert
 correctness, and A7's classification table are the named unit-test
@@ -1212,7 +1227,7 @@ follow S1's split; "Inherited?" follows CSS — with two gaps flagged
 | `row-gap`, `column-gap` | flex | Length | px today | px f32 |
 | `gap` | flex | shorthand | expands to row-gap+column-gap at parse (B; today it is a standalone attribute — behavior refinement toward CSS) | — |
 | `transform` | transform | Text | `translateX/Y` px functions today; typed at parse with B | translate px [f32; 2] |
-| `transition-property/-duration/-timing-function/-delay` | (scheduler slot) | Text list | comma lists, ms values | persisted on the node by the pass (`transition_config`, S1.1); read by the scheduler on value change; not a computed group, not diff-classified |
+| `transition-property/-duration/-timing-function/-delay` | (scheduler slot) | Text list | comma lists, ms values | persisted on the node by the pass (`ResolvedTransitionLonghands`, S1.1 — bounded inline lists, capacity 4); read by the scheduler on value change; not a computed group, not diff-classified |
 
 Notes and newly surfaced items:
 
@@ -1331,7 +1346,12 @@ per group (seven `Copy` compares) → map changed groups via a static
 table: box → layout+paint + layer-membership re-evaluation; flex →
 layout+paint; transform → paint + layer-membership re-evaluation;
 visual/color → paint (+damage rect); font/text → layout+paint + text
-remeasure. No children-marking row exists: the pass walks the full dirty
+remeasure. When a group compares changed, the pass also yields the
+*moving fields* by field-level compare; the transition scheduler matches
+its `transition-property` list against those field names, not the group
+name — so `transition-property: font-size` does not fire on a
+line-height move (both live in the font group). No children-marking row
+exists: the pass walks the full dirty
 subtree, so every visited descendant is re-seeded from its parent during
 the same pass (A5); a pass started above a nested layer boundary crosses
 it, and a clean nested layer root is a strong no-op — both behaviors are
@@ -1514,9 +1534,25 @@ edits. Dispositions:
 | 2-3a | Write→invalidation diagram showed G semantics on the strict `set` path | **Accepted, fixed.** The diagram now shows the strict typed-error contract. |
 | 2-3b | Tradeoff table: "seven inline Copy groups (styled nodes only)" contradicts inline-everywhere | **Accepted, fixed.** "(every element node)" — matching S1.1, E's reckoning, and visit locality. |
 | 2-3c | "~17 types" undercounts the section's own file list | **Accepted, fixed.** Now "~25 behavior-bearing files," with the impl-light folds (`TextKey`, `PropertySet`, `Precedence`) explicitly assigned to `decl_value.rs`, and `transition_config.rs` added to the list. |
-| 2-4 | Transition-config persistence unspecified | **Accepted, fixed.** `NodePresentation.transition_config`: a scheduler-facing inline slot written by the pass from winners (S1.2 step 3), read by the scheduler on value change, not a group, not diff-classified. This closes the D8-chain hole (stylesheet rules, never just inline blocks, supply the longhands). |
+| 2-4 | Transition-config persistence unspecified | **Accepted, fixed.** `NodePresentation`'s scheduler-facing inline slot (renamed `ResolvedTransitionLonghands` in round 3 — see the third adjudication): written by the pass from winners, read by the scheduler on value change, not a group, not diff-classified. This closes the D8-chain hole (stylesheet rules, never just inline blocks, supply the longhands). |
 | 2-5a | Parse-tightening obligations unnamed | **Accepted, fixed.** D5's release mechanics and spine step 6 now carry the parse-tightening table (isolate, overflow, flex keywords, transform, font-weight, outline lengths, border-radius, gap), each row a D8-vs-fail-closed adjudication with the admission policy as valve. |
 | 2-5b | `set_attr` enforcement conflates two paths | **Accepted, fixed.** Typed `set_attr` loses presentation variants at the split (compile break — converts most call sites at compile time); only string-keyed `set_attr_str` needs the runtime `DomError`. |
 
 The second review's closing instruction is honored in the row 2a rewrite
 above: the adjudication table no longer falsifies the record it protects.
+
+## Third adversarial review adjudication (2026-10-17)
+
+The third review verified the round-2 resolution in full (diffed
+line-by-line; all eight dispositions verified) and found three
+one-sentence residues introduced by the 2-4 fix itself. Dispositions:
+
+| # | Point | Disposition |
+| --- | --- | --- |
+| 3-1 | `TransitionConfig` collides with the existing `DomTransitionConfig` (dom_transition.rs:66 — the resolved spec of one *running* transition) | **Accepted, fixed.** The slot type is renamed `ResolvedTransitionLonghands` (the cascaded longhands the spec is built from), the field to `transition_longhands`, and the file to `resolved_transition_longhands.rs`. The rename note in S1.1 names the relationship explicitly — no surprise from the name, per repo rule. |
+| 3-2 | "Resolved longhands, inline" does quiet work for a variable-length list | **Accepted, fixed.** Shape specified: fixed-capacity inline lists (capacity 4, ArrayVec-class — the damage-rect precedent) of typed entries, parsed once by the pass; over-capacity lists are rejected at admission via the set/set_all contracts + drop metric, revisitable through the admission policy (D6). E's footprint sentence now reads "seven-group + config-slot inline footprint." |
+| 3-3 | The scheduler's `transition-property` match needs field names, not group names | **Accepted, fixed.** A7 now states it: a changed group also yields the *moving fields* by field-level compare; the scheduler matches its property list against those field names — so `transition-property: font-size` does not fire on a line-height move. |
+
+The third review's closing assessment stands: rounds 1–3 are closed, the
+adjudication table does not falsify the record it protects, and the
+document is the design its spine presupposes.
