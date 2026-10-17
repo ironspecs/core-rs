@@ -530,11 +530,12 @@ that out: the engines run families of structures, and our candidates are
 families too, differing in how much of the engine shape we adopt.
 
 **Variant 1 — Servo-like:** ordered declaration vectors with parallel
-importance bits and COW sharing (for both stylesheet rules and inline
-style); computed style split into inheritance-grouped structs shared
-across nodes; difference-computed dirty hints (H). Maximal memory
-elegance and sharing; largest migration; most new machinery (id sets,
-COW discipline, rule cache).
+importance bits and arena-shared blocks (for both stylesheet rules and
+inline style); computed style split into inheritance-grouped structs
+interned and shared across nodes (substrate: proposal S1 — its COW
+substrate is superseded); difference-computed dirty hints (H). Maximal
+memory elegance and sharing; largest migration; most new machinery (id
+sets, intern discipline, rule cache).
 
 **Variant 2 — Blink-like:** typed parsed declarations in per-source
 stores; a computed store partitioned by inheritance with per-feature
@@ -559,6 +560,227 @@ The acceptance spine is unchanged: G's error-handling pin first, then
 A's inline-precedence acceptance test; every variant is judged against
 the same suite.
 
+## Proposal S1 — arena-resident style storage with view accessors (2026-10-17)
+
+**Status: PROPOSED, not decided.** This section replaces the Arc/COW
+substrate implied by Variant 1. COW is old-Rust; this crate already runs
+better patterns — `SlotMap` arenas with generational keys (rules, nodes,
+layer slots), validated leases (the layer pool), and borrow-view
+discipline (`as_*` accessors that hand out views, never ownership or
+clones — the `Option::as_ref` / `as_slice` / `SlotMap::get` standard).
+S1 applies those patterns to the whole style-data family.
+
+### S1.1 The structures (signatures, not final code)
+
+Declaration side — one arena for *all* declaration blocks (stylesheet
+rules and per-element inline style):
+
+    enum DeclValue {                          // typed at parse; no strings retained
+        Length(DeclLength),                   // Unset | Px(f32) | Em(f32)
+        Color([f32; 4]),
+        Keyword(KeywordId),                   // u16, per-property closed tables
+        Number(f32),
+        Integer(i64),
+        Text(TextKey),                        // font-family, transform: interned strings
+    }
+
+    struct Declaration { property: PresentationProperty, value: DeclValue }
+    // PresentationProperty: the closed presentation vocabulary AFTER the
+    // role split (approach C). Content attributes stay DomAttribute.
+
+    struct DeclBlock {
+        declarations: SmallVec<[Declaration; 4]>,  // source order preserved
+        present: PropertySet,                      // fixed bitset over PresentationProperty
+        // importance bits arrive with tier path F — parallel SmallBitVec, Servo shape
+    }
+
+    struct DeclStore { blocks: SlotMap<DeclBlockKey, DeclBlock> }
+    // StyleRule holds DeclBlockKey instead of an embedded attr_map.
+    // An element's inline style is its DeclBlockKey (None when never written).
+
+Computed side — inheritance-grouped, interned, immutable:
+
+    // Inherited groups (seed from parent keys during the pass):
+    struct ComputedFontGroup  { size_px: f32, line_height_px: Option<f32>,
+                                family: TextKey, weight: u16, style: FontStyleKw }
+    struct ComputedTextGroup  { align: TextAlignKw, direction: DirectionKw,
+                                white_space: WhiteSpaceKw, overflow_wrap: OverflowWrapKw,
+                                word_break: WordBreakKw }
+    struct ComputedColorGroup { color_rgba: [f32; 4] }
+    // Non-inherited groups (seed from initial values):
+    struct ComputedBoxGroup   { display, position, overflow,
+                                width, height, min_w, min_h, max_w, max_h,
+                                margin[4], padding[4], border[4], top, left, right, bottom }
+    struct ComputedFlexGroup  { direction, wrap, grow, shrink, basis, order,
+                                justify, align_items, align_self, align_content, gap[2] }
+    struct ComputedVisualGroup{ background_rgba, border_rgba[4], radius[4],
+                                outline_color, outline_width, outline_offset,
+                                caret_color, opacity }
+    // Every field typed; lengths resolved to px at style time where the
+    // grammar allows (em resolves against the element's own font size —
+    // computable without layout). Nearly all groups are plain Copy.
+
+    struct ComputedGroups { font: GroupKey, text: GroupKey, color: GroupKey,
+                            box_: GroupKey, flex: GroupKey, visual: GroupKey }
+    // 6 × 8-byte generational keys = 48 bytes per element node, replacing
+    // the presentation half of the flattened attr map.
+
+    struct ComputedStyleStore {
+        fonts:   InternArena<ComputedFontGroup>,
+        texts:   InternArena<ComputedTextGroup>,
+        colors:  InternArena<ComputedColorGroup>,
+        boxes:   InternArena<ComputedBoxGroup>,
+        flexes:  InternArena<ComputedFlexGroup>,
+        visuals: InternArena<ComputedVisualGroup>,
+    }
+    // InternArena = SlotMap<K, T> + hash→keys intern table. Groups are
+    // immutable once interned: mutation is intern-new-and-rekey on the node.
+
+Text-valued properties (`font-family`, `transform`) intern their strings
+in a small string arena (`TextKey`), or stay stringly node attrs until
+approach B's value-type table lands — deferred detail, flagged.
+
+### S1.2 The methods (signatures and contracts)
+
+Declaration writes (the D5 programmatic API, css-style-attr §4 semantics):
+
+    impl RootDom {
+        fn style_mut(&mut self, node: DomNodeSlotKey) -> StyleMut<'_>;
+    }
+    impl StyleMut<'_> {
+        /// Parses and upserts one declaration into the node's inline block,
+        /// then marks style dirty up to the layer root. Never marks layout
+        /// or paint directly: the pass classifies consequences.
+        fn set(self, property: &str, value: &str) -> Result<(), DomError>;
+        fn set_all(self, declaration_list: &str) -> Result<(), DomError>; // G semantics
+        fn remove(self, property: &str) -> Result<(), DomError>;
+    }
+
+Computed reads (the `as_*` standard: borrows, no ownership, no clones):
+
+    impl RootDom {
+        fn computed_style(&self, node: DomNodeSlotKey) -> ComputedStyleRef<'_>;
+    }
+    impl ComputedStyleRef<'_> {
+        fn as_font(&self) -> &ComputedFontGroup;
+        fn as_text(&self) -> &ComputedTextGroup;
+        fn as_color(&self) -> &ComputedColorGroup;
+        fn as_box(&self) -> ComputedBoxView<'_>;       // view may merge transition overlay
+        fn as_flex(&self) -> &ComputedFlexGroup;
+        fn as_visual(&self) -> ComputedVisualView<'_>;
+        fn snapshot(&self) -> ComputedStyleSnapshot;   // owned, for measurement probes
+    }                                                   // (compute_style_map's successor)
+
+The style pass per dirty element (D2/D3 mechanics, visitor doctrine):
+
+    1. seed inherited keys from parent (ancestor seed at layer roots — unchanged)
+    2. fold declarations into a stack-local fixed array:
+         winners: [Option<(DeclValue, Precedence)>; PRESENTATION_PROPERTY_COUNT]
+       source order: behavior sheet (UA-ish tier) → matched rules sorted by
+       (origin.priority, specificity, order) → inline block (top specificity)
+    3. resolve the six groups from winners + inherited seeds
+    4. intern each group → the node's new group keys
+    5. diff old vs new keys (six u64 compares) → classify dirties:
+         box_/flex changed  → mark layout+paint
+         visual/color       → mark paint only (damage rect)
+         font/text          → mark layout+paint, remeasure text intrinsics,
+                               and mark children style-dirty (inherited seeds moved)
+    6. clear the style bit
+
+### S1.3 Flow diagrams
+
+Storage topology:
+
+    DeclStore (SlotMap)                ComputedStyleStore (interned arenas)
+    ┌───────────────┐                  ┌──────────────────────────────┐
+    │ K1: rule blk  │◄─── StyleRule    │ fonts   F7  {14.0, 18.0, …}  │
+    │ K2: rule blk  │     {decl: K1}   │ texts   T3  {start, ltr, …}  │
+    │ K3: row blk   │◄─── node inline  │ colors  C9  {#f7f9ff…}       │
+    └───────▲───────┘                  │ boxes   B2  {flex, 180×…}    │
+            │                          │ flexes  X1  {row, grow 1, …} │
+    node: { decl: K3,                  │ visuals V5  {bg #2A313D, …}  │
+            computed: {F42,T3,C9,      └───────▲──────────────────────┘
+                       B2,X1,V5} }             │ interned by content hash
+                                               │
+    read: root.computed_style(node).as_visual().background_rgba
+          → &[f32; 4]  (borrow; no clone, no ownership)
+
+Write → invalidation flow (the P2 timing fix):
+
+    root.style_mut(row).set("background-color", "#2A313D")?
+        │
+        ▼  typed parse; malformed → dropped + metric (G)
+    DeclStore: upsert into row's DeclBlock
+        │
+        ▼  mark style-dirty: row → … → layer root   (ONE bit per node)
+        │  (layout/paint NOT marked here — the pass classifies)
+        ▼
+    next update → style pass: winners fold → resolve → intern → rekey row
+        │
+        ▼  key diff: visual changed; box_/flex/font/text/color unchanged
+        ▼
+    paint-only dirty + damage rect; layout never touched
+
+Inheritance flow (unifies the two current channels):
+
+    parent  { font: F7, text: T3, color: C9, … }
+        │   DFS carries parent's inherited keys
+        ▼
+    child winners { font-size: 20px }
+        font  = intern(F7 with size_px = 20.0) → F42   (new group)
+        text  = T3          (key copy — no recompute, no clone)
+        color = C9          (key copy)
+        ▼
+    grandchild, no declarations: font F42, text T3, color C9 (all key copies)
+
+### S1.4 Tradeoffs, made visible
+
+| axis | today (flattened attrs) | Arc+COW groups (rejected) | S1 arena + views |
+|---|---|---|---|
+| node presentation storage | BTreeMap + heap strings | 6 Arc ptrs + refcount | 6 u64 keys, no atomics |
+| inline write cost | normalize, map insert, static dirty class | COW clone-on-write | block upsert + one style bit |
+| read path | `presented_attr(...).cloned()` | Arc deref | borrow view, zero clones |
+| recompute diff | per-attr compare in `set_attr_internal` | deep group equality | six key compares |
+| inheritance | materialize strings into child attrs + context carry | Arc clone per group | key copy per group |
+| N identical rows | N full maps | N ptrs + 1 shared group | N keys + 1 interned group |
+| shared-data mutation | n/a | AtomicBool COW dance | forbidden (interned immutable) |
+| reclamation | node drop frees map | refcount | append-only arenas; needs epoch/trim policy (open) |
+| stale access | n/a | Arc keeps alive | generational key rejects |
+
+Costs S1 must answer for, honestly:
+
+- **Interning overhead:** hash + lookup per group per recomputed node. The
+  bet: themed UIs share groups heavily (rows of identical items), so hits
+  dominate. Verdict comes from counters (intern hit/miss, live groups per
+  arena — enum-indexed, zero-alloc), pinned before and after.
+- **Whole-group granularity:** a one-property font change interns a new
+  font group. Groups are small `Copy` structs; acceptable, but it means
+  group boundaries are a real design decision (they are the dirty
+  classification classes — H becomes "which keys moved").
+- **Append-only arenas:** distinct-style growth is bounded by the product
+  of themes × states, small for retained UIs, but an epoch/trim policy is
+  owed (candidate: trim on stylesheet unload epochs; decide at design).
+- **Snapshot contract:** canonical snapshots serialize *resolved
+  projections*, never keys (session-local). Another v0.6.0-class contract
+  note.
+- **Transition overlay merge:** `as_box()`/`as_visual()` merge the
+  per-node transition overlay at view level; the merge mechanics are a
+  design detail, not settled here.
+
+Effect on the variants: S1 is the physical substrate for V1 and V2 (V1's
+"COW sharing" is superseded — the remaining V1 essence is inheritance-
+grouped interned structs; V2 adds matched-rule caching (J) on the same
+substrate). V3 (flattened attrs stay) remains the fallback if interning
+measures poorly. The variant choice collapses to: computed-store
+granularity and caching policy, on one shared substrate.
+
+Proof obligations if S1 is adopted: the full 249-proof suite unchanged in
+observable outcome; new zero-alloc counters (intern hit/miss, live groups,
+style-pass nodes visited) pinned alongside the existing perf pins; the
+cascade families unchanged (observable cascade semantics are identical);
+`off_spec_direct_attr_write...` relabels on-spec when A lands on this
+substrate.
+
 ## Open questions
 
 1. ~~Migration contract~~ — DECIDED (D5): hard break, string ergonomics
@@ -576,8 +798,10 @@ the same suite.
 5. `!important`, UA sheet, animations, layers: admission path is F, staged
    by consumer need, each stage proof-gated. The precedence-key structure
    must not preclude them.
-6. Sparse storage shape: internal freedom (D6) — decide at design time
-   with an allocation budget and a perf-metric pin.
+6. Sparse storage shape: internal freedom (D6) — proposal S1 is the
+   candidate answer (arena + interning + view accessors); its counters
+   decide. The V3 fallback (flattened attrs) stands if interning
+   measures poorly.
 7. Inheritance channels: observable behavior is spec inheritance; channel
    unification is internal freedom (D6) — decide with the store design.
 8. Fate of public `apply_styles`: unused by any consumer and bypasses
@@ -650,3 +874,12 @@ the same suite.
   tested; nothing repaints from it, and the rect pass clears the whole
   surface per layer per apply regardless. Producer exists; the consumer
   decision is open question 11.
+- **2026-10-17 — COW is superseded before it was ever adopted.** The
+  crate already runs the better patterns: SlotMap arenas with
+  generational keys, validated leases, and `as_*` borrow-view discipline.
+  Proposal S1 applies them to the style-data family and turns the
+  style-difference problem into six key compares per node — the cheap
+  version of the engines' change-hint classification. The honest new
+  costs it introduces: interning overhead (counter-measured), whole-group
+  granularity (group boundaries = dirty classes), and an owed epoch/trim
+  policy for append-only arenas.
