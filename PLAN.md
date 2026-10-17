@@ -70,6 +70,25 @@ contract: `tests/layout_proofs/README.md`.
 - **Dirty-bit doctrine.** Per-node per-domain booleans, upward propagation,
   work-on-visit passes, zero-allocation metrics. This doctrine is **not** up
   for redesign.
+- **Transition overlay.** `DomNode::presented_attr` consults the node's
+  active-transition map *before* stored attrs, so a running transition wins
+  over every stored value. This is observably equivalent to transitions'
+  tier-1 position in the spec cascade — achieved mechanically, not by
+  cascade participation. A candidate case of "internal shape free,
+  observable answer already correct."
+- **Public styling API surface today:** `RootDom::set_attr` /
+  `set_attr_str` (validated string ergonomics consumers love),
+  `RootDom::apply_styles` (**public but unused by any consumer** — bypasses
+  D1–D3; demotion candidate), `RootDom::compute_style_map` (public one-off
+  style query; used by consumers as a measurement probe — 10+ call sites in
+  `stream-pro2`; needs a successor or survival), `RootDom::set_transition`;
+  `RootDomContext::load_stylesheet` / `unload_stylesheet`.
+- **Parse error contract today:** one malformed declaration fails the
+  entire `load_stylesheet` / `parse_style_attr_map` call with
+  `DomError::InvalidAttributeValue`. Browsers drop just the malformed
+  declaration and keep the rest (CSS 2.1 §4.1.7, css-style-attr §3).
+  **New divergence** — registry candidate; pin with an `off_spec_*` proof
+  before the parser is redesigned.
 
 ## The spec and the Blink/Gecko approach
 
@@ -124,6 +143,46 @@ store and marks the element style-dirty, and the frame loop's rendering
 update re-runs the cascade before layout/paint. There is exactly one clock.
 Our D2 adopts precisely this.
 
+**Spec conformance contract (researched 2026-10-17).** The exact observable
+semantics D6 binds us to:
+
+- **Style attribute (css-style-attr §4):** declarations in a style
+  attribute "are considered to have author origin and a specificity higher
+  than any selector," and "must be interpreted exactly as if they were
+  given in a CSS style rule that applies to the element." That is the
+  entire inline-style contract: author origin, top specificity, same
+  interpretation as rules.
+- **Style attribute parsing (css-style-attr §3):** the value is a
+  declaration-list parsed with forward-compatible error handling — a
+  malformed declaration is skipped, never fatal; a stray `}` does not
+  terminate the value. Stylesheets follow the same rule (CSS 2.1 §4.1.7:
+  illegal declarations are ignored, parsing continues).
+- **Cascade sorting order (CSS Cascade 5 §6.1),** descending:
+  1. Transition declarations
+  2. Important user-agent declarations
+  3. Important user declarations
+  4. Important author declarations
+  5. Animation declarations
+  6. Normal author declarations
+  7. Normal user declarations
+  8. Normal user-agent declarations
+  Within an origin: (cascade layers,) specificity, then order of
+  appearance.
+- **Shorthands (CSS Cascade 5 §3):** "A shorthand property sets all of its
+  longhand sub-properties, exactly as if expanded in place"; omitted
+  longhands take their initial value; `!important` on a shorthand is
+  `!important` on every longhand. Expansion happens **at declaration
+  time**, which makes the declaration store the one expansion point in the
+  system.
+- **Presentational hints (CSS Cascade 5 §6.5):** non-CSS presentational
+  attributes translate to author-level, zero-specificity declarations
+  placed at the *start* of the author level — the weakest author tier,
+  below every author rule, and strictly below inline style.
+- **Defaulting (CSS Cascade 5 §7):** every property on every element ends
+  with exactly one specified value; `initial`/`inherit`/`unset`/`revert`
+  are the explicit defaulting keywords. (Our `unset` length keyword
+  exists; the other keywords are currently unsupported.)
+
 ## Decided constraints
 
 - **D1 (2026-10-17).** Programmatic styling methods write to a **different
@@ -139,6 +198,20 @@ Our D2 adopts precisely this.
   nothing on-spec becomes off-spec; off-spec → on-spec moves must follow
   Blink/Gecko algorithm shape (or carry a documented Rust/Bevy-justified
   mechanics divergence).
+- **D5 (2026-10-17).** Migration is a **hard break** for consumers of the
+  current direct styling writes, but the replacement API must keep the
+  lesson of the existing one: string property names and string values with
+  crate-side validation and normalization (the `set_attr_str(key, "width",
+  "10px")` ergonomics users love), with typed constants optional above.
+  Consumer evidence: `stream-pro2` themes components through 100+ direct
+  presentation writes across `ui-components` and `remote-app`, using both
+  constants and raw strings.
+- **D6 (2026-10-17).** Browser-conformance principle: **inputs, outputs,
+  and timings match browser behavior.** Any observable deviance from
+  Blink/Gecko semantics will be reported by users as a bug. Internal
+  implementation shape remains free (documented Rust/Bevy-justified
+  mechanics are fine). This resolves open questions 2, 3, 4, 6, and 7: the
+  observable answers are the spec's answers.
 
 ## Vocabulary divisions (the "one bag" enumerated)
 
@@ -187,6 +260,14 @@ attrs become a pure **computed projection** written only by the style pass.
   presentation attrs (immediate-apply semantics end); needs a migration
   story and a release gate. Storage shape for sparse per-element
   declarations is an open question (see E below).
+- *Conformance contract:* css-style-attr §4 verbatim semantics — author
+  origin, specificity higher than any selector, interpreted exactly as a
+  style rule. The declaration store parses per css-style-attr §3
+  (declaration-list; malformed declarations skipped, see G).
+- *API ergonomics (D5):* the programmatic API presents string names/values
+  with crate-side validation (`set("width", "10px")`-class ergonomics),
+  with typed builder sugar optional above it. It replaces `set_attr*` for
+  presentation properties; content attributes keep `set_attr*`.
 
 ### B. Typed value model at declaration time (Typed OM analog)
 
@@ -203,6 +284,10 @@ matching, storage, and consumers all carry typed values instead of strings.
   must not grow allocation on the hot path (zero-allocation doctrine);
   keyword/length tables must stay closed and strict (fail-closed parsing
   stays).
+- *Shorthand expansion point (D6 + Cascade §3):* expansion happens at
+  declaration-parse time inside the store, so the cascade and all
+  consumers only ever see longhands. The shorthand divergence resolves as
+  a by-product of adopting B, not as separate work.
 
 ### C. Split the attribute vocabulary by role
 
@@ -242,6 +327,25 @@ interned property ids).
   on the emission path; read-side ergonomics for consumers stay public-API
   stable where possible.
 
+### F. Cascade tier growth path (how the absent features slot in)
+
+The current precedence tuple `(origin.priority, specificity, order)` is a
+projection of the §6.1 tier list onto one axis. The growth path toward spec
+coverage, staged by consumer need and each stage proof-gated: importance
+flag per declaration → built-in UA tier (a real sheet below all author
+rules, replacing ad-hoc behavior styling) → animation tier → cascade
+layers. The sorting structure should be designed now so these are additive
+(a wider precedence key), not a rework. Observable behavior at each stage
+is pinned first; internal mechanics stay free per D6.
+
+### G. Declaration-drop parsing (spec error handling)
+
+Both declaration stores (stylesheet and inline) parse with
+forward-compatible error handling: malformed declarations are dropped,
+parsing continues, and the drop is reported by metric, not silence.
+Replaces today's whole-sheet rejection. Registry: new `off_spec_*` pin of
+the current behavior first; reclassify on landing.
+
 ## Value-stage vocabulary (proposed naming to settle)
 
 Candidate adoption of the CSS Cascade §4 ladder, so code names stop
@@ -258,25 +362,71 @@ colliding:
   (`set_style`/`style_mut`) to make the inline-style contract legible to
   consumers.
 
+Mapping to the current pipeline (research-confirmed 2026-10-17):
+
+| Cascade §4 stage | Meaning | Current `ui-dom` home |
+| --- | --- | --- |
+| declared | every declaration applying to the element | stylesheet rule store + (future) inline declaration store |
+| cascaded | the one winning declaration | the sort-then-fold in `matched_style_rules_for_element` |
+| specified | defaulted; exactly one per property per element | implicit in the folded map (no explicit stage today) |
+| computed | absolutized for inheritance (§4.4: the value inheritance transfers) | presented attrs on the node + the inherited-style context |
+| used | resolved through layout | layout's `NodeStyle` + box solving |
+| actual | environment-adjusted | staged paint ops |
+
+This mapping is why D1–D3 are safe: the node-level store already *is* the
+computed stage. What is missing is the declaration stage for programmatic
+input and an explicit specified/defaulting stage.
+
+## Emerging candidate shape (NOT decided — recorded for the design pass)
+
+The research pushes the approaches toward one coherent composition:
+
+**a single declaration-block abstraction** — typed values at parse time
+(B), sparse physical storage (E), declaration-drop error handling (G) —
+used for *both* stylesheet rules and the per-element inline style store
+(A); one cascade pass collecting from both stores (D2); the node retaining
+only the computed projection (D3); the precedence key structured wide
+enough for the tier growth path (F); provenance layered so unload restores
+instead of deletes (D). This is, deliberately, the shape Blink and Servo
+already run — the conformance contract (D6) is satisfiable by
+construction, and every internal choice left open by it is ours.
+
+Open before it becomes a candidate design: the physical store layout (E's
+decision), the value-type table (B's property registry), the migration
+surface (D5's API), and the proof obligations ordering (G's pin first,
+then A's acceptance test).
+
 ## Open questions
 
-1. Migration contract for `set_attr_str` on presentation attrs: hard break
-   (writes become declarations) vs. deprecated alias with the new semantics
-   vs. dual APIs. Which release carries it (v0.6.0 candidate)?
-2. Does inline-style precedence include beating behavior pseudo-state
-   declarations (the widget sheet)? In CSS the style attribute beats UA —
-   expected yes, pin with a proof.
-3. Transitions: do they enter the cascade as their own tier (spec shape) or
-   stay a presented-overlay (current mechanics)? A registry-level decision.
-4. Shorthand expansion: at declaration-parse time (spec) vs. at cascade
-   fold time; and which shorthands are admitted first (`flex`, `place-*`,
-   `margin`/`padding` families are candidates; none exist today).
-5. `!important`, UA stylesheet, cascade layers: admit with the new
-   structures or formally exclude (registry currently: unimplemented).
-6. Sparse storage: pooled blocks vs. small-map vs. interned ids — decide
-   with an allocation budget and a perf-metric pin before implementation.
-7. Do inherited-channel properties unify into one channel, or is the
-   two-channel split formalized as permanent architecture (with docs)?
+1. ~~Migration contract~~ — DECIDED (D5): hard break, string ergonomics
+   preserved.
+2. ~~Inline style vs behavior sheet~~ — DECIDED (D6): inline style wins
+   (author origin, specificity higher than any selector; the behavior
+   sheet is a UA-tier concern, see F).
+3. ~~Transitions as a cascade tier~~ — DECIDED OBSERVABLY (D6): transitions
+   already win via the overlay, matching §6.1 tier-1 ordering. Whether to
+   *mechanically* unify them into the cascade is an internal-shape
+   decision deferred to design.
+4. ~~Shorthand expansion point~~ — DECIDED (D6 + Cascade §3): at
+   declaration-parse time; the declaration store is the only expansion
+   point.
+5. `!important`, UA sheet, animations, layers: admission path is F, staged
+   by consumer need, each stage proof-gated. The precedence-key structure
+   must not preclude them.
+6. Sparse storage shape: internal freedom (D6) — decide at design time
+   with an allocation budget and a perf-metric pin.
+7. Inheritance channels: observable behavior is spec inheritance; channel
+   unification is internal freedom (D6) — decide with the store design.
+8. Fate of public `apply_styles`: unused by any consumer and bypasses
+   D1–D3 — demote to `pub(crate)` in the redesign (no migration cost
+   observed).
+9. Successor for `compute_style_map`: consumers use it as a measurement
+   probe (10+ call sites in `stream-pro2`). It must survive or be replaced
+   by an equivalent computed-value query over the new store.
+10. Presentational-hint tier: do any of our content attributes carry
+    presentational semantics that should map at §6.5's weakest tier
+    (candidate: `img` width/height sizing hints)? Enumerate before the
+    tier model lands.
 
 ## Learnings log
 
@@ -297,3 +447,21 @@ colliding:
 - **2026-10-17 — Two-channel inheritance is pinned architecture,** not a
   bug: four properties materialize into descendant attrs, four are
   context-carried into text intrinsics. Unify or formalize (open question 7).
+- **2026-10-17 — The transition overlay is already spec-ordered.**
+  `presented_attr` consults active transitions before stored attrs, which is
+  observably the §6.1 tier-1 position. Not every divergence candidate is
+  real; verify the observable before designing mechanics.
+- **2026-10-17 — New divergence discovered: declaration error handling.**
+  Browsers drop malformed declarations and continue (CSS 2.1 §4.1.7,
+  css-style-attr §3); we reject the entire stylesheet on the first bad
+  declaration. Users would report this as a bug per D6. Registry candidate;
+  pin before parser redesign (approach G).
+- **2026-10-17 — Consumer evidence for D5.** `stream-pro2` themes via 100+
+  direct presentation writes (constants and raw strings mixed), and uses
+  `compute_style_map` as a measurement probe; `apply_styles` has zero
+  external callers. The migration cost concentrates in `set_attr_str`
+  presentation writes.
+- **2026-10-17 — Shorthand expansion has exactly one honest home.**
+  Cascade §3 ("as if expanded in place") puts expansion at declaration
+  time; any design that expands later duplicates the point. This collapses
+  approach B's shorthand work into the declaration store itself.
