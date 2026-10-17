@@ -47,6 +47,68 @@ Guidelines:
   is not permitted in this tree; an ignored proof hides divergence movement
   and lets its expectations rot.
 
+## Table conventions
+
+Proof families that admit tabulation are table-driven:
+
+- One `#[test]` function per claim family drives a table of cases; the table
+  is the enumerable coverage and is reviewed as such.
+- Every row carries a `name` used in assertion labels, so a failure names the
+  row.
+- Staged-ops assertions pin exact plan counts and exact op counts per kind
+  per plan (counts are platform-stable; exact equality is required), plus
+  indexed-op geometry through `assert_close`.
+- Retained-layout assertions are secondary to staged-ops assertions.
+- Rows build scenarios through `support.rs` helpers and public `RootDom`
+  APIs only.
+
+## Spec coverage map
+
+Keyed by governing spec. Provenance legend: **full** = spec sections + WPT or
+browser oracles + pinned Gecko/Blink implementation files; **partial** = spec
+sections only; **crate-owned** = pins crate invariants by design.
+
+| Spec area | Pinning modules | Provenance |
+|---|---|---|
+| CSS 2.1 §8 box model, §8.3.1 margin collapsing | `normal_flow.rs`, `content_height.rs` | partial (impl files in `normal_flow.rs`) |
+| CSS 2.1 §9.2–9.4 block/inline formatting, §10.3/10.6 width and height | `block_inline.rs`, `content_height.rs`, `text_auto_size.rs` | full in `block_inline.rs`; partial elsewhere; `text_auto_size.rs` carries per-test Blink/Gecko notes |
+| CSS 2.1 §9.3 positioning, §10.3.7/10.6.4 absolutely positioned | `fixed_layers.rs`, `normal_flow.rs`, `transitions.rs` | partial |
+| CSS 2.1 §10.3.2/10.6.2 replaced elements, CSS Images 3 §5.3 | `replaced_elements.rs` | full, with a declared deliberate divergence (see registry) |
+| CSS 2.1 §10.7 min/max sizes, §11.1.1 overflow; CSS 2.2 §10.6.6/10.6.7 | `popup_menus.rs`, `popup_text_rows.rs` | partial in `popup_text_rows.rs`; `popup_menus.rs` is crate-owned |
+| CSS Flexbox 1 | `flex_layout.rs` | full; unadmitted subsets gated in `src/domains/layout/flex.rs` |
+| CSS Text 4 `white-space`; CSS Text 3 wrapping and word-break | `white_space.rs`, `text_auto_size.rs` | full in `white_space.rs` |
+| CSS Forms 1 `field-sizing`, HTML rendering widgets, CSS Sizing 3 | `form_control_auto_size.rs` | full |
+| CSS Transitions 1 | `transitions.rs` | partial |
+| HTML Standard "update the rendering" (pipeline ordering) | `stylesheet_lifecycle.rs` | full (explicit no-single-WPT statement) |
+| CSS Cascading and Inheritance: cascade order, specificity, inheritance transmission | — | **gap**: no proof module; pinned only by unit tests inside `domains/style`. This is the augmentation target of the current style-internals work. |
+
+## Known off-spec registry
+
+Every known divergence from the cited specs is registered here and pinned by a
+running test. Registry classes:
+
+- **divergent** — behavior contradicts the spec; pinned at current values and
+  expected to move on-spec.
+- **deliberate** — a crate-owned value replacing a spec default where the
+  spec's default has no meaning for our world; pinned permanently and
+  re-reviewed when the spec area is revisited.
+- **unimplemented** — a spec area the solver does not admit yet; pinned by a
+  gate test at the admission point.
+
+Off-spec proofs are named `off_spec_*` so
+`cargo test --test layout_proofs off_spec` enumerates the divergent registry.
+When an off-spec proof fails, the behavior moved; the same change must
+classify the move: unintended regressions are reverted, intended divergence
+changes update the pinned values and this registry, and arrival at spec
+relabels the proof on-spec.
+
+| Proof or gate | Class | Spec claim | Current (pinned) vs spec-correct | Root cause |
+|---|---|---|---|---|
+| `off_spec_adjacent_negative_block_margins_collapse_to_most_negative` (`normal_flow.rs`) | divergent | CSS 2.1 §8.3.1 final paragraph: adjoining negative margins collapse to the most negative | sums −10px and −5px to −15px; spec: −10px | `collapsed_sibling_margin_overlap_px` clamps the collapse overlap to ≥ 0 in `src/domains/layout/flow.rs` |
+| 16:9 placeholder intrinsic ratio (`replaced_elements.rs`, declared in module header) | deliberate | CSS Images 3 §5.3 default object size 300×150 applies to images with no intrinsic dimensions | unloaded `img` seeds a 16:9 placeholder ratio; the §10.3.2/10.6.2 transfer math stays on-spec | crate-owned placeholder policy for never-loaded images |
+| Flex subsets beyond batches 3–7 | unimplemented | CSS Flexbox 1 areas the active solver does not admit | admission gated by `active_flex_gate_*` unit tests in `src/domains/layout/flex.rs`; fallback is the placeholder solver | active solver subset; see flex coverage map |
+| Cascade model: no `!important`, no built-in UA stylesheet, no cascade layers | unimplemented (proofs absent — augmentation target) | CSS Cascade 5 §6: important declarations, origin layers | precedence is exactly `(origin.priority, specificity, order)` | `domains/style` precedence model; must be pinned by the new cascade proof module before redesign |
+
 Popup coverage map:
 
 - `popup_menus.rs`: synthetic fixed-row popup clamp math.
