@@ -136,6 +136,14 @@ pub(crate) fn collect_winners(
     }
 
     // Matched rules, ascending precedence, under ONE runtime lock.
+    //
+    // Per-element allocation note: `candidate_keys_for_node` allocates a
+    // `Vec<StyleRuleKey>` + dedup `HashSet` and this `matched` Vec (+ sort)
+    // is a second per-element allocation. This is the preserved
+    // right-most-index lookup shape, consumed in the SAME visit — not batch
+    // accumulation with extra accesses (rule 4). Matched-rule caching is
+    // PLAN.md proposal J, an evidence-gated follow-up; `StylePassNodeVisited`
+    // / `StylePassNodeChanged` are its gate counters.
     let node_index = style_index_for_node(node).ok_or(DomError::InvalidAttributeTarget)?;
     let context = Arc::clone(root_dom.context());
     let runtime = context

@@ -17,8 +17,11 @@ use super::presentation_property::PresentationProperty;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PropertySet([u64; 2]);
 
-#[allow(dead_code)] // `new`/`contains` are exercised only by tests until the block wiring lands
 impl PropertySet {
+    /// `new` is test-only: `DeclBlock` constructs its `present` bitset through
+    /// the derived `Default` (`DeclBlock::new` calls `Self::default()`), never
+    /// `PropertySet::new`.
+    #[allow(dead_code)]
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -34,6 +37,10 @@ impl PropertySet {
         self.0[index / 64] &= !(1u64 << (index % 64));
     }
 
+    /// `contains` is test-only: `DeclBlock::get` scans the declaration list
+    /// directly, so production membership reads go through `get`, not
+    /// `contains`.
+    #[allow(dead_code)]
     #[must_use]
     pub fn contains(&self, property: PresentationProperty) -> bool {
         let index = property.index();

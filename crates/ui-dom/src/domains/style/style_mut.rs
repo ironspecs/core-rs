@@ -87,6 +87,10 @@ impl<'a> StyleMut<'a> {
             .root_dom
             .node(self.node)
             .ok_or(DomError::InvalidNodeKey)?;
+        // Element-only target. Keep this check in sync with the `style`
+        // attribute route in `RootDom::route_style_attribute`
+        // (src/types/root_dom.rs): the fold processes elements only, so a
+        // write on any other node kind would be silently inert.
         if !matches!(node, DomNode::Element(_)) {
             return Err(DomError::InvalidAttributeTarget);
         }

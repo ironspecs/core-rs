@@ -1880,15 +1880,22 @@ impl RootDom {
     /// drop-and-continue (CSS 2.1 §4.1.7) and replaces the block wholesale
     /// (cssText semantics). Block replacement is one mutating write: it marks
     /// style-dirty and counts `StyleDeclarationUpsert` via
-    /// `replace_inline_decl_block`, plus `StyleDeclarationDropped` per dropped
-    /// declaration. Any other value kind is a typed error.
+    /// `replace_inline_decl_block` (only when the stored declarations actually
+    /// changed), plus `StyleDeclarationDropped` per dropped declaration —
+    /// counted whenever the list dropped any malformed declaration, even when
+    /// the surviving block is unchanged. Any other value kind is a typed error.
     fn route_style_attribute(
         &mut self,
         key: DomNodeSlotKey,
         value: Option<DomAttributeValue>,
     ) -> Result<(), DomError> {
         let node = self.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
-        if matches!(node, DomNode::Text(_)) {
+        // Element-only target. Keep this check in sync with
+        // `StyleMut::validate_target` (src/domains/style/style_mut.rs): the
+        // winners fold processes elements only, so a write on `Text`,
+        // `Document`, or `DocumentFragment` would be silently inert and is
+        // rejected here instead.
+        if !matches!(node, DomNode::Element(_)) {
             return Err(DomError::InvalidAttributeTarget);
         }
         let (block, report) = match value {
@@ -1898,11 +1905,14 @@ impl RootDom {
             }
             Some(_) => return Err(DomError::InvalidAttributeValue),
         };
-        let changed = self.replace_inline_decl_block(key, block);
-        if changed {
-            for _ in 0..report.dropped {
-                self.increment_metric(RootDomMetricName::StyleDeclarationDropped);
-            }
+        self.replace_inline_decl_block(key, block);
+        // Drops are a parsing outcome, not a mutation outcome (AGENTS.md:
+        // "every drop is counted by metric ... never a graceful silent
+        // fallback"): count them whenever the declaration list dropped any
+        // malformed declaration, independent of whether the surviving block
+        // differed from the previous one.
+        for _ in 0..report.dropped {
+            self.increment_metric(RootDomMetricName::StyleDeclarationDropped);
         }
         Ok(())
     }
@@ -5783,6 +5793,70 @@ mod tests {
                     .get(&DomAttribute::Custom("my-data".to_string()))),
             Some(&DomAttributeValue::String("stored".to_string()))
         );
+    }
+
+    #[test]
+    fn style_attribute_route_rejects_non_element_targets() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+
+        // Document: the fold processes elements only, so a document write is
+        // rejected (mirrors `StyleMut::validate_target`).
+        let document = root.document_node().0;
+        assert_eq!(
+            root.set_attr_str(document, "style", "width: 10px"),
+            Err(DomError::InvalidAttributeTarget)
+        );
+
+        // DocumentFragment: not constructible through a public live-document
+        // API, so create one directly to exercise the same route.
+        let fragment = root
+            .insert_node(DomNode::document_fragment(root.root))
+            .expect("fragment");
+        assert_eq!(
+            root.set_attr_str(fragment, "style", "width: 10px"),
+            Err(DomError::InvalidAttributeTarget)
+        );
+
+        // Text.
+        let text = root.create_text_node("label").expect("text");
+        assert_eq!(
+            root.set_attr_str(text, "style", "width: 10px"),
+            Err(DomError::InvalidAttributeTarget)
+        );
+
+        // Element is the one valid target: the write routes.
+        let element = root.create_element(DomTag::Div).expect("div");
+        root.set_attr_str(element, "style", "width: 10px")
+            .expect("element style attribute should route");
+        assert_eq!(
+            root.canonical_style_snapshot(element).styles,
+            vec![(
+                "width".to_string(),
+                DomAttributeValue::String("10px".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn style_attribute_route_counts_drops_even_when_block_is_unchanged() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let node = root.create_element(DomTag::Div).expect("div");
+
+        root.set_attr_str(node, "style", "width: 10px")
+            .expect("first style write");
+        assert_eq!(root.count(RootDomMetricName::StyleDeclarationDropped), 0);
+
+        // The second list drops `mystery` (unknown property), but the surviving
+        // block (`width: 10px`) is unchanged, so `replace_inline_decl_block`
+        // reports `changed == false`. The drop must still be counted — a drop
+        // is a parsing outcome, not a mutation outcome.
+        root.set_attr_str(node, "style", "width: 10px; mystery: 1px")
+            .expect("second style write");
+        assert_eq!(root.count(RootDomMetricName::StyleDeclarationDropped), 1);
+
+        // The unchanged write is not a mutation: the upsert metric stays at one
+        // (only the first write changed the block).
+        assert_eq!(root.count(RootDomMetricName::StyleDeclarationUpsert), 1);
     }
 
     #[test]
