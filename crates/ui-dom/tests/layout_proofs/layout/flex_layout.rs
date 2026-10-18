@@ -8416,3 +8416,48 @@ fn assert_container_border_padding_origin(name: &str) {
         &format!("{name}: item 2"),
     );
 }
+
+// CSS Flexbox 1 §8.4 (align-content): "This property has no effect on
+// single-line flex containers" — a nowrap container has one line that fills
+// the cross size, so `align-content` has no remaining cross space to pack.
+// `remaining_cross_axis_line_pack_space_px` (`flex.rs:1750`) early-returns
+// 0.0 when the container is not wrapping (`flex.rs:1756`), so the line pack
+// offset stays at cross-start for every `align-content` keyword. Gecko skips
+// line packing for single-line containers in `nsFlexContainerFrame.cpp`
+// (`AlignLines` is only reached with multiple lines); Blink mirrors it in
+// `flex_layout_algorithm.cc`. Closest WPT oracle:
+// `css/css-flexbox/align-content-001.htm` (align-content is inert without
+// wrap). ON-SPEC: every row lands at the flex-start baseline.
+#[test]
+fn single_line_align_content_is_inert() {
+    let rows: [InertAlignContentRow; 3] = [
+        ("align_content_center", "center"),
+        ("align_content_space_between", "space-between"),
+        ("align_content_stretch", "stretch"),
+    ];
+    for (name, align_content) in rows {
+        assert_single_line_align_content_inert(name, align_content);
+    }
+}
+
+/// A named single-line align-content probe: the row name plus the keyword.
+type InertAlignContentRow = (&'static str, &'static str);
+
+fn assert_single_line_align_content_inert(name: &str, align_content: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "flex-wrap", "nowrap");
+    assert_style_set(&mut root, container, "align-content", align_content);
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "30px");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + item");
+    // Identical to the flex-start baseline: the single line sits at
+    // cross-start and the item follows align-items (flex-start), so the
+    // align-content keyword has no effect.
+    assert_rect_op_geometry(&plans[0].rects[1], 0.0, 0.0, 30.0, 20.0, name);
+}
