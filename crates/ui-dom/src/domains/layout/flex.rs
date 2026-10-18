@@ -1330,6 +1330,7 @@ fn horizontal_content_based_auto_min_content_width_px(
             key,
             inherited_style,
             measured_main_size_px,
+            style.sides,
         );
     }
     let mut content_width_px: f32 = 0.0;
@@ -1370,17 +1371,20 @@ fn horizontal_flex_container_content_based_auto_min_content_width_px(
     key: DomNodeSlotKey,
     inherited_style: &InheritedStyleContext,
     measured_main_size_px: f32,
+    container_sides: BoxSides,
 ) -> Result<f32, DomError> {
     let container_node = node_for_key(root_dom, key)?;
-    // The graceful-degradation gate now lives in the sole caller
-    // (`horizontal_content_based_auto_min_content_width_px`): this function is
-    // only reached when `flex_container_content_based_auto_min_is_supported`
-    // holds (horizontal, non-reversed, no-wrap). The former fail-fast assert
-    // here (which also preserved the `flex-flow: wrap-reverse` reject verdict
-    // lost in the typed `FlexWrapKw::WrapReverse` mapping) is replaced by that
-    // gate: unsupported shapes now return the measured main size instead of
-    // panicking. Every recursive re-entry into a nested container passes back
-    // through the caller's gate, so no descendant shape can panic either.
+    // This function is only reached when
+    // `flex_container_content_based_auto_min_is_supported` holds (horizontal,
+    // non-reversed, no-wrap); the sole caller
+    // (`horizontal_content_based_auto_min_content_width_px`) degrades every
+    // other container shape to the measured main size at its own gate. The two
+    // former fail-fast asserts — one for unsupported shapes, one for growing
+    // children — are both replaced by graceful fallbacks: unsupported shapes
+    // return the measured main size at the caller's gate, and a growing child
+    // returns the threaded measured main size below. Every recursive re-entry
+    // into a nested container passes back through those gates, so no descendant
+    // shape can panic either.
     let container_style = staged_flex_container_style(container_node);
     let mut content_width_px = 0.0;
     let mut has_previous_item = false;
@@ -1403,6 +1407,20 @@ fn horizontal_flex_container_content_based_auto_min_content_width_px(
             child_key = next_child_key;
             continue;
         }
+        let child_node = node_for_key(root_dom, current_child_key)?;
+        if item_flex_grow_factor_from_node(child_node) != 0.0 {
+            // Graceful degradation (replacing the former grow-factor fail-fast
+            // assert): a growing child means this container's true §4.5
+            // content-based auto-min requires the "ignore growth in min-content"
+            // admission (deferred to PR 3's mapping doc), so the walk cannot
+            // compute it without either changing laid-out sizes or ignoring
+            // growth. Fall back to the threaded measured main size — the same
+            // over-estimate the unsupported-shape gate uses. The caller's
+            // `border_box_width` re-adds `container_sides`, recovering the
+            // measured border-box main size. Never a collapse, never a panic.
+            return Ok(measured_main_size_px
+                - main_axis_border_padding_size_px(container_sides, FlexAxis::Horizontal));
+        }
         if has_previous_item {
             content_width_px += container_style.gap_sizes.between_items_px;
         }
@@ -1414,7 +1432,7 @@ fn horizontal_flex_container_content_based_auto_min_content_width_px(
             measured_main_size_px,
         )?;
         content_width_px += horizontal_flex_container_auto_min_child_border_box_contribution_px(
-            node_for_key(root_dom, current_child_key)?,
+            child_node,
             child_style,
             border_box_width(child_style.sides, child_content_width_px),
         ) + child_style.sides.margin.left_px
@@ -1430,10 +1448,10 @@ fn horizontal_flex_container_auto_min_child_border_box_contribution_px(
     child_style: NodeStyle,
     child_border_box_min_width_px: f32,
 ) -> f32 {
-    assert!(
-        item_flex_grow_factor_from_node(child_node) == 0.0,
-        "visible-overflow flex container auto-min should only measure non-growing children",
-    );
+    // The grow-factor boundary is enforced by the caller's graceful fallback
+    // (`horizontal_flex_container_content_based_auto_min_content_width_px`):
+    // this function is only reached for non-growing children, because a growing
+    // child returns the measured-size fallback before any contribution branch.
     if item_flex_shrink_factor_from_node(child_node) == 0.0 {
         return child_border_box_min_width_px.max(
             horizontal_flex_item_definite_base_border_box_width_px(child_node, child_style)
@@ -3527,6 +3545,65 @@ mod tests {
         assert!(
             item_record.automatic_min_main_size_px >= 30.0,
             "grandchild degradation must not collapse the grandchild's 30px leaf",
+        );
+    }
+
+    #[test]
+    fn measured_item_record_growing_child_in_supported_row_degrades_to_measured_size() {
+        let (mut root, container, context) = flex_container_with_context();
+        // Supported shape (horizontal, non-reversed, no-wrap) with no explicit
+        // width and default visible overflow, but a growing child: the auto-min
+        // walk must degrade to the measured main size instead of asserting.
+        let item = append_div(&mut root, container);
+        root.style_mut(item)
+            .set("display", "flex")
+            .expect("item display should set");
+        let growing = append_div(&mut root, item);
+        root.style_mut(growing)
+            .set("flex-grow", "1")
+            .expect("grow should set");
+        root.style_mut(growing)
+            .set("height", "10px")
+            .expect("height should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item_record = items.first().expect("child item");
+
+        assert!(item_record.flex_base_size_px > 0.0);
+        assert_eq!(
+            item_record.automatic_min_main_size_px, item_record.flex_base_size_px,
+            "growing child auto-min should fall back to the measured main size",
+        );
+    }
+
+    #[test]
+    fn measured_item_record_growing_grandchild_degrades_to_measured_size() {
+        let (mut root, container, context) = flex_container_with_context();
+        // row item (supported) -> row child (supported) -> growing grandchild.
+        // The growing grandchild must degrade to the measured size threaded
+        // through the recursion instead of panicking.
+        let item = append_div(&mut root, container);
+        root.style_mut(item)
+            .set("display", "flex")
+            .expect("item display should set");
+        let child = append_div(&mut root, item);
+        root.style_mut(child)
+            .set("display", "flex")
+            .expect("child display should set");
+        let grandchild = append_div(&mut root, child);
+        root.style_mut(grandchild)
+            .set("flex-grow", "1")
+            .expect("grandchild grow should set");
+        root.style_mut(grandchild)
+            .set("height", "10px")
+            .expect("grandchild height should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item_record = items.first().expect("child item");
+
+        assert_eq!(
+            item_record.automatic_min_main_size_px, item_record.flex_base_size_px,
+            "growing grandchild should thread the measured size instead of panicking",
         );
     }
 

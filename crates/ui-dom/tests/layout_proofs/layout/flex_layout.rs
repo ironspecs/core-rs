@@ -34,14 +34,17 @@
 //!   <https://chromium.googlesource.com/chromium/src/+/c50f75313342e085919cf7525192f45f2ab649d1/third_party/blink/renderer/core/layout/flex/flex_line.h>
 //!
 //! These proofs lock the admitted active-solver behavior in place; the
-//! subset the active solver does not yet admit degrades gracefully at the one
-//! explicit support gate in `src/domains/layout/flex.rs`: the
+//! subset the active solver does not yet admit degrades gracefully at two
+//! gates in `src/domains/layout/flex.rs`: the
 //! `flex_container_content_based_auto_min_is_supported` predicate
-//! (`flex.rs:1436`) admits content-based auto-min only for horizontal,
-//! non-reversed, no-wrap containers, and any visible-overflow auto-min
-//! measurement outside that subset falls back to the item's measured main
-//! size instead of panicking (see
-//! `off_spec_flex_auto_min_unsupported_shapes_use_measured_size`). There is
+//! (`flex.rs`) admits content-based auto-min only for horizontal,
+//! non-reversed, no-wrap containers, and the grow-factor boundary in
+//! `horizontal_flex_container_content_based_auto_min_content_width_px`
+//! degrades a growing child to the measured size. Any visible-overflow
+//! auto-min measurement outside those gates falls back to the item's measured
+//! main size instead of panicking (see
+//! `off_spec_flex_auto_min_unsupported_shapes_use_measured_size` and
+//! `off_spec_flex_auto_min_growing_children_use_measured_size`). There is
 //! no placeholder solver fallback — the measured-size fallback is a registered
 //! divergence deferred to the engine-mapped admission (PR 3).
 
@@ -7428,6 +7431,195 @@ fn assert_grandchild_recursion(name: &str) {
         rects[4].size_px[0],
         30.0,
         &format!("{name}: leaf keeps its own width"),
+    );
+}
+
+// CSS Flexbox 1 §4.5 automatic minimum size: a visible-overflow flex item that
+// is itself a flex container uses its content-based minimum size before shrink.
+// The active solver admits that computation only for the horizontal,
+// non-reversed, no-wrap subset. No single WPT oracle pairs a growing child
+// inside the content-based auto-min walk, so this is cited from §4.5 directly
+// (the "no WPT" rule, README); closest family is
+// `css/css-flexbox/min-width-auto-*`. Gecko computes the automatic minimum in
+// `nsFlexContainerFrame.cpp` (`GenerateFlexItemForChild` → content-based
+// min-size); Blink in `flex_layout_algorithm.cc` (`ConstructAndAppendFlexItems`
+// → `FlexItem::UpdateAutoMinSize`).
+//
+// OFF-SPEC: a growing child (`flex-grow != 0`) inside a supported-shape flex
+// item's auto-min walk makes the container fall back to the threaded MEASURED
+// main size instead of the true §4.5 content-based minimum (the same
+// over-estimate the unsupported-shape gate uses — never a collapse). The former
+// grow-factor fail-fast assert is replaced by that fallback in
+// `horizontal_flex_container_content_based_auto_min_content_width_px`
+// (`flex.rs`). Spec-correct for row (a): the titlebar item keeps its true
+// content-based minimum — the icon's 16px basis plus the growing title's
+// min-content (0px for an empty title) = 16px — so the sibling sits at 16px;
+// the solver instead pins the item at its measured 200px. The "ignore growth in
+// min-content" computation is the named admission deferred to PR 3's mapping
+// doc. Row (c) is the non-growing control: the content-based path is unchanged.
+#[test]
+fn off_spec_flex_auto_min_growing_children_use_measured_size() {
+    let rows: [GrowingChildAutoMinRow; 3] = [
+        (
+            "titlebar_growing_title",
+            assert_titlebar_growing_title_keeps_measured_size,
+        ),
+        (
+            "nested_supported_flex_growing_grandchild",
+            assert_nested_supported_flex_growing_grandchild,
+        ),
+        (
+            "non_growing_control",
+            assert_non_growing_control_keeps_content_based_auto_min,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named growing-child auto-min probe: row name plus a runner.
+type GrowingChildAutoMinRow = (&'static str, fn(&str));
+
+/// Row (a): the titlebar shape — outer row, item I (row, no width, visible
+/// overflow) with a 16px icon and a `flex-grow: 1` title, plus a 10px sibling.
+/// Asserts no panic, the item keeps its measured width, the title fills the
+/// rest of the item, and the sibling is positioned after the measured item.
+fn assert_titlebar_growing_title_keeps_measured_size(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "flex");
+    let icon = assert_append_div_to(&mut root, item);
+    assert_set_inflexible_row_item(&mut root, icon, "16px", "10px");
+    let title = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, title, "flex-grow", "1");
+    assert_style_set(&mut root, title, "height", "10px");
+    let sibling = assert_append_div_to(&mut root, container);
+    assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_width_px = assert_node_layout(&root, item).width_px;
+    assert_close(
+        item_width_px,
+        200.0,
+        &format!("{name}: item keeps its measured width"),
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item, rects[2] = icon, rects[3] = title,
+    // rects[4] = sibling. The growing title fills the item after the 16px icon;
+    // the sibling sits after the measured item (spec: 16px content-based).
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        item_width_px,
+        20.0,
+        &format!("{name}: item"),
+    );
+    assert_rect_op_geometry(&rects[2], 0.0, 0.0, 16.0, 10.0, &format!("{name}: icon"));
+    assert_rect_op_geometry(
+        &rects[3],
+        16.0,
+        0.0,
+        item_width_px - 16.0,
+        10.0,
+        &format!("{name}: growing title fills the item"),
+    );
+    assert_rect_op_geometry(
+        &rects[4],
+        item_width_px,
+        0.0,
+        10.0,
+        20.0,
+        &format!("{name}: sibling after measured item"),
+    );
+}
+
+/// Row (b): the deeper recursion — outer row, item I (row) → child C (row) →
+/// growing grandchild G. Asserts no panic and that the growing grandchild
+/// threads the measured size through the recursion instead of collapsing.
+fn assert_nested_supported_flex_growing_grandchild(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "flex");
+    let child = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, child, "display", "flex");
+    let grandchild = assert_append_div_to(&mut root, child);
+    assert_style_set(&mut root, grandchild, "flex-grow", "1");
+    assert_style_set(&mut root, grandchild, "height", "10px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_width_px = assert_node_layout(&root, item).width_px;
+    assert_close(
+        item_width_px,
+        200.0,
+        &format!("{name}: item keeps its measured width"),
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item, rects[2] = child, rects[3] = grandchild.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        item_width_px,
+        20.0,
+        &format!("{name}: item"),
+    );
+    // The growing grandchild degrades to the measured size threaded through the
+    // recursion, keeping its own resolved width inside the oversized ancestor
+    // chain rather than collapsing or panicking.
+    assert_close(
+        rects[3].size_px[0],
+        200.0,
+        &format!("{name}: grandchild keeps its own width"),
+    );
+}
+
+/// Row (c): non-growing control. A supported row item with a non-growing text
+/// child keeps its true content-based auto-min (the text min-content width)
+/// instead of the measured-size fallback — the existing behavior is preserved.
+fn assert_non_growing_control_keeps_content_based_auto_min(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "50px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "flex");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_style_set(&mut root, item, "flex-basis", "80px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    let sibling = assert_append_div_to(&mut root, container);
+    assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
+    let child = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, child, "flex-basis", "0px");
+    assert_style_set(&mut root, child, "flex-grow", "0");
+    assert_style_set(&mut root, child, "flex-shrink", "1");
+    let text = assert_append_text_to(
+        &mut root,
+        child,
+        "UnbreakableContentUnbreakableContentUnbreakableContentUnbreakableContentUnbreakableContent",
+    );
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_min_width_px = assert_text_intrinsic(&root, text).max_content_width_px;
+    assert!(
+        text_min_width_px > 40.0,
+        "control requires text min-content wider than the unclamped shrink target; got {text_min_width_px}",
+    );
+    assert_close(
+        assert_node_layout(&root, item).width_px,
+        text_min_width_px,
+        &format!("{name}: non-growing item keeps content-based auto-min"),
     );
 }
 
