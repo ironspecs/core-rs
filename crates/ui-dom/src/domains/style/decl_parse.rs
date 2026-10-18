@@ -25,8 +25,10 @@
 //!   `expand_flex` calls the `FlexBasis`/`NonNegativeNumber` dispatch targets
 //!   directly — behaviorally identical today, noted so a future grammar
 //!   re-point is applied at those leaves too. The radius corners route through
-//!   `BorderTopLeftRadius` and the gaps through `RowGap` as representatives of
-//!   their (currently identical) longhand grammars
+//!   `BorderTopLeftRadius`, the gaps through `RowGap`, the four margins through
+//!   `MarginTop` (signed `Length`), and the four paddings through `PaddingTop`
+//!   (`NonNegativeLength`) as representatives of their (currently identical)
+//!   longhand grammars
 
 // `parse_declaration_block` is wired into the stylesheet load path (spine
 // step 2); `parse_declaration_strict` is wired into the `style_mut` single
@@ -139,6 +141,8 @@ enum Shorthand {
     PlaceSelf,
     Transition,
     BorderSide(BorderSide),
+    Margin,
+    Padding,
 }
 
 /// The four sides of the border-side (width-only) shorthand aliases.
@@ -170,6 +174,8 @@ fn property_shape(name: &str) -> Option<PropertyShape> {
         "border-right" => Shorthand::BorderSide(BorderSide::Right),
         "border-bottom" => Shorthand::BorderSide(BorderSide::Bottom),
         "border-left" => Shorthand::BorderSide(BorderSide::Left),
+        "margin" => Shorthand::Margin,
+        "padding" => Shorthand::Padding,
         _ => return None,
     };
     Some(PropertyShape::Shorthand(shorthand))
@@ -189,7 +195,7 @@ pub(crate) fn longhands_for_name(name: &str) -> Option<SmallVec<[PresentationPro
 }
 
 /// True when `name` is a presentation-property write: one of the 68 longhand
-/// names or one of the 13 shorthand names (the `longhands_for_name` admission
+/// names or one of the 15 shorthand names (the `longhands_for_name` admission
 /// surface). The D5 enforcement gate (`set_attr_str`) consults this BEFORE
 /// `DomAttribute::try_from`, so a presentation name never reaches the content
 /// vocabulary's `Custom` fallthrough; `set_attr` applies the same check to
@@ -245,6 +251,18 @@ fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProper
             BorderSide::Bottom => &[PresentationProperty::BorderBottomWidth],
             BorderSide::Left => &[PresentationProperty::BorderLeftWidth],
         },
+        Shorthand::Margin => &[
+            PresentationProperty::MarginTop,
+            PresentationProperty::MarginRight,
+            PresentationProperty::MarginBottom,
+            PresentationProperty::MarginLeft,
+        ],
+        Shorthand::Padding => &[
+            PresentationProperty::PaddingTop,
+            PresentationProperty::PaddingRight,
+            PresentationProperty::PaddingBottom,
+            PresentationProperty::PaddingLeft,
+        ],
     };
     SmallVec::from_slice(longhands)
 }
@@ -281,6 +299,8 @@ fn expand_shorthand(
         Shorthand::PlaceSelf => expand_place_self(value),
         Shorthand::Transition => expand_transition(value, interner),
         Shorthand::BorderSide(side) => expand_border_side(side, value),
+        Shorthand::Margin => expand_margin(value),
+        Shorthand::Padding => expand_padding(value),
     }
 }
 
@@ -682,8 +702,10 @@ fn parse_token_list<T>(value: &str, parse: impl Fn(&str) -> Option<T>) -> Option
 
 /// Parses one expanded token through the target longhand's grammar, so the
 /// sign policy (and any future grammar rule) cannot be bypassed via a
-/// shorthand. All four radius corners share one grammar, as do both gaps;
-/// the representative property is named for readability only.
+/// shorthand. All four radius corners share one grammar, as do both gaps,
+/// the four margins (`Length`, signed), and the four paddings
+/// (`NonNegativeLength`); the representative property is named for
+/// readability only.
 fn parse_length_for(property: PresentationProperty, value: &str) -> Option<DeclLength> {
     let mut scratch = TextInterner::default();
     match parse_value(property.grammar(), value, &mut scratch)? {
@@ -716,6 +738,38 @@ fn expand_border_radius(value: &str) -> Option<Vec<Declaration>> {
             PresentationProperty::BorderBottomLeftRadius,
             DeclValue::Length(bl),
         ),
+    ])
+}
+
+fn expand_margin(value: &str) -> Option<Vec<Declaration>> {
+    let lengths = parse_token_list(value, |token| {
+        parse_length_for(PresentationProperty::MarginTop, token)
+    })?;
+    let (top, right, bottom, left) = corner_quad(&lengths)?;
+    Some(vec![
+        declaration(PresentationProperty::MarginTop, DeclValue::Length(top)),
+        declaration(PresentationProperty::MarginRight, DeclValue::Length(right)),
+        declaration(
+            PresentationProperty::MarginBottom,
+            DeclValue::Length(bottom),
+        ),
+        declaration(PresentationProperty::MarginLeft, DeclValue::Length(left)),
+    ])
+}
+
+fn expand_padding(value: &str) -> Option<Vec<Declaration>> {
+    let lengths = parse_token_list(value, |token| {
+        parse_length_for(PresentationProperty::PaddingTop, token)
+    })?;
+    let (top, right, bottom, left) = corner_quad(&lengths)?;
+    Some(vec![
+        declaration(PresentationProperty::PaddingTop, DeclValue::Length(top)),
+        declaration(PresentationProperty::PaddingRight, DeclValue::Length(right)),
+        declaration(
+            PresentationProperty::PaddingBottom,
+            DeclValue::Length(bottom),
+        ),
+        declaration(PresentationProperty::PaddingLeft, DeclValue::Length(left)),
     ])
 }
 
@@ -1008,6 +1062,28 @@ mod tests {
         let mut interner = TextInterner::default();
         let (block, report) = parse_declaration_block(text, &mut interner);
         (block, report, interner)
+    }
+
+    fn px(v: f32) -> DeclValue {
+        DeclValue::Length(DeclLength::Px(v))
+    }
+
+    fn margin_quad(block: &DeclBlock) -> [DeclValue; 4] {
+        [
+            value(block, PresentationProperty::MarginTop),
+            value(block, PresentationProperty::MarginRight),
+            value(block, PresentationProperty::MarginBottom),
+            value(block, PresentationProperty::MarginLeft),
+        ]
+    }
+
+    fn padding_quad(block: &DeclBlock) -> [DeclValue; 4] {
+        [
+            value(block, PresentationProperty::PaddingTop),
+            value(block, PresentationProperty::PaddingRight),
+            value(block, PresentationProperty::PaddingBottom),
+            value(block, PresentationProperty::PaddingLeft),
+        ]
     }
 
     // — Grammar arms — //
@@ -1821,6 +1897,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn margin_shorthand_expands_clockwise() {
+        let (block, report, _) = parse_block("margin: 8px");
+        assert_eq!(report.applied, 1);
+        assert_eq!(margin_quad(&block), [px(8.0), px(8.0), px(8.0), px(8.0)]);
+
+        let (block, _, _) = parse_block("margin: 1px 2px");
+        assert_eq!(margin_quad(&block), [px(1.0), px(2.0), px(1.0), px(2.0)]);
+
+        let (block, _, _) = parse_block("margin: 1px 2px 3px");
+        assert_eq!(margin_quad(&block), [px(1.0), px(2.0), px(3.0), px(2.0)]);
+
+        let (block, _, _) = parse_block("margin: 1px 2px 3px 4px");
+        assert_eq!(margin_quad(&block), [px(1.0), px(2.0), px(3.0), px(4.0)]);
+
+        let (_, report, _) = parse_block("margin: 1px 2px 3px 4px 5px");
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.dropped, 1);
+    }
+
+    #[test]
+    fn margin_shorthand_admits_negative_lengths() {
+        let (block, report, _) = parse_block("margin: -10px 2px");
+        assert_eq!(report.applied, 1);
+        assert_eq!(
+            margin_quad(&block),
+            [px(-10.0), px(2.0), px(-10.0), px(2.0)]
+        );
+    }
+
+    #[test]
+    fn padding_shorthand_expands_and_rejects_negatives() {
+        let (block, report, _) = parse_block("padding: 4px");
+        assert_eq!(report.applied, 1);
+        assert_eq!(padding_quad(&block), [px(4.0), px(4.0), px(4.0), px(4.0)]);
+
+        let (_, report, _) = parse_block("padding: -4px");
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.dropped, 1);
+    }
+
     // — Block-parse mechanics — //
 
     #[test]
@@ -2056,12 +2173,29 @@ mod tests {
             longhands_for_name("border-top").map(SmallVec::into_vec),
             Some(vec![PresentationProperty::BorderTopWidth])
         );
+        assert_eq!(
+            longhands_for_name("margin").map(SmallVec::into_vec),
+            Some(vec![
+                PresentationProperty::MarginTop,
+                PresentationProperty::MarginRight,
+                PresentationProperty::MarginBottom,
+                PresentationProperty::MarginLeft,
+            ])
+        );
+        assert_eq!(
+            longhands_for_name("padding").map(SmallVec::into_vec),
+            Some(vec![
+                PresentationProperty::PaddingTop,
+                PresentationProperty::PaddingRight,
+                PresentationProperty::PaddingBottom,
+                PresentationProperty::PaddingLeft,
+            ])
+        );
     }
 
     #[test]
     fn longhands_for_name_returns_none_for_unknown_names() {
         assert_eq!(longhands_for_name("frobnicate"), None);
         assert_eq!(longhands_for_name(""), None);
-        assert_eq!(longhands_for_name("margin"), None);
     }
 }

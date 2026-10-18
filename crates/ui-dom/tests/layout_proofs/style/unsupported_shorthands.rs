@@ -7,16 +7,22 @@
 //! Shorthand pins for the style system (PLAN.md B3 + B10).
 //!
 //! Purpose: pin the gate behavior for unimplemented shorthand NAMES — the
-//! box-model shorthands CSS admits as one expansion family (`margin`,
-//! `padding`, `border`, `border-width`, `inset`, `outline`) whose expansion the
-//! engine has not yet admitted (B3), and the other-shorthand + overflow-axes
-//! family (`font`, `background`, `all`, `overflow-x`/`overflow-y`) (B10). Each
-//! pin asserts BOTH sides of the gate: the declaration is dropped + counted
-//! (drop-and-continue, CSS 2.1 §4.1.7) AND the corresponding longhand group
-//! fields stay at their group initial. A later admission flips exactly these
-//! rows on-spec (see each per-test "SPEC-CORRECT" note).
+//! box-model shorthands CSS admits as one expansion family (`border`,
+//! `border-width`, `inset`, `outline`) whose expansion the engine has not yet
+//! admitted (B3), and the other-shorthand + overflow-axes family (`font`,
+//! `background`, `all`, `overflow-x`/`overflow-y`) (B10). Each pin asserts BOTH
+//! sides of the gate: the declaration is dropped + counted (drop-and-continue,
+//! CSS 2.1 §4.1.7) AND the corresponding longhand group fields stay at their
+//! group initial. A later admission flips exactly these rows on-spec (see each
+//! per-test "SPEC-CORRECT" note).
 //!
-//! Class note: every row in this file is `unsupported_*` = unimplemented —
+//! The `margin` and `padding` rows of the original B3 box-model family were
+//! admitted in PR 1 item 1 and relabeled on-spec here
+//! (`margin_shorthand_expands_to_longhands`, `padding_shorthand_expands_to_longhands`):
+//! they now assert the 1–4 corner expansion to the four `*-top`/`*-right`/
+//! `*-bottom`/`*-left` longhands, not the drop gate.
+//!
+//! Class note: every `unsupported_*` row in this file is unimplemented —
 //! policy-gated absence per the D6 admission policy in `MIGRATION.md` (a named
 //! consumer need + spec citation + Blink/Gecko algorithm reference + proof).
 //! The names are absent from the `property_shape` name table (`decl_parse.rs`),
@@ -52,102 +58,116 @@ fn styled_target_load(css: &str) -> (World, RootDom, DomNodeSlotKey, StylesheetL
 }
 
 #[test]
-// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// ON-SPEC (relabeled from `unsupported_margin_shorthand_drops` in PR 1 item 1):
 // - SPEC: CSS Box 3 §4.2 `margin` is a shorthand for the four `margin-*`
 //   longhands, taking 1–4 values with the corner mapping (1 = all sides,
 //   2 = vertical/horizontal, 3 = top/horizontal/bottom, 4 = top/right/bottom/
 //   left). <https://drafts.csswg.org/css-box-3/#margin-shorthand>
 // - CURRENT (asserted): `margin: 8px`, `margin: 1px 2px`, and
-//   `margin: 1px 2px 3px 4px` each drop + count (`declarations_dropped == 1`)
-//   — the name is absent from `property_shape` (`decl_parse.rs`); after a
-//   four-value load the computed `margin` stays `[0.0; 4]` (the group initial).
-// - SPEC-CORRECT: expand to the four `margin-*` longhands via the 1–4 corner
-//   map (the `expand_border_radius` template in `decl_parse.rs`).
-// - D6: admission requires a named consumer need + spec citation + Blink/Gecko
-//   algorithm reference. NOTE: `margin`/`padding` are the #1 admission
-//   candidates by popularity (PLAN.md B3).
-fn unsupported_margin_shorthand_drops() {
+//   `margin: 1px 2px 3px 4px` each expand to the four `margin-*` longhands via
+//   the corner map with no drops; the computed `margin` is TRBL
+//   `[8.0; 4]` / `[1.0, 2.0, 1.0, 2.0]` / `[1.0, 2.0, 3.0, 4.0]`.
+fn margin_shorthand_expands_to_longhands() {
     struct Case {
         name: &'static str,
         body: &'static str,
+        margin: [f32; 4],
     }
 
     let cases = [
         Case {
             name: "margin_one_value",
             body: "margin: 8px",
+            margin: [8.0; 4],
         },
         Case {
             name: "margin_two_values",
             body: "margin: 1px 2px",
+            margin: [1.0, 2.0, 1.0, 2.0],
         },
         Case {
             name: "margin_four_values",
             body: "margin: 1px 2px 3px 4px",
+            margin: [1.0, 2.0, 3.0, 4.0],
         },
     ];
 
     for case in cases {
-        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+        let (mut world, mut root, target, report) =
+            styled_target_load(&format!(".x {{ {} }}", case.body));
+        assert_eq!(report.declarations_applied, 1, "{} should apply", case.name);
+        assert_eq!(
+            report.declarations_dropped, 0,
+            "{} should not drop",
+            case.name,
+        );
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target).expect("target").as_box().margin,
+            case.margin,
+            "{} should expand to TRBL {:?}",
+            case.name,
+            case.margin,
+        );
     }
-
-    let (mut world, mut root, target, _report) =
-        styled_target_load(".x { margin: 1px 2px 3px 4px }");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    assert_eq!(
-        root.computed_style(target).expect("target").as_box().margin,
-        [0.0; 4],
-        "margin shorthand should stay at its [0.0; 4] group initial",
-    );
 }
 
 #[test]
-// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// ON-SPEC (relabeled from `unsupported_padding_shorthand_drops` in PR 1 item 1):
 // - SPEC: CSS Box 3 §4.3 `padding` is a shorthand for the four `padding-*`
 //   longhands, taking 1–4 `<length-percentage [0,∞]>` values with the same
 //   corner mapping as `margin`.
 //   <https://drafts.csswg.org/css-box-3/#padding-shorthand>
 // - CURRENT (asserted): `padding: 8px`, `padding: 1px 2px`, and
-//   `padding: 1px 2px 3px 4px` each drop + count; after a four-value load the
-//   computed `padding` stays `[0.0; 4]` (the group initial).
-// - SPEC-CORRECT: expand to the four `padding-*` longhands via the corner map.
-// - D6: admission-gated.
-fn unsupported_padding_shorthand_drops() {
+//   `padding: 1px 2px 3px 4px` each expand to the four `padding-*` longhands
+//   via the corner map with no drops; the computed `padding` is TRBL
+//   `[8.0; 4]` / `[1.0, 2.0, 1.0, 2.0]` / `[1.0, 2.0, 3.0, 4.0]`.
+fn padding_shorthand_expands_to_longhands() {
     struct Case {
         name: &'static str,
         body: &'static str,
+        padding: [f32; 4],
     }
 
     let cases = [
         Case {
             name: "padding_one_value",
             body: "padding: 8px",
+            padding: [8.0; 4],
         },
         Case {
             name: "padding_two_values",
             body: "padding: 1px 2px",
+            padding: [1.0, 2.0, 1.0, 2.0],
         },
         Case {
             name: "padding_four_values",
             body: "padding: 1px 2px 3px 4px",
+            padding: [1.0, 2.0, 3.0, 4.0],
         },
     ];
 
     for case in cases {
-        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+        let (mut world, mut root, target, report) =
+            styled_target_load(&format!(".x {{ {} }}", case.body));
+        assert_eq!(report.declarations_applied, 1, "{} should apply", case.name);
+        assert_eq!(
+            report.declarations_dropped, 0,
+            "{} should not drop",
+            case.name,
+        );
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target)
+                .expect("target")
+                .as_box()
+                .padding,
+            case.padding,
+            "{} should expand to TRBL {:?}",
+            case.name,
+            case.padding,
+        );
     }
-
-    let (mut world, mut root, target, _report) =
-        styled_target_load(".x { padding: 1px 2px 3px 4px }");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    assert_eq!(
-        root.computed_style(target)
-            .expect("target")
-            .as_box()
-            .padding,
-        [0.0; 4],
-        "padding shorthand should stay at its [0.0; 4] group initial",
-    );
 }
 
 #[test]
