@@ -778,6 +778,20 @@ an f32 basis.
   different kind from PR 2's: it HAS a named driver (the users' biggest
   complaint), so its debate proceeds with real substance.
 
+- **2026-10-19 — PR 3's driver named (consumer signal).** Several client
+  teams cannot use the crate's flex or grid layout for real designs and
+  fall back to absolute positioning — which is plain-Bevy usage and
+  defeats the library's purpose. This satisfies the named-driver bar
+  PR 2 failed. Two consequences: (1) the signal is the existence proof
+  of the complaint list, not the list — the list must be collected as
+  reproducible rows (authored input / expected / actual / workaround)
+  before the mapping document's debate, per PR 3's debate question 1;
+  (2) "grid" is NOT inside PR 3's current scope (the flex-solver
+  migration): `display: grid` is unadmitted (the
+  `unsupported_display_values_drop_to_initial` gate), and grid admission
+  is a NEW layout algorithm, not a migration. Whether grid enters the
+  arc, and where, is a named decision owed before PR 3's debate closes.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
