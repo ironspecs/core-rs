@@ -11,8 +11,12 @@ before anyone else names them). Sections:
 3. **The proposals** — PRs 1–5, each with design, evidence, costs,
    alternatives, and proof obligations. PRs 2 and 3 carry a **debate
    section that must be resolved, with third-party agreement, before any
-   implementation**.
+   implementation**, and each carries a kill criterion (a debate without
+   one is a ratchet).
 4. **Decision log** — everything already adjudicated, with rationale.
+5. **Vocabulary carried from the redesign** — one-line definitions of every
+   term this document reuses from the landed plans, so nothing requires
+   git archaeology (AGENTS.md points readers here).
 
 Status markers: `SETTLED` items are decided and need only execution.
 `DEBATE` items are open positions that require the written debate and
@@ -32,10 +36,18 @@ Five problems, in the order this arc addresses them.
   is dropped at the boundary, counted, and inert. The coverage accounting
   pinned every one of these behaviors with running proofs, so we know
   exactly what we do; what we do is not enough for the consumers we have.
-  Evidence: the `unsupported_*` pin families in
-  `tests/layout_proofs/style/` (B2/B3/B6/B9/B11 rows), the admission queue
-  analysis in the architect's library review (2026-10-18), and the registry
-  itself.
+  Evidence: the pin families `unsupported_shorthand_drops` (B3's file),
+  `unsupported_box_sizing_drops_and_border_box_sizing_holds`,
+  `unsupported_important_declarations_drop_but_the_rule_survives` and its
+  inline sibling, `unsupported_percentage_lengths_drop`,
+  `unsupported_auto_lengths_drop`,
+  `off_spec_opacity_out_of_range_rejected`,
+  `off_spec_adjacent_negative_block_margins_collapse_to_most_negative`
+  (`layout/normal_flow.rs`), and
+  `off_spec_transform_transitions_do_not_schedule`
+  (`style/admitted_gaps.rs`) — all in `tests/layout_proofs/` — plus the
+  admission queue analysis in the architect's library review (2026-10-18)
+  and the registry itself.
 - **P2 — The style runtime's sharing mechanism is a global mutex in the
   style path.** `RootDomContext` shares `Arc<RootDomContext>` with
   `Mutex<StyleRuntime>`; the style pass locks it once per element per pass
@@ -60,7 +72,10 @@ Five problems, in the order this arc addresses them.
   registered divergence, the named step-5 follower). Fallback is implicit
   in one function. cosmic-text asserts (`font_size != 0`,
   `line_height != 0`) leaked through as panics until the accounting found
-  them; the guards are now scattered across six call sites. Any change to
+  them; the guards now stand at every site the probes reached (the
+  intrinsic measurement pair, wrapped-layout and caret-path functions, the
+  control measurement, and the three text-op staging sites in paint — see
+  the B1 hardening record in git history for the enumeration). Any change to
   this seam risks closing doors for non-Latin, RTL, and vertical text that
   must stay open — which is why the seam proposal carries an explicit
   prove-or-abandon gate.
@@ -97,12 +112,16 @@ it does well, and where it is weak. Citations are load-bearing.
   per-property grammar, group, inherited flag, name). Fail-closed: anything
   outside the table drops with a counted report (CSS 2.1 §4.1.7, the scoped
   exception recorded in AGENTS.md).
-- **The winners fold** (`winners_fold.rs`): per element, behavior base →
+- **The winners fold** (`src/domains/visitor/winners_fold.rs`): per element,
+  behavior base →
   active pseudo-state behavior → matched rules ascending
   `Precedence { origin_priority, inline, specificity, order }`
   (`decl_value.rs:39-44`) → inline block (`i32::MAX`, `inline: true`), into
-  a stack-local `[Option<(DeclValue, Precedence)>; 68]`. Zero-allocation
-  per element by construction.
+  a stack-local `[Option<(DeclValue, Precedence)>; 68]`. The fold and
+  resolution are zero-allocation per element; the collect phase carries
+  two pinned per-element allocations plus a dedup `HashSet`
+  (`winners_fold.rs:140-146` — the deferred proposal J's target, see the
+  vocabulary section).
 - **The computed projection.** Seven small `Copy` groups (font, text,
   color, box, flex, visual, transform) inline in the node record
   (`NodePresentation`), seeded by group-copy inheritance (A5) and
@@ -198,7 +217,9 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-364 layout proofs in subsystem directories; the off-spec registry (8
+367 layout proofs in subsystem directories (360 in
+`style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 7 in the
+cross-cutting `robustness.rs`); the off-spec registry (8
 divergent, 4 deliberate, grouped `unsupported_*` gates, a robustness
 family) as a living divergence map with reclassification discipline;
 `perf_metric.rs`/`perf_allocation.rs` pinning exact work counters and
@@ -252,11 +273,19 @@ designs below are settled and the pins are the witnesses.
    `unsupported_margin_shorthand_drops`, `unsupported_padding_shorthand_drops`.
    Spec: CSS Box 3 §4.2–4.3; Servo/Blink expand-at-parse.
 2. **The negative-margin collapse fix.** `collapsed_sibling_margin_overlap_px`
-   (`src/domains/layout/flow.rs`) clamps the collapse overlap to ≥ 0,
-   summing −10 and −5 to −15 where CSS 2.1 §8.3.1's final paragraph
-   requires the most negative (−10). Remove the clamp for the all-negative
-   case; the mixed-sign case keeps today's behavior (state the covered
-   subset in the comment). Pin flip:
+   (`src/domains/layout/flow.rs:962-975`) computes the collapse overlap as
+   `min(a, b).max(0.0)`, and the used sibling gap is `a + b − overlap` —
+   so for (−10, −5) today's overlap is 0 and the gap is −15, where CSS 2.1
+   §8.3.1 requires −10. **The correct fix computes the used margin directly
+   in three branches — both-positive → `max(a, b)`; both-negative →
+   `min(a, b)`; mixed-sign → `a + b` — and derives the overlap as
+   `a + b − used`** (removing the clamp alone yields overlap = −10 and a
+   gap of −5, which is still off-spec; the three-branch form is the only
+   one that yields −10 for the pinned case). The mixed-sign branch already
+   matches today's behavior (summation is spec-correct for one positive +
+   one negative margin, and the comment must say so — today's subset note
+   at `flow.rs:966-968` scopes this path to the non-negative slice).
+   Pin flip:
    `off_spec_adjacent_negative_block_margins_collapse_to_most_negative`
    relabels on-spec. The registry's oldest divergent entry closes. **With
    it lands the spillover verification pin** (see the decision log):
@@ -271,13 +300,29 @@ designs below are settled and the pins are the witnesses.
    `unsupported_box_sizing_drops_and_border_box_sizing_holds`.
 4. **`!important`** (CSS Cascade 5 §6.1, §6.4.1 — F stage 1, pre-shaped).
    `DeclBlock` gains a parallel importance bit-vector (the Servo
-   `declarations_importance: SmallBitVec` shape already named in
-   `decl_block.rs`'s header). Declaration parse strips the `!important`
-   suffix and sets the bit (it is part of the declaration, not the value).
-   `Precedence` gains `important: bool` as its FIRST field: important
-   author declarations beat all normal declarations including normal inline
-   style; transitions still win above everything (the overlay is
-   tier-1-equivalent and untouched). Pin flips:
+   `declarations_importance: SmallBitVec` shape named in the redesign's
+   F verdict; `decl_block.rs`'s header notes only that importance bits
+   "arrive later with cascade tier path F"). Declaration parse strips the
+   `!important` suffix and sets the bit (it is part of the declaration,
+   not the value). **The `Precedence` record gains a tier field, NOT a
+   bool-first flag:** `Precedence { tier, origin_priority, inline,
+   specificity, order }` where `tier` descends `ImportantAuthor >
+   NormalAuthor > NormalUa` (today's behavior sheet). This projects CSS
+   Cascade §6.1 correctly — important author declarations beat all normal
+   declarations including normal inline style (important inline style is
+   `ImportantAuthor` at top specificity); transitions still win above
+   everything (the overlay is tier-1-equivalent and untouched); and the
+   important-vs-important case across author origins sorts by
+   `origin_priority` *within* the `ImportantAuthor` tier, matching §6.4.1's
+   class reversal (the UA/user/author ladder, with the behavior sheet as
+   the UA-ish rung) without the bool-first shape's baked-in violation.
+   The tier field is also the honest reading of `decl_value.rs:34-38`'s
+   contract ("widened later for importance/UA/animation/layer tiers
+   without reshaping the key"): stages 2–4 (a real UA tier, the animation
+   tier, cascade layers) extend the tier enum additively — `ImportantUa`
+   above, `Animation` between `ImportantAuthor` and `NormalAuthor`, layer
+   indices within a tier — rather than reshaping its semantics.
+   Pin flips:
    `unsupported_important_declarations_drop_but_the_rule_survives` and
    `unsupported_important_in_style_attribute_drops`.
 5. **`opacity` clamping** (CSS Color 4 §12.2). The `Opacity` grammar
@@ -298,8 +343,23 @@ designs below are settled and the pins are the witnesses.
    form; layout resolves `Percent` against the containing-block dimension
    it owns (width and margin/padding against the containing-block WIDTH,
    even vertically, per CSS Values §percentages); `auto` margins resolve by
-   distributing free space (the centering case consumers actually want);
-   `auto` for width/height maps to the existing `None`/initial (free).
+   distributing free space (the block-layout centering case); `auto` for
+   width/height maps to the existing `None`/initial (free).
+   **Blast radius, stated fully:**
+   (a) **public API break** — `ComputedBoxGroup`'s length fields are on the
+   computed read surface; `BoxLength` replacing `f32` lands in
+   `MIGRATION.md` with a named decision, the same standard PR 5 applies to
+   its own contract;
+   (b) **reader fan-out** — "layout resolves Percent" is not one branch but
+   every consumer of every box length (`flow.rs`, `flex.rs`, walker,
+   sizing projection), each needing the containing-block width at the point
+   of use;
+   (c) **flex auto margins are explicitly OUT of scope for this item** —
+   Flexbox §8.1's per-item free-space absorption is a different algorithm
+   from the block case and is the single most common consumer use of
+   `margin: auto`; it is named as its own later admission (gated by
+   consumer need per D6) rather than silently bundled, because guessing
+   either way ships as a bug.
    Pin flips: the percentage rows of `unsupported_percentage_lengths_drop`
    and both rows of `unsupported_auto_lengths_drop`.
 
@@ -354,13 +414,19 @@ expectations are a question, not a fact in this debate).
    are context-scoped but must NOT be captured into snapshot lifetimes
    (they are not style data). Confirm the boundary.
 5. The revision seam: `sync_stylesheet_runtime` currently compares a `u64`
-   per update. Does the snapshot identity/revision subsume it cleanly, and
-   does `RootDomContext`'s public revision accessor survive unchanged?
+   per update (via the `pub(crate)` accessor on `RootDomContext`).
+   Does the snapshot identity/revision subsume it cleanly, and
+   does that accessor's contract survive unchanged?
 
 **What the reviewer should attack:** the absence of measurement; the
 hidden assumption that contention will ever exist; the risk of shipping a
 new primitive (a) when (b) suffices; and whether this PR is really
 P2-solving or architecture-for-its-own-sake.
+
+**Kill criterion (added per the S10 review):** this PR dies if the debate
+concludes alternative (c) — measurement shows the lock is contention-free
+in every realistic scenario AND no consumer names a concurrent-reader
+need. A debate that can only ratify is not a debate.
 
 ### PR 3 — the flex solver: source-verified migration `DEBATE — mapping doc and agreement required before implementation`
 
@@ -378,17 +444,30 @@ phases — with the engines' durable shapes named (flex lines as
 first-class objects with hypothetical main sizes; items with min/max
 clamps; violation accumulation for balancing; free-space distribution
 after constraint resolution), every delta named, and each marked
-justified-ours or fix-to-theirs. This document is the debate's subject.
+justified-ours or fix-to-theirs. **The document carries an explicit
+engine tie-break rule:** when Blink and Gecko disagree (they do — line
+balancing and violation accumulation differ structurally), WPT decides
+first and Blink second, matching the proof suite's per-claim provenance
+rule; without it every contested phase becomes its own unplanned debate.
+This document is the debate's subject.
 
 **The migration (only after the debate):** behavior-preserving
 data-structure alignment, gated by the entire flex proof suite (the
 batch families, the solver unit tests, perf pins). Structural-migration
 policy: moves are byte-identical where behavior must not move; algorithm
 changes are their own commits, reviewed as performance changes.
+**Scope honesty (stated before the debate, not inside it):** a
+behavior-preserving migration moves zero coverage by construction — the
+proofs pin only admitted behavior (batches 3–7). What the migration buys
+is the shared vocabulary and the review surface that makes the missing
+batches *admissible and reviewable*; the admissions that fix the named
+bugs are subsequent, behavior-changing landings on the aligned structures,
+and they are the actual point. The migration without them is aesthetics;
+the debate must not let it become that.
 
 **The debate must answer.**
 1. What is the actual complaint list? (The users' top flex bugs, named —
-   the migration targets them, not aesthetics.)
+   the subsequent admissions target them, not aesthetics.)
 2. Map-first vs admit-first: is aligning structures to Blink/Gecko
    justified *before* admitting the missing batches, or should the missing
    batches be admitted into the current solver first (cheaper, keeps the
@@ -399,6 +478,10 @@ changes are their own commits, reviewed as performance changes.
    them are testing bespoke internals that should die with the bespoke
    structures (per the test-migration policy: genuine unit assertions
    re-home; cross-module assertions re-express through the public surface)?
+5. **Kill criterion (added per the S10 review):** this PR dies if the
+   mapping document concludes the current solver is already closer to the
+   engines than feared — in which case the arc admits the named missing
+   batches into the current solver and stops.
 
 **What the reviewer should attack:** whether this is a rewrite in mapping
 clothes; whether the complaint list is real or assumed; whether the
@@ -433,7 +516,11 @@ Before merge, the seam must render through the public pipeline with proofs:
 1. New font faces installed through the catalog (not hardcoded additions —
    a consumer-supplied face path).
 2. Scripts beyond the pinned CJK coverage (choose at least one with
-   shaping complexity, e.g. Arabic or Devanagari).
+   shaping complexity, e.g. Arabic or Devanagari). **This gate depends on
+   gate 1:** the four bundled faces (IBM Plex Sans variable + Source Han
+   J/SC/K) do not cover those scripts, so complex-script proofs are only
+   possible via the consumer-supplied-face mechanism — an implementer may
+   not "pass" gate 1 with a Latin face and strand gate 2.
 3. RTL text: bidirectional shaping and caret behavior.
 4. Vertical writing: either a working path or an explicitly named
    boundary (today `writing-mode` is unadmitted — the proof documents
@@ -441,6 +528,18 @@ Before merge, the seam must render through the public pipeline with proofs:
 
 **Kill criterion:** if the new interface cannot express those honestly, we
 do not make the change. The fallback is today's seam, documented.
+
+**Ownership and boundaries (stated per the S7 review):** the seam's font
+catalog and fallback policy are **context-scoped** (shared across
+documents, like today's `TextLayoutConfig`) — this is a joint boundary
+with PR 2, whose snapshot explicitly excludes them from snapshot
+lifetimes (fonts are not style data); making the seam document-scoped
+would be a multi-document sharing regression and is rejected. **The
+line-height 1px floor stays in the style resolver** (`project.rs`: it is a
+computed-value policy, and the registry pins it permanently); the seam
+owns the cosmic call sites and the floor's render-side backstop — the
+computed read surface does not change observably, and the permanent pin
+does not move.
 
 **Honest risks:** the seam formalization could itself narrow what can be
 requested (a door-closer by accident — hence the gate); fallback policy
@@ -461,24 +560,28 @@ pub struct RootDom {
 }
 ```
 
-One file per subsystem with its own impl (structural rules 1/5 hold);
-`RootDom` keeps the consumer-called facade as thin delegations; the rest
-of the 48 public methods become `pub(crate)` on the subsystems. Follow-on
-ownership correction: the popup/options system leaves `RootDom` for the
+One file per subsystem with its own impl (structural rules 1/5 hold).
+**The compatibility contract, stated precisely:** the 48 `pub fn` on
+`RootDom` stay public, as thin delegations on the facade — no
+consumer-visible change without a named decision recorded here. The
+remaining ~70 `pub(crate)` and private methods (the actual body of
+`root_dom.rs`) distribute to the subsystems, which is where the line count
+goes. Follow-on ownership correction, sequenced INSIDE this PR (it is not
+a trigger from outside): the popup/options system leaves `RootDom` for the
 widget layer (`control_widgets.rs`/`element_behaviors/`).
 
 **Migration policy:** structural-migration — one subsystem at a time,
-byte-identical where behavior must not move, full gate per move; the 48
-public methods are the compatibility contract (no consumer-visible change
-without a named decision recorded here).
+byte-identical where behavior must not move, full gate per move.
 
 **Honest cost (stated for the reviewer):** no user-visible win. It is a
 large mechanical diff whose only return is that the crate's core file
 stops absorbing everything. It is sequenced last precisely because it is
-the least valuable per risk at any earlier point — and it should be
-challenged on exactly that basis if the arc's earlier PRs make the file
-smaller than feared (if `root_dom.rs` shrinks materially from PR 1's
-deletions and the popup extraction, this PR's scope should shrink with it).
+the least valuable per risk at any earlier point — and its scope should be
+re-evaluated when it starts: if work earlier in the arc has already shrunk
+`root_dom.rs` materially, this PR descopes to match (the challenge is
+welcomed; what it may NOT do is fire on PR 1, whose items do not touch
+`root_dom.rs` materially — the file stands as it is until this PR's own
+moves begin).
 
 ---
 
@@ -493,13 +596,14 @@ deletions and the popup extraction, this PR's scope should shrink with it).
   expansion defeats the cache geometry and the damage-rect model;
   (2) negative margins are rare, and legitimate visible spillover is a
   structural decision the author expresses with an unclipped (Normal) or
-  dedicated layer; (3) it is a deliberate visual divergence, registered
-  deliberate, with that escape hatch named and pinned. Orthogonal to the
+  dedicated layer; (3) it is **decided** as a deliberate visual divergence —
+  registration of the registry row and the verification pin are **owed in
+  PR 1 item 2** (the pin asserts both the clipped behavior and the
+  Normal-layer escape hatch painting the spill; the registry entry lands
+  with it, class deliberate). Orthogonal to the
   negative-margin collapse math, which is a plain spec violation fixed in
   PR 1 item 2 regardless (it is cheap, and the registry is more valuable
-  when every entry is a stance, not an accident). Verification owed in
-  PR 1: pin the actual spillover behavior as deliberate and the
-  Normal-layer escape hatch as working.
+  when every entry is a stance, not an accident).
 - **2026-10-18 — the `/types` advice accepted.** Narrow newtypes over
   trait-based capability splits; popup/options moves to the widget layer
   as the follow-on ownership correction. (Option A over Option B; Option C
@@ -525,3 +629,67 @@ deletions and the popup extraction, this PR's scope should shrink with it).
   removal, `from == to` skip. It slots into PR 1's branch as an
   uncontroversial companion bundle (`pipeline/transitions.rs` rows) unless
   a better home is named.
+
+## Vocabulary carried from the redesign (self-contained definitions)
+
+One line per term this document reuses from the landed plans, so nothing
+requires git archaeology (AGENTS.md's scoped-exception note points readers
+to this section). Terms marked † are defined in this document's own
+problem statement (P1–P5) and are not repeated.
+
+- **A1** — the declaration parser (`decl_parse.rs`): closed per-property
+  grammars, drop-and-continue block parsing, the system's single
+  shorthand-expansion point.
+- **A3** — selector parse + specificity (the closed subset in
+  `domains/style/mod.rs`).
+- **A5** — defaulting/inheritance: inherited groups seed from the parent,
+  non-inherited from initial (group-copy inheritance).
+- **A6** — unit resolution: `font-size` em → parent's computed size; every
+  other property's em → the element's own.
+- **A7** — group-diff dirty classification: the static table mapping a
+  changed computed group to layout/paint/remeasure/layer-membership marks.
+- **A10** — the minimal-edit `DeclBlock` upsert (update-in-place keeping
+  source position; changed flag).
+- **D2** — one timing: programmatic writes mark style-dirty; the rendering
+  update's style pass resolves everything (no second clock).
+- **D5** — the v0.6.0 hard-break migration contract (see `MIGRATION.md`).
+- **D6** — the admission policy: a property or grammar form enters only
+  with a named consumer need, a spec citation plus the Blink/Gecko
+  reference, and a proof in the same change.
+- **D7** — damage rects are preserved; targeted repaint is a staged goal.
+- **D8** — preserve all functionality; where behavior is reinterpreted,
+  bias toward Blink/Gecko semantics.
+- **F (cascade tier path)** — staged tier admissions: stage 1 `!important`,
+  stage 2 a real UA tier, stage 3 the animation tier, stage 4 cascade
+  layers; the `Precedence` tier field is shaped so these are additive.
+- **G** — the drop-and-continue declaration-parsing rule (CSS 2.1 §4.1.7,
+  css-style-attr §3): malformed declarations drop, parsing continues, and
+  every drop is counted by metric AND returned in an explicit report —
+  never silent. Scoped to declaration lists; single-declaration APIs stay
+  strict (the AGENTS.md scoped exception).
+- **J (proposal J)** — matched-rule caching / selector-aware invalidation,
+  deferred on evidence: style passes visit 1–3 elements in the pinned
+  scenarios, so scoped dirtying already carries the load. Its named target
+  is the collect phase's two per-element allocations
+  (`winners_fold.rs:140-146`); it wakes only if the counters demand it.
+- **S1** — the landed substrate: declarations in arenas with generational
+  keys; computed style as seven small `Copy` groups stored inline on the
+  node (visit locality, value-compared, no refcounting); typed `DeclValue`
+  at the declaration boundary; bounded inline lists (capacity 4) for
+  transition longhands. "The S1 invariants" = those group properties.
+- **B1–B12** — the coverage accounting's twelve bundles (landed; proof
+  files in `tests/layout_proofs/`): B1 sign rules & numeric edges and B2
+  units (`style/unsupported_values.rs`), B3 box shorthands and B10 other
+  shorthands (`style/unsupported_shorthands.rs`), B4 text consumption &
+  admitted quirks and B5 preserved candidates (`style/admitted_gaps.rs`),
+  B6 layout-impact and B11 property tail (`style/unsupported_properties.rs`),
+  B7 colors (`style/unsupported_colors.rs`), B8 selectors/at-rules
+  (`style/unsupported_selectors.rs`), B9 cascade tiers
+  (`style/cascade_tiers.rs`), B12 robustness (`robustness.rs`).
+- **The redesign / the spine** — the landed declaration-store style system
+  (v0.6.0; its plan lives in git history at the v0.6.0 merge), whose
+  implementation sequence was called the spine.
+- **P1–P5 †** — this document's own problem statements (§1); note they are
+  unrelated to the old plan's P1–P3 (programmatic-style loss, two clocks,
+  one-bag attributes — all fixed and closed).
+
