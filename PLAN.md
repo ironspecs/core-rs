@@ -846,7 +846,9 @@ An unsupported selector fails `parse_selector` → `DomError::InvalidSelector`
 | `@media (min-width: 100px) { .a { } }` | whole load Err | conditional rules | unimplemented |
 | `@supports (display: flex) { }` | whole load Err | feature queries | unimplemented |
 | `@keyframes spin { }`, `@font-face` | whole load Err | at-rules | unimplemented |
-| stray text before a rule, stray `}`, missing closing `}` | load Err (`InvalidAttributeValue`, block structure) | CSS error recovery skips to next rule | adjudicate: G was scoped to declarations deliberately; pin current (fatal), note the boundary |
+| stray `}` before a rule | whole load `Err(InvalidSelector)` | CSS error recovery skips to next rule | unimplemented (statement recovery); pin current (fatal) — verified actual |
+| missing closing `}` | whole load `Err(InvalidAttributeValue)` | CSS error recovery skips to next rule | unimplemented (statement recovery); pin current (fatal) — verified actual |
+| `garbage .a { }` ("stray text" premise) | loads OK as a valid `garbage .a` descendant selector | a valid rule (arbitrary idents are tag selectors) | honesty correction: not stray text |
 
 **B8 scope and changes.**
 
@@ -888,16 +890,22 @@ An unsupported selector fails `parse_selector` → `DomError::InvalidSelector`
 - **`@import` / `@charset` rows:** `@import url(...)` (the first at-rule a
   consumer bundling real CSS hits) and `@charset "utf-8"` — both whole-load
   `Err` today (the block parser sees an at-rule as a selector), class
-  unimplemented.
+  unimplemented. VERIFIED ACTUAL: both fail with `Err(InvalidSelector)` — they
+  carry no `{`, so `parse_css_blocks` hits its no-open-brace arm.
 - **Stray-`}` / block-structure adjudication (decided, recorded here):** pin
-  current whole-load-`Err(InvalidAttributeValue)` as **unimplemented**:
-  statement-level error recovery (CSS 2.1 §4.1.7's malformed-statement
-  rule, the statement-level sibling of G's declaration rule) is an
-  admission-gated parser feature. The load error is loud (typed `Err` to
-  the caller), so the current shape is acceptable until a consumer need is
-  named; the natural admission shape mirrors G at statement level (skip the
-  malformed statement, count it, continue). The atomicity fix (above) makes
-  these error paths honest in the meantime.
+  current whole-load `Err` as **unimplemented**: statement-level error recovery
+  (CSS 2.1 §4.1.7's malformed-statement rule, the statement-level sibling of
+  G's declaration rule) is an admission-gated parser feature. The load error is
+  loud (typed `Err` to the caller), so the current shape is acceptable until a
+  consumer need is named; the natural admission shape mirrors G at statement
+  level (skip the malformed statement, count it, continue). The atomicity fix
+  (above) makes these error paths honest in the meantime. VERIFIED ACTUAL
+  (two honesty corrections vs the earlier "all `InvalidAttributeValue`"
+  claim): a stray `}` before a rule fails with `Err(InvalidSelector)`
+  (`parse_css_blocks`'s leading-`}` arm), and a missing closing `}` fails with
+  `Err(InvalidAttributeValue)` (its no-close-brace arm); a "stray text" premise
+  does NOT fail — `garbage .a { }` loads OK as a valid `garbage .a` descendant
+  selector (arbitrary idents are tag selectors).
 - **Registry:** `unsupported_*` rows per family (combinators, attribute
   selectors, pseudo-classes, pseudo-elements, selector lists, at-rules,
   statement recovery), plus the `off_spec_*` atomicity row that flips with
@@ -1285,7 +1293,8 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B5 — preserved candidates | **done** (pins; three adjudications recorded in the B5 section and decision log: near-white initial `color` deliberate, `line-height: normal` → 1.0× divergent, border widths initial `0` deliberate; see `style/admitted_gaps.rs`) |
 | B6 — layout-impact properties | **done** (pins; all rows verified dropped+counted + per-family no-effect; two honesty corrections recorded: the crate's single sizing model is content-box — not the "border-box" this plan previously stated — and a bare unloaded `img` resolves 160×0 while the 160×90 placeholder is the intrinsic, materialized via ratio transfer; see `style/unsupported_properties.rs`) |
 | B7 — color grammar | not started |
-| B8 — selectors & at-rules (+F1 fix) | not started |
+| B8 — selectors & at-rules (+F1 fix) | **in progress** (a — pins done; b — F1 atomicity fix + pin flip pending) |
+| B8 (a) — pins of the non-F1 rows + the F1 off-spec pin (`style/unsupported_selectors.rs`) | done |
 | B9 — cascade tiers | not started |
 | B10 — other shorthands & overflow axes | not started |
 | B11 — text/effects property tail | not started |
