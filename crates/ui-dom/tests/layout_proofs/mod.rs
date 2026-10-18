@@ -6,6 +6,7 @@
 
 mod layout;
 mod pipeline;
+mod robustness;
 mod style;
 mod support;
 mod text;
