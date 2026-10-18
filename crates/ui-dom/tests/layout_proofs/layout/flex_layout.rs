@@ -6328,3 +6328,175 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
     let value_u16 = u16::try_from(value).expect("titlebar flex proof counts should fit within u16");
     f32::from(value_u16)
 }
+
+// CSS Flexbox 1 §4.1: an absolutely-positioned child of a flex container is
+// not a flex item and does not participate in flex layout (its only flex
+// involvement is the reordering step and its static-position rectangle);
+// CSS 2.1 §9.2: a `display: none` child generates no box. CSS Flexbox 1 §9.2
+// (line length determination) therefore counts only real flex items, so
+// neither abs-pos nor `display: none` children occupy a line slot, add a gap
+// adjacency, or count toward justify-content distribution. Closest WPT oracle:
+// the `css/css-flexbox/abspos/` family (abs-pos children are out of flow);
+// no single WPT oracle pairs the gap interaction, which is cited directly from
+// §9.2. Gecko skips both in `GenerateFlexLines` (`nsFlexContainerFrame.cpp`);
+// Blink skips both in `ConstructAndAppendFlexItems`
+// (`flex_layout_algorithm.cc`).
+//
+// OFF-SPEC: `measure_tree_walker_node_without_layout_write` (`flex.rs:541`)
+// measures a `display: none` or abs-pos/fixed child to `FlowSize::default()`
+// (zero), but `collect_measured_flex_items_in_dom_order` (`flex.rs:406`) still
+// collects every DOM child as a `FlexItemSource::BlockItem` — so the zero-size
+// slot still occupies a line position, adds a gap adjacency, and shifts later
+// items. Spec-correct: a `column-gap` between two 30px/40px items lands the
+// trailing item at 40px (one gap); the solver lands it at 50px (the zero-size
+// slot plus two gaps). Row (d) is the on-spec control: a `display: none`-only
+// child leaves the container visibly empty.
+#[test]
+fn off_spec_abspos_and_display_none_children_occupy_flex_slots() {
+    let rows: [AbsposNoneRow; 4] = [
+        (
+            "abspos_middle_child_adds_gap_adjacency",
+            assert_abspos_middle_child_gap,
+        ),
+        (
+            "abspos_only_child_static_position_flattens_width",
+            assert_abspos_only_child_static_position,
+        ),
+        (
+            "display_none_middle_child_adds_gap_adjacency",
+            assert_display_none_middle_child_gap,
+        ),
+        (
+            "display_none_only_child_container_sizes_empty",
+            assert_display_none_only_child_empty,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named abs-pos/`display:none` slot probe: row name plus a runner.
+type AbsposNoneRow = (&'static str, fn(&str));
+
+fn assert_abspos_middle_child_gap(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "30px");
+    assert_style_set(&mut root, first, "height", "20px");
+    let abs = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, abs, "position", "absolute");
+    let third = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, third, "flex-basis", "40px");
+    assert_style_set(&mut root, third, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    // The abs-pos child paints nothing (zero-size): rects[0]=container,
+    // rects[1]=first, rects[2]=third.
+    assert_eq!(
+        plans[0].rects.len(),
+        3,
+        "{name}: container + two visible items"
+    );
+    // Divergent: the abs-pos slot adds a gap adjacency, pushing the trailing
+    // item to 50px instead of the spec-correct 40px (one gap).
+    assert_close(
+        plans[0].rects[2].position_px[0],
+        50.0,
+        &format!("{name}: trailing item left after phantom abs slot and two gaps"),
+    );
+}
+
+fn assert_abspos_only_child_static_position(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let abs = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, abs, "position", "absolute");
+    assert_style_set(&mut root, abs, "width", "10px");
+    assert_style_set(&mut root, abs, "height", "10px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 1, "{name}: only the container paints");
+    // Divergent: the abs-pos child is measured to `FlowSize::default()` (zero
+    // width) rather than laid out at its static position with its 10px used
+    // width — its border box sits at the container origin but with width 0.
+    assert_close(
+        assert_node_layout(&root, abs).width_px,
+        0.0,
+        &format!("{name}: abs child width flattened to zero"),
+    );
+    let abs_box = node_box(&root, abs).expect("abs child box model");
+    assert_close(
+        abs_box.border_box.left_px,
+        0.0,
+        &format!("{name}: abs child static left"),
+    );
+    assert_close(
+        abs_box.border_box.top_px,
+        0.0,
+        &format!("{name}: abs child static top"),
+    );
+    assert_close(
+        abs_box.border_box.height_px,
+        10.0,
+        &format!("{name}: abs child authored height retained"),
+    );
+}
+
+fn assert_display_none_middle_child_gap(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "30px");
+    assert_style_set(&mut root, first, "height", "20px");
+    let none = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, none, "display", "none");
+    let third = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, third, "flex-basis", "40px");
+    assert_style_set(&mut root, third, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    // The display:none child paints nothing: rects[0]=container, rects[1]=first,
+    // rects[2]=third.
+    assert_eq!(
+        plans[0].rects.len(),
+        3,
+        "{name}: container + two visible items"
+    );
+    // Divergent: the display:none slot adds a gap adjacency, pushing the
+    // trailing item to 50px instead of the spec-correct 40px (one gap).
+    assert_close(
+        plans[0].rects[2].position_px[0],
+        50.0,
+        &format!("{name}: trailing item left after phantom none slot and two gaps"),
+    );
+}
+
+fn assert_display_none_only_child_empty(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let none = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, none, "display", "none");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    // On-spec control: a display:none-only child leaves the container visibly
+    // empty (the single zero-size internal slot produces no paint and no gap).
+    assert_eq!(plans[0].rects.len(), 1, "{name}: only the container paints");
+    assert_close(
+        assert_node_layout(&root, container).width_px,
+        200.0,
+        &format!("{name}: container keeps its explicit width"),
+    );
+    assert_close(
+        assert_node_layout(&root, container).height_px,
+        20.0,
+        &format!("{name}: container keeps its explicit height"),
+    );
+}
