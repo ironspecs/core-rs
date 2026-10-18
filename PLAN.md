@@ -53,6 +53,16 @@ The purpose is accounting, not redesign:
   never be admitted (grid layout, floats) — their pins are the permanent
   record of the boundary, which is itself a deliverable of this plan.
 
+**Scope guards (what this plan is NOT):** no vocabulary admissions in
+Phase 1 (pins only, plus the two named fixes); no perf work (the pins watch
+behavior, not counters — perf regressions found in passing are reported,
+not chased); `flex_layout.rs` stays whole and `support.rs` stays rooted;
+the redesign's step-5 followers (damage-rect consumption, matched-rule
+caching, font-family CONSUMPTION, cascade-tier stages) are out of scope
+here except where B4/B9 pin their current absence; the stream-pro2
+conversion is a separate sister PR (see `MIGRATION.md`); PLAN.md edits
+ride in the same commit as the work they describe, always.
+
 ## Conventions (read before writing any pin)
 
 - **Pin classes** (extends the README's registry classes — CLOSED
@@ -99,6 +109,87 @@ The purpose is accounting, not redesign:
   time; the pinning task verifies each row, and where reality differs the
   PIN records reality and this document's row is corrected in the same change.
 - **Gates per landing**: fmt, clippy, workspace tests, `cargo xtask lint`.
+
+## Execution playbook (how to land a bundle)
+
+Two landing shapes, both governed by the rule that **behavior change and
+its proof move together** and no commit is ever red:
+
+1. **Pin-only bundles** (B2, B3, B6, B7, B8-rows-that-are-not-F1, B9, B10,
+   B11, B12): ONE commit — new proof file + its `style/mod.rs`
+   registration + the README registry rows + this document's rows marked
+   verified. No production changes.
+2. **Fix-bearing bundles** (B1's sign-rule family; B8's F1 atomicity fix):
+   TWO commits — (a) `off_spec_*` pins of the CURRENT behavior (they pass);
+   (b) the production fix + the pin relabel on-spec + the registry update +
+   the corrected doc rows, atomically.
+
+Per-bundle checklist:
+
+1. Read the bundle's section (table + scope-and-changes + data structures).
+2. Verify each row's "expected current" against the tree FIRST (the honesty
+   rule); correct the doc in the same commit.
+3. Write the proof file to the conventions (table-driven, per-row names in
+   assertion labels, headers citing spec + CURRENT + SPEC-CORRECT + ROOT
+   CAUSE or the D6 admission reference).
+4. Register the module and grow the README registry in the same change.
+5. Run the full gate (fmt, clippy, workspace tests, `cargo xtask lint`,
+   perf suites if production code moved).
+6. Update the Landing status table at the end of this document.
+7. Commit in repo style (`test(ui-dom): …` for pins, `fix(ui-dom): …` for
+   production fixes, `docs:` for doc-only).
+
+## The landed surface (how the pins observe)
+
+The accounting asserts through these public/`pub(crate)` surfaces (all
+landed at v0.6.0):
+
+| What to assert | Through |
+| --- | --- |
+| a declaration dropped | `StylesheetLoadReport.declarations_dropped` per load + `RootDomContext::declaration_drop_count()` (cumulative) |
+| a `style`-attribute drop | `RootDom::count(RootDomMetricName::StyleDeclarationDropped)` |
+| an inline-block mutation | `RootDomMetricName::StyleDeclarationUpsert` |
+| style-pass work | `RootDomMetricName::StylePassNodeVisited` / `StylePassNodeChanged` |
+| a property's computed value | `RootDom::computed_style(key) -> Option<ComputedStyleRef>` → `.as_box()/.as_flex()/.as_visual()/.as_font()/.as_text()/.as_color()/.as_transform()` (typed `Copy` groups) |
+| computed font family text | `ComputedStyleRef::font_family()` (resolves via the document's computed-text interner) |
+| live declaration blocks | `RootDomContext::declaration_block_count()` (level accessor) |
+| a transition's overlay | the same `computed_*` reads (overlay merges at read) |
+| geometry/paint outcomes | `assert_node_layout`, staged layer paint plans (support.rs) |
+| a programmatic write | `root.style_mut(key).set/.set_all/.remove` (Elements only; `InvalidAttributeTarget` otherwise) |
+| a presentation write via attrs | `set_attr`/`set_attr_str` → `Err(DomError::PresentationRequiresStyleMut)` (except `style`, which routes) |
+
+Key structural facts to rely on (verified at v0.6.0): the winners fold
+order is behavior base → active pseudo-state → matched rules ascending
+`(origin_priority, inline, specificity, order)` → inline block (inline wins
+all); declarations intern in TWO arenas (the context-shared stylesheet
+store and the per-document inline store); `font-family` computes into the
+document's computed-text interner; fragment trees hold no declarations;
+the `style` attribute route rejects non-Element targets; `pointer-events`
+is a content-side `Custom` channel, not a presentation property.
+
+## Verified this session (evidence registry)
+
+Facts verified against the tree during the planning session — do not
+re-verify or "correct" the document back to the contrary belief:
+
+| Fact | Evidence | Used by |
+| --- | --- | --- |
+| `parse_authored_length` is sign-agnostic; negatives parse for all length properties except line-height | `dom_attr_parse.rs:116-130`; `decl_parse.rs:330-346` (`parse_non_negative_f32`/`parse_non_negative_length` reject there) | B1 |
+| `load_stylesheet` is NOT atomic on the error path (partial insert, revision unbumped) | `style_runtime.rs:65-132` | B8/F1 |
+| `order` clamps i64 → i32 saturating | `project.rs:444-445` | B1 |
+| `text-align: justify` IS consumed | `text_render.rs:104-106` (`TextAlign::Justified → cosmic Align::Justified`) | B4 |
+| `pointer-events` is `Custom("pointer-events")`: `none`→disabled, `auto`→enabled, else inherit | `hit_test.rs:331-337` | B4 |
+| `line-height: 0` floors at 1px at render | `text_layout/mod.rs:719-722` | B1 |
+| font-family/weight/style are computed but unconsumed (UiSans hardcoded) | `text_layout_request.rs:33-48`, `text_layout/mod.rs:36-39` | B4 |
+| initial text color is near-white `[240/255;3, 1.0]` | `computed_color_group.rs:23` (`DEFAULT_TEXT_COLOR_RGBA`) | B5 |
+| batch-0 moves are viable (proof files import support via crate-absolute paths; no `super::`) | reviewer verification, e.g. `normal_flow.rs:26` | batch 0 |
+| `decl_value_matches_grammar` is kind-only ("Range constraints are enforced at parse time") | `root_dom.rs:4768` | B1/F2 |
+
+This document itself passed one full third-party adversarial review
+(2026-10-18; all findings adjudicated at commit `85de600`), after passing
+three review rounds on the redesign plan it succeeds. Rows still marked
+"expected current" are pending pin-verification per the honesty rule;
+everything else above is settled evidence.
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
@@ -1095,6 +1186,78 @@ the same change, recorded above.
   nothing without crashing).
 
 Resolved this session: the `pointer-events` channel (content-side
-`Custom("pointer-events")`, `none`/`auto`/inherit at `hit_test.rs:332-336`
+`Custom("pointer-events")`, `none`/`auto`/inherit at `hit_test.rs:331-337`
 — see B4) and the `order` clamp target (saturating i64→i32 at
 `project.rs:444-445` — see B1).
+
+## Decision log (dated; consolidated so nothing is re-litigated)
+
+- **2026-10-18 — B5 adjudications.** near-white initial `color` →
+  **deliberate** (dark-theme design-system default; permanent).
+  `line-height: normal` → `1.0 × font-size` → **divergent** (browsers ~1.2;
+  D6 favors the browser answer; moves when a consumer need is named).
+  border widths initial `0` → **deliberate** (observably identical to CSS's
+  `medium × style:none` for undeclared borders; `border-style` admission
+  revisits).
+- **2026-10-18 — the admit-side/reject-side rule.** Admit-side divergences
+  (we accept what the spec rejects) are hazards, fixed in Phase 1.
+  Reject-side divergences (we reject what the spec admits) are gates,
+  pinned, then moved through D6 admission. (Written into Conventions.)
+- **2026-10-18 — F1 atomicity.** `load_stylesheet` gets buffer-then-commit
+  (an `Err` must mean "nothing happened"), landing in Phase 1 with
+  partial-application pins flipped in the same atomic commit.
+- **2026-10-18 — statement recovery stays unimplemented.** Stray-`}` /
+  block-structure errors keep the whole-load `Err` (loud, typed);
+  statement-level recovery is admission-gated, with G's shape as its model.
+- **2026-10-18 — `pointer-events` is behavior input, not style.** It stays
+  a content-side `Custom` channel (deliberate); the stylesheet-channel
+  absence is pinned as unimplemented and would move into the presentation
+  table only through admission.
+- **2026-10-18 — ownership.** `overflow-x/y` → B10; `text-decoration`
+  family → B11; `animation*` → B9; `border-style` → B11 (with B5's
+  cross-reference).
+- **2026-10-18 — two-commit rule for fix bundles; one commit for pin-only
+  bundles.** No commit is ever red; behavior change and its proof move
+  together (see the Execution playbook).
+- **2026-10-18 — B1's fix generalizes the existing non-negative helpers**
+  (`parse_non_negative_f32`/`parse_non_negative_length`), and the expansion
+  layer applies per-longhand grammar so policy cannot be bypassed via
+  shorthands.
+- **2026-10-18 — `font-size: unset` admitted** into the B1 fix family,
+  resolving to the inherited seed (CSS `unset` on an inherited property).
+- **2026-10-18 — exhaustiveness is honest, not claimed.** The inventory
+  grows as gaps are discovered; B11's tail regenerates from a CSS property
+  index diffed against the 68-name table at each admission.
+- **2026-10-18 — no new features in Phase 1.** Pins, the two named fixes,
+  adjudications, registry. Everything else is Phase 2.
+
+## Landing status (update in the same commit as each landing)
+
+Branch: `proof-accounting` (off `main` @ v0.6.0, commit `5ab7622`).
+Registry baseline before the accounting: 1 divergent (negative margins,
+`layout/normal_flow.rs`), 1 deliberate (16:9, `layout/replaced_elements.rs`),
+2 unimplemented (flex subsets; cascade `!important`/UA/layers).
+
+| Landing | Status |
+| --- | --- |
+| Plan: replan as coverage accounting (`86c42d7`) | done |
+| Plan: bundles + ratings (`991e0e6`) | done |
+| Plan: scope-and-changes per bundle (`13856db`) | done |
+| Plan: phases + data structures/algorithms (`6fa0a75`, `2d5b951`) | done |
+| Plan: adversarial review adjudication (`85de600`) | done |
+| Plan: compaction-survival pass (decision log, evidence registry, playbook) | done |
+| Batch 0 — suite reorganization | not started |
+| B1 — sign rules & numeric edges | not started |
+| B2 — units & sizing keywords | not started |
+| B3 — box shorthands | not started |
+| B4 — text consumption & admitted quirks | not started |
+| B5 — preserved candidates | not started |
+| B6 — layout-impact properties | not started |
+| B7 — color grammar | not started |
+| B8 — selectors & at-rules (+F1 fix) | not started |
+| B9 — cascade tiers | not started |
+| B10 — other shorthands & overflow axes | not started |
+| B11 — text/effects property tail | not started |
+| B12 — robustness | not started |
+| Phase 2 admissions | not started (gated on Phase 1 exit + consumer need) |
+
