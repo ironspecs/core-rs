@@ -7799,3 +7799,192 @@ fn assert_chained_refreeze_freeze_order(name: &str) {
         &format!("{name}: C left (spec-correct 200)"),
     );
 }
+
+// CSS Flexbox 1 §9.2/§9.8 + CSS 2.1 §10.1 + CSS Values 4 §percentages: a
+// flex item's percentage `width`/`height` resolve against its containing
+// block (the flex container's content box) — main-axis width against the
+// container content width, cross/main height against the definite container
+// height — and percentage `margin`/`padding` resolve against the container's
+// inline size (width), per CSS Flexbox 1 §4.2. Gecko resolves these in
+// `FlexItem` construction (`nsFlexContainerFrame.cpp`) and Blink in
+// `ConstructAndAppendFlexItems` (`flex_layout_algorithm.cc`). Closest WPT
+// oracle: `css/css-flexbox/percentage-margins-001.html` plus the
+// `flexbox_flex-*-Npercent*` basis family.
+//
+// OFF-SPEC (rows c/d): `active_flex_resolved_child_context` (`flex.rs:2555`)
+// sets the placement relayout context's `available_width_px` to the item's
+// own resolved content width (`flex.rs:2584`), so a percentage `margin-left`/
+// `padding-left` re-resolves against the ITEM's width during placement
+// instead of the container's content width. Width/height percentages (rows
+// a/b/e/f/g) are unaffected (they flow through the content-size override, not
+// `available_width_px`) and land on-spec.
+#[test]
+fn off_spec_percentage_resolution_against_flex_container() {
+    let rows: [PercentageResolutionRow; 7] = [
+        (
+            "row_item_width_percent_main_axis",
+            assert_row_item_width_percent,
+        ),
+        (
+            "row_item_height_percent_definite_cross",
+            assert_row_item_height_percent,
+        ),
+        (
+            "row_item_margin_left_percent",
+            assert_row_item_margin_left_percent,
+        ),
+        (
+            "row_item_padding_left_percent",
+            assert_row_item_padding_left_percent,
+        ),
+        (
+            "column_item_width_percent_cross_axis",
+            assert_column_item_width_percent,
+        ),
+        (
+            "column_item_height_percent_main_axis",
+            assert_column_item_height_percent,
+        ),
+        (
+            "wrapped_line_break_uses_resolved_percent",
+            assert_wrapped_percent_line_break,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named percentage-resolution probe: the row name plus a runner.
+type PercentageResolutionRow = (&'static str, fn(&str));
+
+fn assert_row_item_width_percent(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50%");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + item");
+    // On-spec: 50% of the 200px container content width = 100px.
+    assert_rect_op_geometry(&plans[0].rects[1], 0.0, 0.0, 100.0, 20.0, name);
+}
+
+fn assert_row_item_height_percent(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "100px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "50%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + item");
+    // On-spec: 50% of the 100px definite container height = 50px cross size.
+    assert_rect_op_geometry(&plans[0].rects[1], 0.0, 0.0, 50.0, 50.0, name);
+}
+
+fn assert_row_item_margin_left_percent(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_style_set(&mut root, item, "margin-left", "10%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + item");
+    // Divergent: the margin re-resolves against the item's own 50px width
+    // (10% = 5px) instead of the 200px container content width (spec 20px).
+    assert_rect_op_geometry(&plans[0].rects[1], 5.0, 0.0, 50.0, 20.0, name);
+}
+
+fn assert_row_item_padding_left_percent(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_style_set(&mut root, item, "padding-left", "10%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + item");
+    // Divergent: the padding re-resolves against the item's own 50px width
+    // (10% = 5px, border box 55px) instead of the 200px container content
+    // width (spec 20px padding, border box 70px).
+    assert_rect_op_geometry(&plans[0].rects[1], 0.0, 0.0, 55.0, 20.0, name);
+}
+
+fn assert_column_item_width_percent(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_column_container_size(&mut root, container, "200px", "100px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50%");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + item");
+    // On-spec: 50% of the 200px container content width = 100px cross size.
+    assert_rect_op_geometry(&plans[0].rects[1], 0.0, 0.0, 100.0, 20.0, name);
+}
+
+fn assert_column_item_height_percent(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_column_container_size(&mut root, container, "200px", "100px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "50%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + item");
+    // On-spec: 50% of the 100px definite container height = 50px main size.
+    assert_rect_op_geometry(&plans[0].rects[1], 0.0, 0.0, 50.0, 50.0, name);
+}
+
+fn assert_wrapped_percent_line_break(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "row");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "200px");
+    assert_style_set(&mut root, container, "height", "60px");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "60%");
+        assert_style_set(&mut root, item, "height", "20px");
+        assert_style_set(&mut root, item, "flex-shrink", "0");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 4, "{name}: container + three items");
+    // On-spec: each 60% width resolves to 120px, so a second item would
+    // overflow the 200px line and each item breaks onto its own line.
+    assert_rect_op_geometry(
+        &plans[0].rects[1],
+        0.0,
+        0.0,
+        120.0,
+        20.0,
+        &format!("{name}: item 1"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[2],
+        0.0,
+        20.0,
+        120.0,
+        20.0,
+        &format!("{name}: item 2"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[3],
+        0.0,
+        40.0,
+        120.0,
+        20.0,
+        &format!("{name}: item 3"),
+    );
+}
