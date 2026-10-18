@@ -7988,3 +7988,219 @@ fn assert_wrapped_percent_line_break(name: &str) {
         &format!("{name}: item 3"),
     );
 }
+
+// CSS Flexbox 1 §5.2 (flex-wrap) + §8.2/§8.4 (alignment) + CSS Box Alignment 3
+// (gap): in a column flex container the main axis is vertical and the wrapped
+// flex LINES are the columns, so `column-gap` separates the columns along the
+// cross axis and `row-gap` separates items along the main axis; reversing the
+// main axis (`row-reverse`/`column-reverse`) or the cross axis
+// (`wrap-reverse`) moves items/lines to the opposite start without changing
+// the gap magnitude. Gecko builds column lines in `GenerateFlexLines`
+// (`nsFlexContainerFrame.cpp`) and Blink in `ConstructAndAppendFlexItems`
+// (`flex_layout_algorithm.cc`); gap placement is pinned by
+// `css/css-flexbox/flexbox-column-row-gap-001.html` (module header).
+// ON-SPEC: all four rows land at the spec positions (exact-fit containers so
+// the gap geometry is not mixed with negative-free-space fallback, which is
+// separately pinned by the space-evenly registry row).
+#[test]
+fn column_wrap_gap_geometry() {
+    let rows: [ColumnWrapGapRow; 4] = [
+        ("column_wrap_column_gap", assert_column_wrap_column_gap),
+        (
+            "column_wrap_reverse_column_gap",
+            assert_column_wrap_reverse_column_gap,
+        ),
+        (
+            "row_reverse_wrap_column_gap",
+            assert_row_reverse_wrap_column_gap,
+        ),
+        (
+            "column_reverse_wrap_column_gap",
+            assert_column_reverse_wrap_column_gap,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named column-wrap gap probe: the row name plus a runner.
+type ColumnWrapGapRow = (&'static str, fn(&str));
+
+fn assert_column_wrap_column_gap(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "170px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "50px");
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 4, "{name}: container + three items");
+    // Each 40px item fits one per 60px column; the 10px column-gap separates
+    // the three wrapped columns at x = 0, 60, 120.
+    assert_rect_op_geometry(
+        &plans[0].rects[1],
+        0.0,
+        0.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 1"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[2],
+        60.0,
+        0.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 2"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[3],
+        120.0,
+        0.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 3"),
+    );
+}
+
+fn assert_column_wrap_reverse_column_gap(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap-reverse");
+    assert_style_set(&mut root, container, "width", "170px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "50px");
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 4, "{name}: container + three items");
+    // wrap-reverse swaps cross-start/end, so the first column is at the right
+    // and the columns run 120, 60, 0 with the same 10px gap.
+    assert_rect_op_geometry(
+        &plans[0].rects[1],
+        120.0,
+        0.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 1"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[2],
+        60.0,
+        0.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 2"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[3],
+        0.0,
+        0.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 3"),
+    );
+}
+
+fn assert_row_reverse_wrap_column_gap(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "100px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    assert_style_set(&mut root, container, "align-content", "flex-start");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "40px");
+        assert_style_set(&mut root, item, "height", "20px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 4, "{name}: container + three items");
+    // Two 40px items + one 10px gap fit per 100px line; the third wraps. The
+    // reversed main axis packs the first line from the right: item 1 at 60,
+    // item 2 at 10, and the wrapped item 3 at 60 on the next line.
+    assert_rect_op_geometry(
+        &plans[0].rects[1],
+        60.0,
+        0.0,
+        40.0,
+        20.0,
+        &format!("{name}: item 1"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[2],
+        10.0,
+        0.0,
+        40.0,
+        20.0,
+        &format!("{name}: item 2"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[3],
+        60.0,
+        20.0,
+        40.0,
+        20.0,
+        &format!("{name}: item 3"),
+    );
+}
+
+fn assert_column_reverse_wrap_column_gap(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column-reverse");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "170px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "50px");
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 4, "{name}: container + three items");
+    // column-reverse packs each 40px item to the bottom of its 60px column
+    // (y = 20) while the columns still run left-to-right at 0, 60, 120.
+    assert_rect_op_geometry(
+        &plans[0].rects[1],
+        0.0,
+        20.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 1"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[2],
+        60.0,
+        20.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 2"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[3],
+        120.0,
+        20.0,
+        50.0,
+        40.0,
+        &format!("{name}: item 3"),
+    );
+}
