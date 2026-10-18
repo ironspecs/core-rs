@@ -1297,7 +1297,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B8 (a) — pins of the non-F1 rows + the F1 off-spec pin (`style/unsupported_selectors.rs`) | done |
 | B8 (b) — F1 atomicity fix (buffer-then-commit) + pin flip (`stylesheet_load_failure_is_atomic`) | done |
 | B9 — cascade tiers | **done** (pins; all rows verified — `!important` drops the declaration while the rule survives (stylesheet and `style`-attribute routes), `@layer` fails the whole load with `InvalidSelector`, `--brand`/`var()` drop at name lookup and value grammar respectively, `animation` drops, and the UA-sheet workaround is on-spec; see `style/cascade_tiers.rs`) |
-| B10 — other shorthands & overflow axes | not started |
+| B10 — other shorthands & overflow axes | **done** (pins; all rows verified — `font`/`background`/`all`/`overflow-x`/`overflow-y` drop+count at name lookup with group-initial computed reads; the two-token `overflow: scroll auto` drops as ONE declaration at the value grammar, and the CONTROL `overflow: scroll` single-token admitted form still applies; see `style/unsupported_shorthands.rs`) |
 | B11 — text/effects property tail | not started |
 | B12 — robustness | not started |
 | Phase 2 admissions | not started (gated on Phase 1 exit + consumer need) |

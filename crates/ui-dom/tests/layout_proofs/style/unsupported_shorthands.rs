@@ -4,31 +4,32 @@
 // comparisons in this module are deliberate exact checks.
 #![allow(clippy::float_cmp)]
 
-//! Box-shorthand pins for the style system (PLAN.md B3).
+//! Shorthand pins for the style system (PLAN.md B3 + B10).
 //!
 //! Purpose: pin the gate behavior for unimplemented shorthand NAMES — the
 //! box-model shorthands CSS admits as one expansion family (`margin`,
 //! `padding`, `border`, `border-width`, `inset`, `outline`) whose expansion the
-//! engine has not yet admitted. Each pin asserts BOTH sides of the gate: the
-//! declaration is dropped + counted (drop-and-continue, CSS 2.1 §4.1.7) AND
-//! the corresponding longhand group fields stay at their group initial. A later
-//! admission flips exactly these rows on-spec (see each per-test
-//! "SPEC-CORRECT" note).
+//! engine has not yet admitted (B3), and the other-shorthand + overflow-axes
+//! family (`font`, `background`, `all`, `overflow-x`/`overflow-y`) (B10). Each
+//! pin asserts BOTH sides of the gate: the declaration is dropped + counted
+//! (drop-and-continue, CSS 2.1 §4.1.7) AND the corresponding longhand group
+//! fields stay at their group initial. A later admission flips exactly these
+//! rows on-spec (see each per-test "SPEC-CORRECT" note).
 //!
 //! Class note: every row in this file is `unsupported_*` = unimplemented —
 //! policy-gated absence per the D6 admission policy in `MIGRATION.md` (a named
 //! consumer need + spec citation + Blink/Gecko algorithm reference + proof).
 //! The names are absent from the `property_shape` name table (`decl_parse.rs`),
 //! so they drop at the name level before any value grammar runs — that is the
-//! whole-declaration-drop behavior this file pins.
-//!
-//! This file will later also hold B10's family (`font`, `background`,
-//! `text-decoration`, `all`, `overflow-x`/`overflow-y`) as a separate table
-//! family. B3's rows assert "dropped+counted AND the longhand group fields stay
-//! at initial" for the box shorthands only.
+//! whole-declaration-drop behavior this file pins. The one value-grammar row
+//! (B10's two-token `overflow: scroll auto`) drops because the admitted
+//! `overflow` keyword grammar matches the whole value string, so the
+//! whole declaration drops as ONE (never two partial drops).
 
 use bevy::prelude::World;
-use ui_dom::{DomNodeSlotKey, DomPointerUpdate, RootDom, StylesheetLoadReport};
+use ui_dom::{
+    DisplayKw, DomNodeSlotKey, DomPointerUpdate, Keyword, OverflowKw, RootDom, StylesheetLoadReport,
+};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_decl_drop, assert_root_dom_update, assert_set_attr_str,
@@ -275,5 +276,190 @@ fn unsupported_outline_shorthand_drops() {
     assert_eq!(
         view.outline_rgba, [0.0; 4],
         "outline shorthand should stay at its transparent [0.0; 4] initial",
+    );
+}
+
+// — B10: other shorthands & overflow axes — //
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Fonts 4 §font shorthand — `font` is a full shorthand for the
+//   font longhands (style/weight/size/line-height/family); per the shorthand
+//   grammar, `font-size` and `font-family` are the required components and the
+//   rest reset to their initial values.
+//   <https://drafts.csswg.org/css-fonts-4/#font-shorthand>
+// - CURRENT (asserted): `font: italic 12px serif` and `font: bold 14px
+//   sans-serif` each drop + count (`declarations_dropped == 1`) — the NAME is
+//   absent from `property_shape` (`decl_parse.rs`), so the whole declaration
+//   drops as one before any value grammar runs; after a load the computed font
+//   group stays at its group initial (size 14.0px, style Normal, weight 400).
+// - SPEC-CORRECT: expand to the five font longhands via the CSS Fonts 4
+//   shorthand rules (size/family required, style/weight/line-height initial).
+// - D6: admission-gated.
+fn unsupported_font_shorthand_drops() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "font_italic_12px_serif",
+            body: "font: italic 12px serif",
+        },
+        Case {
+            name: "font_bold_14px_sans_serif",
+            body: "font: bold 14px sans-serif",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+
+    let (mut world, mut root, target, _report) =
+        styled_target_load(".x { font: italic 12px serif }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let font = root.computed_style(target).expect("target").as_font();
+    assert_eq!(
+        font.size_px, 14.0,
+        "font shorthand should stay at the 14.0 default size seed",
+    );
+    assert_eq!(
+        font.style,
+        Keyword::Normal,
+        "font shorthand should stay at its Normal style initial",
+    );
+    assert_eq!(
+        font.weight, 400,
+        "font shorthand should stay at its 400 weight initial",
+    );
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Backgrounds 3 §background shorthand — `background` is a full
+//   shorthand for the background longhands (`background-color`, `-image`, …).
+//   <https://drafts.csswg.org/css-backgrounds-3/#background>
+// - CURRENT (asserted): `background: #112233` drops + counts — the NAME is
+//   absent from `property_shape`, so the whole declaration drops as one; after
+//   the load the computed `background_rgba` stays `[0.0; 4]` (the transparent
+//   group initial). No partial color application despite the value being a
+//   parseable hex color.
+// - SPEC-CORRECT: expand to the background longhands (`background-color` for
+//   this single-color form).
+// - D6: admission-gated.
+fn unsupported_background_shorthand_drops() {
+    assert_decl_drop(".x { background: #112233 }", 0, 1);
+
+    let (mut world, mut root, target, _report) = styled_target_load(".x { background: #112233 }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_visual()
+            .background_rgba,
+        [0.0; 4],
+        "background shorthand should stay at its transparent [0.0; 4] initial",
+    );
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Cascade 5 §all shorthand — `all` resets every property except
+//   `direction`/`unicode-bidi` to a CSS-wide keyword (`initial`, `inherit`,
+//   `unset`, `revert`, …). <https://drafts.csswg.org/css-cascade-5/#all-shorthand>
+// - CURRENT (asserted): `all: initial` drops + counts — the NAME is absent from
+//   `property_shape`, so the whole declaration drops as one; after the load the
+//   computed groups stay at their group initials (width `None`, the near-white
+//   color initial, display `Block`).
+// - SPEC-CORRECT: reset every longhand to its initial value.
+// - D6: admission-gated.
+fn unsupported_all_shorthand_drops() {
+    assert_decl_drop(".x { all: initial }", 0, 1);
+
+    let (mut world, mut root, target, _report) = styled_target_load(".x { all: initial }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let style = root.computed_style(target).expect("target");
+    assert_eq!(
+        style.as_box().width,
+        None,
+        "all shorthand should leave width at its initial None",
+    );
+    assert_eq!(
+        style.as_color().color_rgba,
+        [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0, 1.0],
+        "all shorthand should leave color at its near-white initial",
+    );
+    assert_eq!(
+        style.as_box().display,
+        DisplayKw::Block,
+        "all shorthand should leave display at its Block initial",
+    );
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Overflow 3 §overflow-x/§overflow-y — the per-axis longhands are
+//   `overflow-x`/`overflow-y`; `overflow` is a two-value shorthand (x then y).
+//   <https://drafts.csswg.org/css-overflow-3/#overflow-x>
+// - CURRENT (asserted): `overflow: scroll auto` (the two-token shorthand form),
+//   `overflow-x: scroll`, and `overflow-y: scroll` each drop + count. The
+//   two-token form drops as ONE declaration — the admitted `overflow` keyword
+//   grammar matches the whole value string (`Keyword::from_name_in`), so
+//   `scroll auto` fails and the whole declaration drops (never two partial
+//   drops). `overflow-x`/`overflow-y` are NAME-absent, so they drop at name
+//   lookup. After a load the computed `overflow` stays `OverflowKw::Visible`
+//   (the group initial).
+// - CONTROL (must not over-reach): `overflow: scroll` (single-token, admitted)
+//   still applies — the computed `overflow` becomes `OverflowKw::Scroll`.
+// - SPEC-CORRECT: expand `overflow` to `overflow-x`/`overflow-y` and split the
+//   box group's single `overflow` field into `[OverflowKw; 2]` (x, y).
+// - D6: admission-gated.
+fn unsupported_overflow_axes_and_two_token_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "overflow_two_tokens",
+            body: "overflow: scroll auto",
+        },
+        Case {
+            name: "overflow_x_scroll",
+            body: "overflow-x: scroll",
+        },
+        Case {
+            name: "overflow_y_scroll",
+            body: "overflow-y: scroll",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+
+    let (mut world, mut root, target, _report) = styled_target_load(".x { overflow-x: scroll }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_box()
+            .overflow,
+        OverflowKw::Visible,
+        "overflow-x should stay at its Visible initial",
+    );
+
+    let (mut world, mut root, target, _report) = styled_target_load(".x { overflow: scroll }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_box()
+            .overflow,
+        OverflowKw::Scroll,
+        "overflow: scroll (single-token, admitted) should apply",
     );
 }
