@@ -261,8 +261,18 @@ zero-size-line inconsistency).
 
 ### PR 1 — margin and style gaps (the admission queue) `SETTLED`
 
-**LANDED (2026-10-18, branch `pr1-margin-style-gaps`, 10 commits):** all
-seven items plus the transition proof-family companion bundle. Item 1
+**LANDED (2026-10-18, branch `pr1-margin-style-gaps`, 13 commits, PR #17
+open):** all seven items plus the transition proof-family companion bundle,
+followed by a third-party review round with all three findings adjudicated:
+(a) percentages that silently no-op'd on line-width/radius grammars were
+rejected at admission (`DeclGrammar::LineWidth`/`SignedLineWidth` — the
+width families are spec-closed `<line-width>`/`<length>`; the radius
+rejection is admission-gated on a corner-pair elliptical model, never a
+silent resolve); (b) canonical style snapshots now preserve `!important`
+for every value kind via a CSS-string serializer (colors included, with a
+round-trip pin through the style-attribute route); (c) percentage-authored
+transitions stepping is pinned as a documented follow-up (schedule-time
+basis resolution, admission-gated per D6). Item 1
 margin/padding shorthands; item 2 the three-branch negative-margin collapse
 plus the deliberate spillover decision pinned at the composite
 (`clip_world`) and integration levels; item 3 `box-sizing` (vocabulary 68
