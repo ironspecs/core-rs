@@ -1,4 +1,9 @@
 #![allow(rustdoc::bare_urls)]
+// The transition behavior family asserts bit-exact interpolated px values (the
+// linear timing and 1s/100px/100ms shapes are exact in f32, and the progress
+// ratios land on exact f32 midpoints), so the exact typed comparisons in this
+// module are deliberate.
+#![allow(clippy::float_cmp)]
 
 //! Transition-position proofs for nested and sibling layers.
 //!
@@ -12,7 +17,7 @@
 //! - CSS Transitions Level 1 interpolation model:
 //!   <https://www.w3.org/TR/css-transitions-1/>
 
-use ui_dom::DomPointerUpdate;
+use ui_dom::{DomPointerUpdate, RootDomMetricName};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
@@ -344,5 +349,480 @@ fn interpolated_inherited_values_transmit_to_descendants_mid_transition() {
     assert!(
         (alpha - 1.0).abs() <= f32::EPSILON,
         "child color should stay fully opaque, got alpha {alpha}"
+    );
+}
+
+// — the transition behavior family — //
+
+/// Unwraps a computed box length to its resolved pixel value. The behavior
+/// family asserts bit-exact interpolated px values, so a non-px length is a
+/// test-authoring error, not a value to fudge.
+fn expect_px(length: ui_dom::BoxLength, label: &str) -> f32 {
+    match length {
+        ui_dom::BoxLength::Px(px) => px,
+        other => panic!("{label} should present a px value, got {other:?}"),
+    }
+}
+
+/// The cubic-bézier coordinate at parameter `t` for one axis (CSS Easing 1 §3
+/// shares this basis for both the x and y axes).
+fn cubic_bezier_axis_value(t: f32, p1: f32, p2: f32) -> f32 {
+    let inverse_t = 1.0 - t;
+    3.0 * inverse_t * inverse_t * t * p1 + 3.0 * inverse_t * t * t * p2 + t * t * t
+}
+
+/// Solves the x-axis of a cubic-bézier timing function for `t` at the given
+/// input progress, by Newton–Raphson (deliberately NOT the engine's bisection):
+/// this is the spec-side evaluator the pin measures the engine against.
+fn cubic_bezier_t_for_progress(progress: f32, x1: f32, x2: f32) -> f32 {
+    // x(t) = p3 t^3 + p2 t^2 + p1 t (the constant term is 0); coefficients
+    // derived from the control points.
+    let p3 = 3.0 * x1 - 3.0 * x2 + 1.0;
+    let p2 = 3.0 * x2 - 6.0 * x1;
+    let p1 = 3.0 * x1;
+    let mut t = progress;
+    for _ in 0..32 {
+        let value = ((p3 * t + p2) * t + p1) * t - progress;
+        if value.abs() < 1e-9 {
+            break;
+        }
+        let derivative = (3.0 * p3 * t + 2.0 * p2) * t + p1;
+        t = (t - value / derivative).clamp(0.0, 1.0);
+    }
+    t
+}
+
+/// The spec's eased progress for one cubic-bézier timing function (CSS Easing 1
+/// §3): solve the x-axis for `t`, then read the y-axis at that `t`.
+fn spec_eased_progress(progress: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    cubic_bezier_axis_value(cubic_bezier_t_for_progress(progress, x1, x2), y1, y2)
+}
+
+/// One timing-function row of the easing table: the keyword name plus its
+/// cubic-bézier control points `[x1, y1, x2, y2]` (`None` for `linear`).
+struct EasingCurve {
+    keyword: &'static str,
+    control_points: Option<[f32; 4]>,
+}
+
+/// The five timing functions (CSS Easing 1 §3): `linear` is the identity; each
+/// keyword curve carries its cubic-bézier control points.
+const EASING_CURVES: [EasingCurve; 5] = [
+    EasingCurve {
+        keyword: "linear",
+        control_points: None,
+    },
+    EasingCurve {
+        keyword: "ease",
+        control_points: Some([0.25, 0.1, 0.25, 1.0]),
+    },
+    EasingCurve {
+        keyword: "ease-in",
+        control_points: Some([0.42, 0.0, 1.0, 1.0]),
+    },
+    EasingCurve {
+        keyword: "ease-out",
+        control_points: Some([0.0, 0.0, 0.58, 1.0]),
+    },
+    EasingCurve {
+        keyword: "ease-in-out",
+        control_points: Some([0.42, 0.0, 0.58, 1.0]),
+    },
+];
+
+#[test]
+// CSS Easing 1 §3 (cubic-bézier timing functions) + CSS Transitions 1 §2
+// (`transition-timing-function`): the engine's `cubic_bezier_progress`
+// (`dom_transition.rs`) must reproduce each keyword curve's control points, so
+// the presented `left` at each sampled progress equals the SPEC's curve value.
+// <https://drafts.csswg.org/css-easing-1/#cubic-bezier-easing-functions>
+// The expectation is derived from a local cubic-bézier evaluator (Newton on the
+// x-axis) so the pin compares the engine's solver to the spec's control points,
+// never to itself. The comparison normalizes `left` back to eased progress
+// (from 0px, to 100px) so the crate's 1e-3 tolerance applies to the [0, 1]
+// progress domain, where the engine's bisection lands within ~2e-4 of the spec.
+fn transition_easing_curves_match_css_control_points() {
+    for curve in EASING_CURVES {
+        let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+        let document_root = root.document_node().0;
+        let target = assert_append_div_to(&mut root, document_root);
+        assert_style_set(&mut root, target, "left", "0px");
+        assert_style_set(&mut root, target, "transition-property", "left");
+        assert_style_set(&mut root, target, "transition-duration", "1s");
+        assert_style_set(
+            &mut root,
+            target,
+            "transition-timing-function",
+            curve.keyword,
+        );
+
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_style_set(&mut root, target, "left", "100px");
+        // D2 one-timing: the detection update schedules the transition
+        // (progress 0); each later update presents the eased value.
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        for progress in [0.25_f32, 0.5, 0.75] {
+            assert_root_dom_update(
+                &mut world,
+                &mut root,
+                f64::from(progress),
+                DomPointerUpdate::Unchanged,
+            );
+            let expected_eased = match curve.control_points {
+                Some([x1, y1, x2, y2]) => spec_eased_progress(progress, x1, y1, x2, y2),
+                None => progress,
+            };
+            let actual_px = expect_px(
+                root.computed_style(target).expect("target").as_box().left,
+                curve.keyword,
+            );
+            assert_close(
+                actual_px / 100.0,
+                expected_eased,
+                &format!("{} eased progress at {progress}", curve.keyword),
+            );
+        }
+    }
+}
+
+#[test]
+// CSS Transitions 1 §2 (`transition-delay`, negative allowed) + §3 (the active
+// interval): a negative delay pulls the transition's effective start into the
+// past, so the transition is already partway through at its first advance.
+// <https://drafts.csswg.org/css-transitions-1/#starting>
+// In D2 one-timing the detection update schedules and presents `from` (0.0);
+// the FIRST sync (the next update, at the same clock time) is already at raw
+// progress 0.5 — presented 50.0, not 0.0. Linear timing keeps that exact.
+fn transition_negative_delay_starts_partway_through() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, target, "left", "0px");
+    assert_style_set(&mut root, target, "transition-property", "left");
+    assert_style_set(&mut root, target, "transition-duration", "100ms");
+    assert_style_set(&mut root, target, "transition-delay", "-50ms");
+    assert_style_set(&mut root, target, "transition-timing-function", "linear");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_style_set(&mut root, target, "left", "100px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "detection left",
+        ),
+        0.0,
+        "the detection update schedules the transition and presents `from` (0.0)",
+    );
+
+    // First sync at the same clock time: effective start is 50ms in the past,
+    // so raw progress is 0.5 (the transition has already started).
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "first-sync left",
+        ),
+        50.0,
+        "the negative delay should present the transition partway through (50.0), not 0.0",
+    );
+}
+
+#[test]
+// CSS Transitions 1 §3 (interrupting a running transition): a re-target reads
+// the CURRENT presented value as the new `from`, so the replacement transition
+// continues from ≈50 rather than jumping to the new target or resetting to 0.
+// <https://drafts.csswg.org/css-transitions-1/#reversing>
+// The replacement also increments `TransitionScheduleAllocation` and fires the
+// `TransitionCancel` event (counted by `TransitionEventPathAllocation`). Linear
+// timing keeps the 50.0/125.0 midpoints exact.
+fn transition_retargeting_continues_from_the_presented_value() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, target, "left", "0px");
+    assert_style_set(&mut root, target, "transition-property", "left");
+    assert_style_set(&mut root, target, "transition-duration", "200ms");
+    assert_style_set(&mut root, target, "transition-timing-function", "linear");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_style_set(&mut root, target, "left", "100px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(&mut world, &mut root, 0.1, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "mid left",
+        ),
+        50.0,
+        "the first transition should be at its 50px midpoint",
+    );
+
+    assert_style_set(&mut root, target, "left", "200px");
+    assert_root_dom_update(&mut world, &mut root, 0.1, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "re-target left",
+        ),
+        50.0,
+        "the re-target should continue from the presented 50.0, not jump to 200 or reset to 0",
+    );
+    assert_eq!(
+        root.count(RootDomMetricName::TransitionScheduleAllocation),
+        2,
+        "the replacement transition should schedule once more",
+    );
+    assert_eq!(
+        root.count(RootDomMetricName::TransitionEventPathAllocation),
+        1,
+        "replacing the running transition should dispatch one TransitionCancel event",
+    );
+
+    assert_root_dom_update(&mut world, &mut root, 0.2, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "later left",
+        ),
+        125.0,
+        "the re-targeted transition should reach the 50→200 midpoint (125.0)",
+    );
+}
+
+#[test]
+// CSS Transitions 1 §2 (list-valued `transition-*` longhands repeat to the
+// longest list): (a) a single duration repeats to every listed property; (b) a
+// shorter duration list repeats by index (width and left share the 100ms slot,
+// height the 200ms slot — 100/200/100), so width and left complete at 100ms
+// while height is still mid-flight. Linear timing keeps the mid-flight values
+// exact.
+// <https://drafts.csswg.org/css-transitions-1/#transition-shorthand-property>
+fn transition_lists_repeat_to_the_longest() {
+    // (a) `width, height` with one 100ms duration: both properties transition.
+    {
+        let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+        let document_root = root.document_node().0;
+        let target = assert_append_div_to(&mut root, document_root);
+        assert_style_set(&mut root, target, "width", "20px");
+        assert_style_set(&mut root, target, "height", "40px");
+        assert_style_set(&mut root, target, "transition-property", "width, height");
+        assert_style_set(&mut root, target, "transition-duration", "100ms");
+        assert_style_set(&mut root, target, "transition-timing-function", "linear");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_style_set(&mut root, target, "width", "100px");
+        assert_style_set(&mut root, target, "height", "200px");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_root_dom_update(&mut world, &mut root, 0.05, DomPointerUpdate::Unchanged);
+        let box_ = root.computed_style(target).expect("target").as_box();
+        assert_eq!(
+            box_.width,
+            ui_dom::BoxLength::Px(60.0),
+            "(a) width mid-flight"
+        );
+        assert_eq!(
+            box_.height,
+            ui_dom::BoxLength::Px(120.0),
+            "(a) height mid-flight"
+        );
+    }
+
+    // (b) `width, height, left` with `100ms, 200ms`: durations repeat 100/200/100.
+    {
+        let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+        let document_root = root.document_node().0;
+        let target = assert_append_div_to(&mut root, document_root);
+        assert_style_set(&mut root, target, "width", "20px");
+        assert_style_set(&mut root, target, "height", "40px");
+        assert_style_set(&mut root, target, "left", "0px");
+        assert_style_set(
+            &mut root,
+            target,
+            "transition-property",
+            "width, height, left",
+        );
+        assert_style_set(&mut root, target, "transition-duration", "100ms, 200ms");
+        assert_style_set(&mut root, target, "transition-timing-function", "linear");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_style_set(&mut root, target, "width", "100px");
+        assert_style_set(&mut root, target, "height", "200px");
+        assert_style_set(&mut root, target, "left", "100px");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_root_dom_update(&mut world, &mut root, 0.1, DomPointerUpdate::Unchanged);
+        let box_ = root.computed_style(target).expect("target").as_box();
+        assert_eq!(
+            box_.width,
+            ui_dom::BoxLength::Px(100.0),
+            "(b) width completes at its 100ms slot",
+        );
+        assert_eq!(
+            box_.left,
+            ui_dom::BoxLength::Px(100.0),
+            "(b) left repeats the 100ms slot (repeat-to-longest)",
+        );
+        assert_eq!(
+            box_.height,
+            ui_dom::BoxLength::Px(120.0),
+            "(b) height is mid-flight at its 200ms slot",
+        );
+    }
+}
+
+#[test]
+// CSS Transitions 1 §3 (completion removes the running transition; the
+// transition tier disappears): after the finishing update the presented value
+// is exactly the target (the stored cascaded value with no residual overlay), a
+// further update still reads the target, and a later change schedules a fresh
+// transition that completes cleanly.
+// <https://drafts.csswg.org/css-transitions-1/#completed>
+fn transition_completion_removes_the_overlay() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, target, "left", "0px");
+    assert_style_set(&mut root, target, "transition-property", "left");
+    assert_style_set(&mut root, target, "transition-duration", "100ms");
+    assert_style_set(&mut root, target, "transition-timing-function", "linear");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_style_set(&mut root, target, "left", "100px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(&mut world, &mut root, 0.05, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "mid left",
+        ),
+        50.0,
+        "the transition should be at its 50px midpoint",
+    );
+
+    // Past the duration: the overlay is removed and the target is presented.
+    assert_root_dom_update(&mut world, &mut root, 0.2, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "finished left",
+        ),
+        100.0,
+        "after the finishing update the overlay is removed and the target is presented exactly",
+    );
+
+    // A further update still reads the stored target (no residual overlay).
+    assert_root_dom_update(&mut world, &mut root, 0.3, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "later left",
+        ),
+        100.0,
+        "a further update still reads the stored target with no residual overlay",
+    );
+
+    // A fresh change schedules cleanly (the scheduler is not stuck) and, once
+    // it completes, presents the new target.
+    let schedule_before = root.count(RootDomMetricName::TransitionScheduleAllocation);
+    assert_style_set(&mut root, target, "left", "50px");
+    assert_root_dom_update(&mut world, &mut root, 0.3, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.count(RootDomMetricName::TransitionScheduleAllocation),
+        schedule_before + 1,
+        "the later change should schedule a fresh transition",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.5, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        expect_px(
+            root.computed_style(target).expect("target").as_box().left,
+            "re-transitioned left",
+        ),
+        50.0,
+        "the new transition should complete to the new 50.0 target",
+    );
+}
+
+#[test]
+// CSS Transitions 1 §3 (a transition starts only when the value changes; a
+// from == to write schedules nothing): writing the SAME width the element
+// already has produces no transition schedule, no transition event, and no
+// active transition, so `TransitionScheduleAllocation` is unchanged.
+// <https://drafts.csswg.org/css-transitions-1/#starting>
+fn transition_from_equals_to_schedules_nothing() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, target, "width", "20px");
+    assert_style_set(&mut root, target, "transition", "width 100ms");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let schedule_before = root.count(RootDomMetricName::TransitionScheduleAllocation);
+    assert_eq!(
+        schedule_before, 0,
+        "the baseline pass should never schedule a transition",
+    );
+
+    assert_style_set(&mut root, target, "width", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.count(RootDomMetricName::TransitionScheduleAllocation),
+        schedule_before,
+        "a from == to write must not schedule a transition",
+    );
+    assert_eq!(
+        root.count(RootDomMetricName::TransitionEventPathAllocation),
+        0,
+        "a from == to write must not fire a transition event",
+    );
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        ui_dom::BoxLength::Px(20.0),
+        "the width should stay at its authored 20px",
+    );
+}
+
+#[test]
+// CSS Cascade 5 §6.1 (transition declarations sit ABOVE even important author
+// declarations): while a width transition runs, the presented value is the
+// interpolated transition value, not the important author declaration.
+// <https://drafts.csswg.org/css-cascade-5/#cascade-origin>
+// The target must be written as important inline (`width: 100px !important`) so
+// it wins the cascade over the important rule `.a { width: 10px !important }` —
+// a NORMAL inline write loses to that rule (CSS Cascade 5 §6.4.1), leaves the
+// cascaded value unchanged, and schedules nothing. Linear timing keeps the
+// 10→100 midpoint (55.0) exact.
+fn transition_overlay_beats_important_declarations_while_running() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, target, "class", "a");
+    root.context()
+        .load_stylesheet(theme_stylesheet_origin(), ".a { width: 10px !important }")
+        .expect("the important rule should load");
+    assert_style_set(&mut root, target, "transition-property", "width");
+    assert_style_set(&mut root, target, "transition-duration", "200ms");
+    assert_style_set(&mut root, target, "transition-timing-function", "linear");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        ui_dom::BoxLength::Px(10.0),
+        "the important rule should set the baseline width to 10px",
+    );
+
+    assert_style_set(&mut root, target, "width", "100px !important");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(&mut world, &mut root, 0.1, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        ui_dom::BoxLength::Px(55.0),
+        "the running transition's overlay (55.0) should beat the important declarations",
+    );
+
+    // Past the duration: the overlay is gone and the cascaded important-inline
+    // target (100.0) is presented — not the important rule's 10.0.
+    assert_root_dom_update(&mut world, &mut root, 0.4, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        ui_dom::BoxLength::Px(100.0),
+        "after completion the cascaded important-inline target (100.0) is presented, not the important rule's 10.0",
     );
 }

@@ -1300,6 +1300,35 @@ fn unsupported_intrinsic_size_keywords_drop() {
 }
 
 #[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Box Alignment 3 §8.2 admits `normal | <length-percentage>` on the
+//   gap longhands (and the `gap` shorthand), so `gap: 10%` / `row-gap: 10%` are
+//   valid and resolve against the flex container's content box.
+//   <https://drafts.csswg.org/css-align-3/#column-row-gap>
+// - CURRENT (asserted): the percentage form drops + counts — `parse_gap_longhand`
+//   (`decl_parse.rs:478-486`) rejects `DeclLength::Percent`, and `expand_gap`
+//   (`decl_parse.rs:914-927`) routes the shorthand through the same gate. The
+//   flex gap field is `[f32; 2]` and percentage resolution against the flex
+//   container's content box is out of scope (PR 1 item 7); admitting the value
+//   with no resolution target would be a silent no-op, so it keeps dropping.
+// - SPEC-CORRECT: admit `<length-percentage>` on gap and resolve against the
+//   flex container's content box.
+// - D6: admission-gated.
+fn unsupported_gap_percentages_drop() {
+    for body in ["gap: 10%", "row-gap: 10%"] {
+        assert_decl_drop(&format!(".x {{ {body} }}"), 0, 1);
+        let (mut world, mut root, target, _report) =
+            styled_target_load(&format!(".x {{ {body} }}"));
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target).expect("target").as_flex().gap,
+            [0.0, 0.0],
+            "{body} should drop and keep the [0.0, 0.0] initial",
+        );
+    }
+}
+
+#[test]
 // ON-SPEC: CSS Values 4 §4.1.1 — a non-zero `<length>` requires a unit;
 // `width: 10` is invalid. The grammar's `0` arm admits only the literal zero,
 // so `10` drops + counts. Pin to keep (a unitless non-zero length must never
