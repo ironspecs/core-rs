@@ -484,11 +484,29 @@ pub(super) fn text_caret_map_from_buffer(
     TextCaretMap { lines }
 }
 
+/// The byte index of each line's first character. Segment breaks are `\n`,
+/// `\r\n` (one break), or a lone `\r` (CSS Text 3 §4.1; matches
+/// `collapse_spaces_preserving_segment_breaks`'s normalization and
+/// cosmic-text's UAX #14 hard break).
 fn line_start_byte_indices(text: &str) -> Vec<usize> {
     let mut line_start_byte_indices = vec![0usize];
-    for (byte_index, character) in text.char_indices() {
-        if character == '\n' {
-            line_start_byte_indices.push(byte_index + character.len_utf8());
+    let mut characters = text.char_indices().peekable();
+    while let Some((byte_index, character)) = characters.next() {
+        match character {
+            '\n' => line_start_byte_indices.push(byte_index + 1),
+            '\r' => {
+                if matches!(characters.peek(), Some((_, '\n'))) {
+                    characters.next();
+                }
+                // The line starts after the break (after the lone `\r`, or
+                // after the `\r\n` pair) — track the next character's index.
+                if let Some(&(next_byte_index, _)) = characters.peek() {
+                    line_start_byte_indices.push(next_byte_index);
+                } else {
+                    line_start_byte_indices.push(text.len());
+                }
+            }
+            _ => {}
         }
     }
     line_start_byte_indices
@@ -941,5 +959,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn line_start_indices_handle_lone_carriage_return() {
+        assert_eq!(super::line_start_byte_indices("a\rb"), vec![0, 2]);
+    }
+
+    #[test]
+    fn line_start_indices_count_crlf_as_one_break() {
+        assert_eq!(super::line_start_byte_indices("a\r\nb"), vec![0, 3]);
+    }
+
+    #[test]
+    fn line_start_indices_lf_only_unchanged() {
+        assert_eq!(super::line_start_byte_indices("a\nb"), vec![0, 2]);
     }
 }

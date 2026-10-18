@@ -692,6 +692,22 @@ mod tests {
     }
 
     #[test]
+    fn zero_size_caret_map_counts_lone_cr_as_segment_break() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            white_space: DomWhiteSpace::Pre,
+            ..TextLayoutRequest::for_text("a\rb", 0.0)
+        };
+
+        let caret_map = context.layout_text_caret_map(&request);
+
+        assert_eq!(caret_map.lines.len(), 2);
+        assert_eq!(caret_map.lines[1].stops[0].byte_index, 2);
+    }
+
+    #[test]
     fn zero_size_multiline_collapsing_modes_render_one_line() {
         let mut context = default_context();
         let request = TextLayoutRequest {
