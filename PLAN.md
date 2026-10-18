@@ -261,6 +261,26 @@ zero-size-line inconsistency).
 
 ### PR 1 — margin and style gaps (the admission queue) `SETTLED`
 
+**LANDED (2026-10-18, branch `pr1-margin-style-gaps`, 10 commits):** all
+seven items plus the transition proof-family companion bundle. Item 1
+margin/padding shorthands; item 2 the three-branch negative-margin collapse
+plus the deliberate spillover decision pinned at the composite
+(`clip_world`) and integration levels; item 3 `box-sizing` (vocabulary 68
+→ 69, the D6 policy's first post-v0.6.0 admission); item 4 the `!important`
+tier (`CascadeTier` descending `ImportantAuthor > NormalAuthor > NormalUa`,
+importance bits parallel to declarations, CSSOM upsert rules, identity hash
+and dedup importance-aware); item 5 opacity clamping (the registry's last
+reject-side divergence closed); item 6 transform transitions
+(`DeclValue::Translate`, with a double-scheduling fix to the transform
+moving-field mapping found during landing); item 7 the `BoxLength`
+computed/used split with the `margin: 0 auto` centering pattern working in
+shorthand and longhand forms (public API break, recorded in
+`MIGRATION.md`); plus the seven-test transition behavior family (easing
+control points, negative delay, re-targeting, list-repeat, completion,
+from==to, overlay-beats-important). The off_spec census stands at 5
+(font-family unconsumed, font-weight/style unconsumed, `break-spaces`,
+range pill, `line-height: normal` → 1.0×).
+
 Seven items, ordered cheapest-first. Each is its own commit on one branch;
 each flips its registry pin in the same change. No debate required — the
 designs below are settled and the pins are the witnesses.
