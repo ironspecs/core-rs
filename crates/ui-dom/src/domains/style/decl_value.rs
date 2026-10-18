@@ -119,6 +119,10 @@ pub(crate) fn decl_value_to_css_string<'a>(
 /// `rgba(R, G, B, A)` with 0–255 integer channels and the shortest float alpha.
 /// Both forms round-trip through `parse_css_color_rgba` for colors it produces
 /// (channels are exact `n / 255` and alpha is preserved bit-exactly).
+/// Invariant: `DeclValue::Color` channels are parser-normalized to `[0, 1]` at
+/// admission (`parse_css_color_rgba`), which is what makes the
+/// `f32_to_u8(...).expect(...)` below a self-owned structural invariant rather
+/// than a boundary-data panic.
 #[allow(clippy::float_cmp)] // the opaque test is an exact 1.0 alpha comparison
 fn format_color_rgba(rgba: [f32; 4]) -> String {
     let [red, green, blue, alpha] = rgba;
