@@ -488,6 +488,10 @@ fn interpolate_value(from: &DeclValue, to: &DeclValue, progress: f32) -> DeclVal
         (DeclValue::Number(from), DeclValue::Number(to)) => {
             DeclValue::Number(from + (to - from) * progress)
         }
+        (DeclValue::Translate(from), DeclValue::Translate(to)) => DeclValue::Translate([
+            from[0] + (to[0] - from[0]) * progress,
+            from[1] + (to[1] - from[1]) * progress,
+        ]),
         _ if progress >= 1.0 => *to,
         _ => *from,
     }
@@ -779,6 +783,34 @@ mod tests {
         let to = DeclValue::Keyword(Keyword::Flex);
         assert_eq!(interpolate_value(&from, &to, 0.5), from);
         assert_eq!(interpolate_value(&from, &to, 1.0), to);
+    }
+
+    #[test]
+    fn interpolate_value_lerps_the_translate_pair_and_steps_across_kinds() {
+        let from = DeclValue::Translate([0.0, 0.0]);
+        let to = DeclValue::Translate([10.0, 20.0]);
+        assert_eq!(
+            interpolate_value(&from, &to, 0.5),
+            DeclValue::Translate([5.0, 10.0])
+        );
+        assert_eq!(
+            interpolate_value(&from, &to, 0.0),
+            DeclValue::Translate([0.0, 0.0])
+        );
+        assert_eq!(
+            interpolate_value(&from, &to, 1.0),
+            DeclValue::Translate([10.0, 20.0])
+        );
+
+        // `none` (Keyword) × translate steps: mid-flight keeps the from-shape,
+        // completion takes `to` (the `none`↔translate identity interpolation is
+        // a documented follow-up, not this step).
+        let none = DeclValue::Keyword(Keyword::None);
+        let translate = DeclValue::Translate([5.0, 0.0]);
+        assert_eq!(interpolate_value(&none, &translate, 0.5), none);
+        assert_eq!(interpolate_value(&none, &translate, 1.0), translate);
+        assert_eq!(interpolate_value(&translate, &none, 0.5), translate);
+        assert_eq!(interpolate_value(&translate, &none, 1.0), none);
     }
 
     #[test]

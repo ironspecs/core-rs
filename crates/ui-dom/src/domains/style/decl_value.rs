@@ -50,8 +50,8 @@ pub struct Precedence {
     pub order: u64,
 }
 
-/// A parsed declaration value: length, color, keyword, number, integer, or
-/// interned text.
+/// A parsed declaration value: length, color, keyword, number, integer,
+/// interned text, or the typed translate pair.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeclValue {
     Length(DeclLength),
@@ -60,6 +60,12 @@ pub enum DeclValue {
     Number(f32),
     Integer(i64),
     Text(TextKey),
+    /// The scheduler's interpolation form for `transform`. Declarations stay
+    /// text-interned (`Keyword(None)` / `Text`) and resolve into the transform
+    /// group; this variant is how the group hands the scheduler a typed
+    /// `[x, y]` translate pair. It is produced only at group-read time
+    /// (`decl_value_for_groups`), never by declaration parse.
+    Translate([f32; 2]),
 }
 
 impl DeclValue {
@@ -92,6 +98,9 @@ pub(crate) fn decl_value_to_dom_value<'a>(
                 .expect("interned text must resolve in its owning store")
                 .to_string(),
         ),
+        DeclValue::Translate([x, y]) => {
+            DomAttributeValue::String(format!("translate({x}px, {y}px)"))
+        }
     }
 }
 
@@ -126,6 +135,8 @@ mod tests {
             DeclValue::Color([1.0, 0.0, 0.0, 1.0])
                 .value_equals(&DeclValue::Color([1.0, 0.0, 0.0, 1.0]))
         );
+        assert!(DeclValue::Translate([3.0, 4.0]).value_equals(&DeclValue::Translate([3.0, 4.0])));
+        assert!(!DeclValue::Translate([3.0, 4.0]).value_equals(&DeclValue::Translate([4.0, 3.0])));
     }
 
     #[test]
@@ -184,6 +195,14 @@ mod tests {
         assert_eq!(
             decl_value_to_dom_value(&DeclValue::Text(TextKey(7)), resolve_text),
             DomAttributeValue::String("ui-sans, sans-serif".to_string())
+        );
+        assert_eq!(
+            decl_value_to_dom_value(&DeclValue::Translate([5.0, 0.0]), resolve_none),
+            DomAttributeValue::String("translate(5px, 0px)".to_string())
+        );
+        assert_eq!(
+            decl_value_to_dom_value(&DeclValue::Translate([0.0, -3.5]), resolve_none),
+            DomAttributeValue::String("translate(0px, -3.5px)".to_string())
         );
     }
 }

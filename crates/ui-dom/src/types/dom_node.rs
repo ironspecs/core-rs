@@ -789,7 +789,8 @@ impl DomNode {
             | DeclValue::Keyword(_)
             | DeclValue::Number(_)
             | DeclValue::Integer(_)
-            | DeclValue::Text(_) => None,
+            | DeclValue::Text(_)
+            | DeclValue::Translate(_) => None,
         }
     }
 
@@ -886,6 +887,7 @@ impl DomNode {
 
     fn presented_transform(&self) -> Option<([f32; 2], bool)> {
         match self.active_presented(PresentationProperty::Transform)? {
+            DeclValue::Translate(v) => Some((*v, true)),
             DeclValue::Keyword(Keyword::None) => Some(([0.0, 0.0], false)),
             // A `Text` transform cannot be re-parsed without the document
             // interner; transform transitions step and the stored group already

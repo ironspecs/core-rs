@@ -16,7 +16,8 @@
 //! justify`), the closed keyword set drops wider CSS values (`font-style:
 //! oblique`), a white-space mode is folded into another mode's transform
 //! (`white-space: break-spaces` shares `pre-wrap`'s preserve transform),
-//! a value cannot schedule a transition (`transform`), an authored zero radius
+//! the `none` ↔ translate transform transition steps rather than interpolating
+//! the identity (a documented follow-up), an authored zero radius
 //! falls back to a control's pill default (range), a content attribute merges
 //! with a property (`dir` vs `direction`), or a content-side channel is the
 //! only live path while the stylesheet channel is dropped (`pointer-events`).
@@ -398,31 +399,30 @@ fn off_spec_break_spaces_approximated_as_pre_wrap() {
     );
 }
 
-// — B4: transform transitions never schedule — //
+// — B4: transform transitions interpolate the translate pair — //
 
 #[test]
-// OFF-SPEC (divergent, documented in MIGRATION.md): CSS Transitions 1 §2
-// `transition: transform 180ms` should interpolate a `translateX` change over
-// the duration. <https://drafts.csswg.org/css-transitions-1/>
+// ON-SPEC: CSS Transitions 1 §2 `transition: transform` interpolates a
+// `translateX` change over the duration.
+// <https://drafts.csswg.org/css-transitions-1/>
 //
-// CURRENT (asserted below): `transition: transform 180ms` with a
-// `translateX(0px) → translateX(10px)` change presents the target immediately
-// at the next update — no transition is scheduled, so the target is STILL
-// presented at progress 0.5 (t=0.09s, half the 180ms duration).
-// SPEC-CORRECT: the transform interpolates; at progress 0.5 the `translate_px`
-// is strictly between 0 and 10.
-// ROOT CAUSE: `decl_value_for_groups` (`root_dom.rs:4695-4703`) returns `None`
-// for `PresentationProperty::Transform` (the transform `DeclValue` is interned
-// text, which the scheduler cannot interpolate; the typed `[f32; 2]` pair is
-// the admission shape), so `schedule_pass_transitions` never installs one.
-// RECLASSIFY: typed-translate interpolation (a small admission-gated follow-up)
-// flips this pin on-spec.
-fn off_spec_transform_transitions_do_not_schedule() {
+// Relabeled from `off_spec_transform_transitions_do_not_schedule` in PR 1
+// item 6 after the typed translate pair joined the scheduler's interpolation
+// table.
+//
+// The duration is authored as `1s linear` so the midpoint and end assertions
+// are exact. The scheduler converts the f32 duration to f64 before dividing
+// (`f64::from(0.18_f32)` is `0.18000000715255737`), so a `180ms` duration's
+// 0.09s midpoint resolves to progress `0.49999997` and its 0.18s end never
+// satisfies `is_finished`. `1.0` is exact in f32 and f64, so progress 0.5
+// lands exactly on the `[5, 0]` midpoint and progress 1.0 completes; `linear`
+// avoids the `ease` easing that would move the 0.5-time progress to ≈0.80.
+fn transform_transitions_interpolate_translate() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let container = assert_append_div_to(&mut root, document_root);
     assert_style_set(&mut root, container, "transform", "translateX(0px)");
-    assert_style_set(&mut root, container, "transition", "transform 180ms");
+    assert_style_set(&mut root, container, "transition", "transform 1s linear");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
@@ -436,31 +436,94 @@ fn off_spec_transform_transitions_do_not_schedule() {
 
     assert_style_set(&mut root, container, "transform", "translateX(10px)");
     // Pass-driven scheduling (D2 one-timing): the first update detects the
-    // change. Because Transform is never transitionable, the target presents
-    // immediately instead of starting a transition.
+    // change and starts the transition (presented == from).
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(container)
             .expect("container")
             .as_transform()
             .translate_px,
-        [10.0, 0.0],
-        "transform should jump to the target on the change-detection update",
+        [0.0, 0.0],
+        "transform should still present the from-shape at the change-detection update",
     );
 
-    // Mid-time (progress 0.5): the presented value is STILL the target — no
-    // mid-flight interpolated value exists. A scheduled transition would
-    // present a value strictly between [0.0, 0.0] and [10.0, 0.0] here, so the
-    // jump is discriminated (matches `pipeline/transitions.rs`'s
-    // MID_TRANSITION_TIME_S = 0.09 convention).
-    assert_root_dom_update(&mut world, &mut root, 0.09, DomPointerUpdate::Unchanged);
+    // Mid-time (progress 0.5): the interpolated translate is the exact midpoint.
+    assert_root_dom_update(&mut world, &mut root, 0.5, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(container)
+            .expect("container")
+            .as_transform()
+            .translate_px,
+        [5.0, 0.0],
+        "transform should interpolate translate to the [5,0] midpoint at progress 0.5",
+    );
+
+    // End-time (progress 1.0): the transition completes and presents the target.
+    assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(container)
             .expect("container")
             .as_transform()
             .translate_px,
         [10.0, 0.0],
-        "transform should stay at the target at progress 0.5 (a scheduled transition would interpolate strictly between [0,0] and [10,0])",
+        "transform should settle at the authored target once the transition completes",
+    );
+}
+
+#[test]
+// SCOPED STEP RULE: `transform: none` ↔ `translate` transitions step — the
+// presented value stays the from-shape until progress ≥ 1.0. CSS Transitions
+// interpolates `none` as the identity transform (`translate(0)`) and would
+// interpolate smoothly; the `none` ↔ translate identity interpolation is a
+// documented follow-up, NOT this item. This pin documents the step boundary so
+// the follow-up that lands identity interpolation flips it on-spec.
+fn transform_none_to_translate_transition_steps() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "transform", "none");
+    assert_style_set(&mut root, container, "transition", "transform 1s");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert!(
+        !root
+            .computed_style(container)
+            .expect("container")
+            .as_transform()
+            .has_transform,
+        "initial transform: none should leave the node without a transform",
+    );
+
+    assert_style_set(&mut root, container, "transform", "translateX(5px)");
+    // Pass-driven scheduling (D2 one-timing): the change-detection update
+    // schedules the transition (presented == from == none).
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // Mid-time (progress 0.5): the step rule keeps the from-shape (no transform).
+    assert_root_dom_update(&mut world, &mut root, 0.5, DomPointerUpdate::Unchanged);
+    assert!(
+        !root
+            .computed_style(container)
+            .expect("container")
+            .as_transform()
+            .has_transform,
+        "none → translate should step: the from-shape (no transform) presents until progress ≥ 1.0",
+    );
+
+    // End-time (progress 1.0): the target presents.
+    assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
+    let transform = root
+        .computed_style(container)
+        .expect("container")
+        .as_transform();
+    assert!(
+        transform.has_transform,
+        "none → translate should settle at the target transform",
+    );
+    assert_eq!(
+        transform.translate_px,
+        [5.0, 0.0],
+        "none → translate should present the target translate at progress 1.0",
     );
 }
 

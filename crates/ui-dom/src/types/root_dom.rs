@@ -4514,8 +4514,10 @@ pub(crate) fn next_id_from_attr(
 /// transition starts from the active transition's presented value, a fresh one
 /// from the raw old field. `None` means the field has no representable
 /// transitionable value (text-valued properties whose source the group already
-/// resolved away — font-family's `TextKey`, transform's translate), so no
-/// transition is scheduled.
+/// resolved away — font-family's `TextKey`) or the transition scheduler slots
+/// themselves, so no transition is scheduled. `Transform` IS representable:
+/// the group hands the scheduler its resolved `Translate` pair (or
+/// `Keyword(None)` when no transform is present).
 #[allow(clippy::too_many_lines)] // mechanical field-by-field inverse projection
 pub(crate) fn decl_value_for_groups(
     groups: &ComputedGroups,
@@ -4706,11 +4708,20 @@ pub(crate) fn decl_value_for_groups(
         PresentationProperty::BorderBottomLeftRadius => {
             Some(DeclValue::Length(DeclLength::Px(groups.visual.radius[3])))
         }
+        // Transform is schedulable through the typed translate pair (spine
+        // 3.3e follow-up): a present transform hands the scheduler its resolved
+        // `[x, y]` translate, and its absence hands `Keyword(None)`.
+        PresentationProperty::Transform => {
+            if groups.transform.has_transform {
+                Some(DeclValue::Translate(groups.transform.translate_px))
+            } else {
+                Some(DeclValue::Keyword(Keyword::None))
+            }
+        }
         // Text-valued properties whose source the group already resolved away
-        // (font-family's TextKey, transform's translate) and the transition
-        // scheduler slots are never transitionable.
+        // (font-family's TextKey) and the transition scheduler slots are never
+        // transitionable.
         PresentationProperty::FontFamily
-        | PresentationProperty::Transform
         | PresentationProperty::TransitionProperty
         | PresentationProperty::TransitionDuration
         | PresentationProperty::TransitionTimingFunction
@@ -4810,7 +4821,7 @@ fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue)
         DeclGrammar::Transform => {
             matches!(
                 value,
-                DeclValue::Keyword(Keyword::None) | DeclValue::Text(_)
+                DeclValue::Keyword(Keyword::None) | DeclValue::Text(_) | DeclValue::Translate(_)
             )
         }
         DeclGrammar::Text

@@ -121,7 +121,9 @@ fold), or the computed read surface (`RootDom::computed_style`).
 - **Transition re-key (spine 3.3e).** The transition scheduler's retained
   objects (`DomTransition`/`DomTransitionConfig`) are keyed by
   `PresentationProperty` and interpolate typed `DeclValue`s (`Length(Px)`,
-  color channels, and `Number` lerp; every other kind steps). The overlay merge
+  color channels, `Number`, and the typed `Translate` pair lerp; every other
+  kind — keywords, text, and the `none` ↔ translate crossing — steps). The
+  overlay merge
   in `DomNode::computed_*` re-keys from the transition's property to its group
   field, and the overlay becomes the inheritance seed (CSS Cascade §6.1): the
   transition tier wins the cascade, so a parent's interpolated inherited value

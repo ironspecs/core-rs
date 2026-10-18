@@ -14,9 +14,11 @@
 //! - `for_each_moved_field` compares every field of the seven `Copy` groups
 //!   (`old != new`) and invokes `visit` once per moved field with the field's
 //!   owning `PresentationProperty`. The `transform` group has two fields
-//!   (`translate_px`, `has_transform`) that both map to `Transform`; both may
-//!   fire `visit(Transform)`, which is harmless — `Transform` is not a
-//!   transitionable property and `decl_value_for_groups` returns `None` for it.
+//!   (`translate_px`, `has_transform`) that both map to `Transform`; the group
+//!   compares as one unit so a transform change fires `visit(Transform)`
+//!   exactly once — `Transform` is one transitionable property and must not
+//!   double-schedule when both fields move together (e.g. `none` →
+//!   `translateX(5px)`).
 //! - **Zero allocation.** No buffers, no iteration collectors; the compare is
 //!   inline and `visit` is a closure.
 //! - The mapping is the mechanical inverse of `resolve_declaration_into_groups`
@@ -217,11 +219,9 @@ pub(crate) fn for_each_moved_field(
         &mut visit,
     );
 
-    // Non-inherited — transform group (both fields map to `Transform`).
-    if old.transform.translate_px != new.transform.translate_px {
-        visit(PresentationProperty::Transform);
-    }
-    if old.transform.has_transform != new.transform.has_transform {
+    // Non-inherited — transform group (one property: both fields map to
+    // `Transform`, so the group compares as a unit to visit exactly once).
+    if old.transform != new.transform {
         visit(PresentationProperty::Transform);
     }
 }
@@ -347,6 +347,13 @@ mod tests {
 
         let mut new = old;
         new.transform.translate_px = [3.0, 4.0];
+        assert_eq!(moved(&old, &new), vec![PresentationProperty::Transform]);
+
+        // A change that moves BOTH fields still fires once: the group is one
+        // transitionable property and must not double-schedule.
+        let mut new = old;
+        new.transform.translate_px = [5.0, 0.0];
+        new.transform.has_transform = true;
         assert_eq!(moved(&old, &new), vec![PresentationProperty::Transform]);
     }
 

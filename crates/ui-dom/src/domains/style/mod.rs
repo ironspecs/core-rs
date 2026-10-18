@@ -623,6 +623,12 @@ fn hash_decl_value(hasher: &mut std::collections::hash_map::DefaultHasher, value
             5u8.hash(hasher);
             key.0.hash(hasher);
         }
+        DeclValue::Translate(channels) => {
+            6u8.hash(hasher);
+            for channel in channels {
+                channel.to_bits().hash(hasher);
+            }
+        }
     }
 }
 
