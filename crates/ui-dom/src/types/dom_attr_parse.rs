@@ -132,7 +132,10 @@ pub(crate) fn parse_authored_length(value: &str) -> Option<AuthoredLength> {
 /// Parses the supported CSS color subset into normalized `[red, green, blue, alpha]` channels.
 ///
 /// Supported inputs are `transparent`, six- or eight-digit hex colors, `rgb(...)`, `rgba(...)`,
-/// and the named colors `white`, `black`, `red`, `green`, and `blue`.
+/// and the named colors `white`, `black`, `red`, `green`, and `blue`. `rgb()`/`rgba()` channels
+/// may be comma- or space-separated, and channels may be 0–255 or percentages with alpha as
+/// 0–1 or a percentage. The modern slash-alpha form (`rgb(255 0 0 / 50%)`) is NOT admitted and
+/// fails the call (see the `modern_rgb_syntax_is_partially_admitted` proof).
 pub fn parse_css_color_rgba(value: &str) -> Result<[f32; 4], DomError> {
     let trimmed = value.trim();
     if trimmed.eq_ignore_ascii_case("transparent") {
