@@ -411,7 +411,33 @@ mitigated by the entire cascade proof family); item 7 is the only one that
 reshapes a group field type, and its used-value resolution must not grow
 per-frame allocation (the perf pins are its judge).
 
-### PR 2 — style snapshot sharing `DEBATE — no code until resolved with third-party agreement`
+### PR 2 — style snapshot sharing `KILLED 2026-10-19 — per its own kill criterion; no code`
+
+**Kill record (2026-10-19).** Killed per the S10 kill criterion below:
+the lock is provably contention-free in every realistic scenario we can
+name (single-threaded update loop; uncontended acquisition is tens of
+nanoseconds against per-element match work orders of magnitude larger,
+in passes visiting 1–3 elements in the pinned scenarios), and no
+consumer has named a concurrent-reader need — the plan itself could
+state consumers' multi-document expectations only as "a question, not a
+fact," which fails the crate's own D6 standard. The one non-perf
+justification found in debate preparation — per-pass consistency
+(today's per-element lock admits a rule-set tear if a load interleaves
+a pass, `winners_fold.rs:201-227`) — is latent under the SAME missing
+precondition (interleaving requires the concurrent consumer nobody has
+named); it wakes with that consumer, not before. Alternative (d)
+(per-document runtimes) was also rejected as speculative: it would
+remove a deliberately built sharing capability on the same absence of
+evidence. No lock-wait counter was landed: instrumentation for a killed
+item is scope creep; a revival arrives with a named need and the
+counter lands with it. **Wake conditions** (any one revives this PR
+with its debate intact): (1) a consumer names concurrent or interleaved
+multi-document driving; (2) a named per-pass consistency requirement
+from a real interleaving pattern; (3) pass element counts grow until
+even same-thread lock cost is measurable (proposal J's gate counters
+would show it first); (4) a measured nonzero lock wait in a realistic
+scenario. The debate framework below is preserved verbatim as the
+revival starting position.
 
 **Problem (restated honestly).** The style pass locks
 `Mutex<StyleRuntime>` once per element per pass. It is correct. It may
@@ -569,9 +595,10 @@ do not make the change. The fallback is today's seam, documented.
 
 **Ownership and boundaries (stated per the S7 review):** the seam's font
 catalog and fallback policy are **context-scoped** (shared across
-documents, like today's `TextLayoutConfig`) — this is a joint boundary
-with PR 2, whose snapshot explicitly excludes them from snapshot
-lifetimes (fonts are not style data); making the seam document-scoped
+documents, like today's `TextLayoutConfig`) — the joint-boundary
+question with PR 2's snapshot died with PR 2 (fonts were never inside
+`StyleRuntime`; the exclusion boundary was the type boundary); making
+the seam document-scoped
 would be a multi-document sharing regression and is rejected. **The
 line-height 1px floor stays in the style resolver** (`project.rs`: it is a
 computed-value policy, and the registry pins it permanently); the seam
@@ -735,6 +762,21 @@ an f32 basis.
   height-axis subtraction, and zero-clamp pins; end-to-end percentage
   rows for padding×4, min/max-width, and left/right; and a
   non-finite-opacity robustness row (unit-only today).
+
+- **2026-10-19 — PR 2 killed per its own kill criterion; the arc order
+  updates.** PR 2 (style snapshot sharing) is dead: the kill criterion's
+  condition (contention-free in every realistic scenario AND no named
+  concurrent-reader need) was checkable from debate preparation alone —
+  running the full debate to reach it would have been the theater the
+  criterion exists to prevent. The arc is now PR 1 (landed) → PR 3 (the
+  flex mapping debate, next) → PR 4 (the text seam) → PR 5 (the
+  `RootDom` decomposition). P2's mechanism (the `Mutex<StyleRuntime>`
+  per-element lock) remains correct for the single-threaded loop and is
+  a named boundary with four wake conditions recorded in PR 2's kill
+  record; the per-pass consistency observation is preserved there so it
+  survives context compaction. PR 3's debate is unaffected and is a
+  different kind from PR 2's: it HAS a named driver (the users' biggest
+  complaint), so its debate proceeds with real substance.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
