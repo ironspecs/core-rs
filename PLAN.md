@@ -22,6 +22,30 @@ The purpose is accounting, not redesign:
    adjudicated divergence fixes (B1's sign rules; anything an adjudication
    forces — each recorded here).
 
+## The phases
+
+- **Phase 0 — file and folder rearrangement (batch 0).** The
+  `layout_proofs/` suite moves to subsystem directories ahead of its
+  growth. No behavior change; full suite green.
+- **Phase 1 — the accounting (B1–B12).** Every item in this document gets a
+  running proof pinning its current behavior. Crashes on boundary data are
+  fixed immediately (typed error or drop, never panic — the B12 rule). The
+  two pre-adjudicated divergence fixes (B1's sign rules) and the B5
+  adjudications land here too. Exit criteria: every row pinned and
+  verified, the registry current, the full suite green, this document's
+  "expected current" columns corrected against reality. **No new features
+  ship in Phase 1.**
+- **Phase 2 — the march on-spec.** Item by item, with the pins as
+  witnesses: a named consumer need opens the D6 admission (spec citation +
+  Blink/Gecko algorithm reference + proof in the same change), the feature
+  is implemented per the data-structure/algorithm sketches below (they are
+  starting designs, revisited at admission), and its pin flips on-spec with
+  the registry updated in the same change. **The flip is the acceptance
+  test.** The march is slow and methodical by design: one admission per
+  landing, ordered by the bundle table and consumer need. Some items may
+  never be admitted (grid layout, floats) — their pins are the permanent
+  record of the boundary, which is itself a deliverable of this plan.
+
 ## Conventions (read before writing any pin)
 
 - **Pin classes** (extends the README's registry classes):
@@ -193,6 +217,26 @@ Current length grammar (`unset | 0 | <px> | <em>`) has **no sign check**
   in commit (c); the on-spec/robustness rows register as pins with no
   divergence entry.
 
+**B1 data structures and algorithms (Phase 1 fix, referenced for the record).**
+Current state: the admission table is `DeclGrammar` in
+`presentation_property.rs` — a `Copy` enum where each variant IS a grammar
+family, attached per property in the static `METADATA` table. That shape is
+deliberate (redesign approach C): every per-property policy is metadata in
+ONE table, so a policy question ("is this length signed?") has exactly one
+answer-site. The fix extends the same shape: `Length` (signed) and
+`NonNegativeLength` variants, with the sign policy assigned per property in
+`METADATA`; the primitive (`parse_authored_length`,
+`dom_attr_parse.rs:116-130`) stays sign-agnostic — policy lives in the
+grammar layer, not the primitive, because the primitive is shared by
+grammars with different sign rules. Algorithm: one comparison
+(`scalar < 0.0 → None`) in the two new `parse_value` arms of
+`decl_parse.rs`; rejection flows through the existing drop-and-continue
+report (CSS 2.1 §4.1.7 treats out-of-range as malformed). The non-finite
+rejection already lives in `parse_finite_length_scalar` (NaN/inf never
+enter a group — finite f32 is a group-field invariant the A7 `memcmp`-style
+diffs rely on).
+
+
 
 ## B2 — units & sizing keywords
 
@@ -228,6 +272,39 @@ Current length grammar (`unset | 0 | <px> | <em>`) has **no sign check**
 - **Registry:** all rows register `unsupported_*` with the D6 admission
   reference; no divergent entries.
 
+**B2 data structures and algorithms (Phase 2 preview).** Current state:
+`DeclLength { Unset, Px(f32), Em(f32) }` (`decl_value.rs`) is the only
+length shape, and computed groups store RESOLVED px (`Option<f32>`),
+because A6 resolves everything resolvable at style time — that was the
+redesign's deliberate choice: groups are `Copy`, compared by value, and
+consumers never re-parse. Percentages break the "resolve at style time"
+premise: a percentage resolves against the containing block, which exists
+only at layout. The admission-time shape therefore splits
+**computed vs used** (the redesign's own "used-vs-computed honesty" note,
+CSS Cascade §4.5): the box group's length fields become an enum
+(`BoxLength { Auto, Px(f32), Percent(f32) }` — still `Copy`, still
+value-compared) holding the COMPUTED form, and layout resolves
+`Percent(x)` against the containing-block dimension it already owns (CSS
+Values §percentages: width → cb width; margin/padding → cb width even
+vertically; font-size → parent font-size; line-height → element font-size).
+`calc()` is a separate, later admission: a bounded expression type
+(`CalcExpr`, depth-capped tree over our admitted units — Blink's
+`MathExpressionNode`/Servo's `calc` module are the engine references),
+resolved to `BoxLength` when all terms are absolute, kept symbolic
+otherwise. `rem` resolves at style time against the ROOT element's
+computed font-size (the pass already seeds from the root; no used-value
+split needed — same shape as `em`, `DeclLength::Rem(f32)`).
+`auto`/intrinsic keywords ride the existing `DeclValue::Keyword`
+vocabulary: `auto` maps to the group's `None`/Auto initial (free), while
+`auto` MARGINS are the honest exception — CSS resolves them at layout
+(absorbing free space), so they need the same `BoxLength::Auto` used-value
+resolution (the layout algorithm that distributes free space — the
+centering case consumers will actually ask for). Viewport units
+(`vw`/`vh`/`vmin`/`vmax`) resolve at style time against the viewport
+dimensions the composite stage already knows — a style-time available
+context, no used-split.
+
+
 
 ## B3 — box shorthands
 
@@ -254,6 +331,25 @@ Current length grammar (`unset | 0 | <px> | <em>`) has **no sign check**
   `Shorthand::BorderSide` alias pattern already in `property_shape`.
 - **Registry:** `unsupported_*` rows; the margin/padding row headers note
   these are the #1 admission candidates (popularity).
+
+**B3 data structures and algorithms (Phase 2 preview).** Current state: the
+system has exactly ONE shorthand-expansion point — A1 in `decl_parse.rs`
+(CSS Cascade 5 §3: "a shorthand sets all of its longhands exactly as if
+expanded in place," at declaration time) — with the `Shorthand` enum +
+`property_shape` name table and `expand_border_radius` as the 1–4-value
+corner-mapping reference implementation. The admission of every shorthand
+in this bundle and B10 is the same mechanical shape: a new `Shorthand`
+variant, a name in `property_shape`, and an expansion fn returning
+`SmallVec<[Declaration; 4]>`; `margin`/`padding`/`border-width`/`inset`
+reuse the corner map verbatim (inset maps to top/right/bottom/left);
+`outline` and `border` follow the existing `Shorthand::BorderSide`
+width-only-alias precedent (the unadmitted style/color components are
+dropped with a counted note or rejected per the fail-closed rule — the
+call is made at admission with the pin flipping). No new data structures:
+the cascade and consumers only ever see longhands, which is WHY the
+expansion is safe — the winners fold, groups, and diff machinery are
+shorthand-agnostic by construction (the redesign's B decision).
+
 
 
 ## B4 — text consumption & admitted quirks
@@ -325,6 +421,36 @@ quirky downstream. Verify each at pin time.
   (`visiblePainted`, `painted`, `fill`, `stroke`, `all`) stored-but-inherit —
   unimplemented rows.
 
+**B4 data structures and algorithms (Phase 2 preview).** Current state: the
+computed font group already carries everything text layout needs —
+`family: Option<TextKey>` (interned via the document's computed-text
+interner, resolved by `RootDom::resolve_computed_text`), `weight: u16`,
+`style: Keyword` — because the redesign's S1 font group was DESIGNED for
+this follower (the fields exist, inherit correctly per CSS Fonts, and are
+diff-classified so a family change re-measures text). The consumption work
+is at the text-layout boundary: `TextFontFamilyId`
+(`text_layout/mod.rs:36-39`) stops being a one-variant enum and becomes a
+resolved family request — the `TextLayoutRequest` (`text_layout_request.rs`)
+carries the resolved family STRING (parsed as a CSS family list:
+comma-separated, quotes stripped, generic families `serif`/`sans-serif`/
+`monospace`/`system-ui` mapped to fontdb generics), `weight` → cosmic
+`Weight(u16)`, `style` → cosmic `FontStyle`; matching and fallback are
+delegated to fontdb/cosmic-text (Blink/Gecko do the same: first matched
+family in list order, generics last — the engine reference for the
+fallback algorithm). The font catalog (`ui_dom_text_font_catalog.rs`) owns
+family-name resolution to loaded faces; the intrinsic text measurement and
+the render path consume the same resolved triple so measure == render (the
+existing single-measure rule). `white-space` mode gaps (`pre-line`,
+`break-spaces`) map into the shaper's collapse/preserve table
+(`text_render.rs`); `pre-line` = collapse spaces, preserve newlines;
+`break-spaces` = preserve trailing spaces — both are shaping-policy rows,
+not new structures. The `transform`-transition follower is smaller than it
+looks: the computed transform group is already `translate_px: [f32; 2]`,
+so the scheduler interpolates two px channels exactly like a length pair —
+the work is admitting a typed transform pair into the scheduler's
+`DeclValue` interpolation table (the 3.3e note), not designing one.
+
+
 
 ## B5 — preserved pre-redesign candidates
 
@@ -362,6 +488,23 @@ time, recorded here and in the registry:
 - **Registry:** one row per candidate with the class and rationale above;
   the near-white and border rows are permanent (deliberate), the
   line-height row is expected to move (divergent).
+
+**B5 data structures and algorithms (Phase 2 preview, line-height only —
+the other two are pinned permanent).** Current state: `line-height: normal`
+resolves to `None` in the font group, and the downstream default is
+`font_size_px` (1.0×) at `text_layout/mod.rs:714-722`
+(`effective_line_height_px`). The on-spec shape: `normal` resolves from
+FONT METRICS, not a fixed factor — Blink's `FontMetrics::lineSpacing` and
+Gecko's hhea-derived normal line height both compute
+`ascent + descent + lineGap` (≈ 1.2 for most text faces). cosmic-text's
+`FontSystem`/fontdb exposes the same metrics (`Metrics::new(font_size,
+line_height)` vs the face's hhea table). The algorithm change is one
+function: `normal` → query the resolved family's hhea metrics and compute
+`line_height = ascent + descent (+ lineGap)` at the same site that today
+returns `font_size_px`. The pin flips when it lands; the font-consumption
+follower (B4) is a prerequisite in practice, since metric choice depends on
+the resolved family.
+
 
 
 ## B6 — layout-impact properties
@@ -402,6 +545,36 @@ drop), `display: grid` / `inline-grid` / `table` / `inline-table` /
     baseline (scroll behavior pinned by the existing scroll unit tests).
 - **Registry:** `unsupported_*` rows with the D6 admission reference.
 
+**B6 data structures and algorithms (Phase 2 preview, per property).**
+Admission shape follows the redesign's standing rule: a property enters the
+68-row table in `presentation_property.rs` (name, group, grammar — one
+metadata row), a field appears in the owning group if one is missing
+(`Copy` fields only — the S1 invariant that groups stay small, comparable,
+and arena-free), and consumers read it visit-locally. Per family:
+`z-index` → an order key on the layer (`composite/mod.rs` already maintains
+`layer_order`; the algorithm is CSS 2.1 Appendix E stacking order —
+tree-order sorted by z within stacking contexts; the field is an
+`Option<i32>` on the box group). `position: sticky` → `PositionKw::Sticky`
+plus the layout algorithm: the sticky constraint rectangle (nearest
+scroll-port ancestor) clamps the static position at scroll time (CSS
+Position 3 §sticky; the scroll machinery at `domains/visitor/scroll.rs`
+already knows the container). `box-sizing` → `BoxSizingKw { BorderBox,
+ContentBox }` on the box group; layout's width/height interpretation moves
+inside one function (the sizing projection in `domains/layout/style.rs` —
+border-box stays the default and the crate's current single model).
+`aspect-ratio` → `Option<f32>` field; the CSS Sizing 4 preferred-ratio rule
+constrains auto sizes in the replaced-element and absolute sizing paths.
+`object-fit`/`object-position` → img paint algorithm (contain/cover/fill
+letterboxing inside the content box, at `paint/mod.rs`'s image op).
+`float`/`clear` → flow-layout additions (out-of-flow boxes, line
+shortening, clear bands in `domains/layout/flow.rs`) — the largest item in
+this bundle and a likely never-admit. `display: grid`/`table`/`contents` →
+`grid` is a new solver (never-admit by default); `contents` is a
+box-generation rule (suppress the own box, children join the parent's
+formatting context) — medium, and the only display admission with a
+plausible consumer need.
+
+
 
 ## B7 — color grammar
 
@@ -426,6 +599,25 @@ drop), `display: grid` / `inline-grid` / `table` / `inline-table` /
   form, on-spec where accepted, unimplemented where dropped.
 - **Registry:** `unsupported_*` rows (plus on-spec rows for anything already
   admitted).
+
+**B7 data structures and algorithms (Phase 2 preview).** Current state:
+`DeclValue::Color([f32; 4])` is normalized at the declaration boundary by
+`parse_css_color_rgba` (`dom_attr_parse.rs:136+`) — colors are typed from
+birth, so consumers never re-parse (the redesign's P3 fix for the worst
+corner: color used to ride as a `Custom(String)` heap key). Admissions are
+pure grammar widenings at that one site: hex3/hex4 (digit-doubling, one
+branch), the CSS named-color set (a static `&[(&str, [f32; 4])]` table —
+the full ~148 names, sorted, binary search or a phf map), and modern
+`rgb()` space/slash forms (the parser's channel splitter, likely
+part-admitted already). `currentColor` is the one structural note: it is
+not a color but a value REFERENCE — CSS computes it to the element's
+`color` value — so it resolves at style time from the color group
+(`color_rgba`); the declaration stores `Keyword(CurrentColor)` and the
+resolver substitutes the element's own computed color (Servo does exactly
+this at computed-value time; Blink keeps it symbolic to used time — our
+style-time resolution matches Servo's shape and keeps groups fully
+resolved, consistent with the A5/A6 doctrine).
+
 
 
 ## B8 — selectors & at-rules
@@ -474,6 +666,40 @@ An unsupported selector fails `parse_selector` → `DomError::InvalidSelector`
   selectors, pseudo-classes, pseudo-elements, selector lists, at-rules,
   statement recovery).
 
+**B8 data structures and algorithms (Phase 2 preview, per feature).**
+Current state: `SimpleSelector` (`style/mod.rs`) is a flat per-compound
+enum matched right-to-left with a parent-chain scan per preceding compound
+(the A3 algorithm, shaped like Blink's `RuleSet` bucket + match and Servo's
+`SelectorMap`); the right-most inverted indexes
+(`id/class/tag/universal_index` in `style_runtime.rs`) make candidate
+lookup O(indexed); the closed grammar rejects everything else at load. Per
+feature: **selector lists (`,`)** — `parse_css_blocks` splits the selector
+text at top-level commas; each member compiles to its own `CompiledRule`
+SHARING one `DeclBlockKey` (the decl arena already dedups and shares
+blocks by key — no storage change, one line of identity-hash thought:
+identical (selector, block) pairs still dedup). **Combinators (`>`, `+`,
+`~`)** — a `Combinator` enum between compounds; the matcher replaces the
+chain scan for that compound with the exact relation (parent / previous
+sibling / preceding siblings — all reachable from the node record's
+sibling/parent keys, O(1) or O(siblings)). **Attribute selectors** — a
+`SimpleSelector::Attr { name, value_matcher }` variant; matching reads
+stored content attrs (`id`/`class` fast paths exist). **Structural
+pseudo-classes** (`:first-child`, `:nth-child`, …) — computed on the visit
+from sibling links (child index, child count); state pseudo-classes
+(`:checked`, `:disabled`) read the widget state bits already on elements.
+**`@media`** — the block parser learns at-rule parsing; a rule gains a
+media condition (parsed `min/max-width/height` over our closed feature
+set); `StyleRuntime` evaluates conditions at match time against the
+viewport dimensions the composite stage already owns, and a viewport
+resize bumps `revision` (the existing boundary-change seam) so
+conditionality re-evaluates on the next update. **`@supports`** — trivial
+with the closed property table (a feature is "supported" iff admitted).
+**Statement recovery** — the block parser skips to the next `}` on a
+malformed statement and counts it in the load report (G's declaration rule
+lifted to statement level, with the same report-and-count contract).
+**`@keyframes`** — deferred to F stage 3 (the animation tier, B9).
+
+
 
 ## B9 — cascade tiers
 
@@ -511,6 +737,36 @@ An unsupported selector fails `parse_selector` → `DomError::InvalidSelector`
   low-priority origin" path so it cannot silently break.
 - **Registry:** `unsupported_*` rows + the one on-spec workaround pin.
 
+**B9 data structures and algorithms (Phase 2 preview, per tier).** Current
+state: precedence is the `Precedence { origin_priority, inline,
+specificity, order }` record (`decl_value.rs`) — widened at redesign time
+exactly so these tiers are ADDITIVE (F's "adopt the structure, defer the
+stages" verdict), with the behavior sheet folded at `i32::MIN` as the
+UA-ish tier. **`!important` (F stage 1):** `DeclBlock` gains a parallel
+importance bit-vector (the Servo `declarations_importance: SmallBitVec`
+shape, already noted in `decl_block.rs`'s header); parsing strips the
+`!important` suffix at declaration level (it is part of the declaration,
+not the value — CSS Syntax §5); `Precedence` gains `important: bool` as its
+FIRST field (important author beats all normal declarations including
+normal inline; our tier order stays a projection of CSS Cascade §6.1:
+transitions > important tiers > normal tiers). **Custom properties (F):**
+the block gains a string-keyed custom-property map (Servo keeps a
+`PropertyDeclarationIdSet` with a custom-name set — the same shape); `var()`
+substitution happens at computed-value time with cycle detection and the
+guaranteed-invalid concept (CSS Custom Properties §3; Blink/Servo both
+substitute at computed-value time). **`@layer` (F stage 4):** a layer table
+in `StyleRuntime` (first-seen layer order per origin) and a `layer: u16`
+field inserted into `Precedence` per §6.1 (unlayered above layered; order
+within layers by the table). **Animation tier (F stage 3):** keyframes
+storage (`@keyframes` from B8), a per-property keyframed-interpolation
+sampler sharing the transition machinery's `DeclValue` lerp table, and an
+animation declaration tier in the winners fold between important and
+normal (§6.1's order — the fold's `Precedence` already supports it). **Real
+UA tier (F stage 2):** the `i32::MIN` behavior-sheet precedence is
+formalized into a named tier field (the workaround pin in this bundle is
+its interim guarantee).
+
+
 
 ## B10 — other shorthands & overflow axes
 
@@ -531,6 +787,19 @@ An unsupported selector fails `parse_selector` → `DomError::InvalidSelector`
   single-token admitted form still works (guard against the pin
   over-reaching).
 - **Registry:** `unsupported_*` rows.
+
+**B10 data structures and algorithms (Phase 2 preview).** Identical in shape
+to B3: new `Shorthand` variants + `property_shape` names + expansion fns in
+`decl_parse.rs`. `overflow-x`/`overflow-y` additionally splits the box
+group's single `overflow: OverflowKw` field into `[OverflowKw; 2]` (x, y) —
+the ONE group-field change in the bundle, rippling to the clip/scroll
+predicates (`creates_clip` = either axis ≠ Visible; `allows_vertical_scroll`
+= the y axis) and their consumers (layer kind, scroll gating, flex auto-min
+— all already centralized behind those two predicates, which is why the
+split stays cheap). `font` maps to the font group's five longhands with the
+CSS Fonts 4 shorthand rules (size/line-height/family required-ish, others
+initial — the closed-subset projection of the full grammar).
+
 
 
 ## B11 — text/effects property tail
@@ -558,6 +827,24 @@ All dropped+counted, inert, no crash; one mechanical table. Rows:
 - **Registry:** the family registers as one `unsupported_*` entry naming the
   whole tail table rather than 30 individual rows (the registry stays
   readable; the table itself is the enumeration).
+
+**B11 data structures and algorithms (Phase 2 preview, by popularity).**
+`text-decoration` → a text-group field (`TextDecorationKw` line set +
+color) with paint emitting the decoration line under/over text runs (the
+text paint path already walks runs with their baselines — decoration is a
+rect per run segment). `box-shadow` → a bounded shadow list on the visual
+group (`ArrayVec<ShadowSpec, 4>` — the damage-rect/transition-longhand
+bounded-list precedent: fixed capacity, over-capacity rejected at
+admission, revisitable via D6) with paint emitting blurred/offset rects
+before the box (blur via the existing rect-op corner machinery or a new op
+kind). `text-overflow: ellipsis` → a paint-time clip + ellipsis run
+substitution at the line box (cosmic-text provides the ellipsis glyph; the
+line-layout walk already knows overflow). Everything else in the tail
+admits one property-table row and, where it has no engine meaning yet
+(`cursor`, `will-change`, `visibility: collapse`-only rows), stays a
+stored computed value until a consumer names the effect — storage is
+cheap; behavior is admission-gated per effect.
+
 
 
 ## B12 — robustness
@@ -620,6 +907,20 @@ Every scenario asserts the defined outcome AND returns without panic.
 ### Hardening fixes landed (running record)
 
 _None yet._
+
+**B12 data structures and algorithms.** No Phase 2 — this bundle is the
+permanent safety net, not an admission track. The scenarios stress the
+system's existing bounded structures exactly where they are designed to
+hold: the fixed-capacity history ring and enum-indexed counters (metrics
+doctrine — no allocation under load), the `SlotMap` arenas (10k-rule
+volume exercises generational-key density, not pointer storms), the
+`SmallVec`/`ArrayVec` bounded lists (200-declaration blocks), the
+parent-chain selector scan (64-deep nesting — iterative, not recursive, by
+construction), and the typed-error boundary (every malformed input returns
+`DomError` or drops with a count — the two sanctioned outcomes, never a
+panic). A failure of any of these is a boundary-policy bug with a fix in
+the same change, recorded above.
+
 
 
 ## Open verifications (resolve at pin time; correct the doc in the same change)
