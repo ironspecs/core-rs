@@ -1279,7 +1279,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B2 — units & sizing keywords | **done** (pins; all rows verified; the stale `font-size: unset` row was resolved by B1b and is marked above) |
 | B3 — box shorthands | done (pins; all rows verified dropped+counted + group-initial) |
 | B4 — text consumption & admitted quirks | done (pins; all rows verified; break-spaces classed divergent as a pre-wrap fold; see `style/admitted_gaps.rs`) |
-| B5 — preserved candidates | not started |
+| B5 — preserved candidates | **done** (pins; three adjudications recorded in the B5 section and decision log: near-white initial `color` deliberate, `line-height: normal` → 1.0× divergent, border widths initial `0` deliberate; see `style/admitted_gaps.rs`) |
 | B6 — layout-impact properties | not started |
 | B7 — color grammar | not started |
 | B8 — selectors & at-rules (+F1 fix) | not started |

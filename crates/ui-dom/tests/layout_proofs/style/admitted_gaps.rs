@@ -6,7 +6,7 @@
 #![allow(clippy::float_cmp)]
 
 //! Admitted grammars whose computed values are ignored, approximated, or
-//! quirky downstream (PLAN.md B4; and later B5's preserved-candidates family).
+//! quirky downstream (PLAN.md B4; and B5's preserved-candidates family).
 //!
 //! Purpose: the "within-vocabulary honesty" file. These pins cover declarations
 //! that ARE admitted by the style grammar but whose downstream consumption
@@ -27,7 +27,12 @@
 //! `dir_attribute_and_direction_property_merge` and `pointer_events_content_channel`
 //! rows are on-spec keeps; `white_space_pre_line_and_break_spaces_consumption`
 //! verifies each keyword and pins `pre-line` on-spec while `break-spaces` is
-//! classed divergent (folded into `pre-wrap`).
+//! classed divergent (folded into `pre-wrap`). B5's preserved candidates split
+//! across the classes: `initial_color_is_near_white_by_design` and
+//! `initial_border_widths_are_zero_by_design` are deliberate (crate-owned
+//! defaults pinned permanently), while
+//! `off_spec_line_height_normal_resolves_to_one_times_font_size` is divergent
+//! (expected to move on-spec).
 
 use bevy::prelude::World;
 use ui_dom::{
@@ -606,4 +611,93 @@ fn pointer_scenario() -> (World, RootDom, DomNodeSlotKey, DomNodeSlotKey) {
     assert_style_set(&mut root, child, "width", "60px");
     assert_style_set(&mut root, child, "height", "60px");
     (world, root, parent, child)
+}
+
+// — B5: preserved candidates — //
+
+#[test]
+// DELIBERATE (crate-owned design-system default; PLAN.md B5 decision log):
+// CSS Color 4 §12 `color` initial is `canvastext` (opaque black in light
+// contexts — the canvas's text color).
+// <https://drafts.csswg.org/css-color-4/#propdef-color>
+//
+// CURRENT (asserted below): a plain div with text and no `color` declaration
+// anywhere (no stylesheet, no `style_mut`) computes the near-white
+// `[240/255;3, 1.0]` (`DEFAULT_TEXT_COLOR_RGBA`, `computed_color_group.rs:23`).
+// SPEC-CORRECT: the CSS initial `canvastext` (black in light contexts).
+// RATIONALE (deliberate, recorded in PLAN.md's decision log): the crate's
+// dark-theme design-system default — the spec's `canvastext` default has no
+// meaning for this product surface. Pinned permanently, re-reviewed if the
+// design system changes.
+fn initial_color_is_near_white_by_design() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let div = assert_append_div_to(&mut root, document_root);
+    assert_append_text_to(&mut root, div, "Hello world");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        root.computed_style(div)
+            .expect("plain div")
+            .as_color()
+            .color_rgba,
+        [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0, 1.0],
+        "an absent color should compute the near-white design-system default",
+    );
+}
+
+#[test]
+// DIVERGENT (PLAN.md B5 decision log): CSS 2.1 §10.8 `line-height: normal` is
+// UA-dependent — "roughly 1.2" in desktop browsers.
+// <https://www.w3.org/TR/CSS21/visudet.html#propdef-line-height>
+//
+// CURRENT (asserted below): a `font-size: 20px` container with no `line-height`
+// measures its text node's intrinsic line height at exactly `1.0 × font-size`
+// = 20.0 (`effective_line_height_px`, `text_layout/mod.rs:714-722`).
+// SPEC-CORRECT: font-metrics-derived normal — Blink's
+// `FontMetrics::lineSpacing`, Gecko's hhea ascent+descent+lineGap (≈1.2 for
+// most text faces).
+// RATIONALE: pinned divergent per PLAN.md's decision log (D6 favors the
+// browser answer; moves when a consumer need is named — reclassify deliberate
+// only if the design system explicitly confirms tight rows).
+fn off_spec_line_height_normal_resolves_to_one_times_font_size() {
+    let (root, _plain_text, styled_text, _styled) = text_pair_with_css("font-size: 20px");
+
+    let intrinsic = text_intrinsic(&root, styled_text);
+    assert_eq!(
+        intrinsic.line_height_px, 20.0,
+        "line-height: normal should resolve to exactly 1.0 × font-size",
+    );
+}
+
+#[test]
+// DELIBERATE (crate-owned width-gates-border model; PLAN.md B5 decision log):
+// CSS Backgrounds 3 §4.2 `border-width` initial is `medium`, but `border-style`
+// initial is `none` (§4.1), so undeclared borders are invisible in browsers
+// too. <https://drafts.csswg.org/css-backgrounds-3/#the-border-width>
+//
+// CURRENT (asserted below): a plain div with no border declarations computes
+// `border_width == [0.0; 4]` — the width-gates-border model
+// (`ComputedBoxGroup::initial()` at `computed_box_group.rs`).
+// SPEC-CORRECT: `medium` (a UA-dependent width) × `style: none` — invisible
+// for the undeclared case, but non-zero at the computed-value level.
+// RATIONALE (deliberate, PLAN.md decision log): observably identical to CSS's
+// `medium × style:none` for the undeclared case; the `border-style` admission
+// (tracked in B11) would revisit this.
+fn initial_border_widths_are_zero_by_design() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let div = assert_append_div_to(&mut root, document_root);
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        root.computed_style(div)
+            .expect("plain div")
+            .as_box()
+            .border_width,
+        [0.0; 4],
+        "an undeclared border should compute zero widths",
+    );
 }
