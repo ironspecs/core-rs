@@ -2618,6 +2618,98 @@ mod tests {
     }
 
     #[test]
+    // Pin for the deliberate 2026-10-18 layer-spillover decision (PLAN.md
+    // decision log): a clipped layer's bounds clip content that spills outside
+    // them, where a browser would paint it. Bounded surfaces ARE the render
+    // cache (scroll, animation, targeted repaint); the spill is clipped at the
+    // layer bounds, never a surface expansion. Complements the layout proof
+    // `tests/layout_proofs/layout/normal_flow.rs::layer_bounds_clip_spillover_by_design`,
+    // which pins the integration-visible half (the −20px child is staged above
+    // the 100×100 container's border box). This pin guards the composite half:
+    // `local_clip_world` (`composite/mod.rs`, ~line 1287) derives a Clipped
+    // layer's `clip_world` from its OWN border box, so a child pulled above
+    // that box by a negative top margin must NOT expand the clip region.
+    fn negative_margin_child_does_not_expand_clip_world() {
+        let mut root = RootDom::new(RootDomContext::new_gpu());
+        let parent_layer = root.create_element(DomTag::Div).expect("parent layer");
+        let clipped_child = root.create_element(DomTag::Div).expect("clipped child");
+        let negative_margin_child = root
+            .create_element(DomTag::Div)
+            .expect("negative-margin child");
+        root.append_child(root.root, parent_layer)
+            .expect("append parent layer");
+        root.append_child(parent_layer, clipped_child)
+            .expect("append clipped child");
+        root.append_child(clipped_child, negative_margin_child)
+            .expect("append negative-margin child");
+        root.style_mut(parent_layer)
+            .set("position", "fixed")
+            .expect("parent position");
+        root.style_mut(parent_layer)
+            .set("left", "40px")
+            .expect("parent left");
+        root.style_mut(parent_layer)
+            .set("top", "20px")
+            .expect("parent top");
+        root.style_mut(parent_layer)
+            .set("width", "120px")
+            .expect("parent width");
+        root.style_mut(parent_layer)
+            .set("height", "80px")
+            .expect("parent height");
+        root.style_mut(clipped_child)
+            .set("overflow", "scroll")
+            .expect("clipped child overflow");
+        root.style_mut(clipped_child)
+            .set("margin-left", "7px")
+            .expect("clipped child margin left");
+        root.style_mut(clipped_child)
+            .set("margin-top", "9px")
+            .expect("clipped child margin top");
+        root.style_mut(clipped_child)
+            .set("width", "100px")
+            .expect("clipped child width");
+        root.style_mut(clipped_child)
+            .set("height", "100px")
+            .expect("clipped child height");
+        root.style_mut(negative_margin_child)
+            .set("width", "100px")
+            .expect("negative-margin child width");
+        root.style_mut(negative_margin_child)
+            .set("height", "20px")
+            .expect("negative-margin child height");
+        root.style_mut(negative_margin_child)
+            .set("margin-top", "-20px")
+            .expect("negative-margin child margin top");
+
+        let mut world = World::new();
+        install_direct_gpu_support(&mut world);
+        world.init_resource::<Assets<Image>>();
+        let parent = world.spawn_empty().id();
+        root.attach_to_bevy_parent_entity(&mut world, parent, 0.0)
+            .expect("attach");
+
+        update(&mut root, &mut world, parent, 16.0).expect("composite update");
+
+        let clipped_entity = root
+            .layer_entity(clipped_child)
+            .expect("clipped child layer entity");
+        let presentation = world
+            .get::<UiDomLayerPresentation>(clipped_entity)
+            .expect("clipped child presentation");
+
+        // The negative-margin child stages 20px above the clipped layer's
+        // border box (layer-tree world top 29 − 20 = 9), but the clip stays at
+        // the layer's own border box: world_rect(47, 29, 100, 100). Were the
+        // spill folded into the clip, the top bound would read −9 instead of
+        // −29.
+        assert_vec4_close(
+            presentation.clip_world,
+            Vec4::new(47.0, -129.0, 147.0, -29.0),
+        );
+    }
+
+    #[test]
     fn clipped_layer_shrink_requires_presentation_uv_window_to_match_live_target_height() {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let clipped_root = root.create_element(DomTag::Div).expect("clipped root");
