@@ -447,6 +447,12 @@ where
     let child_key = source.key();
     let (child_style, child_inherited_style) =
         resolved_node_style(root_dom, child_key, child_context)?;
+    // CSS Display 3 §2.7: blockify a flex item's inline outer display so a
+    // nested `inline-flex` item resolves its auto size and auto-min exactly
+    // like a `display: flex` item (stretching as block-level) rather than
+    // shrink-wrapping as inline-level. This keeps the measurement below on
+    // the same path the dispatcher routes `InlineFlex` onto.
+    let child_style = blockified_flex_item_style(child_style);
     let measured_flow = measure_tree_walker_node_without_layout_write(
         root_dom,
         tree_size,
@@ -509,6 +515,17 @@ where
     })
 }
 
+/// CSS Display 3 §2.7: blockify a flex item's `inline-flex` outer display to
+/// `flex`. The solver hosts only block-level flex containers, and the flex
+/// item path (`measure_one_flex_item`) applies this before measurement so a
+/// nested `inline-flex` item behaves identically to `display: flex`.
+fn blockified_flex_item_style(mut style: NodeStyle) -> NodeStyle {
+    if style.display == LayoutDisplay::InlineFlex {
+        style.display = LayoutDisplay::Flex;
+    }
+    style
+}
+
 fn measure_tree_walker_node_without_layout_write<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
@@ -548,7 +565,14 @@ where
             inherited_style,
             resolver,
         ),
-        LayoutDisplay::Flex => measure_flex_node_without_layout_write(
+        // CSS Display 3 §2.7 blockification: a flex item's `inline-flex`
+        // outer display blockifies to `flex` (like `inline-block` → `block`),
+        // so an inline-flex child reaches the flex container measurement path
+        // rather than panicking. The `InlineFlex` arm below is the one
+        // remaining display value that could previously reach this match; the
+        // other admitted displays are all handled above (`None` and
+        // absolute/fixed-position children return before the match).
+        LayoutDisplay::Flex | LayoutDisplay::InlineFlex => measure_flex_node_without_layout_write(
             root_dom,
             tree_size,
             key,
@@ -557,9 +581,6 @@ where
             inherited_style,
             resolver,
         ),
-        LayoutDisplay::InlineFlex => {
-            unreachable!("pure flex measurement only supports block-level flex containers",)
-        }
         LayoutDisplay::None => unreachable!("display none handled before measurement dispatch"),
     }
 }
@@ -3376,6 +3397,66 @@ mod tests {
             node_layout_dirty(&root, nested_child),
             nested_child_dirty_before
         );
+    }
+
+    #[test]
+    fn nested_inline_flex_child_blockifies_to_flex_container_measurement() {
+        let (mut root, container, context) = flex_container_with_context();
+        root.style_mut(container)
+            .set("width", "200px")
+            .expect("width should set");
+        root.style_mut(container)
+            .set("height", "40px")
+            .expect("height should set");
+
+        let inline_flex = append_div(&mut root, container);
+        root.style_mut(inline_flex)
+            .set("display", "inline-flex")
+            .expect("inline-flex display should set");
+        let inline_flex_child = append_div(&mut root, inline_flex);
+        root.style_mut(inline_flex_child)
+            .set("width", "12px")
+            .expect("width should set");
+        root.style_mut(inline_flex_child)
+            .set("height", "18px")
+            .expect("height should set");
+
+        let flex_control = append_div(&mut root, container);
+        root.style_mut(flex_control)
+            .set("display", "flex")
+            .expect("flex display should set");
+        let flex_control_child = append_div(&mut root, flex_control);
+        root.style_mut(flex_control_child)
+            .set("width", "12px")
+            .expect("width should set");
+        root.style_mut(flex_control_child)
+            .set("height", "18px")
+            .expect("height should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+
+        assert_eq!(
+            items.len(),
+            2,
+            "both children should be collected as flex items",
+        );
+        let inline_flex_item = &items[0];
+        let flex_control_item = &items[1];
+        assert_eq!(inline_flex_item.source.key(), inline_flex);
+        assert_eq!(flex_control_item.source.key(), flex_control);
+        // Blockification (CSS Display 3 §2.7): the nested `inline-flex` item
+        // measures identically to the equivalent `display: flex` item — both
+        // stretch as block-level flex containers rather than shrink-wrapping.
+        assert_eq!(
+            inline_flex_item.flex_base_size_px, flex_control_item.flex_base_size_px,
+            "blockified inline-flex item should share the flex item's base size",
+        );
+        assert_eq!(
+            inline_flex_item.automatic_min_main_size_px,
+            flex_control_item.automatic_min_main_size_px,
+            "blockified inline-flex item should share the flex item's auto-min",
+        );
+        assert!(inline_flex_item.flex_base_size_px > 0.0);
     }
 
     #[test]

@@ -34,9 +34,14 @@
 //!   <https://chromium.googlesource.com/chromium/src/+/c50f75313342e085919cf7525192f45f2ab649d1/third_party/blink/renderer/core/layout/flex/flex_line.h>
 //!
 //! These proofs lock the admitted active-solver behavior in place; the
-//! subset the active solver does not yet admit falls back to the placeholder
-//! solver and is pinned by the `active_flex_gate_*` unit tests in
-//! `src/domains/layout/flex.rs`.
+//! subset the active solver does not yet admit fails fast at the one
+//! explicit support gate in `src/domains/layout/flex.rs`: the
+//! `flex_container_content_based_auto_min_is_supported` predicate
+//! (`flex.rs:1436`) admits content-based auto-min only for horizontal,
+//! non-reversed, no-wrap containers, and the assert inside
+//! `horizontal_flex_container_content_based_auto_min_content_width_px`
+//! (`flex.rs:1361`) rejects any visible-overflow auto-min measurement outside
+//! that subset. There is no placeholder solver fallback.
 
 use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, node_box};
 
