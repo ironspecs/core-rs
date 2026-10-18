@@ -8,24 +8,26 @@
 //! Cascade-tier boundary pins for the style system (PLAN.md B9).
 //!
 //! Purpose: pin the boundary of the cascade tiers the engine has deliberately
-//! set aside — `!important` (F stage 1), custom properties/`var()`,
-//! `@layer` (F stage 4), and the animation tier (F stage 3) — plus the
-//! documented UA-sheet workaround (the on-spec pin that must not silently
-//! break). The precedence record is `{ origin_priority, inline, specificity,
-//! order }` (`decl_value.rs:39-41`), widened at redesign time exactly so the
-//! deferred tiers are additive; the behavior sheet folds at `i32::MIN` as the
-//! UA-ish tier (`winners_fold.rs::behavior_precedence`), so a consumer's
-//! low-priority origin models a real UA sheet sitting between it and author
-//! sheets.
+//! set aside — custom properties/`var()`, `@layer` (F stage 4), and the
+//! animation tier (F stage 3) — plus the ADMITTED `!important` tier (F stage 1,
+//! landed in PR 1 item 4) and the documented UA-sheet workaround (the on-spec
+//! pin that must not silently break). The precedence record is `{ tier,
+//! origin_priority, inline, specificity, order }` (`decl_value.rs`), widened at
+//! redesign time exactly so the deferred tiers are additive: `tier` descends
+//! `ImportantAuthor > NormalAuthor > NormalUa` (`cascade_tier.rs`), and the
+//! behavior sheet folds at the `NormalUa` tier with `origin_priority: i32::MIN`
+//! (`winners_fold.rs::behavior_precedence`), so a consumer's low-priority
+//! origin models a real UA sheet sitting between it and author sheets.
 //!
 //! Class notes: every `unsupported_*` row is unimplemented (D6 admission-gated
-//! absence per `MIGRATION.md`). The `!important`, custom-property/`var()`, and
-//! animation rows pin the drop-and-count gate (a malformed/unadmitted
-//! declaration is dropped and counted, no crash); the `@layer` row pins the
-//! whole-load typed `Err` (at-rule, the same mechanics as B8's at-rule rows);
-//! the UA-sheet workaround row is on-spec (pinned so it cannot silently
-//! break). There are no `off_spec_*` (divergent) rows in this file — the
-//! cascade tiers are absent, not wrong.
+//! absence per `MIGRATION.md`). The custom-property/`var()` and animation rows
+//! pin the drop-and-count gate (a malformed/unadmitted declaration is dropped
+//! and counted, no crash); the `@layer` row pins the whole-load typed `Err`
+//! (at-rule, the same mechanics as B8's at-rule rows); the `!important` rows
+//! relabeled on-spec in PR 1 item 4 and the UA-sheet workaround row are on-spec
+//! (pinned so they cannot silently break). There are no `off_spec_*`
+//! (divergent) rows in this file — the remaining cascade tiers are absent, not
+//! wrong.
 
 use bevy::prelude::World;
 use ui_dom::{
@@ -87,75 +89,133 @@ fn is_hovered(root: &RootDom, key: DomNodeSlotKey) -> bool {
 }
 
 #[test]
-// UNSUPPORTED (class: unimplemented — F stage 1, D6 admission-gated):
+// ON-SPEC (relabeled from `unsupported_important_declarations_drop_but_the_rule_survives` in PR 1
+// item 4 after the importance tier landed):
 // - SPEC: CSS Cascade 5 §6.1 — declarations marked `!important` form the
-//   important tier, above every normal author declaration.
+//   important tier, above every normal author declaration; §6.4.1 — within the
+//   important tier, origin order is reversed and important inline style sits at
+//   top specificity.
 //   <https://drafts.csswg.org/css-cascade-5/#cascade-origin>
-// - CURRENT (asserted): `.a { width: 10px !important; height: 5px }` reports
-//   `declarations_applied == 1` (height) and `declarations_dropped == 1`
-//   (width) — the `!important` token is left in the value text, so the width
-//   value fails the grammar and the DECLARATION drops while the rest of the
-//   rule survives. Computed: `height == Some(5.0)`, `width == None`.
-// - SPEC-CORRECT: `!important` is a declaration-level flag (CSS Syntax 3 §5.5),
-//   stripped before the value grammar; the declaration applies in the
-//   important tier. F stage 1's design is already shaped: importance bits
-//   arrive as a parallel bit-vector (the Servo `declarations_importance`
-//   shape named in the redesign's F verdict; `decl_block.rs`'s header notes
-//   the future arrival).
-// - ROOT CAUSE: `parse_non_negative_length_or_unset` (`decl_parse.rs`) rejects
-//   the trailing `!important` in `10px !important`, so `expand_shape` returns
-//   `None` and the declaration drops.
-fn unsupported_important_declarations_drop_but_the_rule_survives() {
+// - ASSERTED: the `!important` suffix is stripped at parse (CSS Syntax 3 §5.5),
+//   the declaration applies in the `ImportantAuthor` tier, and the four
+//   cross-tier orderings hold (see each sub-scenario).
+fn important_declarations_win_over_normal_author_rules() {
+    // (a) a mixed rule: the important width applies alongside the normal height.
     let (mut world, mut root, target, report) =
         styled_target_load("a", ".a { width: 10px !important; height: 5px }");
-
     assert_eq!(
-        report.declarations_applied, 1,
-        "height should apply while width !important drops",
+        report.declarations_applied, 2,
+        "both the important width and the normal height should apply",
     );
     assert_eq!(
-        report.declarations_dropped, 1,
-        "the width !important declaration should be dropped and counted",
+        report.declarations_dropped, 0,
+        "no declaration should drop once !important is stripped at parse",
     );
-
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let box_ = root.computed_style(target).expect("target").as_box();
-    assert_eq!(box_.height, Some(5.0), "height should compute 5px");
-    assert_eq!(box_.width, None, "width should stay absent after the drop");
-}
+    assert_eq!(
+        box_.width,
+        Some(10.0),
+        "the important width should compute 10px"
+    );
+    assert_eq!(
+        box_.height,
+        Some(5.0),
+        "the normal height should compute 5px"
+    );
 
-#[test]
-// UNSUPPORTED (class: unimplemented — the same F stage 1 tier):
-// - SPEC: css-style-attr §3 — the style attribute is a declaration list parsed
-//   with forward-compatible error handling (drop-and-continue, counted).
-//   <https://drafts.csswg.org/css-style-attr/#syntax>
-// - CURRENT (asserted): `set_attr_str(target, "style", "width: 10px !important")`
-//   returns `Ok(())` (the style route is drop-and-continue, never a rejection),
-//   counts exactly one `RootDomMetricName::StyleDeclarationDropped`, and
-//   computes `width == None`.
-// - SPEC-CORRECT: `!important` admits the declaration into the important tier
-//   (F stage 1); the value then applies at `10px`.
-// - ROOT CAUSE: the style route parses through `parse_declaration_block`
-//   (`root_dom.rs::route_style_attribute`), which drops the `!important`
-//   value at grammar time — the same mechanics as the stylesheet route.
-fn unsupported_important_in_style_attribute_drops() {
+    // (b) important beats a normal rule of HIGHER specificity on the same
+    // element (tier over specificity).
+    let (mut world, mut root, target, _) =
+        styled_target_load("a b", ".a { width: 10px !important } div.b { width: 20px }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        Some(10.0),
+        "(b) the important declaration should beat a higher-specificity normal rule",
+    );
+
+    // (c) important at origin_priority -100 beats normal at origin_priority 100
+    // (tier over origin).
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let target = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, target, "class", "x");
+    assert_load_root_stylesheet(
+        &root,
+        StyleRuleOrigin::new("ua", -100),
+        ".x { width: 10px !important }",
+    );
+    assert_load_root_stylesheet(
+        &root,
+        StyleRuleOrigin::new("author", 100),
+        ".x { width: 20px }",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        Some(10.0),
+        "(c) the -100 important declaration should beat the 100 normal declaration",
+    );
 
-    root.set_attr_str(target, "style", "width: 10px !important")
-        .expect("the style route should drop-and-continue, not reject");
+    // (d) important author declaration beats normal inline style.
+    let (mut world, mut root, target, _) = styled_target_load("a", ".a { width: 10px !important }");
+    root.set_attr_str(target, "style", "width: 30px")
+        .expect("normal inline style should route");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        Some(10.0),
+        "(d) the important author declaration should beat normal inline style",
+    );
+
+    // (e) important inline style beats an important author rule (top specificity
+    // within the important tier).
+    let (mut world, mut root, target, _) = styled_target_load("a", ".a { width: 10px !important }");
+    root.set_attr_str(target, "style", "width: 30px !important")
+        .expect("important inline style should route");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        Some(30.0),
+        "(e) important inline style should beat an important author rule",
+    );
+}
+
+#[test]
+// ON-SPEC (relabeled from `unsupported_important_in_style_attribute_drops` in PR 1
+// item 4 after the importance tier landed):
+// - SPEC: css-style-attr §3 — the style attribute is a declaration list parsed
+//   with forward-compatible error handling; a `!important` declaration in it
+//   applies in the important tier. CSS Cascade 5 §6.1 — important inline style
+//   sits at top specificity within the important tier.
+//   <https://drafts.csswg.org/css-style-attr/#syntax>
+// - ASSERTED: `set_attr_str(target, "style", "width: 30px !important")` applies
+//   the declaration and it wins over `.a { width: 10px !important }`.
+fn important_style_attribute_declarations_apply_and_win() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, target, "class", "a");
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".a { width: 10px !important }",
+    );
+
+    root.set_attr_str(target, "style", "width: 30px !important")
+        .expect("the important style-attribute declaration should apply, not drop");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     assert_eq!(
         root.count(RootDomMetricName::StyleDeclarationDropped),
-        1,
-        "the !important style-attribute declaration should be dropped and counted",
+        0,
+        "the important style-attribute declaration should not be dropped",
     );
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        None,
-        "width should stay absent after the style-attribute drop",
+        Some(30.0),
+        "the important inline width should win over the important author rule",
     );
 }
 

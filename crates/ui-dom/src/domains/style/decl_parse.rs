@@ -41,6 +41,7 @@ use super::decl_drop_report::DeclDropReport;
 use super::decl_value::{DeclLength, DeclValue};
 use super::declaration::Declaration;
 use super::keyword::Keyword;
+use super::parsed_declaration::ParsedDeclaration;
 use super::presentation_property::{DeclGrammar, PresentationProperty};
 use super::text_interner::TextInterner;
 use crate::types::dom_transition::transition_longhand_values_from_shorthand;
@@ -67,6 +68,7 @@ pub(crate) fn parse_declaration_block(
             report.dropped += 1;
             continue;
         };
+        let (value, important) = strip_importance_marker(value);
         let Some(shape) = property_shape(name) else {
             report.dropped += 1;
             continue;
@@ -76,7 +78,7 @@ pub(crate) fn parse_declaration_block(
             continue;
         };
         for declaration in declarations {
-            block.upsert(declaration);
+            block.upsert(declaration, important);
         }
         report.applied += 1;
     }
@@ -86,20 +88,33 @@ pub(crate) fn parse_declaration_block(
 /// Strict single-authored-declaration parse (the `StyleMut::set` contract):
 /// all-or-nothing — any malformation is a typed `DomError`, never a drop.
 /// Shorthands expand to their longhands; a longhand yields one declaration.
+/// The `!important` marker (if any) is stripped from the value and carried on
+/// every produced `ParsedDeclaration`.
 pub(crate) fn parse_declaration_strict(
     property: &str,
     value: &str,
     interner: &mut TextInterner,
-) -> Result<SmallVec<[Declaration; 4]>, DomError> {
+) -> Result<SmallVec<[ParsedDeclaration; 4]>, DomError> {
     let property = property.trim();
     let value = value.trim();
     if property.is_empty() || value.is_empty() {
         return Err(DomError::InvalidAttributeValue);
     }
+    let (value, important) = strip_importance_marker(value);
+    if value.is_empty() {
+        return Err(DomError::InvalidAttributeValue);
+    }
     let shape = property_shape(property).ok_or(DomError::InvalidAttributeValue)?;
     let declarations =
         expand_shape(shape, value, interner).ok_or(DomError::InvalidAttributeValue)?;
-    let declarations: SmallVec<[Declaration; 4]> = declarations.into_iter().collect();
+    let declarations: SmallVec<[ParsedDeclaration; 4]> = declarations
+        .into_iter()
+        .map(|declaration| ParsedDeclaration {
+            property: declaration.property,
+            value: declaration.value,
+            important,
+        })
+        .collect();
     Ok(declarations)
 }
 
@@ -118,6 +133,30 @@ fn parse_segment(segment: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((name, value))
+}
+
+/// Splits a trailing `!important` marker off a declaration value, per CSS
+/// Syntax 3 §5.5 (the importance flag is part of the declaration, not the
+/// value). Returns `(value_without_marker, important)`.
+///
+/// The marker is `!` + optional whitespace + `important` (ASCII
+/// case-insensitive), preceded by optional whitespace, matched ONLY at the end
+/// of the value string — `10px !important`, `10px!important`, and
+/// `10px ! IMPORTANT` are markers, while `10px !important 5px` and
+/// `!important 10px` are NOT (the whole string is returned unchanged with
+/// `important == false`, and the value grammar rejects it later).
+fn strip_importance_marker(value: &str) -> (&str, bool) {
+    let Some(exclaim) = value.rfind('!') else {
+        return (value, false);
+    };
+    let after = value[exclaim + 1..].trim_start();
+    if after.len() >= "important".len()
+        && after[.."important".len()].eq_ignore_ascii_case("important")
+        && after["important".len()..].trim().is_empty()
+    {
+        return (value[..exclaim].trim_end(), true);
+    }
+    (value, false)
 }
 
 /// The resolved shape of a declaration name: a longhand property or a
@@ -2087,6 +2126,88 @@ mod tests {
             panic!("delay should intern to text");
         };
         assert_eq!(interner.resolve(key), Some("-20ms"));
+    }
+
+    // — `!important` marker — //
+
+    #[test]
+    fn importance_marker_strips_from_strict_parse_and_carries_the_flag() {
+        let mut interner = TextInterner::default();
+        let declarations = parse_declaration_strict("width", "10px !important", &mut interner)
+            .expect("important width should parse");
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].property, PresentationProperty::Width);
+        assert_eq!(
+            declarations[0].value,
+            DeclValue::Length(DeclLength::Px(10.0))
+        );
+        assert!(declarations[0].important);
+    }
+
+    #[test]
+    fn importance_marker_accepts_case_and_whitespace_variants() {
+        let mut interner = TextInterner::default();
+        for authored in [
+            "10px !important",
+            "10px!important",
+            "10px ! IMPORTANT",
+            "10px !  important",
+        ] {
+            let declarations = parse_declaration_strict("width", authored, &mut interner)
+                .unwrap_or_else(|_| panic!("{authored:?} should parse as important"));
+            assert_eq!(declarations.len(), 1, "{authored:?}");
+            assert_eq!(
+                declarations[0].value,
+                DeclValue::Length(DeclLength::Px(10.0)),
+                "{authored:?}"
+            );
+            assert!(declarations[0].important, "{authored:?}");
+        }
+    }
+
+    #[test]
+    fn importance_marker_absent_keeps_normal_flag() {
+        let mut interner = TextInterner::default();
+        let declarations = parse_declaration_strict("width", "10px", &mut interner)
+            .expect("plain width should parse");
+        assert_eq!(declarations.len(), 1);
+        assert!(!declarations[0].important);
+    }
+
+    #[test]
+    fn importance_marker_is_not_recognized_mid_value() {
+        let mut interner = TextInterner::default();
+        // `!important` is only a marker at the END of the value string; these
+        // values leave the marker in place, so the grammar rejects them.
+        assert_eq!(
+            parse_declaration_strict("width", "10px !important 5px", &mut interner),
+            Err(DomError::InvalidAttributeValue)
+        );
+        assert_eq!(
+            parse_declaration_strict("width", "!important 10px", &mut interner),
+            Err(DomError::InvalidAttributeValue)
+        );
+        // An empty remainder after the marker is malformed.
+        assert_eq!(
+            parse_declaration_strict("width", "!important", &mut interner),
+            Err(DomError::InvalidAttributeValue)
+        );
+    }
+
+    #[test]
+    fn block_parse_upserts_importance_and_keeps_the_normal_after() {
+        let (block, report, _) = parse_block("width: 10px !important; height: 5px");
+        assert_eq!(report.applied, 2);
+        assert_eq!(report.dropped, 0);
+        assert_eq!(
+            value(&block, PresentationProperty::Width),
+            DeclValue::Length(DeclLength::Px(10.0))
+        );
+        assert_eq!(
+            value(&block, PresentationProperty::Height),
+            DeclValue::Length(DeclLength::Px(5.0))
+        );
+        assert_eq!(block.importance(), &[true, false]);
     }
 
     // — longhands_for_name — //

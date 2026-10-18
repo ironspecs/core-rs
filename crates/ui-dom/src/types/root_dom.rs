@@ -46,7 +46,7 @@ use crate::domains::style::computed::{
 };
 use crate::domains::style::{
     ComputedStyleRef, DeclBlock, DeclDropReport, DeclGrammar, DeclLength, DeclStore, DeclValue,
-    Declaration, Keyword, PresentationProperty, StyleMut, TextInterner, TextKey,
+    Declaration, Keyword, ParsedDeclaration, PresentationProperty, StyleMut, TextInterner, TextKey,
     decl_value_to_dom_value, name_is_presentation, parse_declaration_block,
 };
 use crate::domains::visitor::event_target::{
@@ -2035,19 +2035,22 @@ impl RootDom {
     /// declarations in block order, projected to the public wire shape
     /// `(property-name, value)` (spine 3.3g-2a). `Text` values resolve through
     /// the inline store's interner; lengths/keywords/numbers/colors use the
-    /// same formatter `compute_style_map` shares. A missing node yields an
-    /// empty list (it has no inline declarations).
+    /// same formatter `compute_style_map` shares. An important declaration's
+    /// `String` value carries the CSS-compatible ` !important` suffix so the
+    /// list replays through the style-attribute route unchanged. A missing
+    /// node yields an empty list (it has no inline declarations).
     #[must_use]
     pub fn canonical_style_snapshot(&self, node_key: DomNodeSlotKey) -> DomCanonicalStyleSnapshot {
         let mut styles = Vec::new();
         if let Some(block) = self.inline_decl_block(node_key) {
-            for declaration in block.declarations() {
-                styles.push((
-                    declaration.property.name().to_string(),
-                    decl_value_to_dom_value(&declaration.value, |key| {
-                        self.resolve_inline_text(key)
-                    }),
-                ));
+            for (declaration, important) in block.declarations().iter().zip(block.importance()) {
+                let mut value = decl_value_to_dom_value(&declaration.value, |key| {
+                    self.resolve_inline_text(key)
+                });
+                if *important && let DomAttributeValue::String(text) = &mut value {
+                    text.push_str(" !important");
+                }
+                styles.push((declaration.property.name().to_string(), value));
             }
         }
         DomCanonicalStyleSnapshot { styles }
@@ -2748,13 +2751,14 @@ impl RootDom {
         self.inline_decl_store.live_block_count()
     }
 
-    /// Upserts parsed declarations into the node's inline block (created on
-    /// first use; the key is written to `node.presentation.decl`, the single
-    /// source). Returns whether the block changed.
+    /// Upserts parsed declarations (with their importance flags) into the
+    /// node's inline block (created on first use; the key is written to
+    /// `node.presentation.decl`, the single source). Returns whether the block
+    /// changed.
     pub(crate) fn upsert_inline_declarations(
         &mut self,
         node: DomNodeSlotKey,
-        declarations: &[Declaration],
+        declarations: &[ParsedDeclaration],
     ) -> bool {
         if declarations.is_empty() {
             return false;
@@ -2774,8 +2778,14 @@ impl RootDom {
             let Some(block) = self.inline_decl_store.get_mut(key) else {
                 return false;
             };
-            for declaration in declarations {
-                changed |= block.upsert(*declaration);
+            for parsed in declarations {
+                changed |= block.upsert(
+                    Declaration {
+                        property: parsed.property,
+                        value: parsed.value,
+                    },
+                    parsed.important,
+                );
             }
         }
         if changed {
@@ -5863,6 +5873,42 @@ mod tests {
         // The unchanged write is not a mutation: the upsert metric stays at one
         // (only the first write changed the block).
         assert_eq!(root.count(RootDomMetricName::StyleDeclarationUpsert), 1);
+    }
+
+    #[test]
+    fn canonical_style_snapshot_serializes_important_with_suffix_and_round_trips() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let node = root.create_element(DomTag::Div).expect("div");
+
+        root.style_mut(node)
+            .set("width", "10px !important")
+            .expect("important width");
+        let snapshot = root.canonical_style_snapshot(node);
+        assert_eq!(
+            snapshot.styles,
+            vec![(
+                "width".to_string(),
+                DomAttributeValue::String("10px !important".to_string())
+            )]
+        );
+
+        // The suffix is CSS-compatible: re-serializing the snapshot's
+        // (name, value) pairs to a declaration list and re-parsing through the
+        // style-attribute route round-trips to the same snapshot.
+        let replayed = snapshot
+            .styles
+            .iter()
+            .map(|(name, value)| {
+                let DomAttributeValue::String(text) = value else {
+                    panic!("round-trip test replays string values only");
+                };
+                format!("{name}: {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        root.set_attr_str(node, "style", &replayed)
+            .expect("style round-trip");
+        assert_eq!(root.canonical_style_snapshot(node), snapshot);
     }
 
     #[test]

@@ -20,8 +20,9 @@
 //!   compound; the right-most compound is the record `StyleRuntime` indexes
 //! - specificity is the CSS (a, b, c) lexicographic triple via derived `Ord`
 //!   field order; pseudo-classes count into `class`
-//! - cascade precedence is exactly `(origin.priority, specificity, order)`;
-//!   no `!important`, no cascade layers
+//! - cascade precedence is `(tier, origin.priority, specificity, order)` where
+//!   `tier` is `CascadeTier` (`ImportantAuthor > NormalAuthor > NormalUa`);
+//!   `!important` is admitted (F stage 1), cascade layers are not
 //! - declarations are typed (`DeclValue`) and arena-resident; `decl_value.rs`
 //!   owns `decl_value_to_dom_value`, the formatter the debug-priced
 //!   `compute_style_map` uses to project winners to the public wire shape
@@ -32,6 +33,7 @@
 //! - stylesheet text is boundary data: parse and match failures are typed
 //!   errors, never panics
 
+mod cascade_tier;
 mod decl_block;
 mod decl_drop_report;
 mod decl_parse;
@@ -39,6 +41,7 @@ mod decl_store;
 mod decl_value;
 mod declaration;
 mod keyword;
+mod parsed_declaration;
 mod presentation_property;
 mod property_set;
 mod style_mut;
@@ -60,12 +63,14 @@ use crate::types::{DomAttributeValue, DomError, DomPseudoState};
 #[cfg(test)]
 use crate::types::{RootDom, RootDomContext};
 
+pub use cascade_tier::CascadeTier;
 pub use decl_block::DeclBlock;
 pub use decl_drop_report::{DeclDropReport, StylesheetLoadReport};
 pub use decl_store::{DeclBlockKey, DeclStore};
 pub use decl_value::{DeclLength, DeclValue, Precedence, TextKey};
 pub use declaration::Declaration;
 pub use keyword::Keyword;
+pub(crate) use parsed_declaration::ParsedDeclaration;
 pub use presentation_property::{DeclGrammar, PresentationGroup, PresentationProperty};
 pub use style_mut::StyleMut;
 pub use style_rule_origin::StyleRuleOrigin;
@@ -562,6 +567,7 @@ fn compute_rule_identity_hash(
     specificity: SelectorSpecificity,
     selector_parts: &[SimpleSelector],
     declarations: &[Declaration],
+    importance: &[bool],
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     origin.key.hash(&mut hasher);
@@ -580,6 +586,11 @@ fn compute_rule_identity_hash(
     for declaration in declarations {
         declaration.property.index().hash(&mut hasher);
         hash_decl_value(&mut hasher, &declaration.value);
+    }
+    // Two rules identical except importance are DIFFERENT rules (different
+    // cascade outcome): the parallel importance slice is part of the identity.
+    for flag in importance {
+        flag.hash(&mut hasher);
     }
     hasher.finish()
 }

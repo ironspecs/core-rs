@@ -87,18 +87,21 @@ type StagedRule = (
 struct RuleEquivalence<'a> {
     selector_parts: &'a [SimpleSelector],
     declarations: &'a [Declaration],
+    importance: &'a [bool],
     specificity: SelectorSpecificity,
     origin: &'a StyleRuleOrigin,
 }
 
 /// Equivalence test shared by the active-rule dedup and the same-load staged
 /// dedup. Two rules are equivalent when their selector parts, declarations,
-/// specificity, and origin all match — the exact field set the pre-restructure
-/// mid-loop insert compared. Both dedup tiers ride this one comparison so they
-/// can never drift apart.
+/// importance flags, specificity, and origin all match — the exact field set
+/// the pre-restructure mid-loop insert compared, widened with importance (two
+/// rules identical except importance are different cascade outcomes). Both
+/// dedup tiers ride this one comparison so they can never drift apart.
 fn rules_are_equivalent(a: &RuleEquivalence<'_>, b: &RuleEquivalence<'_>) -> bool {
     a.selector_parts == b.selector_parts
         && a.declarations == b.declarations
+        && a.importance == b.importance
         && a.specificity == b.specificity
         && a.origin == b.origin
 }
@@ -107,15 +110,13 @@ fn rules_are_equivalent(a: &RuleEquivalence<'_>, b: &RuleEquivalence<'_>) -> boo
 /// tier's `identity_index` discipline: only the staged entries in the matching
 /// bucket are re-checked with the shared `rules_are_equivalent`, so a load is
 /// O(N) with hash collisions re-checked rather than a full linear scan of
-/// every staged rule.
+/// every staged rule. `candidate` is the rule being staged; the staged side
+/// reuses `candidate.origin` (one origin per load).
 fn has_equivalent_staged_rule(
     staged: &[StagedRule],
     staged_identity_index: &HashMap<u64, Vec<usize>>,
     identity_hash: u64,
-    selector_parts: &[SimpleSelector],
-    declarations: &[Declaration],
-    specificity: SelectorSpecificity,
-    origin: &StyleRuleOrigin,
+    candidate: &RuleEquivalence<'_>,
 ) -> bool {
     staged_identity_index
         .get(&identity_hash)
@@ -123,17 +124,13 @@ fn has_equivalent_staged_rule(
             positions.iter().any(|&pos| {
                 let (staged_decl, _, staged_parts, _, staged_spec, _) = &staged[pos];
                 rules_are_equivalent(
-                    &RuleEquivalence {
-                        selector_parts,
-                        declarations,
-                        specificity,
-                        origin,
-                    },
+                    candidate,
                     &RuleEquivalence {
                         selector_parts: staged_parts.as_slice(),
                         declarations: staged_decl.declarations(),
+                        importance: staged_decl.importance(),
                         specificity: *staged_spec,
-                        origin,
+                        origin: candidate.origin,
                     },
                 )
             })
@@ -193,7 +190,15 @@ impl StyleRuntime {
                 specificity,
                 &selector_parts,
                 decl_block.declarations(),
+                decl_block.importance(),
             );
+            let candidate = RuleEquivalence {
+                selector_parts: &selector_parts,
+                declarations: decl_block.declarations(),
+                importance: decl_block.importance(),
+                specificity,
+                origin: &origin,
+            };
             // Two-tier dedup: skip a block that matches an already-committed
             // active rule (reload dedup) OR an already-staged rule in this
             // same load (same-load dedup); both tiers share
@@ -204,6 +209,7 @@ impl StyleRuntime {
                 identity_hash,
                 &selector_parts,
                 decl_block.declarations(),
+                decl_block.importance(),
                 specificity,
                 &origin,
             );
@@ -211,10 +217,7 @@ impl StyleRuntime {
                 &staged,
                 &staged_identity_index,
                 identity_hash,
-                &selector_parts,
-                decl_block.declarations(),
-                specificity,
-                &origin,
+                &candidate,
             );
             if has_active_equivalent || has_staged_equivalent {
                 continue;
@@ -414,6 +417,7 @@ impl StyleRuntime {
         identity_hash: u64,
         selector_parts: &[SimpleSelector],
         declarations: &[Declaration],
+        importance: &[bool],
         specificity: SelectorSpecificity,
         origin: &StyleRuleOrigin,
     ) -> bool {
@@ -428,12 +432,14 @@ impl StyleRuntime {
                             &RuleEquivalence {
                                 selector_parts,
                                 declarations,
+                                importance,
                                 specificity,
                                 origin,
                             },
                             &RuleEquivalence {
                                 selector_parts: existing.selector_parts.as_slice(),
                                 declarations: block.declarations(),
+                                importance: block.importance(),
                                 specificity: existing.specificity,
                                 origin: &existing.origin,
                             },
@@ -1022,6 +1028,37 @@ mod tests {
 
         assert_eq!(first.rules_inserted, 1);
         assert_eq!(second.rules_inserted, 1);
+    }
+
+    #[test]
+    fn load_stylesheet_keeps_rules_that_differ_only_in_importance() {
+        // Two rules identical except importance are different cascade outcomes
+        // (CSS Cascade 5 §6.1): the identity hash and `rules_are_equivalent`
+        // both carry the importance flags, so neither dedup tier collapses
+        // them.
+        let mut runtime = StyleRuntime::default();
+        let first = runtime
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".cta { width: 10px; }")
+            .expect("normal load should pass");
+        let second = runtime
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 1),
+                ".cta { width: 10px !important; }",
+            )
+            .expect("important load should pass");
+
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 1);
+        assert_eq!(runtime.decl_block_count(), 2);
+
+        // Control: the same important rule reloaded dedups to zero inserts.
+        let third = runtime
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 1),
+                ".cta { width: 10px !important; }",
+            )
+            .expect("important reload should pass");
+        assert_eq!(third.rules_inserted, 0);
     }
 
     #[test]

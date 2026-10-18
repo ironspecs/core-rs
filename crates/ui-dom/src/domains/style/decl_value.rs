@@ -8,14 +8,16 @@
 //!
 //! Invariants and rules:
 //!
-//! - `Precedence` field order is the cascade sort order (origin tier, then the
-//!   inline flag above any selector specificity, then specificity, then source
-//!   order); it is widened later for importance/UA/animation/layer tiers
-//!   without reshaping the key
+//! - `Precedence` field order is the cascade sort order (the cascade tier
+//!   first, then origin priority, then the inline flag above any selector
+//!   specificity, then specificity, then source order); stages 2–4 of cascade
+//!   tier path F extend the `CascadeTier` enum additively without reshaping the
+//!   key
 //! - `value_equals` is the single documented equality intent for cascade and
 //!   upsert change detection; it is plain `PartialEq`, named so callers state
 //!   their intent
 
+use super::cascade_tier::CascadeTier;
 use super::keyword::Keyword;
 use crate::types::DomAttributeValue;
 
@@ -32,11 +34,16 @@ pub enum DeclLength {
 pub struct TextKey(pub u32);
 
 /// Cascade precedence record for one declaration (field order IS the sort
-/// order: origin tier, then inline-style flag above any selector specificity,
-/// then specificity, then source order). Widened later for importance/UA/
-/// animation/layer tiers without reshaping the key (plan: cascade tier path F).
+/// order: the cascade tier first, then origin priority, then the inline-style
+/// flag above any selector specificity, then specificity, then source order).
+/// The `tier` field projects CSS Cascade 5 §6.1's origin-and-importance ladder
+/// (see `cascade_tier.rs`); stages 2–4 of cascade tier path F extend the
+/// `CascadeTier` ENUM additively (`ImportantUa` above, `Animation` between
+/// `NormalAuthor` and `ImportantAuthor`, layer indices within a tier) rather
+/// than reshaping these semantics.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Precedence {
+    pub tier: CascadeTier,
     pub origin_priority: i32,
     pub inline: bool,
     pub specificity: super::SelectorSpecificity,

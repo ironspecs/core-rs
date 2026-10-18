@@ -15,12 +15,15 @@
 //!
 //! - the fold order is exactly: base behavior declarations → active
 //!   pseudo-state behavior declarations → matched rules (ascending
-//!   `Precedence`) → inline block (`origin_priority: i32::MAX`, `inline: true`,
-//!   max specificity)
-//! - behavior entries use `origin_priority: i32::MIN` with a monotonic
-//!   `order` (base before state); behavior sheets never carry `Text` values
-//!   (their interner-relative `TextKey` has no owning store), so those are
-//!   skipped exactly like the legacy `apply_pseudo_state_style_declarations`
+//!   `Precedence`) → inline block (max specificity)
+//! - behavior entries use the `CascadeTier::NormalUa` tier with `origin_priority:
+//!   i32::MIN` and a monotonic `order` (base before state); behavior sheets
+//!   never carry `Text` values (their interner-relative `TextKey` has no owning
+//!   store), so those are skipped exactly like the legacy
+//!   `apply_pseudo_state_style_declarations`
+//! - rule and inline declarations take their tier from the declaration's
+//!   importance bit (`ImportantAuthor` vs `NormalAuthor`); behavior
+//!   declarations are always normal today (the `ImportantUa` tier is stage 2)
 //! - a declaration takes a winners slot when its `Precedence` is `>=` the
 //!   current occupant's (later-or-higher wins), matching the legacy
 //!   later-insert-wins `BTreeMap` fold
@@ -37,8 +40,9 @@ use crate::domains::style::computed::project::{
 };
 use crate::domains::style::computed::{ComputedGroups, ResolvedTransitionLonghands};
 use crate::domains::style::{
-    DeclBlockKey, DeclLength, DeclValue, Declaration, NodeLookup, Precedence, PresentationGroup,
-    PresentationProperty, SelectorSpecificity, TextInterner, TextKey, style_index_for_node,
+    CascadeTier, DeclBlockKey, DeclLength, DeclValue, Declaration, NodeLookup, NodeStyleIndex,
+    Precedence, PresentationGroup, PresentationProperty, SelectorSpecificity, TextInterner,
+    TextKey, style_index_for_node,
 };
 use crate::types::dom_node::DomNodeSlotKey;
 use crate::types::{
@@ -88,7 +92,8 @@ pub(crate) fn fold_element_winners(
 /// Collects the element's applicable declarations and folds them into a
 /// stack-local winners array, re-interning text into a scratch interner.
 /// Shared by the pass (`fold_element_winners`) and the debug-priced
-/// `compute_style_map` successor. One runtime lock, held only here.
+/// `compute_style_map` successor. One runtime lock, held only during the
+/// matched-rules fold (`fold_matched_rules`).
 pub(crate) fn collect_winners(
     root_dom: &RootDom,
     node_key: DomNodeSlotKey,
@@ -135,55 +140,13 @@ pub(crate) fn collect_winners(
         }
     }
 
-    // Matched rules, ascending precedence, under ONE runtime lock.
-    //
-    // Per-element allocation note: `candidate_keys_for_node` allocates a
-    // `Vec<StyleRuleKey>` + dedup `HashSet` and this `matched` Vec (+ sort)
-    // is a second per-element allocation. This is the preserved
-    // right-most-index lookup shape, consumed in the SAME visit — not batch
-    // accumulation with extra accesses (rule 4). Matched-rule caching is
-    // PLAN.md proposal J, an evidence-gated follow-up; `StylePassNodeVisited`
-    // / `StylePassNodeChanged` are its gate counters.
     let node_index = style_index_for_node(node).ok_or(DomError::InvalidAttributeTarget)?;
-    let context = Arc::clone(root_dom.context());
-    let runtime = context
-        .style_runtime
-        .lock()
-        .expect("style runtime mutex should not poison");
-    let lookup = NodeLookup {
-        nodes: &root_dom.nodes,
-    };
-    let mut matched: Vec<(Precedence, DeclBlockKey)> = Vec::new();
-    for key in runtime.candidate_keys_for_node(node_index) {
-        let Some((precedence_tuple, decl)) = runtime.active_rule_for_node(key, lookup, node_key)?
-        else {
-            continue;
-        };
-        matched.push((
-            Precedence {
-                origin_priority: precedence_tuple.0,
-                inline: false,
-                specificity: precedence_tuple.1,
-                order: precedence_tuple.2,
-            },
-            decl,
-        ));
-    }
-    matched.sort_by_key(|(precedence, _)| *precedence);
-    for (precedence, decl) in matched {
-        let Some(block) = runtime.decl_block(decl) else {
-            continue;
-        };
-        for declaration in block.declarations() {
-            let value = reintern_text(declaration.value, &mut scratch, |key| {
-                runtime.resolve_text(key)
-            });
-            fold_slot(&mut winners, value, declaration.property, precedence);
-        }
-    }
+    fold_matched_rules(&mut winners, &mut scratch, root_dom, node_key, node_index)?;
 
-    // Inline block at top specificity (css-style-attr §4).
+    // Inline block at top specificity (css-style-attr §4); its tier is the
+    // declaration's importance bit (`ImportantAuthor` vs `NormalAuthor`).
     let inline_precedence = Precedence {
+        tier: CascadeTier::NormalAuthor,
         origin_priority: i32::MAX,
         inline: true,
         specificity: SelectorSpecificity {
@@ -194,11 +157,19 @@ pub(crate) fn collect_winners(
         order: 0,
     };
     if let Some(block) = root_dom.inline_decl_block(node_key) {
-        for declaration in block.declarations() {
+        for (declaration, important) in block.declarations().iter().zip(block.importance()) {
+            let precedence = Precedence {
+                tier: if *important {
+                    CascadeTier::ImportantAuthor
+                } else {
+                    CascadeTier::NormalAuthor
+                },
+                ..inline_precedence
+            };
             let value = reintern_text(declaration.value, &mut scratch, |key| {
                 root_dom.resolve_inline_text(key)
             });
-            fold_slot(&mut winners, value, declaration.property, inline_precedence);
+            fold_slot(&mut winners, value, declaration.property, precedence);
         }
     }
 
@@ -207,6 +178,73 @@ pub(crate) fn collect_winners(
         winners,
         scratch,
     })
+}
+
+/// Folds the matched stylesheet rules (ascending precedence) under the ONE
+/// runtime lock, re-interns text into the scratch interner, and applies each
+/// declaration's importance bit to its tier.
+///
+/// Per-element allocation note: `candidate_keys_for_node` allocates a
+/// `Vec<StyleRuleKey>` + dedup `HashSet` and this `matched` Vec (+ sort) is a
+/// second per-element allocation. This is the preserved right-most-index
+/// lookup shape, consumed in the SAME visit — not batch accumulation with
+/// extra accesses (rule 4). Matched-rule caching is PLAN.md proposal J, an
+/// evidence-gated follow-up; `StylePassNodeVisited` / `StylePassNodeChanged`
+/// are its gate counters.
+fn fold_matched_rules(
+    winners: &mut [Option<(DeclValue, Precedence)>; PresentationProperty::COUNT],
+    scratch: &mut TextInterner,
+    root_dom: &RootDom,
+    node_key: DomNodeSlotKey,
+    node_index: NodeStyleIndex<'_>,
+) -> Result<(), DomError> {
+    let context = Arc::clone(root_dom.context());
+    let runtime = context
+        .style_runtime
+        .lock()
+        .expect("style runtime mutex should not poison");
+    let lookup = NodeLookup {
+        nodes: &root_dom.nodes,
+    };
+    let mut matched: Vec<(i32, SelectorSpecificity, u64, DeclBlockKey)> = Vec::new();
+    for key in runtime.candidate_keys_for_node(node_index) {
+        let Some((precedence_tuple, decl)) = runtime.active_rule_for_node(key, lookup, node_key)?
+        else {
+            continue;
+        };
+        matched.push((
+            precedence_tuple.0,
+            precedence_tuple.1,
+            precedence_tuple.2,
+            decl,
+        ));
+    }
+    // Rules sort by (origin priority, specificity, order); the importance tier
+    // is a per-DECLARATION flag, not a per-rule flag, so it is applied inside
+    // the fold rather than the rule sort.
+    matched.sort_by_key(|&(origin, specificity, order, _)| (origin, specificity, order));
+    for (origin_priority, specificity, order, decl) in matched {
+        let Some(block) = runtime.decl_block(decl) else {
+            continue;
+        };
+        for (declaration, important) in block.declarations().iter().zip(block.importance()) {
+            let tier = if *important {
+                CascadeTier::ImportantAuthor
+            } else {
+                CascadeTier::NormalAuthor
+            };
+            let precedence = Precedence {
+                tier,
+                origin_priority,
+                inline: false,
+                specificity,
+                order,
+            };
+            let value = reintern_text(declaration.value, scratch, |key| runtime.resolve_text(key));
+            fold_slot(winners, value, declaration.property, precedence);
+        }
+    }
+    Ok(())
 }
 
 /// Resolves the seven computed groups and the transition-longhand slot from
@@ -257,11 +295,13 @@ fn resolve_winners(
     (groups, longhands)
 }
 
-/// The UA-ish behavior-sheet precedence: below every author rule and inline
+/// The UA-ish behavior-sheet precedence: the `NormalUa` tier (a named tier,
+/// not the old `i32::MIN`-origin hack), below every author rule and inline
 /// declaration, with a monotonic `order` so the active pseudo-state
 /// declarations fold in Hover/Active/Focus/FocusVisible order.
 fn behavior_precedence(order: u64) -> Precedence {
     Precedence {
+        tier: CascadeTier::NormalUa,
         origin_priority: i32::MIN,
         inline: false,
         specificity: SelectorSpecificity::default(),
@@ -400,6 +440,7 @@ mod tests {
 
     fn rule_precedence(origin: i32, specificity: SelectorSpecificity, order: u64) -> Precedence {
         Precedence {
+            tier: CascadeTier::NormalAuthor,
             origin_priority: origin,
             inline: false,
             specificity,
@@ -492,6 +533,7 @@ mod tests {
             ),
         );
         let inline_precedence = Precedence {
+            tier: CascadeTier::NormalAuthor,
             origin_priority: i32::MAX,
             inline: true,
             specificity: SelectorSpecificity {

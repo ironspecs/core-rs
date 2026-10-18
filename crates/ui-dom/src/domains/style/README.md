@@ -39,15 +39,19 @@ fold), or the computed read surface (`RootDom::computed_style`).
   `presentation_property.rs` (the closed 69-property vocabulary — 68 at v0.6.0,
   growing via admission per the D6 policy — with its
   per-property name, group, inherited flag, and grammar), `keyword.rs` (the
-  closed keyword vocabulary), `decl_value.rs` (`DeclValue`/`DeclLength`/
-  `TextKey`/`Precedence`), `declaration.rs` (one typed declaration),
+  closed keyword vocabulary), `cascade_tier.rs` (`CascadeTier`, the
+  origin-and-importance ladder projected onto `Precedence`'s first field),
+  `decl_value.rs` (`DeclValue`/`DeclLength`/`TextKey`/`Precedence`),
+  `declaration.rs` (one typed declaration), `parsed_declaration.rs` (one typed
+  declaration plus its `!important` flag, the strict-parse result),
   `property_set.rs` (the membership bitset), `text_interner.rs` (the text
   arena), `decl_block.rs` (the ordered, property-deduplicated block with its
-  A10 minimal-edit upsert), `decl_store.rs` (the block arena + generational
+  A10 minimal-edit upsert and a parallel importance bit vector),
+  `decl_store.rs` (the block arena + generational
   keys),   `decl_drop_report.rs` (the parse report types), and `decl_parse.rs`
   (A1: the per-property closed grammars, drop-and-continue block parsing,
-  the system's single shorthand-expansion point, and the name-based D5
-  admission surface `name_is_presentation`).
+  the system's single shorthand-expansion point, the `!important` marker
+  stripper, and the name-based D5 admission surface `name_is_presentation`).
 - The computed-value store owns itself, one file per behavior-bearing type
   under `computed/`: seven `computed_*_group.rs` files (the S1.1
   inheritance-grouped `Copy` structs), ten `*_kw.rs` files (the box/flex
@@ -161,16 +165,20 @@ fold), or the computed read surface (`RootDom::computed_style`).
   retained state. This is a scoped, adjudicated exception to the repo's
   fail-fast rule for boundary data (see AGENTS.md); single-declaration APIs
   stay strict.
-- The precedence model is exactly `{ origin_priority, inline, specificity,
-  order }` — the `Precedence` record in `decl_value.rs`, whose `inline` flag
-  sorts above any selector per css-style-attr §4. (The matched-rule pre-sort
-  uses a narrower `(priority, specificity, order)` tuple, which omits the
-  flag because rules are never inline; inline declarations enter the fold
-  through the inline block at the top precedence.) There is no `!important`,
-  no built-in UA stylesheet (consumers may model one
-  as a low-priority origin), and no cascade layers. These are known
-  divergences from CSS Cascading and are pinned as labeled off-spec proofs in
-  `tests/layout_proofs/`.
+- The precedence model is `{ tier, origin_priority, inline, specificity, order }`
+  — the `Precedence` record in `decl_value.rs`, whose `tier` field (`CascadeTier`
+  in `cascade_tier.rs`) projects CSS Cascade 5 §6.1's origin-and-importance
+  ladder: `ImportantAuthor > NormalAuthor > NormalUa` (the behavior sheet's
+  `NormalUa` rung), so important author declarations beat all normal
+  declarations including normal inline style. The `inline` flag sorts above any
+  selector per css-style-attr §4. (The matched-rule pre-sort uses a narrower
+  `(priority, specificity, order)` tuple, which omits the tier because rules
+  are never inline and the tier is a per-DECLARATION importance flag; inline
+  declarations enter the fold through the inline block at the top precedence.)
+  `!important` is admitted (F stage 1); there is no built-in UA stylesheet
+  (consumers may model one as a low-priority origin), and no cascade layers.
+  These are known divergences from CSS Cascading and are pinned as labeled
+  off-spec proofs in `tests/layout_proofs/`.
 - `StyleRuntime::revision` is boundary change detection only: a `RootDom`
   snapshot-compares it once per update to dirty the tree when the stylesheet
   *set* changes across the shared-context seam. It is not a per-node or
