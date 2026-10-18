@@ -1157,7 +1157,19 @@ Every scenario asserts the defined outcome AND returns without panic.
 
 ### Hardening fixes landed (running record)
 
-_None yet._
+1. **`font-size: 0` crash (found by B1a, fix queued into B1b).** The probe
+   `robustness_zero_font_size_does_not_crash` panicked inside cosmic-text
+   (`assert_ne!(font_size, 0.0)`, `cosmic-text-0.18.2/src/buffer.rs:688`,
+   reached via `CosmicMetrics::new` from `text_layout/mod.rs`). CSS Fonts 4
+   §3.5 admits zero font sizes, so this is a boundary-policy violation, not
+   a grammar rejection candidate. Pinned as `off_spec_font_size_zero_panics`
+   (`should_panic`, divergent) in B1a; the B1b hardening (zero guard at the
+   text-layout boundary: zero-width measure, no text op — never a 1px
+   clamp) flips it to `robustness_zero_font_size_renders_nothing`.
+   Related finding (B1a investigation): the `line-height` 1px floor is
+   enforced at RESOLVE time (`project.rs:137`), not only render time, and
+   is load-bearing against cosmic's `line_height != 0` assert
+   (`buffer.rs:254`) — reclassified deliberate-with-crash-reason.
 
 **B12 data structures and algorithms.** No Phase 2 — this bundle is the
 permanent safety net, not an admission track. The scenarios stress the
@@ -1248,6 +1260,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | Plan: compaction-survival pass (decision log, evidence registry, playbook) | done |
 | Batch 0 — suite reorganization | done |
 | B1 — sign rules & numeric edges | not started |
+| B1 (a) — pins of current behavior (`style/unsupported_values.rs`) | done |
 | B2 — units & sizing keywords | not started |
 | B3 — box shorthands | not started |
 | B4 — text consumption & admitted quirks | not started |

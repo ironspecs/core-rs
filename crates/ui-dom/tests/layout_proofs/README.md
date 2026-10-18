@@ -81,6 +81,7 @@ sections only; **crate-owned** = pins crate invariants by design.
 | CSS Transitions 1 | `pipeline/transitions.rs` | partial |
 | HTML Standard "update the rendering" (pipeline ordering) | `pipeline/stylesheet_lifecycle.rs` | full (explicit no-single-WPT statement) |
 | CSS Cascading and Inheritance: cascade order, specificity, inheritance transmission; CSS 2.1 §4.1.7 + css-style-attr §3 declaration error handling; CSS Fonts 4 §3.1–3.3 font-property inheritance | `style/cascade.rs` | full (module-header + per-family provenance; no divergences) |
+| Sign rules & numeric edges (CSS Box 3 §4.4, CSS Sizing 3, CSS Backgrounds 3, CSS UI 4, CSS Fonts 4 §3.5, CSS Color 4 §12.2, CSS Flexbox 1 §5.4/§7.3, CSS 2.1 §10.8) | `style/unsupported_values.rs` | partial; classes mixed (8 divergent rows in the off-spec registry + on-spec keeps + robustness pins) |
 
 ## Known off-spec registry
 
@@ -92,8 +93,12 @@ running test. Registry classes:
 - **deliberate** — a crate-owned value replacing a spec default where the
   spec's default has no meaning for our world; pinned permanently and
   re-reviewed when the spec area is revisited.
-- **unimplemented** — a spec area the solver does not admit yet; pinned by a
-  gate test at the admission point.
+- **unimplemented** — gates named `unsupported_*`: policy-gated absence (the
+  D6 admission policy in `MIGRATION.md`); the pin asserts the gate behavior
+  (dropped + counted, or load error) and no crash.
+- **robustness** — pins named `robustness_*`: crash-resistance over adversarial
+  inputs; orthogonal to the classes above (a robustness pin also carries the
+  divergent/unimplemented/on-spec class of the behavior it guards).
 
 Off-spec proofs are named `off_spec_*` so
 `cargo test --test layout_proofs off_spec` enumerates the divergent registry.
@@ -108,6 +113,15 @@ relabels the proof on-spec.
 | 16:9 placeholder intrinsic ratio (`layout/replaced_elements.rs`, declared in module header) | deliberate | CSS Images 3 §5.3 default object size 300×150 applies to images with no intrinsic dimensions | unloaded `img` seeds a 16:9 placeholder ratio; the §10.3.2/10.6.2 transfer math stays on-spec | crate-owned placeholder policy for never-loaded images |
 | Flex subsets beyond batches 3–7 | unimplemented | CSS Flexbox 1 areas the active solver does not admit | admission gated by `active_flex_gate_*` unit tests in `src/domains/layout/flex.rs`; fallback is the placeholder solver | active solver subset; see flex coverage map |
 | Cascade model: no `!important`, no built-in UA stylesheet, no cascade layers | unimplemented | CSS Cascade 5 §6: important declarations, origin layers | precedence is exactly `{ origin_priority, inline, specificity, order }` (the `inline` flag sorts above any selector per css-style-attr §4), pinned by `style/cascade.rs` families 1–3 | `domains/style` precedence model; the present model is pinned, the absent features await a redesign decision |
+| `off_spec_negative_padding_accepted` (`style/unsupported_values.rs`) | divergent | CSS Box 3 §4.4: `padding-*` is `<length [0,∞]>` | `.x { padding-left: -10px }` loads with `dropped == 0`, `padding[3] == -10.0`; spec-correct: drop + count | `parse_length` (`decl_parse.rs:319-321`) is sign-agnostic; `Length` grammar admits negatives |
+| `off_spec_negative_box_sizes_accepted` (`style/unsupported_values.rs`) | divergent | CSS Sizing 3 §3.1/§3.3/§3.4: `width`/`height`/`min-*`/`max-*` are non-negative | each of the six at `-1px` loads with `dropped == 0`, computed `Some(-1.0)`; spec-correct: drop + count | the six box-size longhands share the sign-agnostic `Length` grammar |
+| `off_spec_negative_border_and_outline_widths_accepted` (`style/unsupported_values.rs`) | divergent | CSS Backgrounds 3 §4.3 / CSS UI 4 §4.3: `<line-width>` non-negative | `border-top-width: -2px`, `outline-width: -2px` load with `dropped == 0`; spec-correct: drop + count | `Length` grammar admits negative border/outline widths |
+| `off_spec_negative_shorthand_lengths_accepted` (`style/unsupported_values.rs`) | divergent | CSS Backgrounds 3 §5.1 / CSS Box Alignment 3 §4.4: radius/gap non-negative | `border-radius: -4px`, `gap: -4px`, `border-top: -2px` all load with `dropped == 0`; spec-correct: drop + count | expansion helpers bypass the grammar layer (F2): `expand_border_radius` (:660), `expand_gap` (:703), `expand_border_side` (:930) call sign-agnostic `parse_length` |
+| `off_spec_negative_font_size_accepted` (`style/unsupported_values.rs`) | divergent | CSS Fonts 4 §3.5: `font-size` non-negative | `font-size: -10px` loads with `dropped == 0`, `size_px == -10.0` (crash-adjacent); spec-correct: drop + count | `LengthNoUnset` grammar sign-agnostic; `resolve_own_font_size_px` (`winners_fold.rs:324`) stores px verbatim |
+| `off_spec_font_size_unset_rejected` (`style/unsupported_values.rs`) | divergent | CSS Cascade 5 §4.3: `unset` is CSS-wide (≈ inherit for inherited `font-size`) | `font-size: unset` drops + counts (`dropped == 1`); spec-correct: admit, resolve to inherited seed | `parse_length_no_unset` (`decl_parse.rs:323-328`) returns `None` for `AuthoredLength::Unset` |
+| `off_spec_font_size_zero_panics` (`style/unsupported_values.rs`) | divergent | CSS Fonts 4 §3.5 admits zero font sizes; boundary data must never panic (AGENTS.md) | `font-size: 0` is admitted, then measuring/shaping the text PANICS in cosmic-text (`assert_ne!(font_size, 0.0)`, `buffer.rs:688`), pinned via `should_panic`; spec-correct: zero-width measure, renders nothing | the zero value flows verbatim from the font group into `CosmicMetrics::new` (`text_layout/mod.rs`) with no zero guard; relabels to `robustness_zero_font_size_renders_nothing` with landing (b)'s hardening |
+| `off_spec_opacity_out_of_range_rejected` (`style/unsupported_values.rs`) | divergent (reject-side) | CSS Color 4 §12.2: `opacity` clamps to `[0,1]` at computed time | `opacity: 1.5` / `-0.5` drop + count; spec-correct: admit + clamp (does NOT flip in B1) | `parse_opacity` (`decl_parse.rs:360-367`) rejects the 0.0..=1.0 range instead of clamping |
+| `off_spec_line_height_zero_floored_at_one_px` (`style/unsupported_values.rs`) | divergent (render-floor) | CSS 2.1 §10.8: `line-height: 0` is legal (zero-height lines) | `line-height: 0` admitted, floored to 1px (`text_layout/mod.rs:719-722`); spec-correct: render nothing (does NOT flip in B1) | `line_height.max(1.0)` in `resolve_font_field` (`project.rs:137`) and `effective_line_height_px` (`text_layout/mod.rs:720`); floor is load-bearing against cosmic-text's `line_height != 0` assert |
 
 Popup coverage map:
 

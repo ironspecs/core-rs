@@ -343,6 +343,34 @@ pub fn theme_stylesheet_origin() -> StyleRuleOrigin {
     StyleRuleOrigin::new("theme", 0)
 }
 
+/// Loads a stylesheet on a FRESH root and asserts the per-load report counts
+/// AND the cumulative drop counter (fresh root ⇒ cumulative == per-load).
+///
+/// The `css` argument is a complete stylesheet (selector + declaration block),
+/// e.g. `.x { padding-left: -10px }`. The fresh root has no authored elements,
+/// so nothing matches — but `declarations_applied`/`declarations_dropped` are
+/// parse-time counts, not match counts, so the report is still the whole story.
+pub fn assert_decl_drop(css: &str, applied: usize, dropped: usize) {
+    let (_world, root) = attached_gpu_root_dom_default_viewport_setup();
+    let report = root
+        .context()
+        .load_stylesheet(theme_stylesheet_origin(), css)
+        .expect("stylesheet should load");
+    assert_eq!(
+        report.declarations_applied, applied,
+        "declarations_applied for {css:?}",
+    );
+    assert_eq!(
+        report.declarations_dropped, dropped,
+        "declarations_dropped for {css:?}",
+    );
+    assert_eq!(
+        root.context().declaration_drop_count(),
+        dropped as u64,
+        "cumulative drop counter for {css:?}",
+    );
+}
+
 pub fn assert_root_dom_update(
     world: &mut World,
     root: &mut RootDom,
