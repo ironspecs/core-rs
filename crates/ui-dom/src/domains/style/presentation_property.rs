@@ -119,8 +119,11 @@ pub enum DeclGrammar {
     /// `unset | 0 | <px> | <em>` (signed: margins, offsets, outline-offset).
     Length,
     /// `unset | 0 | <non-negative px> | <non-negative em>` (padding, box sizes,
-    /// border widths, radii, gaps, outline-width, font-size).
+    /// border widths, radii, outline-width, font-size).
     NonNegativeLength,
+    /// `normal | unset | 0 | <non-negative px> | <non-negative em>` (CSS Box
+    /// Alignment 3 §8.2; `normal` computes to zero, matching the shorthand).
+    Gap,
     /// `normal | <unitless >= 0> | <px> | <em>` (no percentages, no negatives).
     LineHeight,
     /// `transparent | #rrggbb | #rrggbbaa | rgb()/rgba() | white|black|red|green|blue`.
@@ -457,16 +460,8 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
         PresentationGroup::Flex,
         DeclGrammar::Keywords(ALIGN_CONTENT_KEYWORDS),
     ),
-    (
-        "row-gap",
-        PresentationGroup::Flex,
-        DeclGrammar::NonNegativeLength,
-    ),
-    (
-        "column-gap",
-        PresentationGroup::Flex,
-        DeclGrammar::NonNegativeLength,
-    ),
+    ("row-gap", PresentationGroup::Flex, DeclGrammar::Gap),
+    ("column-gap", PresentationGroup::Flex, DeclGrammar::Gap),
     ("opacity", PresentationGroup::Visual, DeclGrammar::Opacity),
     (
         "background-color",
@@ -794,6 +789,8 @@ mod tests {
             DeclGrammar::NonNegativeLength
         );
         assert_eq!(PresentationProperty::Color.grammar(), DeclGrammar::Color);
+        assert_eq!(PresentationProperty::RowGap.grammar(), DeclGrammar::Gap);
+        assert_eq!(PresentationProperty::ColumnGap.grammar(), DeclGrammar::Gap);
 
         let DeclGrammar::Keywords(align_self_keywords) = PresentationProperty::AlignSelf.grammar()
         else {

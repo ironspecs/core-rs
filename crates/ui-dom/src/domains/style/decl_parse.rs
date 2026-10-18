@@ -293,6 +293,7 @@ fn parse_value(
         DeclGrammar::NonNegativeLength => {
             parse_non_negative_length_or_unset(value).map(DeclValue::Length)
         }
+        DeclGrammar::Gap => parse_gap_longhand(value).map(DeclValue::Length),
         DeclGrammar::LineHeight => parse_line_height(value),
         DeclGrammar::Color => parse_color(value),
         DeclGrammar::Opacity => parse_opacity(value),
@@ -333,6 +334,15 @@ fn parse_non_negative_length_or_unset(value: &str) -> Option<DeclLength> {
         AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
         _ => None,
     }
+}
+
+/// `normal | unset | 0 | <non-negative px> | <non-negative em>` (CSS Box
+/// Alignment 3 §8.2: `normal` computes to zero, matching the shorthand).
+fn parse_gap_longhand(value: &str) -> Option<DeclLength> {
+    if value == "normal" {
+        return Some(DeclLength::Px(0.0));
+    }
+    parse_non_negative_length_or_unset(value)
 }
 
 fn parse_line_height(value: &str) -> Option<DeclValue> {
@@ -1052,6 +1062,38 @@ mod tests {
                 parse_value(DeclGrammar::NonNegativeLength, invalid, &mut interner),
                 None,
                 "{invalid:?} should fail the NonNegativeLength grammar"
+            );
+        }
+    }
+
+    #[test]
+    fn gap_grammar_accepts_normal_and_non_negative_lengths() {
+        let mut interner = TextInterner::default();
+        assert_eq!(
+            parse_value(DeclGrammar::Gap, "normal", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(0.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::Gap, "unset", &mut interner),
+            Some(DeclValue::Length(DeclLength::Unset))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::Gap, "0", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(0.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::Gap, "4px", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(4.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::Gap, "1.5em", &mut interner),
+            Some(DeclValue::Length(DeclLength::Em(1.5)))
+        );
+        for invalid in ["-1px", "bogus"] {
+            assert_eq!(
+                parse_value(DeclGrammar::Gap, invalid, &mut interner),
+                None,
+                "{invalid:?} should fail the Gap grammar"
             );
         }
     }
