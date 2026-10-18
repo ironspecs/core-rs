@@ -1276,7 +1276,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B1 — sign rules & numeric edges | **done** (a `4cb6acd` pins; b — fix + flips, incl. the font-size: 0 guard; caret-path follow-up queued below) |
 | B1 (a) — pins of current behavior (`style/unsupported_values.rs`) | done |
 | B2 — units & sizing keywords | **done** (pins; all rows verified; the stale `font-size: unset` row was resolved by B1b and is marked above) |
-| B3 — box shorthands | not started |
+| B3 — box shorthands | done (pins; all rows verified dropped+counted + group-initial) |
 | B4 — text consumption & admitted quirks | not started |
 | B5 — preserved candidates | not started |
 | B6 — layout-impact properties | not started |
