@@ -25,9 +25,9 @@
 //! expected to move on-spec); `unsupported_*` rows are unimplemented (D6
 //! admission-gated drop-and-continue); the `text_align_justify_is_consumed` and
 //! `dir_attribute_and_direction_property_merge` and `pointer_events_content_channel`
-//! rows are on-spec keeps; `white_space_pre_line_and_break_spaces_consumption`
-//! verifies each keyword and pins `pre-line` on-spec while `break-spaces` is
-//! classed divergent (folded into `pre-wrap`). B5's preserved candidates split
+//! rows are on-spec keeps; `white_space_pre_line_is_consumed` is an on-spec
+//! keep while `off_spec_break_spaces_approximated_as_pre_wrap` is classed
+//! divergent (folded into `pre-wrap`). B5's preserved candidates split
 //! across the classes: `initial_color_is_near_white_by_design` and
 //! `initial_border_widths_are_zero_by_design` are deliberate (crate-owned
 //! defaults pinned permanently), while
@@ -164,12 +164,24 @@ fn layout_for_white_space(text: &str, white_space: &str, width_px: f32) -> White
 // the family used for glyph rendering.
 // <https://drafts.csswg.org/css-fonts-4/#font-family-prop>
 //
-// CURRENT (asserted below): `font-family: serif` resolves in the computed group
-// (`font_family() == Some("serif")`) but the text intrinsic widths are
-// IDENTICAL to a sibling with no family — the family is never consumed by text
-// layout, which renders UiSans regardless.
+// CURRENT (asserted below): `font-family: Source Han Sans` resolves in the
+// computed group (`font_family() == Some("Source Han Sans")`) but the text
+// intrinsic widths are IDENTICAL to a sibling with no family — the family is
+// never consumed by text layout, which renders UiSans regardless.
 // SPEC-CORRECT: text layout resolves the computed family and measures with it,
-// so a serif container and a default container may measure differently.
+// so a Source Han Sans container and a default container measure differently.
+// DISCRIMINATOR: `Source Han Sans` IS in the installed catalog (the Japanese
+// face, `UI_DOM_FONT_SOURCE_HAN_SANS_J_PATH`, `text_render.rs:16-17`), so a
+// consuming engine would resolve it to that face and measure `Hello world` with
+// its Latin advance widths, which differ from the IBM Plex Sans default. A
+// generic `serif` would NOT discriminate: no serif face is installed (the
+// catalog is IBM Plex Sans + three Source Han Sans faces, per
+// `install_text_font_catalog`), so consumption would fall back to the same
+// default and the pin would pass even after moving on-spec.
+// RESIDUAL ASSUMPTION: Source Han Sans's Latin advance widths differ from IBM
+// Plex Sans for this text. If the two faces' metrics coincided for `Hello
+// world`, the width-equality half would be weak (the computed-style assertion
+// that the family resolves would still hold).
 // ROOT CAUSE: `TextFontFamilyId::UiSans` one-variant enum
 // (`text_layout/mod.rs:36-39`), hardcoded in `TextLayoutRequest::for_text`
 // (`text_layout_request.rs:33-48`) and resolved by `preferred_repo_font_family`
@@ -177,13 +189,14 @@ fn layout_for_white_space(text: &str, white_space: &str, width_px: f32) -> White
 // RECLASSIFY: consumption is the named step-5 follower; this pin flips on-spec
 // when the resolved family reaches text layout.
 fn off_spec_font_family_computed_but_unconsumed() {
-    let (root, plain_text, styled_text, styled) = text_pair_with_css("font-family: serif");
+    let (root, plain_text, styled_text, styled) =
+        text_pair_with_css("font-family: Source Han Sans");
 
     assert_eq!(
         root.computed_style(styled)
             .expect("styled container")
             .font_family(),
-        Some("serif"),
+        Some("Source Han Sans"),
         "font-family should resolve in the computed group",
     );
 
@@ -203,6 +216,12 @@ fn off_spec_font_family_computed_but_unconsumed() {
 // (rendered regular/upright via the hardcoded UiSans family).
 // SPEC-CORRECT: text layout consumes the computed weight/style, so the rendered
 // run changes.
+// PIN STRENGTH BY HALF: the weight half discriminates — the installed IBM Plex
+// Sans is a variable font, so a consumed `weight: 700` selects a different
+// advance-width axis instance than the default 400. The style/italic half is
+// inherently weak on this catalog: synthesized obliqing does not change advance
+// widths, so its strength is the computed-style assertion plus render-path
+// reachability, NOT a width difference.
 // ROOT CAUSE: the hardcoded `TextFontFamilyId::UiSans` request
 // (`text_layout_request.rs:33-48`) carries no weight/style into the shaper.
 // RECLASSIFY: consumption rides the same step-5 follower as font-family.
@@ -309,24 +328,13 @@ fn unsupported_font_style_oblique_drops() {
 // — B4: white-space consumption (verify per keyword) — //
 
 #[test]
-// VERIFY-AND-PIN-ACTUAL:
-// - `white-space: pre-line` maps to `collapse_spaces_preserving_segment_breaks`
-//   (`types/white_space.rs:147-180`, reached via
-//   `text_layout_input_for_white_space` at `white_space.rs:67`), which collapses
-//   spaces/tabs/form-feed and preserves `\n`/`\r\n` segment breaks — matching
-//   CSS Text 4 §white-space `pre-line` (collapse spaces/tabs, preserve
-//   newlines, wrap). <https://www.w3.org/TR/css-text-4/#white-space-property>
-//   Class: on-spec.
-// - `white-space: break-spaces` maps to `preserve_space_run_advances`
-//   (`types/white_space.rs:255-277`, reached via `white_space.rs:64`) — the
-//   SAME transform as `pre`/`pre-wrap` — not a distinct break-spaces policy.
-//   Repeated spaces are NBSP-substituted so they take advance and wrap (which
-//   happens to match break-spaces for the repeated-trailing-space case), but a
-//   lone trailing space is not preserved. Class: divergent (approximated as
-//   `pre-wrap`; CSS Text 4 break-spaces preserves every trailing space).
-//   <https://www.w3.org/TR/css-text-4/#white-space-property>
-fn white_space_pre_line_and_break_spaces_consumption() {
-    // (a) pre-line: collapse repeated spaces, preserve the explicit newline.
+// ON-SPEC: CSS Text 4 §white-space `pre-line` collapses spaces/tabs/form-feed
+// and preserves `\n`/`\r\n` segment breaks (collapse spaces/tabs, preserve
+// newlines, wrap). <https://www.w3.org/TR/css-text-4/#white-space-property>
+// Verified: `pre-line` maps to `collapse_spaces_preserving_segment_breaks`
+// (`types/white_space.rs:147-180`, reached via
+// `text_layout_input_for_white_space` at `white_space.rs:67`).
+fn white_space_pre_line_is_consumed() {
     let repeated = layout_for_white_space("Alpha    Beta\nGamma", "pre-line", 300.0);
     let collapsed = layout_for_white_space("Alpha Beta\nGamma", "pre-line", 300.0);
     assert_close(
@@ -339,9 +347,31 @@ fn white_space_pre_line_and_break_spaces_consumption() {
         repeated.line_height * 2.0,
         "pre-line should preserve the explicit segment break as a second line",
     );
+}
 
-    // (b) break-spaces: repeated trailing spaces take advance and wrap onto
-    // their own line (the actual NBSP-substituted pre-wrap transform).
+#[test]
+// OFF-SPEC (divergent): CSS Text 4 §white-space `break-spaces` preserves every
+// trailing space (it takes advance and wraps or hangs, never collapses).
+// <https://www.w3.org/TR/css-text-4/#white-space-property>
+//
+// CURRENT (asserted below): `break-spaces` maps to `preserve_space_run_advances`
+// (`types/white_space.rs:255-277`, reached via `white_space.rs:64`) — the SAME
+// transform as `pre`/`pre-wrap`, not a distinct break-spaces policy. Repeated
+// trailing spaces are NBSP-substituted so they take advance and wrap
+// (coincidentally matching break-spaces for that input), but a LONE trailing
+// space is not preserved: `text_has_repeated_ascii_spaces` short-circuits the
+// transform, so the raw space reaches the shaper and is collapsed at the line
+// end.
+// SPEC-CORRECT: a lone trailing space is preserved; at a width where it
+// overflows the line it wraps onto a second line (or hangs), so the block
+// height grows to two lines.
+// ROOT CAUSE: `text_layout_input_for_white_space` (`types/white_space.rs:58-69`)
+// maps `BreakSpaces` to the same `preserve_space_run_advances` as `Pre`/`PreWrap`.
+// RECLASSIFY: a distinct break-spaces transform flips this pin on-spec.
+fn off_spec_break_spaces_approximated_as_pre_wrap() {
+    // (a) repeated trailing spaces: NBSP-substituted, take advance and wrap onto
+    // their own line (the actual pre-wrap transform, which happens to match
+    // break-spaces for this input).
     let trimmed = layout_for_white_space("Alpha Beta", "break-spaces", 70.0);
     let trailing = layout_for_white_space("Alpha Beta   ", "break-spaces", 70.0);
     assert_close(
@@ -354,21 +384,33 @@ fn white_space_pre_line_and_break_spaces_consumption() {
         trailing.line_height * 2.0,
         "break-spaces repeated trailing spaces wrap onto their own line",
     );
+
+    // (b) discriminating case: ONE lone trailing space at 70px. `Alpha Beta`
+    // measures 68.85px max-content and fits one line; `Alpha Beta ` measures
+    // 72.16px, so a preserved space would overflow and wrap to a second line.
+    // Spec break-spaces preserves it (wrap); the current pre-wrap fold collapses
+    // it, so the block stays one line — the jump is discriminated.
+    let lone = layout_for_white_space("Alpha Beta ", "break-spaces", 70.0);
+    assert_close(
+        lone.block_height,
+        lone.line_height,
+        "break-spaces lone trailing space is collapsed by the pre-wrap fold (spec would wrap it onto a second line)",
+    );
 }
 
 // — B4: transform transitions never schedule — //
 
 #[test]
 // OFF-SPEC (divergent, documented in MIGRATION.md): CSS Transitions 1 §2
-// `transition: transform 100ms` should interpolate a `translateX` change over
+// `transition: transform 180ms` should interpolate a `translateX` change over
 // the duration. <https://drafts.csswg.org/css-transitions-1/>
 //
-// CURRENT (asserted below): `transition: transform 100ms` with a
+// CURRENT (asserted below): `transition: transform 180ms` with a
 // `translateX(0px) → translateX(10px)` change presents the target immediately
-// at the next update — no transition is scheduled, so there is no mid-flight
-// value at t=0.1.
-// SPEC-CORRECT: the transform interpolates; mid-flight `translate_px` is
-// strictly between 0 and 10.
+// at the next update — no transition is scheduled, so the target is STILL
+// presented at progress 0.5 (t=0.09s, half the 180ms duration).
+// SPEC-CORRECT: the transform interpolates; at progress 0.5 the `translate_px`
+// is strictly between 0 and 10.
 // ROOT CAUSE: `decl_value_for_groups` (`root_dom.rs:4695-4703`) returns `None`
 // for `PresentationProperty::Transform` (the transform `DeclValue` is interned
 // text, which the scheduler cannot interpolate; the typed `[f32; 2]` pair is
@@ -380,7 +422,7 @@ fn off_spec_transform_transitions_do_not_schedule() {
     let document_root = root.document_node().0;
     let container = assert_append_div_to(&mut root, document_root);
     assert_style_set(&mut root, container, "transform", "translateX(0px)");
-    assert_style_set(&mut root, container, "transition", "transform 100ms");
+    assert_style_set(&mut root, container, "transition", "transform 180ms");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
@@ -406,15 +448,19 @@ fn off_spec_transform_transitions_do_not_schedule() {
         "transform should jump to the target on the change-detection update",
     );
 
-    // Mid-time: still the target — no mid-flight interpolated value exists.
-    assert_root_dom_update(&mut world, &mut root, 0.1, DomPointerUpdate::Unchanged);
+    // Mid-time (progress 0.5): the presented value is STILL the target — no
+    // mid-flight interpolated value exists. A scheduled transition would
+    // present a value strictly between [0.0, 0.0] and [10.0, 0.0] here, so the
+    // jump is discriminated (matches `pipeline/transitions.rs`'s
+    // MID_TRANSITION_TIME_S = 0.09 convention).
+    assert_root_dom_update(&mut world, &mut root, 0.09, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(container)
             .expect("container")
             .as_transform()
             .translate_px,
         [10.0, 0.0],
-        "no mid-flight transform value should exist at t=0.1",
+        "transform should stay at the target at progress 0.5 (a scheduled transition would interpolate strictly between [0,0] and [10,0])",
     );
 }
 

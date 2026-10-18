@@ -21,7 +21,8 @@
 //! value stays at the group initial.
 //!
 //! Class notes: the `negative_*`, `width_zero_*`, `fractional_*`,
-//! `unitless_nonzero_*`, and `font_size_unset_*` rows are on-spec keeps;
+//! `unitless_nonzero_*`, `font_size_unset_*`, and `gap_unset_*` rows are
+//! on-spec keeps;
 //! `unsupported_*` rows are unimplemented (D6 admission-gated drop-and-continue
 //! — the value or grammar form is not admitted); `robustness_*` rows assert
 //! no-panic plus the defined outcome; `line_height_zero_floors_at_one_px` is a
@@ -286,7 +287,12 @@ fn negative_font_size_rejected() {
 //   resolves to inherit. <https://drafts.csswg.org/css-cascade-5/#defaulting-keywords>
 // - Relabeled from `off_spec_font_size_unset_rejected` in B1 landing (b) after
 //   the sign-rule grammar fix (font-size now admits `unset`).
+// - Competing-rule row (b): the admitted `unset` participates in the cascade —
+//   a later `.a { font-size: unset }` beats an earlier `.b { font-size: 30px }`
+//   on the same element (equal specificity, source order wins), takes the
+//   winners slot, then defaults to inherit (20px), NOT 30px.
 fn font_size_unset_resolves_to_inherited_seed() {
+    // (a) baseline: unset on an inherited property resolves to inherit.
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let container = assert_append_div_to(&mut root, document_root);
@@ -309,6 +315,59 @@ fn font_size_unset_resolves_to_inherited_seed() {
         root.computed_style(span).expect("span").as_font().size_px,
         20.0,
         "font-size: unset should resolve to the inherited 20px seed",
+    );
+
+    // (b) competing-rule cascade: the admitted `unset` takes the winners slot
+    // (the later `.a` beats the earlier `.b` by source order at equal
+    // specificity), then defaults to inherit — the parent's 20px, NOT the 30px
+    // `.b` wrote.
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, container, "class", "p");
+    let span = assert_append_span_to(&mut root, container);
+    assert_set_attr_str(&mut root, span, "class", "b a");
+    let report = root
+        .context()
+        .load_stylesheet(
+            theme_stylesheet_origin(),
+            ".p { font-size: 20px } .b { font-size: 30px } .a { font-size: unset }",
+        )
+        .expect("font-size: unset should admit");
+    assert_eq!(
+        report.declarations_dropped, 0,
+        "font-size: unset should be admitted",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(span).expect("span").as_font().size_px,
+        20.0,
+        "the admitted unset should win its slot over the 30px rule and resolve to the inherited 20px",
+    );
+}
+
+#[test]
+// ON-SPEC (admitted since the B1 grammar change):
+// - SPEC: CSS Cascade 5 §4.3 — `unset` on a NON-inherited property (`gap` is
+//   not inherited, CSS Box Alignment 3 §4.4 "Inherited: no") resolves to the
+//   property's initial value. <https://drafts.csswg.org/css-cascade-5/#defaulting-keywords>
+// - B1b admission: `gap: unset` expands to `row-gap: unset; column-gap: unset`
+//   (`expand_gap`, `decl_parse.rs:725-735`) and the resolver's
+//   `write_inset_length` (`project.rs:605-611`) writes the initial 0.0 into each
+//   flex-gap slot. Mirrors `font_size_unset_resolves_to_inherited_seed`'s
+//   shape, but on a non-inherited property the default is the initial, not the
+//   inherited value.
+fn gap_unset_resolves_to_zero() {
+    let (mut world, mut root, target, report) = styled_target_load(".x { gap: unset }");
+    assert_eq!(
+        report.declarations_dropped, 0,
+        "gap: unset should be admitted",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_flex().gap,
+        [0.0, 0.0],
+        "gap: unset should resolve to the [0.0, 0.0] initial",
     );
 }
 
