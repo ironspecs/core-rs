@@ -34,8 +34,9 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    BoxLength, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom,
-    StylesheetLoadReport, TextIntrinsic,
+    AlignContentKw, AlignItemsKw, BoxLength, ComputedFlexGroup, DomIntrinsic, DomNode,
+    DomNodeSlotKey, DomPointerUpdate, JustifyContentKw, RootDom, StylesheetLoadReport,
+    TextIntrinsic,
 };
 
 use crate::layout_proofs::support::{
@@ -1754,4 +1755,75 @@ fn relative_top_percentage_defers_to_offset_time() {
         100.0,
         "relative top: 50% should defer to no offset under an auto-height containing block",
     );
+}
+
+/// A named admitted-value control: the `center` declaration body plus a
+/// predicate over the flex computed group it should produce.
+type AlignmentControl = (&'static str, fn(ComputedFlexGroup) -> bool);
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Box Alignment 3 §8.2/§8.3/§8.4 + CSS Flexbox 1 §8.2–8.4 —
+//   `justify-content` admits `normal | <content-distribution> | <overflow-position>? [ <content-position> | left | right ]`;
+//   `align-items`/`align-self` admit `normal | stretch | <baseline-position> | <overflow-position>? <self-position>`;
+//   `align-content` admits `normal | <baseline-position> | <content-distribution> | <overflow-position>? <content-position>`.
+//   <https://drafts.csswg.org/css-align-3/#propdef-justify-content>
+//   <https://drafts.csswg.org/css-align-3/#propdef-align-items>
+//   <https://drafts.csswg.org/css-align-3/#propdef-align-content>
+// - CURRENT (asserted): each `normal`/`left`/`right`/`baseline` form drops +
+//   counts at the closed keyword grammar and the computed field stays at its
+//   group initial (fail-closed `JUSTIFY_CONTENT_KEYWORDS`,
+//   `ALIGN_ITEMS_KEYWORDS`, `ALIGN_SELF_KEYWORDS`, `ALIGN_CONTENT_KEYWORDS` in
+//   `presentation_property.rs`); the admitted `center` CONTROL applies to every
+//   one of the four properties. No crash.
+// - SPEC-CORRECT: admit the positional `left`/`right`, the `normal` initial
+//   keyword, and first/last baseline alignment; admission per D6.
+fn unsupported_rejected_alignment_keywords_drop() {
+    let rejected = [
+        ("justify_content_normal", "justify-content: normal"),
+        ("justify_content_left", "justify-content: left"),
+        ("justify_content_right", "justify-content: right"),
+        ("align_items_baseline", "align-items: baseline"),
+        ("align_items_normal", "align-items: normal"),
+        ("align_self_baseline", "align-self: baseline"),
+        ("align_content_normal", "align-content: normal"),
+        ("align_content_baseline", "align-content: baseline"),
+    ];
+    for (name, body) in rejected {
+        assert_decl_drop(&format!(".x {{ {body} }}"), 0, 1);
+        let (mut world, mut root, target, _report) =
+            styled_target_load(&format!(".x {{ {body} }}"));
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target).expect("target").as_flex(),
+            ComputedFlexGroup::initial(),
+            "{name} should drop and keep the flex group at its initials",
+        );
+    }
+
+    // CONTROL: the admitted `center` keyword applies to all four properties,
+    // proving the gate rejects only the closed-out vocabulary.
+    let controls: [AlignmentControl; 4] = [
+        ("justify-content: center", |f| {
+            f.justify_content == JustifyContentKw::Center
+        }),
+        ("align-items: center", |f| {
+            f.align_items == AlignItemsKw::Center
+        }),
+        ("align-self: center", |f| {
+            f.align_self == Some(AlignItemsKw::Center)
+        }),
+        ("align-content: center", |f| {
+            f.align_content == AlignContentKw::Center
+        }),
+    ];
+    for (body, check) in controls {
+        let (mut world, mut root, target, _report) =
+            styled_target_load(&format!(".x {{ {body} }}"));
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert!(
+            check(root.computed_style(target).expect("target").as_flex()),
+            "{body} control should apply",
+        );
+    }
 }
