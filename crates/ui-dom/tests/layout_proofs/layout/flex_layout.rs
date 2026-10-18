@@ -5458,40 +5458,177 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
     );
 }
 
-// CSS Flexbox 1 §4 (Flex Items): text nodes and inline-level children
-// participate in flex layout. In real browsers (Gecko/Blink) these are
-// wrapped in anonymous flex items by the box-tree constructor; ui-dom
-// accepts them directly in the active flex solver. WPT
-// `flexbox-anonymous-items-001.html` verifies that anonymous flex items
-// are generated and participate in flex alignment and gap spacing.
+// CSS Flexbox 1 §4 (Flex Items): a contiguous run of inline-level children
+// (text nodes, inline/atomic-inline elements) is wrapped into ONE anonymous
+// flex item by the box-tree constructor, and whitespace-only runs are
+// discarded before flex item collection. Closest WPT oracle:
+// `flexbox-anonymous-items-001.html`. Gecko builds anonymous flex items in
+// `nsFlexContainerFrame.cpp` (`GenerateFlexLines` walks the flattened item
+// list after the box tree has already wrapped inline runs); Blink collects
+// them in `flex_layout_algorithm.cc` (`ConstructAndAppendFlexItems`).
+//
+// OFF-SPEC: this solver makes every DOM child its own flex item —
+// `collect_measured_flex_items_in_dom_order` (`flex.rs:406`) assigns
+// `FlexItemSource::BlockItem` per child at `flex.rs:421` and never merges a
+// contiguous inline run, so `FlexItemSource::AnonymousInlineGroup`
+// (`flex_item_source.rs:16`) is dead. Spec-correct: two adjacent text nodes
+// merge into one anonymous item (no inter-item gap); a span + adjacent text
+// run merge into one item; a block between runs breaks them into two
+// anonymous items plus the block (the solver's per-child model gets this
+// right); a whitespace-only text node between blocks is discarded (no item,
+// no gap). Divergent rows (a), (b), (d) pin the per-child model; row (c) is
+// the on-spec control where a block already breaks the run.
+//
+// Relabeled from `text_children_in_flex_row_honor_gap_and_normal_flow_placement`
+// (row (a)) so the whole family carries the `off_spec_` name.
 #[test]
-fn text_children_in_flex_row_honor_gap_and_normal_flow_placement() {
-    let (mut world, mut root, container) = flex_row_container_setup();
-    let label = assert_append_text_to(&mut root, container, "Left");
-    let _value = assert_append_text_to(&mut root, container, "Right");
+fn off_spec_anonymous_inline_runs_are_not_merged() {
+    let rows: [AnonymousRunRow; 4] = [
+        (
+            "text_plus_text_gap_inserted_between_nodes",
+            assert_text_plus_text_gap_inserted,
+        ),
+        (
+            "span_plus_text_run_not_merged",
+            assert_span_plus_text_run_not_merged,
+        ),
+        (
+            "text_block_text_block_breaks_run_on_spec",
+            assert_text_block_text_block_breaks_run,
+        ),
+        (
+            "whitespace_only_text_between_blocks_kept_as_item",
+            assert_whitespace_only_text_between_blocks,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
 
+/// A named anonymous-inline-run probe: the row name plus a runner that
+/// builds the scenario and asserts through the row name.
+type AnonymousRunRow = (&'static str, fn(&str));
+
+fn assert_text_plus_text_gap_inserted(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
     assert_style_set(&mut root, container, "column-gap", "10px");
-
+    let label = assert_append_text_to(&mut root, container, "Left");
+    let _value = assert_append_text_to(&mut root, container, "Right");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-
     let plans = take_staged_layer_paint_plans(&root);
     let text_runs = &plans[0].text_runs;
-    // text_runs[0] = label, text_runs[1] = value (text children emit text runs, not rects).
-    assert_close(text_runs[0].position_px[0], 0.0, "label text left");
-    assert_close(text_runs[0].position_px[1], 0.0, "label text top");
-    let label_width = assert_node_layout(&root, label).width_px;
-    assert!(
-        label_width > 0.0,
-        "label text should have non-zero layout width",
+    assert_eq!(text_runs.len(), 2, "{name}: two text runs");
+    assert_close(
+        text_runs[0].position_px[0],
+        0.0,
+        &format!("{name}: first text left"),
     );
+    let label_width = assert_node_layout(&root, label).width_px;
+    // Divergent: spec merges "Left"+"Right" into one anonymous item (no
+    // gap); the solver inserts the column-gap between the per-child items.
     assert_close(
         text_runs[1].position_px[0],
         label_width + 10.0,
-        "value text left after gap",
+        &format!("{name}: second text left after gap"),
     );
-    assert_close(text_runs[1].position_px[1], 0.0, "value text top");
+}
+
+fn assert_span_plus_text_run_not_merged(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let span = assert_append_span_to(&mut root, container);
+    let _span_text = assert_append_text_to(&mut root, span, "Foo");
+    let _sibling_text = assert_append_text_to(&mut root, container, "bar");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + span rects");
+    assert_eq!(
+        plans[0].text_runs.len(),
+        2,
+        "{name}: span text + sibling text"
+    );
+    let span_width = assert_node_layout(&root, span).width_px;
+    // Divergent: spec merges the span and the adjacent text node into one
+    // anonymous item; the solver keeps them as two items with a column-gap.
+    assert_close(
+        plans[0].text_runs[1].position_px[0],
+        span_width + 10.0,
+        &format!("{name}: sibling text left after gap"),
+    );
+}
+
+fn assert_text_block_text_block_breaks_run(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let leading_text = assert_append_text_to(&mut root, container, "A");
+    let block = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, block, "flex-basis", "30px");
+    assert_style_set(&mut root, block, "height", "20px");
+    let _trailing_text = assert_append_text_to(&mut root, container, "B");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 2, "{name}: container + block rects");
+    assert_eq!(
+        plans[0].text_runs.len(),
+        2,
+        "{name}: leading + trailing text runs"
+    );
+    let leading_width = assert_node_layout(&root, leading_text).width_px;
+    // On-spec control: the block breaks the run, so the leading text, the
+    // block, and the trailing text are three items with gaps — the same shape
+    // the spec's two anonymous items + block produces.
+    assert_close(
+        plans[0].rects[1].position_px[0],
+        leading_width + 10.0,
+        &format!("{name}: block left after gap"),
+    );
+    assert_close(
+        plans[0].text_runs[1].position_px[0],
+        leading_width + 10.0 + 30.0 + 10.0,
+        &format!("{name}: trailing text left after block and gap"),
+    );
+}
+
+fn assert_whitespace_only_text_between_blocks(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "30px");
+    assert_style_set(&mut root, first, "height", "20px");
+    let _whitespace = assert_append_text_to(&mut root, container, "   ");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "40px");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(
+        plans[0].rects.len(),
+        3,
+        "{name}: container + two block rects"
+    );
+    // Divergent: spec discards the whitespace-only run (no item, one gap
+    // between the blocks); the solver keeps it as a painted item, adding its
+    // width plus a second gap before the trailing block.
+    assert_eq!(
+        plans[0].text_runs.len(),
+        1,
+        "{name}: whitespace run painted as its own item",
+    );
+    let whitespace_width = plans[0].text_runs[0].size_px[0];
+    assert_close(
+        plans[0].rects[2].position_px[0],
+        30.0 + 10.0 + whitespace_width + 10.0,
+        &format!("{name}: second block left pushed by whitespace item and two gaps"),
+    );
 }
 
 #[test]
