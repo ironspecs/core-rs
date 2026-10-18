@@ -217,11 +217,14 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-367 layout proofs in subsystem directories (360 in
-`style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 7 in the
-cross-cutting `robustness.rs`); the off-spec registry (8
-divergent, 4 deliberate, grouped `unsupported_*` gates, a robustness
-family) as a living divergence map with reclassification discipline;
+396 layout proofs (388 in
+`style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
+cross-cutting `robustness.rs`; updated 2026-10-19 post-PR-1 review);
+the off-spec registry (7 divergent proofs in 6 rows, 5 deliberate,
+grouped `unsupported_*` gates, a robustness family — census unit is
+PROOFS, not rows: the font-family and font-weight/style divergences
+share one registry row) as a living divergence map with
+reclassification discipline;
 `perf_metric.rs`/`perf_allocation.rs` pinning exact work counters and
 allocator windows (history assertions ordering-only); structural lint
 rules 1–5 (mechanical, no exemptions); the zero-allocation metrics
@@ -261,8 +264,8 @@ zero-size-line inconsistency).
 
 ### PR 1 — margin and style gaps (the admission queue) `SETTLED`
 
-**LANDED (2026-10-18, branch `pr1-margin-style-gaps`, 13 commits, PR #17
-open):** all seven items plus the transition proof-family companion bundle,
+**LANDED (2026-10-18, branch `pr1-margin-style-gaps`, 17 commits, PR #17
+merged to main):** all seven items plus the transition proof-family companion bundle,
 followed by a third-party review round with all three findings adjudicated:
 (a) percentages that silently no-op'd on line-width/radius grammars were
 rejected at admission (`DeclGrammar::LineWidth`/`SignedLineWidth` — the
@@ -287,9 +290,12 @@ computed/used split with the `margin: 0 auto` centering pattern working in
 shorthand and longhand forms (public API break, recorded in
 `MIGRATION.md`); plus the seven-test transition behavior family (easing
 control points, negative delay, re-targeting, list-repeat, completion,
-from==to, overlay-beats-important). The off_spec census stands at 5
-(font-family unconsumed, font-weight/style unconsumed, `break-spaces`,
-range pill, `line-height: normal` → 1.0×).
+from==to, overlay-beats-important). The off_spec census at landing stood
+at 5 (font-family unconsumed, font-weight/style unconsumed,
+`break-spaces`, range pill, `line-height: normal` → 1.0×); the
+post-landing adversarial review (2026-10-19, see the decision log)
+registered two more divergent §8.3.1 boundary rows, moving the census
+to 7 proofs in 6 rows.
 
 Seven items, ordered cheapest-first. Each is its own commit on one branch;
 each flips its registry pin in the same change. No debate required — the
@@ -319,12 +325,14 @@ designs below are settled and the pins are the witnesses.
    `off_spec_adjacent_negative_block_margins_collapse_to_most_negative`
    relabels on-spec. The registry's oldest divergent entry closes. **With
    it lands the spillover verification pin** (see the decision log):
-   a negative-margin sibling is clipped at its clipped layer's bounds
-   (deliberate), and the Normal-layer escape hatch paints it.
+   a negative-margin descendant is clipped at its clipped layer's
+   bounds (deliberate — the pin drives a first child; the mechanism is
+   sibling-independent), and the Normal-layer escape hatch paints it.
 3. **`box-sizing`** (CSS UI 4 §3.1). Add the property (box group):
    `BoxSizingKw { ContentBox, BorderBox }` on `ComputedBoxGroup` (initial
    `ContentBox` — the crate's single model today, which is also the CSS
-   initial). One branch in the sizing projection (`domains/layout/style.rs`):
+   initial). One branch in the sizing projection (landed as
+`content_box_size_px`, `domains/layout/flow.rs`):
    border-box subtracts padding+border from the specified size to reach the
    content box; content-box is today's path verbatim. Pin flip:
    `unsupported_box_sizing_drops_and_border_box_sizing_holds`.
@@ -676,8 +684,54 @@ moves begin).
   (deferred, pinned `relative_top_percentage_defers_to_offset_time`);
   border/outline widths, outline-offset, radius (elliptical gate), gap, and
   flex-basis percentages are rejected at admission and pinned. The domain
-  of percentage resolution is `Option<basis>` plus a per-field rule, never
-  an f32 basis.
+of percentage resolution is `Option<basis>` plus a per-field rule, never
+an f32 basis.
+
+- **2026-10-19 — the post-PR-1 adversarial review and its remediation.**
+  A seven-agent adversarial review of the PR 1 landing (the architect
+  re-verified the load-bearing claims firsthand) found the landing claims
+  substantially true with the full gate green, plus one critical defect and
+  a set of contract gaps. Adjudication:
+  (a) **critical, fixed** — `strip_importance_marker` panicked on
+  non-ASCII boundary tails (a byte-index `str` slice at a non-char
+  boundary, e.g. `width: 10px !ééééé`), violating `decl_parse.rs`'s own
+  header invariant and the AGENTS.md panic policy. Fixed in `395c97e`
+  (boundary-safe `str::get`; an unrecognized marker falls through to the
+  grammar as a counted drop / typed error) with four unit pins at both
+  parse entry functions, plus the public-route robustness pin
+  `robustness_non_ascii_importance_marker_drops_without_panic` (in
+  `e237763`). (b) **registry contract repairs** (`e237763`) — two
+  divergent rows for the §8.3.1 boundary clamps item 2 did not touch:
+  `off_spec_parent_boundary_negative_margins_clamp` (first-child top /
+  last-child bottom / empty-intermediary `.max(0.0)` clamps) and
+  `off_spec_empty_block_negative_margins_collapse_to_max_not_most_negative`
+  (plain `max`, predating item 2's three-branch rule; admission is the
+  same shape, deferred per D6); the flex auto-margin row rescoped to the
+  truth (main-axis computes to 0; a block-level item in a column
+  container absorbs cross-axis free space through the block solver —
+  accidental, §8.1-aligned for the pinned case — pinned by
+  `column_flex_block_item_cross_auto_margins_absorb_free_space`);
+  robustness count 7 → 8. (c) **doc-drift corrections (this change)** —
+  the §2.6 census numbers and the proofs-not-rows unit rule, the
+  landing-note commit count (17, not 13), item 3's branch citation
+  (`content_box_size_px`, `domains/layout/flow.rs`), the item 2 spillover
+  pin's descendant wording, and the MIGRATION.md flex auto-margin note.
+  (d) **the weak-pin backlog** — named here, owned by the arc's coverage
+  effort; it does NOT block PR 2's debate: the
+  `transition_completion_removes_the_overlay` assertion gap (the pin is
+  invariant under a stuck-overlay fault — assert the `TransitionEnd`
+  counter like its re-targeting sibling); a 3+-declaration
+  mixed-importance middle-removal pin for the `DeclBlock` bit-vector; a
+  malformed-`!important` block-parse counted-drop pin; canonical-snapshot
+  serializer round-trips for the keyword/number/integer/text value kinds
+  (only length and color pinned today); a 3-value `padding` shorthand
+  case and padding through the style-attribute route; box-sizing's border
+  contribution, height-axis subtraction, and zero-clamp pins; end-to-end
+  percentage rows for padding×4, min/max-width, and left/right; a
+  non-finite-opacity robustness row (unit-only today); and `min`/`max`
+  sizes under `box-sizing: border-box` (CSS UI 4 §3.1 applies box-sizing
+  to the min/max properties; the current clamps use raw specified values
+  — wants a pin and a registry row when admitted or gated).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

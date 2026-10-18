@@ -157,8 +157,11 @@ computed/used split (CSS Cascade §4.5, CSS Values §percentages, CSS 2.1
   `padding` against the containing-block WIDTH, even vertically); `font-size`
   and `line-height` percentages resolve at style time. Auto horizontal margins
   absorb free space for block-level non-replaced boxes in normal flow
-  (§10.3.3); flex-item auto margins are deferred (Flexbox §8.1) and compute to
-  0 for now.
+  (§10.3.3); flex-item main-axis auto margins are deferred (Flexbox §8.1)
+  and compute to 0 for now — a block-level item in a column container
+  absorbs cross-axis free space through the block solver (accidental,
+  §8.1-aligned for the simple case, pinned by
+  `column_flex_block_item_cross_auto_margins_absorb_free_space`).
 - `as_box().width` reads `BoxLength::Percent(50.0)` for `width: 50%`; the used
   width is resolved through layout (the public computed read surface keeps the
   symbolic form, matching CSS computed values).
