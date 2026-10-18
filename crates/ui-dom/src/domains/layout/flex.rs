@@ -44,7 +44,8 @@ use super::flow::{
     display_is_inline_outer, enter_node, entered_content_size_property_style, exit_node,
     first_child_key, intrinsic_content_width, layout_flow_size, next_inline_child_context,
     next_sibling_key, non_negative_auto_content_height, relayout_tree_walker_node,
-    resolved_content_size_px, resolved_node_style, wrapped_text_content_height_px,
+    resolved_content_size_px, resolved_node_style, resolved_node_style_with_basis,
+    wrapped_text_content_height_px,
 };
 use super::style::{BoxSides, LayoutDisplay, NodeStyle, PositionMode};
 
@@ -445,7 +446,7 @@ where
 {
     let child_key = source.key();
     let (child_style, child_inherited_style) =
-        resolved_node_style(root_dom, child_key, &child_context.inherited_style)?;
+        resolved_node_style(root_dom, child_key, child_context)?;
     let measured_flow = measure_tree_walker_node_without_layout_write(
         root_dom,
         tree_size,
@@ -671,7 +672,7 @@ where
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
         let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, &child_context.inherited_style)?;
+            resolved_node_style(root_dom, current_child_key, &child_context)?;
         let next_child_context =
             measured_block_child_context(child_context.clone(), flow, child_style.display);
         let child_flow = measure_tree_walker_node_without_layout_write(
@@ -735,7 +736,7 @@ where
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
         let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, &child_context.inherited_style)?;
+            resolved_node_style(root_dom, current_child_key, &child_context)?;
         let next_child_context = next_inline_child_context(child_context.clone(), flow);
         let child_flow = measure_tree_walker_node_without_layout_write(
             root_dom,
@@ -1296,7 +1297,7 @@ fn horizontal_content_based_auto_min_content_width_px(
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
         let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, inherited_style)?;
+            resolved_node_style_with_basis(root_dom, current_child_key, inherited_style, 0.0, 0.0)?;
         if child_style.display == LayoutDisplay::None
             || matches!(
                 child_style.position,
@@ -1341,7 +1342,7 @@ fn horizontal_flex_container_content_based_auto_min_content_width_px(
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
         let (child_style, child_inherited_style) =
-            resolved_node_style(root_dom, current_child_key, inherited_style)?;
+            resolved_node_style_with_basis(root_dom, current_child_key, inherited_style, 0.0, 0.0)?;
         if child_style.display == LayoutDisplay::None
             || matches!(
                 child_style.position,
@@ -2385,11 +2386,8 @@ fn relayout_active_flex_child<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    let (child_style, _) = resolved_node_style(
-        root_dom,
-        request.source.key(),
-        &request.child_context.inherited_style,
-    )?;
+    let (child_style, _) =
+        resolved_node_style(root_dom, request.source.key(), request.child_context)?;
     let placed_context = active_flex_resolved_child_context(
         request.child_context.clone(),
         request.container_style,
@@ -2714,6 +2712,11 @@ fn cross_axis_margin_size_px(sides: BoxSides, main_axis: FlexAxis) -> f32 {
 }
 
 fn main_axis_start_margin(style: NodeStyle, main_axis: FlexAxis) -> f32 {
+    // Flexbox §8.1 auto-margin free-space absorption is deferred (PR 1 item 7
+    // scope boundary, `flex_item_auto_margin_computes_to_zero_for_now`): a flex
+    // item's `margin: auto` computes to 0 here. `node_style` already resolves
+    // an auto margin edge to a 0.0 placeholder, and this solver reads that
+    // resolved edge without distributing free space.
     main_axis_start_margin_from_sides(style.sides, main_axis)
 }
 
@@ -2985,8 +2988,7 @@ mod tests {
         recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
         let mut resolver = IdentityDomLayoutResolver;
         let (style, inherited_style) =
-            resolved_node_style(root, container, &context.inherited_style)
-                .expect("container style");
+            resolved_node_style(root, container, &context).expect("container style");
         let container_style =
             staged_flex_container_style(root.nodes.get(container).expect("container node"));
         let entered = enter_node(
@@ -3020,8 +3022,7 @@ mod tests {
         recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
         let mut resolver = IdentityDomLayoutResolver;
         let (style, inherited_style) =
-            resolved_node_style(root, container, &context.inherited_style)
-                .expect("container style");
+            resolved_node_style(root, container, &context).expect("container style");
         build_staged_measurement_solve(
             root,
             (320.0, 320.0),
@@ -3229,8 +3230,14 @@ mod tests {
 
         let items = collect_items_for_container(&mut root, container, context);
         let item = items.first().expect("child item");
-        let (text_style, _) = resolved_node_style(&root, text, &InheritedStyleContext::default())
-            .expect("text style");
+        let (text_style, _) = resolved_node_style_with_basis(
+            &root,
+            text,
+            &InheritedStyleContext::default(),
+            0.0,
+            0.0,
+        )
+        .expect("text style");
         let expected_segment_width_px = super::measure_text_intrinsic_from_content_and_font_size(
             "Supercalifragilistic",
             text_style.font_size_px,
@@ -4910,6 +4917,7 @@ mod tests {
                     border: BoxEdgeInsets::default(),
                     padding: BoxEdgeInsets::default(),
                 },
+                margin_auto: [false; 4],
                 box_sizing: BoxSizingKw::ContentBox,
                 width_px: None,
                 height_px: Some(12.0),

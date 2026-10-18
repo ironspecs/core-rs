@@ -50,7 +50,7 @@ use crate::types::{
 };
 
 #[cfg(test)]
-use crate::domains::style::{Keyword, StyleRuleOrigin, TransitionLonghandProperty};
+use crate::domains::style::{BoxLength, Keyword, StyleRuleOrigin, TransitionLonghandProperty};
 #[cfg(test)]
 use crate::types::{DomTag, RootDomContext, RootDomContextConfig};
 
@@ -359,8 +359,8 @@ fn fold_slot(
 }
 
 /// Resolves the node's own font size from the `FontSize` winner against the
-/// parent's font size (`em` is unit-resolved here; A6). Falls back to the
-/// inherited size when no author source set it.
+/// parent's font size (`em` and percentages are unit-resolved here; A6).
+/// Falls back to the inherited size when no author source set it.
 fn resolve_own_font_size_px(
     winners: &[Option<(DeclValue, Precedence)>; PresentationProperty::COUNT],
     parent_font_size_px: f32,
@@ -368,6 +368,7 @@ fn resolve_own_font_size_px(
     match winners[PresentationProperty::FontSize.index()] {
         Some((DeclValue::Length(DeclLength::Px(px)), _)) => px,
         Some((DeclValue::Length(DeclLength::Em(em)), _)) => parent_font_size_px * em,
+        Some((DeclValue::Length(DeclLength::Percent(pct)), _)) => parent_font_size_px * pct / 100.0,
         _ => parent_font_size_px,
     }
 }
@@ -648,6 +649,6 @@ mod tests {
         fold_element_winners(&mut root, div).expect("fold");
 
         let view = root.computed_style(div).expect("div");
-        assert_eq!(view.as_box().width, Some(120.0));
+        assert_eq!(view.as_box().width, BoxLength::Px(120.0));
     }
 }

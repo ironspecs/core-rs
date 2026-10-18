@@ -8,14 +8,20 @@
 //!
 //! Invariants and rules:
 //!
-//! - **`Option<f32>` = auto/unset.** `width`/`height`/min/max/top/left/right/
-//!   bottom are `None` when unset (initial `None`); lengths resolve to px at
-//!   style time, `em` against the element's own font size (A6) — the resolver's
-//!   job, not this file's.
+//! - **`BoxLength` = the computed/used split (CSS Cascade §4.5).**
+//!   `width`/`height`/min/max/top/left/right/bottom are `BoxLength::Auto` when
+//!   unset/`auto` (initial `Auto` — exactly the old `None` semantics); `Px` is
+//!   style-resolved (em against the element's own font size, A6); `Percent`
+//!   stays symbolic for layout-time resolution against the containing block.
 //! - **`margin`/`padding`/`border_width` are `[top, right, bottom, left]`,**
-//!   initial `[0.0; 4]` each — mirroring today's absent-edge default of
-//!   `unwrap_or(0.0)` in `domains/layout/style.rs::box_edge_insets_for`.
+//!   initial `[BoxLength::Px(0.0); 4]` each — mirroring today's absent-edge
+//!   default of `unwrap_or(0.0)` in `domains/layout/style.rs::box_edge_insets_for`.
+//!   Authored `margin: auto` is `BoxLength::Auto`, distinct from absent
+//!   (`Px(0.0)`); `padding: auto` never arrives (the grammar rejects it).
+//!   `border_width` stays `[f32; 4]` — no percentages, no `auto` in CSS
+//!   border-width.
 
+use super::box_length::BoxLength;
 use super::box_sizing_kw::BoxSizingKw;
 use super::display_kw::DisplayKw;
 use super::overflow_kw::OverflowKw;
@@ -38,22 +44,25 @@ pub struct ComputedBoxGroup {
     /// the specified `width`/`height` is the content box, padding and border
     /// outside it.
     pub box_sizing: BoxSizingKw,
-    pub width: Option<f32>,
-    pub height: Option<f32>,
-    pub min_width: Option<f32>,
-    pub min_height: Option<f32>,
-    pub max_width: Option<f32>,
-    pub max_height: Option<f32>,
-    pub top: Option<f32>,
-    pub left: Option<f32>,
-    pub right: Option<f32>,
-    pub bottom: Option<f32>,
-    /// `[top, right, bottom, left]`, px; initial `[0.0; 4]` (absent-edge default
-    /// `unwrap_or(0.0)` in `box_edge_insets_for`).
-    pub margin: [f32; 4],
-    /// `[top, right, bottom, left]`, px; initial `[0.0; 4]`.
-    pub padding: [f32; 4],
-    /// `[top, right, bottom, left]`, px; initial `[0.0; 4]`.
+    pub width: BoxLength,
+    pub height: BoxLength,
+    pub min_width: BoxLength,
+    pub min_height: BoxLength,
+    pub max_width: BoxLength,
+    pub max_height: BoxLength,
+    pub top: BoxLength,
+    pub left: BoxLength,
+    pub right: BoxLength,
+    pub bottom: BoxLength,
+    /// `[top, right, bottom, left]`; initial `[BoxLength::Px(0.0); 4]`
+    /// (absent-edge default `unwrap_or(0.0)` in `box_edge_insets_for`). Authored
+    /// `auto` is `BoxLength::Auto`, distinct from absent.
+    pub margin: [BoxLength; 4],
+    /// `[top, right, bottom, left]`; initial `[BoxLength::Px(0.0); 4]`
+    /// (`auto` never arrives — the grammar rejects it).
+    pub padding: [BoxLength; 4],
+    /// `[top, right, bottom, left]`, px; initial `[0.0; 4]` (no percentages, no
+    /// `auto` in CSS border-width).
     pub border_width: [f32; 4],
 }
 
@@ -67,18 +76,18 @@ impl ComputedBoxGroup {
             overflow: OverflowKw::Visible,
             isolate: false,
             box_sizing: BoxSizingKw::ContentBox,
-            width: None,
-            height: None,
-            min_width: None,
-            min_height: None,
-            max_width: None,
-            max_height: None,
-            top: None,
-            left: None,
-            right: None,
-            bottom: None,
-            margin: [0.0; 4],
-            padding: [0.0; 4],
+            width: BoxLength::Auto,
+            height: BoxLength::Auto,
+            min_width: BoxLength::Auto,
+            min_height: BoxLength::Auto,
+            max_width: BoxLength::Auto,
+            max_height: BoxLength::Auto,
+            top: BoxLength::Auto,
+            left: BoxLength::Auto,
+            right: BoxLength::Auto,
+            bottom: BoxLength::Auto,
+            margin: [BoxLength::Px(0.0); 4],
+            padding: [BoxLength::Px(0.0); 4],
             border_width: [0.0; 4],
         }
     }
@@ -97,18 +106,18 @@ mod tests {
         assert_eq!(box_.overflow, OverflowKw::Visible);
         assert!(!box_.isolate);
         assert_eq!(box_.box_sizing, BoxSizingKw::ContentBox);
-        assert_eq!(box_.width, None);
-        assert_eq!(box_.height, None);
-        assert_eq!(box_.min_width, None);
-        assert_eq!(box_.min_height, None);
-        assert_eq!(box_.max_width, None);
-        assert_eq!(box_.max_height, None);
-        assert_eq!(box_.top, None);
-        assert_eq!(box_.left, None);
-        assert_eq!(box_.right, None);
-        assert_eq!(box_.bottom, None);
-        assert_eq!(box_.margin, [0.0; 4]);
-        assert_eq!(box_.padding, [0.0; 4]);
+        assert_eq!(box_.width, BoxLength::Auto);
+        assert_eq!(box_.height, BoxLength::Auto);
+        assert_eq!(box_.min_width, BoxLength::Auto);
+        assert_eq!(box_.min_height, BoxLength::Auto);
+        assert_eq!(box_.max_width, BoxLength::Auto);
+        assert_eq!(box_.max_height, BoxLength::Auto);
+        assert_eq!(box_.top, BoxLength::Auto);
+        assert_eq!(box_.left, BoxLength::Auto);
+        assert_eq!(box_.right, BoxLength::Auto);
+        assert_eq!(box_.bottom, BoxLength::Auto);
+        assert_eq!(box_.margin, [BoxLength::Px(0.0); 4]);
+        assert_eq!(box_.padding, [BoxLength::Px(0.0); 4]);
         assert_eq!(box_.border_width, [0.0; 4]);
     }
 }

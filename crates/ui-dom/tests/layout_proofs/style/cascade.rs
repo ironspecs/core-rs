@@ -60,16 +60,16 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    AlignContentKw, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerState, DomPointerUpdate,
-    DomTextAlign, DomTextDirection, FlexBasisKw, JustifyContentKw, Keyword, RootDom,
-    RootDomMetricName, StyleRuleOrigin, TextIntrinsic, parse_css_color_rgba,
+    AlignContentKw, BoxLength, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerState,
+    DomPointerUpdate, DomTextAlign, DomTextDirection, FlexBasisKw, JustifyContentKw, Keyword,
+    RootDom, RootDomMetricName, StyleRuleOrigin, TextIntrinsic, parse_css_color_rgba,
 };
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
     assert_load_root_stylesheet, assert_node_layout, assert_rect_op_fill, assert_rect_op_geometry,
     assert_root_dom_update, assert_set_attr_str, assert_style_set,
-    attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    attached_gpu_root_dom_default_viewport_setup, box_px, take_staged_layer_paint_plans,
     theme_stylesheet_origin,
 };
 
@@ -394,7 +394,7 @@ fn inline_style_beats_stylesheet_and_survives_unload() {
                 .expect("target should remain readable")
                 .as_box()
                 .width,
-            Some(10.0),
+            box_px(10.0),
             "{name} inline width should win",
         );
         assert_single_rect_target_width(&root, 10.0, name);
@@ -647,17 +647,20 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
                     .expect("span should remain readable")
                     .as_box();
                 assert_eq!(
-                    box_.width, None,
+                    box_.width,
+                    BoxLength::Auto,
                     "{} span should not inherit width",
                     case.name
                 );
                 assert_eq!(
-                    box_.margin[3], 0.0,
+                    box_.margin[3],
+                    box_px(0.0),
                     "{} span should not inherit margin-left",
                     case.name
                 );
                 assert_eq!(
-                    box_.padding[3], 0.0,
+                    box_.padding[3],
+                    box_px(0.0),
                     "{} span should not inherit padding-left",
                     case.name
                 );
@@ -851,7 +854,7 @@ fn assert_hover_phase_width(
             .expect("hover target should remain readable")
             .as_box()
             .width,
-        Some(expected_width_px),
+        box_px(expected_width_px),
         "{label} computed width",
     );
     match previous_width_px {
@@ -1028,7 +1031,7 @@ fn malformed_stylesheet_declarations_drop_and_continue_with_report() {
                 .expect("target should remain readable")
                 .as_box()
                 .width,
-            Some(20.0),
+            box_px(20.0),
             "{}: valid width declaration must apply after drop-and-continue",
             case.name
         );
@@ -1088,7 +1091,7 @@ fn style_attribute_drops_malformed_declarations_and_counts_them() {
                 .expect("target should remain readable")
                 .as_box()
                 .width,
-            Some(20.0),
+            box_px(20.0),
             "{}: valid width declaration must apply after drop-and-continue",
             case.name
         );

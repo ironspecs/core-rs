@@ -32,7 +32,7 @@ use ui_dom::{DomError, DomPointerUpdate, StylesheetLoadReport};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_text_to, assert_decl_drop, assert_root_dom_update,
-    assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
+    assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup, box_px,
     take_staged_layer_paint_plans, theme_stylesheet_origin,
 };
 
@@ -215,7 +215,7 @@ fn robustness_comment_handling() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(1.0),
+        box_px(1.0),
     );
 
     // (b) unterminated block comment → whole load fails with InvalidSelector.
@@ -271,7 +271,7 @@ fn robustness_volume() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(1.0),
+        box_px(1.0),
     );
 
     // (b) one rule, 200 declaration segments, many repeats with last-wins upserts.
@@ -325,7 +325,7 @@ fn robustness_volume() {
     );
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(180.0),
+        box_px(180.0),
     );
 
     // (c) 64-compound descendant selector over a 64-deep div nest.
@@ -345,7 +345,7 @@ fn robustness_volume() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(leaf).expect("leaf").as_box().width,
-        Some(1.0),
+        box_px(1.0),
     );
 }
 
@@ -396,7 +396,7 @@ fn robustness_extreme_values() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().margin[3],
-        -3.4e38_f32,
+        box_px(-3.4e38_f32),
     );
 
     // (c) opacity just past 1.0 clamps to exactly 1.0 (f32 1.000000119 → 1.0).

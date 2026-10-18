@@ -18,6 +18,14 @@
 //! - every grammar family is a small helper (<20 complexity); the
 //!   `DeclGrammar` match only dispatches, it never parses
 //! - numeric parsing always rejects non-finite values (`NaN`, `inf`, `-inf`)
+//! - the `auto` keyword is admitted only for the closed `AUTO_ADMISSIBLE`
+//!   property set (fail-closed, before grammar dispatch); properties outside
+//!   the set fall through to their grammar, which rejects `auto` (e.g.
+//!   `padding: auto`, `border-top-width: auto`, `font-size: auto` all drop)
+//! - `<percentage>` lengths parse to `DeclLength::Percent`; signed `Length`
+//!   admits negative percentages, `NonNegativeLength` rejects them, and `Gap`
+//!   rejects all percentages (the flex gap field is `[f32; 2]` and percentage
+//!   resolution is out of scope for PR 1 item 7)
 //! - expansion helpers parse each produced token through the target longhand's
 //!   grammar (the sign policy cannot be bypassed via a shorthand). Two helpers
 //!   are equivalent-by-construction rather than literally routed:
@@ -28,7 +36,11 @@
 //!   `BorderTopLeftRadius`, the gaps through `RowGap`, the four margins through
 //!   `MarginTop` (signed `Length`), and the four paddings through `PaddingTop`
 //!   (`NonNegativeLength`) as representatives of their (currently identical)
-//!   longhand grammars
+//!   longhand grammars. `expand_margin` additionally admits the `auto` keyword
+//!   per token (CSS Box 3 §4.2 — `margin: auto`/`margin: 0 auto` centering),
+//!   mirroring the longhand's `AUTO_ADMISSIBLE` entry and producing
+//!   `DeclValue::Keyword(Keyword::Auto)`; `expand_padding` does not (padding
+//!   stays `NonNegativeLength` and `auto` keeps dropping)
 
 // `parse_declaration_block` is wired into the stylesheet load path (spine
 // step 2); `parse_declaration_strict` is wired into the `style_mut` single
@@ -315,11 +327,48 @@ fn expand_shape(
 ) -> Option<Vec<Declaration>> {
     match shape {
         PropertyShape::Longhand(property) => {
-            let parsed = parse_value(property.grammar(), value, interner)?;
+            let parsed = parse_property_value(property, value, interner)?;
             Some(vec![declaration(property, parsed)])
         }
         PropertyShape::Shorthand(shorthand) => expand_shorthand(shorthand, value, interner),
     }
+}
+
+/// The properties whose grammar admits the `auto` keyword (CSS: `auto` is
+/// invalid for padding, border widths, radii, gaps, outlines, and font sizes).
+/// This is the closed, fail-closed admission table for the segment parser: a
+/// property NOT in the set falls through to its grammar, which rejects `auto`.
+const AUTO_ADMISSIBLE: &[PresentationProperty] = &[
+    PresentationProperty::Width,
+    PresentationProperty::Height,
+    PresentationProperty::MinWidth,
+    PresentationProperty::MinHeight,
+    PresentationProperty::MaxWidth,
+    PresentationProperty::MaxHeight,
+    PresentationProperty::Top,
+    PresentationProperty::Left,
+    PresentationProperty::Right,
+    PresentationProperty::Bottom,
+    PresentationProperty::MarginTop,
+    PresentationProperty::MarginRight,
+    PresentationProperty::MarginBottom,
+    PresentationProperty::MarginLeft,
+];
+
+/// Parses one longhand's declared value, admitting the `auto` keyword BEFORE
+/// grammar dispatch for the closed `AUTO_ADMISSIBLE` property set. Properties
+/// outside the set fall through to their grammar, which rejects `auto` (a
+/// counted drop) — e.g. `padding: auto`, `border-top-width: auto`, and
+/// `font-size: auto` all drop.
+fn parse_property_value(
+    property: PresentationProperty,
+    value: &str,
+    interner: &mut TextInterner,
+) -> Option<DeclValue> {
+    if value == "auto" && AUTO_ADMISSIBLE.contains(&property) {
+        return Some(DeclValue::Keyword(Keyword::Auto));
+    }
+    parse_value(property.grammar(), value, interner)
 }
 
 fn expand_shorthand(
@@ -387,28 +436,53 @@ fn decl_length_from_authored(value: AuthoredLength) -> DeclLength {
     }
 }
 
-fn parse_length(value: &str) -> Option<DeclLength> {
-    parse_authored_length(value).map(decl_length_from_authored)
+/// Parses a `<f32>%` percentage scalar (finite-only). The trailing `%` is the
+/// percentage marker; anything else is left to the caller's unit grammar.
+fn parse_percentage(value: &str) -> Option<f32> {
+    let scalar = value.strip_suffix('%')?;
+    let parsed = scalar.trim().parse::<f32>().ok()?;
+    parsed.is_finite().then_some(parsed)
 }
 
-/// `unset | 0 | <non-negative px> | <non-negative em>` — the sign policy for
-/// non-negative length properties (CSS rejects negatives here).
+fn parse_length(value: &str) -> Option<DeclLength> {
+    parse_authored_length(value)
+        .map(decl_length_from_authored)
+        .or_else(|| parse_percentage(value).map(DeclLength::Percent))
+}
+
+/// `unset | 0 | <non-negative px> | <non-negative em> | <non-negative %>` —
+/// the sign policy for non-negative length properties (CSS rejects negatives
+/// here, including negative percentages).
 fn parse_non_negative_length_or_unset(value: &str) -> Option<DeclLength> {
-    match parse_authored_length(value)? {
-        AuthoredLength::Unset => Some(DeclLength::Unset),
-        AuthoredLength::Px(px) if px >= 0.0 => Some(DeclLength::Px(px)),
-        AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
-        _ => None,
+    if let Some(authored) = parse_authored_length(value) {
+        return match authored {
+            AuthoredLength::Unset => Some(DeclLength::Unset),
+            AuthoredLength::Px(px) if px >= 0.0 => Some(DeclLength::Px(px)),
+            AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
+            _ => None,
+        };
     }
+    let percentage = parse_percentage(value)?;
+    (percentage >= 0.0).then_some(DeclLength::Percent(percentage))
 }
 
 /// `normal | unset | 0 | <non-negative px> | <non-negative em>` (CSS Box
 /// Alignment 3 §8.2: `normal` computes to zero, matching the shorthand).
+///
+/// Percentages are deliberately NOT admitted here even though
+/// `parse_non_negative_length_or_unset` (which this delegates to) admits them:
+/// the flex gap field is `[f32; 2]` and gap percentage resolution against the
+/// flex container's content box is out of scope for PR 1 item 7 — admitting the
+/// value without a resolution target would be a silent no-op, so the percentage
+/// form keeps dropping + counting instead.
 fn parse_gap_longhand(value: &str) -> Option<DeclLength> {
     if value == "normal" {
         return Some(DeclLength::Px(0.0));
     }
-    parse_non_negative_length_or_unset(value)
+    match parse_non_negative_length_or_unset(value) {
+        Some(DeclLength::Percent(_)) => None,
+        other => other,
+    }
 }
 
 fn parse_line_height(value: &str) -> Option<DeclValue> {
@@ -422,11 +496,15 @@ fn parse_line_height(value: &str) -> Option<DeclValue> {
 }
 
 fn parse_non_negative_length(value: &str) -> Option<DeclLength> {
-    match parse_authored_length(value)? {
-        AuthoredLength::Px(px) if px >= 0.0 => Some(DeclLength::Px(px)),
-        AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
-        _ => None,
+    if let Some(authored) = parse_authored_length(value) {
+        return match authored {
+            AuthoredLength::Px(px) if px >= 0.0 => Some(DeclLength::Px(px)),
+            AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
+            _ => None,
+        };
     }
+    let percentage = parse_percentage(value)?;
+    (percentage >= 0.0).then_some(DeclLength::Percent(percentage))
 }
 
 // — Number/integer family — //
@@ -781,18 +859,19 @@ fn expand_border_radius(value: &str) -> Option<Vec<Declaration>> {
 }
 
 fn expand_margin(value: &str) -> Option<Vec<Declaration>> {
-    let lengths = parse_token_list(value, |token| {
-        parse_length_for(PresentationProperty::MarginTop, token)
+    let values = parse_token_list(value, |token| {
+        if token == "auto" {
+            Some(DeclValue::Keyword(Keyword::Auto))
+        } else {
+            parse_length_for(PresentationProperty::MarginTop, token).map(DeclValue::Length)
+        }
     })?;
-    let (top, right, bottom, left) = corner_quad(&lengths)?;
+    let (top, right, bottom, left) = corner_quad(&values)?;
     Some(vec![
-        declaration(PresentationProperty::MarginTop, DeclValue::Length(top)),
-        declaration(PresentationProperty::MarginRight, DeclValue::Length(right)),
-        declaration(
-            PresentationProperty::MarginBottom,
-            DeclValue::Length(bottom),
-        ),
-        declaration(PresentationProperty::MarginLeft, DeclValue::Length(left)),
+        declaration(PresentationProperty::MarginTop, top),
+        declaration(PresentationProperty::MarginRight, right),
+        declaration(PresentationProperty::MarginBottom, bottom),
+        declaration(PresentationProperty::MarginLeft, left),
     ])
 }
 
@@ -1146,12 +1225,22 @@ mod tests {
             parse_value(DeclGrammar::Length, "unset", &mut interner),
             Some(DeclValue::Length(DeclLength::Unset))
         );
+        assert_eq!(
+            parse_value(DeclGrammar::Length, "50%", &mut interner),
+            Some(DeclValue::Length(DeclLength::Percent(50.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::Length, "-10%", &mut interner),
+            Some(DeclValue::Length(DeclLength::Percent(-10.0)))
+        );
     }
 
     #[test]
     fn length_grammar_rejects_unknown_units_and_non_finite() {
         let mut interner = TextInterner::default();
-        for invalid in ["10", "10vh", "10%", "NaNpx", "infpx", "-infpx", ""] {
+        for invalid in [
+            "10", "10vh", "NaNpx", "infpx", "-infpx", "10%%", "10.5%px", "",
+        ] {
             assert_eq!(
                 parse_value(DeclGrammar::Length, invalid, &mut interner),
                 None,
@@ -1179,7 +1268,11 @@ mod tests {
             parse_value(DeclGrammar::NonNegativeLength, "1.5em", &mut interner),
             Some(DeclValue::Length(DeclLength::Em(1.5)))
         );
-        for invalid in ["-1px", "-0.5em"] {
+        assert_eq!(
+            parse_value(DeclGrammar::NonNegativeLength, "50%", &mut interner),
+            Some(DeclValue::Length(DeclLength::Percent(50.0)))
+        );
+        for invalid in ["-1px", "-0.5em", "-10%"] {
             assert_eq!(
                 parse_value(DeclGrammar::NonNegativeLength, invalid, &mut interner),
                 None,
@@ -1211,11 +1304,47 @@ mod tests {
             parse_value(DeclGrammar::Gap, "1.5em", &mut interner),
             Some(DeclValue::Length(DeclLength::Em(1.5)))
         );
-        for invalid in ["-1px", "bogus"] {
+        for invalid in ["-1px", "-10%", "10%", "bogus"] {
             assert_eq!(
                 parse_value(DeclGrammar::Gap, invalid, &mut interner),
                 None,
                 "{invalid:?} should fail the Gap grammar"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_keyword_admission_is_closed_per_property() {
+        let mut interner = TextInterner::default();
+        for admitted in [
+            PresentationProperty::Width,
+            PresentationProperty::Height,
+            PresentationProperty::MinWidth,
+            PresentationProperty::MaxWidth,
+            PresentationProperty::Top,
+            PresentationProperty::Left,
+            PresentationProperty::MarginTop,
+            PresentationProperty::MarginLeft,
+        ] {
+            assert_eq!(
+                parse_property_value(admitted, "auto", &mut interner),
+                Some(DeclValue::Keyword(Keyword::Auto)),
+                "{admitted:?} should admit auto"
+            );
+        }
+        for rejected in [
+            PresentationProperty::PaddingTop,
+            PresentationProperty::PaddingLeft,
+            PresentationProperty::BorderTopWidth,
+            PresentationProperty::BorderTopLeftRadius,
+            PresentationProperty::RowGap,
+            PresentationProperty::OutlineWidth,
+            PresentationProperty::FontSize,
+        ] {
+            assert_eq!(
+                parse_property_value(rejected, "auto", &mut interner),
+                None,
+                "{rejected:?} should reject auto"
             );
         }
     }
@@ -1243,12 +1372,16 @@ mod tests {
             parse_value(DeclGrammar::LineHeight, "1.25em", &mut interner),
             Some(DeclValue::Length(DeclLength::Em(1.25)))
         );
+        assert_eq!(
+            parse_value(DeclGrammar::LineHeight, "150%", &mut interner),
+            Some(DeclValue::Length(DeclLength::Percent(150.0)))
+        );
     }
 
     #[test]
-    fn line_height_rejects_percentages_negatives_and_non_finite() {
+    fn line_height_rejects_negatives_and_non_finite() {
         let mut interner = TextInterner::default();
-        for invalid in ["120%", "-1", "-2px", "-0.5em", "NaN", "inf", "unset"] {
+        for invalid in ["-120%", "-1", "-2px", "-0.5em", "NaN", "inf", "unset"] {
             assert_eq!(
                 parse_value(DeclGrammar::LineHeight, invalid, &mut interner),
                 None,
@@ -1972,6 +2105,32 @@ mod tests {
             margin_quad(&block),
             [px(-10.0), px(2.0), px(-10.0), px(2.0)]
         );
+    }
+
+    #[test]
+    fn margin_shorthand_admits_auto() {
+        let auto = DeclValue::Keyword(Keyword::Auto);
+
+        let (block, report, _) = parse_block("margin: auto");
+        assert_eq!(report.applied, 1);
+        assert_eq!(margin_quad(&block), [auto, auto, auto, auto]);
+
+        let (block, _, _) = parse_block("margin: 0 auto");
+        assert_eq!(margin_quad(&block), [px(0.0), auto, px(0.0), auto]);
+
+        let (block, _, _) = parse_block("margin: 10px auto 20px");
+        assert_eq!(margin_quad(&block), [px(10.0), auto, px(20.0), auto]);
+
+        let (_, report, _) = parse_block("margin: auto auto auto auto auto");
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.dropped, 1);
+    }
+
+    #[test]
+    fn padding_shorthand_rejects_auto() {
+        let (_, report, _) = parse_block("padding: auto");
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.dropped, 1);
     }
 
     #[test]

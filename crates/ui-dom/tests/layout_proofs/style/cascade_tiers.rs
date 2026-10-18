@@ -31,14 +31,15 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomError, DomNode, DomNodeSlotKey, DomPointerState, DomPointerUpdate, DomPseudoState, RootDom,
-    RootDomMetricName, StyleRuleOrigin, StylesheetLoadReport, parse_css_color_rgba,
+    BoxLength, DomError, DomNode, DomNodeSlotKey, DomPointerState, DomPointerUpdate,
+    DomPseudoState, RootDom, RootDomMetricName, StyleRuleOrigin, StylesheetLoadReport,
+    parse_css_color_rgba,
 };
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_input_to, assert_decl_drop, assert_load_root_stylesheet,
     assert_root_dom_update, assert_set_attr_str, assert_style_set,
-    attached_gpu_root_dom_default_viewport_setup, theme_stylesheet_origin,
+    attached_gpu_root_dom_default_viewport_setup, box_px, theme_stylesheet_origin,
 };
 
 /// Returns `(world, root, target, report)`: a fresh root with a single
@@ -115,12 +116,12 @@ fn important_declarations_win_over_normal_author_rules() {
     let box_ = root.computed_style(target).expect("target").as_box();
     assert_eq!(
         box_.width,
-        Some(10.0),
+        box_px(10.0),
         "the important width should compute 10px"
     );
     assert_eq!(
         box_.height,
-        Some(5.0),
+        box_px(5.0),
         "the normal height should compute 5px"
     );
 
@@ -131,7 +132,7 @@ fn important_declarations_win_over_normal_author_rules() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(10.0),
+        box_px(10.0),
         "(b) the important declaration should beat a higher-specificity normal rule",
     );
 
@@ -154,7 +155,7 @@ fn important_declarations_win_over_normal_author_rules() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(10.0),
+        box_px(10.0),
         "(c) the -100 important declaration should beat the 100 normal declaration",
     );
 
@@ -165,7 +166,7 @@ fn important_declarations_win_over_normal_author_rules() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(10.0),
+        box_px(10.0),
         "(d) the important author declaration should beat normal inline style",
     );
 
@@ -177,7 +178,7 @@ fn important_declarations_win_over_normal_author_rules() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(30.0),
+        box_px(30.0),
         "(e) important inline style should beat an important author rule",
     );
 }
@@ -214,7 +215,7 @@ fn important_style_attribute_declarations_apply_and_win() {
     );
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(30.0),
+        box_px(30.0),
         "the important inline width should win over the important author rule",
     );
 }
@@ -270,7 +271,7 @@ fn unsupported_custom_properties_and_var_drop() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        None,
+        BoxLength::Auto,
         "width should stay absent after the var() drop",
     );
 }
@@ -326,7 +327,7 @@ fn ua_sheet_workaround_low_priority_origin_loses_to_author_and_beats_behavior() 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(20.0),
+        box_px(20.0),
         "(a) the author origin should beat the -100 UA analog at equal specificity",
     );
 

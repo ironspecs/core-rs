@@ -47,6 +47,7 @@ use crate::types::{
 
 use super::style::{
     BoxSides, LayoutDisplay, NodeStyle, PositionMode, intrinsic_box_for_node, node_style,
+    presented_position,
 };
 use super::{DomLayoutInput, DomLayoutResolver};
 
@@ -55,7 +56,9 @@ use crate::domains::layout::walker::relayout_tree;
 #[cfg(test)]
 use crate::domains::layout::{IdentityDomLayoutResolver, node_box};
 #[cfg(test)]
-use crate::domains::style::computed::{ComputedGroups, DisplayKw, OverflowKw, PositionKw};
+use crate::domains::style::computed::{
+    BoxLength, ComputedGroups, DisplayKw, OverflowKw, PositionKw,
+};
 #[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
@@ -179,7 +182,7 @@ pub(super) fn relayout_tree_walker_node<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    let (style, inherited_style) = resolved_node_style(root_dom, key, &context.inherited_style)?;
+    let (style, inherited_style) = resolved_node_style(root_dom, key, &context)?;
     let style = style_with_node_content_size_overrides(style, &context);
     let context = context_without_node_content_size_overrides(context);
 
@@ -264,7 +267,9 @@ where
                 .nodes
                 .get(current_child_key)
                 .ok_or(DomError::InvalidNodeKey)?;
-            node_style(child_node)?
+            let (basis_width_px, basis_height_px) =
+                node_style_basis(presented_position(child_node), &child_context);
+            node_style(child_node, basis_width_px, basis_height_px)?
         };
         let child_participates_in_flow = node_participates_in_normal_flow(child_style);
         let collapsed_parent_top_margin_px =
@@ -357,7 +362,9 @@ where
                 .nodes
                 .get(current_child_key)
                 .ok_or(DomError::InvalidNodeKey)?;
-            node_style(child_node)?
+            let (basis_width_px, basis_height_px) =
+                node_style_basis(presented_position(child_node), &child_context);
+            node_style(child_node, basis_width_px, basis_height_px)?
         };
         let child_participates_in_flow = node_participates_in_normal_flow(child_style);
         let next_child_context = if child_participates_in_flow {
@@ -418,6 +425,7 @@ pub(super) fn enter_node<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
+    let mut style = style;
     let (
         intrinsic_box,
         allows_parent_child_block_margin_collapse,
@@ -478,6 +486,18 @@ where
         )
     };
     let border_width_px = border_box_width(style.sides, content_width_px);
+    // CSS 2.1 §10.3.3: resolve `auto` horizontal margins for a block-level
+    // non-replaced box in normal flow before local-left placement. The
+    // resolved margins write back into both `style.sides.margin` (placement)
+    // and `box_model.margin` (the used box model).
+    let cb_width_px = available_width_px_for_node(style, &context);
+    resolve_block_auto_margins(
+        &mut style,
+        cb_width_px,
+        border_width_px,
+        img_intrinsic_aspect_ratio.is_some(),
+    );
+    box_model.margin = style.sides.margin;
     let local_left_px = resolve_local_left(style, context.clone(), box_model, border_width_px);
     let local_top_px = resolve_local_top_without_height(style, context.clone(), box_model);
     let absolute_left_px = absolute_left_px_for_node(style, &context, local_left_px);
@@ -586,7 +606,7 @@ fn seed_separate_layout_root_box<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    let (style, inherited_style) = resolved_node_style(root_dom, key, &context.inherited_style)?;
+    let (style, inherited_style) = resolved_node_style(root_dom, key, &context)?;
     let entered = enter_node(
         root_dom,
         tree_size,
@@ -1297,7 +1317,7 @@ fn separate_tree_flow_size(
     image_size_px: (f32, f32),
 ) -> Result<FlowSize, DomError> {
     let node_inherited_style = inherited_context_from_node(node, inherited_style);
-    let style = node_style(node)?;
+    let style = node_style(node, 0.0, 0.0)?;
     if style.display == LayoutDisplay::None
         || matches!(style.position, PositionMode::Absolute | PositionMode::Fixed)
     {
@@ -1402,12 +1422,46 @@ pub(super) fn content_width_contribution_for_exit(
 pub(super) fn resolved_node_style(
     root_dom: &RootDom,
     key: DomNodeSlotKey,
+    context: &LayoutContext,
+) -> Result<(NodeStyle, InheritedStyleContext), DomError> {
+    let node = root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
+    let node_inherited_style = inherited_context_from_node(node, &context.inherited_style);
+    let (basis_width_px, basis_height_px) = node_style_basis(presented_position(node), context);
+    let style = node_style(node, basis_width_px, basis_height_px)?;
+    Ok((style, node_inherited_style))
+}
+
+/// Resolves a node's layout style + inherited context with a caller-supplied
+/// basis. Measurement paths and separate-tree intrinsic measurement have no
+/// containing block, so they pass `(0.0, 0.0)` (a percentage then resolves to
+/// its zero degenerate — the measurement subset is gated by the active-solver
+/// support boundaries anyway).
+pub(super) fn resolved_node_style_with_basis(
+    root_dom: &RootDom,
+    key: DomNodeSlotKey,
     inherited_style: &InheritedStyleContext,
+    basis_width_px: f32,
+    basis_height_px: f32,
 ) -> Result<(NodeStyle, InheritedStyleContext), DomError> {
     let node = root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
     let node_inherited_style = inherited_context_from_node(node, inherited_style);
-    let style = node_style(node)?;
+    let style = node_style(node, basis_width_px, basis_height_px)?;
     Ok((style, node_inherited_style))
+}
+
+/// The containing-block width/height a node's percentage lengths resolve
+/// against (CSS 2.1 §10.1, CSS Values §percentages): the containing block's
+/// content box. In-flow boxes use the available width/height; absolute/fixed
+/// boxes use their reference space (containing layer / viewport).
+fn node_style_basis(position: PositionMode, context: &LayoutContext) -> (f32, f32) {
+    (
+        positioned_width_reference_px_for(position, context)
+            .or(context.available_width_px)
+            .unwrap_or(0.0),
+        positioned_height_reference_px_for(position, context)
+            .or(context.available_height_px)
+            .unwrap_or(0.0),
+    )
 }
 
 fn img_intrinsic_aspect_ratio(node: &DomNode) -> Option<f32> {
@@ -1544,15 +1598,29 @@ fn resolve_positioned_auto_content_height(
 }
 
 fn positioned_auto_height_reference_px(style: NodeStyle, context: &LayoutContext) -> Option<f32> {
-    match style.position {
+    positioned_height_reference_px_for(style.position, context)
+}
+
+fn positioned_width_reference_px(style: NodeStyle, context: &LayoutContext) -> Option<f32> {
+    positioned_width_reference_px_for(style.position, context)
+}
+
+fn positioned_height_reference_px_for(
+    position: PositionMode,
+    context: &LayoutContext,
+) -> Option<f32> {
+    match position {
         PositionMode::Absolute => Some(context.containing_layer_height_px),
         PositionMode::Fixed => Some(context.viewport_height_px),
         PositionMode::Static | PositionMode::Relative => None,
     }
 }
 
-fn positioned_width_reference_px(style: NodeStyle, context: &LayoutContext) -> Option<f32> {
-    match style.position {
+fn positioned_width_reference_px_for(
+    position: PositionMode,
+    context: &LayoutContext,
+) -> Option<f32> {
+    match position {
         PositionMode::Absolute => Some(context.containing_layer_width_px),
         PositionMode::Fixed => Some(context.viewport_width_px),
         PositionMode::Static | PositionMode::Relative => None,
@@ -1673,6 +1741,55 @@ fn resolve_node_content_width(
         style.min_width_px,
         style.max_width_px,
     )
+}
+
+/// CSS 2.1 §10.3.3 (block-level, non-replaced boxes in normal flow): with a
+/// non-auto width, an auto horizontal margin absorbs the free space between the
+/// containing-block width and the used border-box width — two auto margins
+/// split it equally, one absorbs it all, both floored at zero. Auto vertical
+/// margins resolve to zero (their placeholder). When the width is `auto`, auto
+/// margins compute to zero per the same section.
+///
+/// Flex-item auto margins are a DIFFERENT algorithm (Flexbox §8.1) and are
+/// deferred (PR 1 item 7 scope boundary): a flex item's `margin: auto` computes
+/// to 0 for now. The flex placement context gives the item's own resolved
+/// content size as `available_width_px`, so the free space here is
+/// `item_content − item_border_box ≤ 0` and this solver naturally leaves the
+/// 0.0 placeholder — see `flex_item_auto_margin_computes_to_zero_for_now`.
+fn resolve_block_auto_margins(
+    style: &mut NodeStyle,
+    cb_width_px: Option<f32>,
+    border_box_width_px: f32,
+    replaced: bool,
+) {
+    if replaced
+        || style.display != LayoutDisplay::Block
+        || !matches!(
+            style.position,
+            PositionMode::Static | PositionMode::Relative
+        )
+        || style.width_px.is_none()
+    {
+        return;
+    }
+    let Some(cb_width_px) = cb_width_px else {
+        return;
+    };
+    // `margin_auto` is `[top, right, bottom, left]` (group array order).
+    let left_auto = style.margin_auto[3];
+    let right_auto = style.margin_auto[1];
+    if !left_auto && !right_auto {
+        return;
+    }
+    let free_px = (cb_width_px - border_box_width_px).max(0.0);
+    if left_auto && right_auto {
+        style.sides.margin.left_px = free_px / 2.0;
+        style.sides.margin.right_px = free_px / 2.0;
+    } else if left_auto {
+        style.sides.margin.left_px = free_px;
+    } else {
+        style.sides.margin.right_px = free_px;
+    }
 }
 
 // Resolves the node's local left position after combining normal-flow
@@ -2081,7 +2198,7 @@ mod tests {
     }
 
     fn resolved_node_style(node: &DomNode) -> NodeStyle {
-        node_style(node).expect("node style")
+        node_style(node, 0.0, 0.0).expect("node style")
     }
 
     #[test]
@@ -2110,8 +2227,8 @@ mod tests {
     fn content_width_uses_available_width_for_block_and_intrinsic_for_inline() {
         let block = node_with_groups(|groups| {
             // `margin`/`padding` are [top, right, bottom, left].
-            groups.box_.margin[3] = 6.0; // margin-left
-            groups.box_.padding[1] = 4.0; // padding-right
+            groups.box_.margin[3] = BoxLength::Px(6.0); // margin-left
+            groups.box_.padding[1] = BoxLength::Px(4.0); // padding-right
         });
         let block_style = resolved_node_style(&block);
         let block_width =
@@ -2140,12 +2257,12 @@ mod tests {
     fn non_replaced_inline_size_properties_do_not_constrain_children_or_content_box() {
         let inline = node_with_groups(|groups| {
             groups.box_.display = DisplayKw::Inline;
-            groups.box_.width = Some(20.0);
-            groups.box_.height = Some(40.0);
-            groups.box_.min_width = Some(10.0);
-            groups.box_.min_height = Some(12.0);
-            groups.box_.max_width = Some(14.0);
-            groups.box_.max_height = Some(16.0);
+            groups.box_.width = BoxLength::Px(20.0);
+            groups.box_.height = BoxLength::Px(40.0);
+            groups.box_.min_width = BoxLength::Px(10.0);
+            groups.box_.min_height = BoxLength::Px(12.0);
+            groups.box_.max_width = BoxLength::Px(14.0);
+            groups.box_.max_height = BoxLength::Px(16.0);
         });
         let inline_style = resolved_node_style(&inline);
 
@@ -2173,7 +2290,7 @@ mod tests {
 
         let explicit_inline_block = node_with_groups(|groups| {
             groups.box_.display = DisplayKw::InlineBlock;
-            groups.box_.width = Some(20.0);
+            groups.box_.width = BoxLength::Px(20.0);
         });
         assert!(!node_defers_child_width_to_intrinsic_inline_measurement(
             resolved_node_style(&explicit_inline_block),
@@ -2192,10 +2309,10 @@ mod tests {
     #[test]
     fn block_auto_width_subtracts_all_non_content_edges() {
         let block = node_with_groups(|groups| {
-            groups.box_.margin[3] = 4.0; // margin-left
-            groups.box_.margin[1] = 6.0; // margin-right
-            groups.box_.padding[3] = 3.0; // padding-left
-            groups.box_.padding[1] = 2.0; // padding-right
+            groups.box_.margin[3] = BoxLength::Px(4.0); // margin-left
+            groups.box_.margin[1] = BoxLength::Px(6.0); // margin-right
+            groups.box_.padding[3] = BoxLength::Px(3.0); // padding-left
+            groups.box_.padding[1] = BoxLength::Px(2.0); // padding-right
             groups.box_.border_width[3] = 1.0; // border-left
             groups.box_.border_width[1] = 5.0; // border-right
         });
@@ -2212,9 +2329,9 @@ mod tests {
     #[test]
     fn explicit_width_and_clamps_stay_consistent() {
         let node = node_with_groups(|groups| {
-            groups.box_.width = Some(10.0);
-            groups.box_.min_width = Some(20.0);
-            groups.box_.max_width = Some(30.0);
+            groups.box_.width = BoxLength::Px(10.0);
+            groups.box_.min_width = BoxLength::Px(20.0);
+            groups.box_.max_width = BoxLength::Px(30.0);
         });
 
         let content_width_px = resolve_content_width(
@@ -2252,8 +2369,8 @@ mod tests {
     fn separate_tree_flow_size_keeps_in_flow_hidden_overflow_nodes() {
         let hidden = node_with_groups(|groups| {
             groups.box_.overflow = OverflowKw::Hidden;
-            groups.box_.width = Some(24.0);
-            groups.box_.height = Some(12.0);
+            groups.box_.width = BoxLength::Px(24.0);
+            groups.box_.height = BoxLength::Px(12.0);
         });
         let flow = separate_tree_flow_size(&hidden, &default_inherited_style(), (20.0, 10.0))
             .expect("hidden flow");
@@ -2265,12 +2382,12 @@ mod tests {
     fn separate_tree_flow_size_keeps_relative_nodes_in_normal_flow() {
         let relative = node_with_groups(|groups| {
             groups.box_.position = PositionKw::Relative;
-            groups.box_.width = Some(10.0);
-            groups.box_.height = Some(12.0);
-            groups.box_.margin[3] = 2.0; // margin-left
-            groups.box_.margin[1] = 3.0; // margin-right
-            groups.box_.margin[0] = 4.0; // margin-top
-            groups.box_.margin[2] = 5.0; // margin-bottom
+            groups.box_.width = BoxLength::Px(10.0);
+            groups.box_.height = BoxLength::Px(12.0);
+            groups.box_.margin[3] = BoxLength::Px(2.0); // margin-left
+            groups.box_.margin[1] = BoxLength::Px(3.0); // margin-right
+            groups.box_.margin[0] = BoxLength::Px(4.0); // margin-top
+            groups.box_.margin[2] = BoxLength::Px(5.0); // margin-bottom
         });
 
         let flow = separate_tree_flow_size(&relative, &default_inherited_style(), (20.0, 10.0))
@@ -2428,8 +2545,8 @@ mod tests {
     fn right_and_bottom_offsets_pin_against_available_space() {
         let absolute = node_with_groups(|groups| {
             groups.box_.position = PositionKw::Absolute;
-            groups.box_.right = Some(12.0);
-            groups.box_.bottom = Some(14.0);
+            groups.box_.right = BoxLength::Px(12.0);
+            groups.box_.bottom = BoxLength::Px(14.0);
         });
 
         let style = resolved_node_style(&absolute);
@@ -2501,7 +2618,7 @@ mod tests {
     fn layout_flow_size_ignores_absolute_and_fixed_nodes() {
         let absolute = node_with_groups(|groups| {
             groups.box_.position = PositionKw::Absolute;
-            groups.box_.margin[3] = 5.0; // margin-left
+            groups.box_.margin[3] = BoxLength::Px(5.0); // margin-left
         });
 
         let style = resolved_node_style(&absolute);

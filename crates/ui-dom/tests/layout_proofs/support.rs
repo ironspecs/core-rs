@@ -396,6 +396,13 @@ pub fn assert_close(actual: f32, expected: f32, label: &str) {
     );
 }
 
+/// Convenience for the `BoxLength` API break (PR 1 item 7): a resolved-px box
+/// length, so box-group assertions read `box_px(20.0)` instead of a thousand
+/// `BoxLength::Px(20.0)` literals.
+pub fn box_px(pixels: f32) -> ui_dom::BoxLength {
+    ui_dom::BoxLength::Px(pixels)
+}
+
 /// Drains the staged render ops produced by the most recent `RootDom::update`
 /// and returns each staged layer's paint plan, in stage order (stage order =
 /// paint order = DOM layer order, root layer first).

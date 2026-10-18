@@ -54,7 +54,7 @@ use crate::domains::style::computed::project::{
     word_break as word_break_from_keyword,
 };
 use crate::domains::style::computed::{
-    AlignContentKw, AlignItemsKw, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
+    AlignContentKw, AlignItemsKw, BoxLength, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
     ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedTextGroup,
     ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw,
     FlexWrapKw, GroupDirtyClassification, JustifyContentKw, OverflowKw, PositionKw,
@@ -552,77 +552,77 @@ impl DomNode {
         {
             box_.box_sizing = box_sizing;
         }
-        apply_optional_px(
+        apply_box_length(
             &mut box_.width,
-            self.presented_optional_px(PresentationProperty::Width),
+            self.presented_box_length(PresentationProperty::Width),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.height,
-            self.presented_optional_px(PresentationProperty::Height),
+            self.presented_box_length(PresentationProperty::Height),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.min_width,
-            self.presented_optional_px(PresentationProperty::MinWidth),
+            self.presented_box_length(PresentationProperty::MinWidth),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.min_height,
-            self.presented_optional_px(PresentationProperty::MinHeight),
+            self.presented_box_length(PresentationProperty::MinHeight),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.max_width,
-            self.presented_optional_px(PresentationProperty::MaxWidth),
+            self.presented_box_length(PresentationProperty::MaxWidth),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.max_height,
-            self.presented_optional_px(PresentationProperty::MaxHeight),
+            self.presented_box_length(PresentationProperty::MaxHeight),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.top,
-            self.presented_optional_px(PresentationProperty::Top),
+            self.presented_box_length(PresentationProperty::Top),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.left,
-            self.presented_optional_px(PresentationProperty::Left),
+            self.presented_box_length(PresentationProperty::Left),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.right,
-            self.presented_optional_px(PresentationProperty::Right),
+            self.presented_box_length(PresentationProperty::Right),
         );
-        apply_optional_px(
+        apply_box_length(
             &mut box_.bottom,
-            self.presented_optional_px(PresentationProperty::Bottom),
+            self.presented_box_length(PresentationProperty::Bottom),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.margin[0],
-            self.presented_px(PresentationProperty::MarginTop),
+            self.presented_margin_edge(PresentationProperty::MarginTop),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.margin[1],
-            self.presented_px(PresentationProperty::MarginRight),
+            self.presented_margin_edge(PresentationProperty::MarginRight),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.margin[2],
-            self.presented_px(PresentationProperty::MarginBottom),
+            self.presented_margin_edge(PresentationProperty::MarginBottom),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.margin[3],
-            self.presented_px(PresentationProperty::MarginLeft),
+            self.presented_margin_edge(PresentationProperty::MarginLeft),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.padding[0],
-            self.presented_px(PresentationProperty::PaddingTop),
+            self.presented_padding_edge(PresentationProperty::PaddingTop),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.padding[1],
-            self.presented_px(PresentationProperty::PaddingRight),
+            self.presented_padding_edge(PresentationProperty::PaddingRight),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.padding[2],
-            self.presented_px(PresentationProperty::PaddingBottom),
+            self.presented_padding_edge(PresentationProperty::PaddingBottom),
         );
-        apply_px(
+        apply_box_length_value(
             &mut box_.padding[3],
-            self.presented_px(PresentationProperty::PaddingLeft),
+            self.presented_padding_edge(PresentationProperty::PaddingLeft),
         );
         apply_px(
             &mut box_.border_width[0],
@@ -784,7 +784,7 @@ impl DomNode {
         match self.active_presented(property)? {
             DeclValue::Length(DeclLength::Px(value)) => Some(*value),
             DeclValue::Length(DeclLength::Unset) => Some(0.0),
-            DeclValue::Length(DeclLength::Em(_))
+            DeclValue::Length(DeclLength::Em(_) | DeclLength::Percent(_))
             | DeclValue::Color(_)
             | DeclValue::Keyword(_)
             | DeclValue::Number(_)
@@ -794,17 +794,46 @@ impl DomNode {
         }
     }
 
-    /// Converts a presented value to an `Option<f32>` field (`width`, `height`,
+    /// Converts a presented value to an `BoxLength` field (`width`, `height`,
     /// min/max, edges): `Set(Some(px))` writes a length, `Set(None)` is `unset`
-    /// (the field clears), `Leave` means the value could not convert and the
-    /// stored field is left untouched.
-    fn presented_optional_px(&self, property: PresentationProperty) -> PresentedOptionalPx {
+    /// (the field clears to `Auto`), `Leave` means the value could not convert
+    /// and the stored field is left untouched.
+    fn presented_box_length(&self, property: PresentationProperty) -> PresentedBoxLength {
         match self.active_presented(property) {
             Some(DeclValue::Length(DeclLength::Px(value))) => {
-                PresentedOptionalPx::Set(Some(*value))
+                PresentedBoxLength::Set(BoxLength::Px(*value))
             }
-            Some(DeclValue::Length(DeclLength::Unset)) => PresentedOptionalPx::Set(None),
-            _ => PresentedOptionalPx::Leave,
+            Some(DeclValue::Length(DeclLength::Unset) | DeclValue::Keyword(Keyword::Auto)) => {
+                PresentedBoxLength::Set(BoxLength::Auto)
+            }
+            Some(DeclValue::Length(DeclLength::Percent(pct))) => {
+                PresentedBoxLength::Set(BoxLength::Percent(*pct))
+            }
+            _ => PresentedBoxLength::Leave,
+        }
+    }
+
+    /// Converts a presented value to a `BoxLength` margin edge: `Px`→`Px`,
+    /// `Percent`→`Percent`, `Unset`→`Px(0.0)`, `Keyword(Auto)`→`Auto` (authored
+    /// `auto`, distinct from absent).
+    fn presented_margin_edge(&self, property: PresentationProperty) -> Option<BoxLength> {
+        match self.active_presented(property)? {
+            DeclValue::Length(DeclLength::Px(value)) => Some(BoxLength::Px(*value)),
+            DeclValue::Length(DeclLength::Percent(pct)) => Some(BoxLength::Percent(*pct)),
+            DeclValue::Length(DeclLength::Unset) => Some(BoxLength::Px(0.0)),
+            DeclValue::Keyword(Keyword::Auto) => Some(BoxLength::Auto),
+            _ => None,
+        }
+    }
+
+    /// Converts a presented value to a `BoxLength` padding edge (no `auto`):
+    /// `Px`→`Px`, `Percent`→`Percent`, `Unset`→`Px(0.0)`.
+    fn presented_padding_edge(&self, property: PresentationProperty) -> Option<BoxLength> {
+        match self.active_presented(property)? {
+            DeclValue::Length(DeclLength::Px(value)) => Some(BoxLength::Px(*value)),
+            DeclValue::Length(DeclLength::Percent(pct)) => Some(BoxLength::Percent(*pct)),
+            DeclValue::Length(DeclLength::Unset) => Some(BoxLength::Px(0.0)),
+            _ => None,
         }
     }
 
@@ -918,6 +947,9 @@ impl DomNode {
             }
             Some(DeclValue::Number(scale)) => {
                 PresentedOptionalPx::Set(Some((scale * size_px).max(1.0)))
+            }
+            Some(DeclValue::Length(DeclLength::Percent(pct))) => {
+                PresentedOptionalPx::Set(Some((pct / 100.0 * size_px).max(1.0)))
             }
             _ => PresentedOptionalPx::Leave,
         }
@@ -1567,8 +1599,36 @@ fn apply_px(target: &mut f32, presented: Option<f32>) {
     }
 }
 
-/// Writes a presented `Option<f32>` length into an optional field.
-/// `Set(Some(px))` writes a length; `Set(None)` is `unset` (the field clears);
+/// Writes a presented `BoxLength` length into an optional field.
+/// `Set(px)` writes a length; `Set(Auto)` is `unset`/`auto` (the field clears);
+/// `Leave` means the value could not convert and the stored field is left
+/// untouched.
+fn apply_box_length(target: &mut BoxLength, presented: PresentedBoxLength) {
+    if let PresentedBoxLength::Set(value) = presented {
+        *target = value;
+    }
+}
+
+/// Writes a presented `BoxLength` edge value when it converts; leaves the field
+/// untouched otherwise.
+fn apply_box_length_value(target: &mut BoxLength, presented: Option<BoxLength>) {
+    if let Some(value) = presented {
+        *target = value;
+    }
+}
+
+/// The outcome of converting a presented value to a `BoxLength` length field: a
+/// resolved value (or `Auto`) to write, or a signal to leave the stored field
+/// untouched.
+#[derive(Clone, Copy)]
+enum PresentedBoxLength {
+    Set(BoxLength),
+    Leave,
+}
+
+/// Writes a presented `Option<f32>` length into an optional field (line-height's
+/// `Option<f32>` group field — the font group stays `f32`, not `BoxLength`).
+/// `Set(Some(px))` writes a length; `Set(None)` is `normal` (the field clears);
 /// `Leave` means the value could not convert and the stored field is left
 /// untouched.
 fn apply_optional_px(target: &mut Option<f32>, presented: PresentedOptionalPx) {
@@ -1577,9 +1637,9 @@ fn apply_optional_px(target: &mut Option<f32>, presented: PresentedOptionalPx) {
     }
 }
 
-/// The outcome of converting a presented value to an `Option<f32>` length
-/// field: a resolved value (or `unset`) to write, or a signal to leave the
-/// stored field untouched.
+/// The outcome of converting a presented value to an `Option<f32>` length field
+/// (line-height): a resolved value (or `normal`) to write, or a signal to leave
+/// the stored field untouched.
 #[derive(Clone, Copy)]
 enum PresentedOptionalPx {
     Set(Option<f32>),

@@ -21,6 +21,9 @@ use crate::domains::style::computed::{
 };
 use crate::types::{DomOverflowWrap, DomTextAlign, DomTextDirection, DomWhiteSpace, DomWordBreak};
 
+#[cfg(test)]
+use crate::domains::style::BoxLength;
+
 /// The carried inherited style for one DFS frame: the three inherited groups.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct InheritedStyleContext {
@@ -143,7 +146,7 @@ mod tests {
         groups.text.align = DomTextAlign::End;
         groups.color.color_rgba = [1.0, 0.0, 0.0, 1.0];
         // Non-inherited groups must not leak into the carried context.
-        groups.box_.width = Some(100.0);
+        groups.box_.width = BoxLength::Px(100.0);
 
         let context = InheritedStyleContext::from_groups(groups);
         assert_eq!(context.font.size_px, 24.0);

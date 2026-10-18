@@ -34,14 +34,14 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, StylesheetLoadReport,
-    TextIntrinsic,
+    BoxLength, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom,
+    StylesheetLoadReport, TextIntrinsic,
 };
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_append_textarea_to,
     assert_decl_drop, assert_root_dom_update, assert_set_attr_str, assert_style_set,
-    attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    attached_gpu_root_dom_default_viewport_setup, box_px, take_staged_layer_paint_plans,
     theme_stylesheet_origin,
 };
 
@@ -85,7 +85,7 @@ fn negative_padding_rejected() {
             .expect("target")
             .as_box()
             .padding[3],
-        0.0,
+        box_px(0.0),
         "negative padding-left should stay at its 0.0 initial",
     );
 }
@@ -161,8 +161,9 @@ fn negative_box_sizes_rejected() {
             BoxField::MaxHeight => box_.max_height,
         };
         assert_eq!(
-            computed, None,
-            "{} should stay at its initial None",
+            computed,
+            BoxLength::Auto,
+            "{} should stay at its initial Auto",
             case.name
         );
     }
@@ -513,8 +514,12 @@ fn negative_margins_and_offsets_apply() {
     assert_eq!(report.declarations_dropped, 0, "none should drop");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let view = root.computed_style(target).expect("target");
-    assert_eq!(view.as_box().margin[3], -10.0, "negative margin-left");
-    assert_eq!(view.as_box().top, Some(-5.0), "negative top inset");
+    assert_eq!(
+        view.as_box().margin[3],
+        box_px(-10.0),
+        "negative margin-left"
+    );
+    assert_eq!(view.as_box().top, box_px(-5.0), "negative top inset");
     assert_eq!(
         view.as_visual().outline_offset,
         -2.0,
@@ -564,7 +569,7 @@ fn width_zero_unitless_admitted_and_normalized() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(0.0),
+        box_px(0.0),
         "unitless zero should normalize to 0px",
     );
 }
@@ -648,12 +653,15 @@ fn robustness_extreme_finite_lengths() {
         assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
         let width = root.computed_style(target).expect("target").as_box().width;
         match width {
-            Some(w) => assert!(
+            BoxLength::Px(w) => assert!(
                 w.is_finite(),
                 "{} computed width should be finite",
                 case.name
             ),
-            None => panic!("{} should resolve a finite computed width", case.name),
+            other => panic!(
+                "{} should resolve a finite px computed width, got {other:?}",
+                case.name
+            ),
         }
     }
 }
@@ -839,46 +847,88 @@ fn robustness_zero_font_size_textarea_caret_does_not_crash() {
 // — B2: units & sizing keywords — //
 
 #[test]
-// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// ON-SPEC (relabeled from `unsupported_percentage_lengths_drop` in PR 1 item 7):
 // - SPEC: CSS Values 4 §percentages — `width`, `margin-left`, `font-size`, and
-//   `line-height` each admit a `<percentage>` (resolved against the containing
-//   block or a font-relative axis at computed/used time).
+//   `line-height` each admit a `<percentage>`, resolved per property.
 //   <https://drafts.csswg.org/css-values-4/#percentages>
-// - CURRENT (asserted): each percentage form drops + counts
-//   (`declarations_dropped == 1`); the computed value stays at the group initial
-//   (width `None`, margin `0.0`, font-size seed, line-height `normal`).
-// - SPEC-CORRECT: admit percentages per shape (box vs font vs line-height
-//   resolution — see PLAN.md B2 data structures).
-// - D6: admission requires a named consumer need + spec citation + Blink/Gecko
-//   algorithm reference.
-fn unsupported_percentage_lengths_drop() {
-    struct Case {
-        name: &'static str,
-        body: &'static str,
-    }
+// - CURRENT (asserted): box-group percentages stay symbolic in the computed
+//   group (`BoxLength::Percent`) and resolve against the containing-block WIDTH
+//   at layout; font-relative percentages resolve at style time (font-size
+//   against the parent seed, line-height against the own size).
+fn percentage_lengths_resolve_against_their_bases() {
+    // width: 50% of a 200px container -> computed `BoxLength::Percent(50.0)`
+    // AND used width 100.0.
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "width", "200px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "width", "50%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(child).expect("child").as_box().width,
+        BoxLength::Percent(50.0),
+        "width: 50% should stay symbolic in the computed group",
+    );
+    assert_eq!(
+        ui_dom::node_box(&root, child)
+            .expect("box")
+            .border_box
+            .width_px,
+        100.0,
+        "width: 50% should resolve to a 100px used width",
+    );
 
-    let cases = [
-        Case {
-            name: "width_percent",
-            body: "width: 50%",
-        },
-        Case {
-            name: "margin_left_percent",
-            body: "margin-left: 10%",
-        },
-        Case {
-            name: "font_size_percent",
-            body: "font-size: 120%",
-        },
-        Case {
-            name: "line_height_percent",
-            body: "line-height: 150%",
-        },
-    ];
+    // margin-left: 10% of a 200px containing block -> 20.0 used margin.
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "width", "200px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "margin-left", "10%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(child).expect("child").as_box().margin[3],
+        BoxLength::Percent(10.0),
+        "margin-left: 10% should stay symbolic in the computed group",
+    );
+    assert_eq!(
+        ui_dom::node_box(&root, child).expect("box").margin.left_px,
+        20.0,
+        "margin-left: 10% should resolve to a 20px used margin",
+    );
 
-    for case in cases {
-        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
-    }
+    // font-size: 120% under a 20px parent -> 24.0 (style-time resolution).
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "font-size", "20px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "font-size", "120%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(child).expect("child").as_font().size_px,
+        24.0,
+        "font-size: 120% should resolve against the parent seed",
+    );
+
+    // line-height: 150% under a 20px own size -> 30.0.
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "font-size", "20px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "font-size", "20px");
+    assert_style_set(&mut root, child, "line-height", "150%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(child)
+            .expect("child")
+            .as_font()
+            .line_height_px,
+        Some(30.0),
+        "line-height: 150% should resolve against the own font size",
+    );
 }
 
 #[test]
@@ -1009,34 +1059,209 @@ fn unsupported_font_relative_units_drop() {
 }
 
 #[test]
-// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// ON-SPEC (relabeled from `unsupported_auto_lengths_drop` in PR 1 item 7):
 // - SPEC: CSS Sizing 3 §3.1 `width` admits `auto` (available/shrink-to-fit);
-//   CSS Box 3 §4.2 `margin-top` admits `auto` (free-space absorption at layout).
+//   CSS Box 3 §4.2 `margin-top` admits `auto` (free-space absorption at
+//   layout, CSS 2.1 §10.3.3).
 //   <https://drafts.csswg.org/css-sizing-3/#preferred-size-properties>
-// - CURRENT (asserted): BOTH drop + count. The two-sided pin also asserts the
-//   computed value stays at the group initial — `width` `None`, `margin[0]`
-//   `0.0` — so "correct outcome" is never confused with "admitted grammar".
-// - SPEC-CORRECT: admit `auto` (margins resolve at layout — see PLAN.md B2).
-// - D6: admission-gated.
-fn unsupported_auto_lengths_drop() {
-    // (a) width: auto — dropped AND computed width stays None (the initial).
-    assert_decl_drop(".x { width: auto }", 0, 1);
-    let (mut world, mut root, target, _report) = styled_target_load(".x { width: auto }");
+// - CURRENT (asserted): `auto` is admitted, kept symbolic in the computed group
+//   (`BoxLength::Auto`), and resolved at layout — width to the old `None`
+//   auto-fill behavior, vertical auto margins to 0 (§10.3.3), and the
+//   block-centering case to equal horizontal margin shares.
+fn auto_lengths_are_admitted_and_resolve() {
+    // (a) width: auto — admitted, computed width `BoxLength::Auto`, used width
+    // fills the 200px container (the old `None` auto-fill behavior).
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "width", "200px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "width", "auto");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
-        root.computed_style(target).expect("target").as_box().width,
-        None,
-        "width: auto should stay at its initial None",
+        root.computed_style(child).expect("child").as_box().width,
+        BoxLength::Auto,
+        "width: auto should stay symbolic in the computed group",
+    );
+    assert_eq!(
+        ui_dom::node_box(&root, child)
+            .expect("box")
+            .border_box
+            .width_px,
+        200.0,
+        "width: auto should fill the 200px containing block",
     );
 
-    // (b) margin-top: auto — dropped AND computed margin-top stays 0.0.
-    assert_decl_drop(".x { margin-top: auto }", 0, 1);
+    // (b) margin-top: auto — admitted, computed `BoxLength::Auto`, used margin
+    // resolves to 0 (vertical auto margins are 0 per §10.3.3).
     let (mut world, mut root, target, _report) = styled_target_load(".x { margin-top: auto }");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().margin[0],
+        BoxLength::Auto,
+        "margin-top: auto should stay symbolic in the computed group",
+    );
+    assert_eq!(
+        ui_dom::node_box(&root, target).expect("box").margin.top_px,
         0.0,
-        "margin-top: auto should stay at its 0.0 initial",
+        "margin-top: auto should resolve to a 0 used margin",
+    );
+
+    // (c) block centering (the consumer ask): a 100px-wide block with
+    // `margin-left: auto; margin-right: auto` in a 200px container absorbs
+    // (50.0, 50.0) and lands its left edge at 50.0.
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "width", "200px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "width", "100px");
+    assert_style_set(&mut root, child, "margin-left", "auto");
+    assert_style_set(&mut root, child, "margin-right", "auto");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let box_ = ui_dom::node_box(&root, child).expect("box");
+    assert_eq!(
+        box_.margin.left_px, 50.0,
+        "centering left margin should absorb 50px"
+    );
+    assert_eq!(
+        box_.margin.right_px, 50.0,
+        "centering right margin should absorb 50px",
+    );
+    assert_eq!(
+        box_.border_box.left_px, 50.0,
+        "the centered block's left edge should land at 50.0",
+    );
+}
+
+#[test]
+// ON-SPEC (PR 1 follow-up: `margin: 0 auto` shorthand centering):
+// - SPEC: CSS Box 3 §4.2 `margin` is a 1–4 value shorthand; the 2-value form
+//   `margin: 0 auto` sets the vertical margins to 0 and the horizontal margins
+//   to `auto`, and a horizontal `auto` pair absorbs equal free space
+//   (CSS 2.1 §10.3.3). <https://drafts.csswg.org/css-box-3/#margin-shorthand>
+// - CURRENT (asserted): `margin: 0 auto` expands via the corner map to
+//   `margin-top: 0; margin-right: auto; margin-bottom: 0; margin-left: auto`;
+//   the horizontal `auto` pair absorbs (50.0, 50.0) and the block's left edge
+//   lands at 50.0 — the same outcome as the longhand `margin-left/right: auto`
+//   centering pin above.
+fn margin_zero_auto_centers_a_fixed_width_block() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "width", "200px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "width", "100px");
+    assert_style_set(&mut root, child, "margin", "0 auto");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let box_ = ui_dom::node_box(&root, child).expect("box");
+    assert_eq!(
+        box_.margin.left_px, 50.0,
+        "centering left margin should absorb 50px"
+    );
+    assert_eq!(
+        box_.margin.right_px, 50.0,
+        "centering right margin should absorb 50px"
+    );
+    assert_eq!(
+        box_.border_box.left_px, 50.0,
+        "the centered block's left edge should land at 50.0"
+    );
+}
+
+#[test]
+// UNIMPLEMENTED (class: unimplemented — Flexbox §8.1 deferred, PR 1 item 7
+// scope boundary): a flex item's `margin: auto` does NOT absorb free space; it
+// computes to 0 for now. The block auto-margin solver (§10.3.3) never applies —
+// the flex placement context gives the item its own resolved content size as
+// the containing-block width, so the free space is zero and the margin stays 0.
+// See the `main_axis_start_margin` deferral note in `flex.rs`.
+fn flex_item_auto_margin_computes_to_zero_for_now() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "width", "200px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-left", "auto");
+    assert_style_set(&mut root, item, "margin-right", "auto");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(item).expect("item").as_box().margin[3],
+        BoxLength::Auto,
+        "flex item margin-left: auto stays symbolic in the computed group",
+    );
+    let box_ = ui_dom::node_box(&root, item).expect("box");
+    assert_eq!(
+        box_.margin.left_px, 0.0,
+        "flex auto left margin computes to 0 for now",
+    );
+    assert_eq!(
+        box_.margin.right_px, 0.0,
+        "flex auto right margin computes to 0 for now",
+    );
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated): the `auto` keyword
+// is invalid for padding, border widths, and font sizes (they are NOT in the
+// closed `AUTO_ADMISSIBLE` table), so each drops + counts and the computed
+// value stays at its group initial.
+fn padding_auto_is_rejected() {
+    assert_decl_drop(".x { padding-left: auto }", 0, 1);
+    assert_decl_drop(".x { padding: auto }", 0, 1);
+    assert_decl_drop(".x { border-top-width: auto }", 0, 1);
+    assert_decl_drop(".x { font-size: auto }", 0, 1);
+
+    let (mut world, mut root, target, _report) = styled_target_load(".x { padding-left: auto }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_box()
+            .padding[3],
+        box_px(0.0),
+        "padding-left: auto should stay at its 0.0 initial",
+    );
+}
+
+#[test]
+// ON-SPEC sign-rule split (PR 1 item 7): `padding-left: -10%` is invalid
+// (padding takes `<length-percentage [0,∞]>`) and drops; `margin-left: -10%`
+// is valid (signed `Length`) and resolves negative against the containing
+// block.
+fn negative_percentage_on_padding_is_rejected() {
+    assert_decl_drop(".x { padding-left: -10% }", 0, 1);
+    let (mut world, mut root, target, _report) = styled_target_load(".x { padding-left: -10% }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_box()
+            .padding[3],
+        box_px(0.0),
+        "padding-left: -10% should stay at its 0.0 initial",
+    );
+
+    // margin-left: -10% is admitted and resolves negative (-20px against a
+    // 200px containing block).
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "width", "200px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "margin-left", "-10%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(child).expect("child").as_box().margin[3],
+        BoxLength::Percent(-10.0),
+        "margin-left: -10% should stay symbolic in the computed group",
+    );
+    assert_eq!(
+        ui_dom::node_box(&root, child).expect("box").margin.left_px,
+        -20.0,
+        "margin-left: -10% should resolve to a -20px used margin",
     );
 }
 

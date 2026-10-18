@@ -26,6 +26,8 @@ use crate::domains::style::PresentationGroup;
 use super::computed_groups::ComputedGroups;
 
 #[cfg(test)]
+use crate::domains::style::computed::BoxLength;
+#[cfg(test)]
 use crate::types::DomTextAlign;
 
 /// The dirty classes a changed computed group implies.
@@ -259,7 +261,7 @@ mod tests {
         );
 
         let mut after = before;
-        after.box_.width = Some(100.0);
+        after.box_.width = BoxLength::Px(100.0);
         assert_eq!(
             GroupDirtyClassification::diff(&before, &after),
             GroupDirtyClassification::for_group(PresentationGroup::Box)

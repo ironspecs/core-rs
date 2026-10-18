@@ -27,6 +27,9 @@ use super::computed_transform_group::ComputedTransformGroup;
 use super::computed_visual_group::ComputedVisualGroup;
 
 #[cfg(test)]
+use super::BoxLength;
+
+#[cfg(test)]
 use crate::types::DomTextAlign;
 
 /// The seven computed groups as one inline `Copy` value.
@@ -94,7 +97,7 @@ mod tests {
         parent.font.size_px = 24.0;
         parent.text.align = DomTextAlign::End;
         parent.color.color_rgba = [1.0, 0.0, 0.0, 1.0];
-        parent.box_.width = Some(100.0);
+        parent.box_.width = BoxLength::Px(100.0);
         parent.flex.grow = 3.0;
         parent.visual.opacity = 0.5;
         parent.transform.has_transform = true;

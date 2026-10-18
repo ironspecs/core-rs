@@ -59,7 +59,7 @@ pub use render_ops::{
     StagedLayerApply, register_render_ops_handler,
 };
 pub use style::{
-    AlignContentKw, AlignItemsKw, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
+    AlignContentKw, AlignItemsKw, BoxLength, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
     ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedStyleMap, ComputedStyleRef,
     ComputedTextGroup, ComputedTransformGroup, ComputedVisualGroup, DeclBlockKey, DeclDropReport,
     DeclLength, DeclStore, DeclValue, Declaration, DisplayKw, FlexBasisKw, FlexDirectionKw,

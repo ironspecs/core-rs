@@ -21,7 +21,7 @@ use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, n
 use crate::layout_proofs::support::{
     assert_append_button_to, assert_append_div_to, assert_append_text_to, assert_close,
     assert_node_layout, assert_root_dom_update, assert_style_set,
-    attached_gpu_root_dom_default_viewport_setup,
+    attached_gpu_root_dom_default_viewport_setup, box_px,
 };
 
 const MENU_POPUP_LEFT_PX: &str = "16px";
@@ -85,12 +85,13 @@ fn fixed_popup_text_rows_keep_auto_height_below_max_height() {
         .expect("popup root should remain readable")
         .as_box();
     assert_eq!(
-        popup_box.height, None,
+        popup_box.height,
+        ui_dom::BoxLength::Auto,
         "text-row popup should rely on auto height rather than authored height",
     );
     assert_eq!(
         popup_box.max_height,
-        Some(160.0),
+        box_px(160.0),
         "text-row popup should present the authored max-height",
     );
 }

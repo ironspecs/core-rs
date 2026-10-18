@@ -34,12 +34,13 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    DisplayKw, DomNodeSlotKey, DomPointerUpdate, Keyword, OverflowKw, RootDom, StylesheetLoadReport,
+    BoxLength, DisplayKw, DomNodeSlotKey, DomPointerUpdate, Keyword, OverflowKw, RootDom,
+    StylesheetLoadReport,
 };
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_decl_drop, assert_root_dom_update, assert_set_attr_str,
-    attached_gpu_root_dom_default_viewport_setup, theme_stylesheet_origin,
+    attached_gpu_root_dom_default_viewport_setup, box_px, theme_stylesheet_origin,
 };
 
 /// Returns `(world, root, target, report)`: a fresh root with a single
@@ -67,28 +68,35 @@ fn styled_target_load(css: &str) -> (World, RootDom, DomNodeSlotKey, StylesheetL
 //   `margin: 1px 2px 3px 4px` each expand to the four `margin-*` longhands via
 //   the corner map with no drops; the computed `margin` is TRBL
 //   `[8.0; 4]` / `[1.0, 2.0, 1.0, 2.0]` / `[1.0, 2.0, 3.0, 4.0]`.
+//   `margin: 0 auto` (2-value form) expands to `[0.0, Auto, 0.0, Auto]` —
+//   the horizontal `auto` pair is admitted on the shorthand (PR 1 follow-up).
 fn margin_shorthand_expands_to_longhands() {
     struct Case {
         name: &'static str,
         body: &'static str,
-        margin: [f32; 4],
+        margin: [BoxLength; 4],
     }
 
     let cases = [
         Case {
             name: "margin_one_value",
             body: "margin: 8px",
-            margin: [8.0; 4],
+            margin: [box_px(8.0); 4],
         },
         Case {
             name: "margin_two_values",
             body: "margin: 1px 2px",
-            margin: [1.0, 2.0, 1.0, 2.0],
+            margin: [box_px(1.0), box_px(2.0), box_px(1.0), box_px(2.0)],
         },
         Case {
             name: "margin_four_values",
             body: "margin: 1px 2px 3px 4px",
-            margin: [1.0, 2.0, 3.0, 4.0],
+            margin: [box_px(1.0), box_px(2.0), box_px(3.0), box_px(4.0)],
+        },
+        Case {
+            name: "margin_auto_two_values",
+            body: "margin: 0 auto",
+            margin: [box_px(0.0), BoxLength::Auto, box_px(0.0), BoxLength::Auto],
         },
     ];
 
@@ -126,24 +134,24 @@ fn padding_shorthand_expands_to_longhands() {
     struct Case {
         name: &'static str,
         body: &'static str,
-        padding: [f32; 4],
+        padding: [BoxLength; 4],
     }
 
     let cases = [
         Case {
             name: "padding_one_value",
             body: "padding: 8px",
-            padding: [8.0; 4],
+            padding: [box_px(8.0); 4],
         },
         Case {
             name: "padding_two_values",
             body: "padding: 1px 2px",
-            padding: [1.0, 2.0, 1.0, 2.0],
+            padding: [box_px(1.0), box_px(2.0), box_px(1.0), box_px(2.0)],
         },
         Case {
             name: "padding_four_values",
             body: "padding: 1px 2px 3px 4px",
-            padding: [1.0, 2.0, 3.0, 4.0],
+            padding: [box_px(1.0), box_px(2.0), box_px(3.0), box_px(4.0)],
         },
     ];
 
@@ -256,18 +264,25 @@ fn unsupported_inset_shorthand_drops() {
     let (mut world, mut root, target, _report) = styled_target_load(".x { inset: 1px 2px }");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let view = root.computed_style(target).expect("target").as_box();
-    assert_eq!(view.top, None, "inset top should stay at its initial None");
     assert_eq!(
-        view.right, None,
-        "inset right should stay at its initial None",
+        view.top,
+        BoxLength::Auto,
+        "inset top should stay at its initial Auto"
     );
     assert_eq!(
-        view.bottom, None,
-        "inset bottom should stay at its initial None",
+        view.right,
+        BoxLength::Auto,
+        "inset right should stay at its initial Auto",
     );
     assert_eq!(
-        view.left, None,
-        "inset left should stay at its initial None",
+        view.bottom,
+        BoxLength::Auto,
+        "inset bottom should stay at its initial Auto",
+    );
+    assert_eq!(
+        view.left,
+        BoxLength::Auto,
+        "inset left should stay at its initial Auto",
     );
 }
 
@@ -403,8 +418,8 @@ fn unsupported_all_shorthand_drops() {
     let style = root.computed_style(target).expect("target");
     assert_eq!(
         style.as_box().width,
-        None,
-        "all shorthand should leave width at its initial None",
+        BoxLength::Auto,
+        "all shorthand should leave width at its initial Auto",
     );
     assert_eq!(
         style.as_color().color_rgba,

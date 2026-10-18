@@ -54,7 +54,9 @@ fold), or the computed read surface (`RootDom::computed_style`).
   stripper, and the name-based D5 admission surface `name_is_presentation`).
 - The computed-value store owns itself, one file per behavior-bearing type
   under `computed/`: seven `computed_*_group.rs` files (the S1.1
-  inheritance-grouped `Copy` structs), ten `*_kw.rs` files (the box/flex
+  inheritance-grouped `Copy` structs), `box_length.rs` (the `BoxLength`
+  computed/used length split — `Auto | Px | Percent`, CSS Cascade §4.5),
+  ten `*_kw.rs` files (the box/flex
   keyword vocabularies, one enum per file), `computed_groups.rs` (the seven
   held together), `node_presentation.rs` (inline block key + computed groups +
   last-pass `previous_computed` baseline + transition longhands),
@@ -63,7 +65,8 @@ fold), or the computed read surface (`RootDom::computed_style`).
   `field_mapping.rs` (the field-level `for_each_moved_field` compare the
   transition scheduler keys on). These are **pure data** plus `initial()` and
   tiny field helpers; resolution logic lives in the step-3.3 resolver
-  (`project.rs`).
+  (`project.rs`), and the used-value percentage resolution lives in the
+  layout-facing readers (`domains/layout/style.rs`), never here.
 
 ## Architectural approach
 

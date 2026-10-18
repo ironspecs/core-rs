@@ -47,6 +47,8 @@
 //! stay independent from that helper for both architecture and performance.
 
 #[cfg(test)]
+use crate::domains::style::BoxLength;
+#[cfg(test)]
 use crate::domains::style::StyleRuleOrigin;
 use crate::domains::style::computed::GroupDirtyClassification;
 #[cfg(test)]
@@ -357,7 +359,7 @@ mod tests {
                 .expect("panel should exist")
                 .computed_box()
                 .left,
-            Some(0.0)
+            BoxLength::Px(0.0)
         );
     }
 

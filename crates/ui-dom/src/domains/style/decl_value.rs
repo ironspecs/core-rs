@@ -21,12 +21,16 @@ use super::cascade_tier::CascadeTier;
 use super::keyword::Keyword;
 use crate::types::DomAttributeValue;
 
-/// A parsed length: the closed `unset | 0 | <px> | <em>` grammar.
+/// A parsed length: the closed `unset | 0 | <px> | <em> | <percentage>`
+/// grammar. `Percent` is the declaration form for ALL percentages; resolution
+/// is per property (font contexts resolve at style time; box lengths stay
+/// symbolic into the group).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeclLength {
     Unset,
     Px(f32),
     Em(f32),
+    Percent(f32),
 }
 
 /// Opaque handle to interned text owned by a `DeclStore`; store-relative.
@@ -89,6 +93,9 @@ pub(crate) fn decl_value_to_dom_value<'a>(
         DeclValue::Length(DeclLength::Unset) => DomAttributeValue::String("unset".to_string()),
         DeclValue::Length(DeclLength::Px(value)) => DomAttributeValue::String(format!("{value}px")),
         DeclValue::Length(DeclLength::Em(value)) => DomAttributeValue::String(format!("{value}em")),
+        DeclValue::Length(DeclLength::Percent(value)) => {
+            DomAttributeValue::String(format!("{value}%"))
+        }
         DeclValue::Color(rgba) => DomAttributeValue::Color(*rgba),
         DeclValue::Keyword(keyword) => DomAttributeValue::String(keyword.name().to_string()),
         DeclValue::Number(value) => DomAttributeValue::String(format!("{value}")),
@@ -121,6 +128,14 @@ mod tests {
         assert!(
             !DeclValue::Length(DeclLength::Px(10.0))
                 .value_equals(&DeclValue::Length(DeclLength::Unset))
+        );
+        assert!(
+            DeclValue::Length(DeclLength::Percent(50.0))
+                .value_equals(&DeclValue::Length(DeclLength::Percent(50.0)))
+        );
+        assert!(
+            !DeclValue::Length(DeclLength::Percent(50.0))
+                .value_equals(&DeclValue::Length(DeclLength::Px(50.0)))
         );
         assert!(DeclValue::Keyword(Keyword::Auto).value_equals(&DeclValue::Keyword(Keyword::Auto)));
         assert!(
@@ -167,6 +182,14 @@ mod tests {
         assert_eq!(
             decl_value_to_dom_value(&DeclValue::Length(DeclLength::Em(1.5)), resolve_none),
             DomAttributeValue::String("1.5em".to_string())
+        );
+        assert_eq!(
+            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Percent(50.0)), resolve_none),
+            DomAttributeValue::String("50%".to_string())
+        );
+        assert_eq!(
+            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Percent(-10.0)), resolve_none),
+            DomAttributeValue::String("-10%".to_string())
         );
         assert_eq!(
             decl_value_to_dom_value(&DeclValue::Color([1.0, 0.0, 0.0, 0.5]), resolve_none),

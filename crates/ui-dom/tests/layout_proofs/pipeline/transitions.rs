@@ -286,14 +286,14 @@ fn transition_shorthand_expands_in_stylesheet_declarations() {
         .as_box()
         .left;
     match left {
-        Some(value) => {
+        ui_dom::BoxLength::Px(value) => {
             assert!(
                 value > -100.0 && value < 0.0,
                 "left should be mid-flight (strictly between -100 and 0), got {value}"
             );
         }
-        None => panic!(
-            "left should present a mid-flight value via the shorthand-scheduled transition, got {left:?}"
+        other => panic!(
+            "left should present a mid-flight px value via the shorthand-scheduled transition, got {other:?}"
         ),
     }
 }

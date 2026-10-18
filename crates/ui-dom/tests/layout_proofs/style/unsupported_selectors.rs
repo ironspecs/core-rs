@@ -34,7 +34,7 @@
 //! and revision mutate only after every block parses, and a typed `Err` means
 //! nothing applied. See PLAN.md B8 "The atomicity truth (F1, adjudicated)".
 
-use ui_dom::{DomError, DomPointerUpdate, StylesheetLoadReport};
+use ui_dom::{BoxLength, DomError, DomPointerUpdate, StylesheetLoadReport};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_root_dom_update, assert_set_attr_str,
@@ -463,7 +463,7 @@ fn stylesheet_load_failure_is_atomic() {
 
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        None,
+        BoxLength::Auto,
         "NOTHING applied: the valid `.good` prefix must not be live after the load Err",
     );
 }

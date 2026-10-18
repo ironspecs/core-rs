@@ -29,6 +29,8 @@ use crate::domains::style::PresentationProperty;
 use super::computed_groups::ComputedGroups;
 
 #[cfg(test)]
+use super::BoxLength;
+#[cfg(test)]
 use crate::domains::style::Keyword;
 #[cfg(test)]
 use crate::domains::style::computed::DisplayKw;
@@ -264,9 +266,9 @@ const RADIUS_PROPERTIES: [PresentationProperty; 4] = [
 ];
 
 #[allow(clippy::float_cmp)] // exact field diff, matching the groups' derived PartialEq
-fn visit_moved_inset(
-    old: [f32; 4],
-    new: [f32; 4],
+fn visit_moved_inset<T: Copy + PartialEq>(
+    old: [T; 4],
+    new: [T; 4],
     properties: [PresentationProperty; 4],
     visit: &mut impl FnMut(PresentationProperty),
 ) {
@@ -320,8 +322,8 @@ mod tests {
     fn inset_and_side_fields_map_to_their_edges() {
         let old = ComputedGroups::initial();
         let mut new = old;
-        new.box_.margin[1] = 8.0;
-        new.box_.padding[3] = 4.0;
+        new.box_.margin[1] = BoxLength::Px(8.0);
+        new.box_.padding[3] = BoxLength::Px(4.0);
         new.box_.border_width[0] = 2.0;
         new.visual.border_rgba[2] = [1.0, 0.0, 0.0, 1.0];
         new.visual.radius[0] = 6.0;

@@ -24,6 +24,7 @@ use arrayvec::ArrayVec;
 
 use super::align_content_kw::AlignContentKw;
 use super::align_items_kw::AlignItemsKw;
+use super::box_length::BoxLength;
 use super::box_sizing_kw::BoxSizingKw;
 use super::computed_groups::ComputedGroups;
 use super::display_kw::DisplayKw;
@@ -138,6 +139,7 @@ fn resolve_font_field(
                 DeclValue::Number(n) => Some((n * size).max(1.0)),
                 DeclValue::Length(DeclLength::Px(px)) => Some(px.max(1.0)),
                 DeclValue::Length(DeclLength::Em(em)) => Some((em * size).max(1.0)),
+                DeclValue::Length(DeclLength::Percent(pct)) => Some((pct / 100.0 * size).max(1.0)),
                 _ => groups.font.line_height_px,
             };
         }
@@ -376,7 +378,7 @@ fn resolve_optional_box_length(
         PresentationProperty::Bottom => &mut groups.box_.bottom,
         _ => return,
     };
-    write_optional_length(target, value, size_px);
+    write_box_length(target, value, size_px);
 }
 
 fn resolve_box_inset(
@@ -385,22 +387,45 @@ fn resolve_box_inset(
     value: DeclValue,
     size_px: f32,
 ) {
-    let target = match property {
-        PresentationProperty::MarginTop => &mut groups.box_.margin[0],
-        PresentationProperty::MarginRight => &mut groups.box_.margin[1],
-        PresentationProperty::MarginBottom => &mut groups.box_.margin[2],
-        PresentationProperty::MarginLeft => &mut groups.box_.margin[3],
-        PresentationProperty::PaddingTop => &mut groups.box_.padding[0],
-        PresentationProperty::PaddingRight => &mut groups.box_.padding[1],
-        PresentationProperty::PaddingBottom => &mut groups.box_.padding[2],
-        PresentationProperty::PaddingLeft => &mut groups.box_.padding[3],
-        PresentationProperty::BorderTopWidth => &mut groups.box_.border_width[0],
-        PresentationProperty::BorderRightWidth => &mut groups.box_.border_width[1],
-        PresentationProperty::BorderBottomWidth => &mut groups.box_.border_width[2],
-        PresentationProperty::BorderLeftWidth => &mut groups.box_.border_width[3],
-        _ => return,
-    };
-    write_inset_length(target, value, size_px);
+    match property {
+        PresentationProperty::MarginTop => {
+            write_margin_edge(&mut groups.box_.margin[0], value, size_px);
+        }
+        PresentationProperty::MarginRight => {
+            write_margin_edge(&mut groups.box_.margin[1], value, size_px);
+        }
+        PresentationProperty::MarginBottom => {
+            write_margin_edge(&mut groups.box_.margin[2], value, size_px);
+        }
+        PresentationProperty::MarginLeft => {
+            write_margin_edge(&mut groups.box_.margin[3], value, size_px);
+        }
+        PresentationProperty::PaddingTop => {
+            write_padding_edge(&mut groups.box_.padding[0], value, size_px);
+        }
+        PresentationProperty::PaddingRight => {
+            write_padding_edge(&mut groups.box_.padding[1], value, size_px);
+        }
+        PresentationProperty::PaddingBottom => {
+            write_padding_edge(&mut groups.box_.padding[2], value, size_px);
+        }
+        PresentationProperty::PaddingLeft => {
+            write_padding_edge(&mut groups.box_.padding[3], value, size_px);
+        }
+        PresentationProperty::BorderTopWidth => {
+            write_inset_length(&mut groups.box_.border_width[0], value, size_px);
+        }
+        PresentationProperty::BorderRightWidth => {
+            write_inset_length(&mut groups.box_.border_width[1], value, size_px);
+        }
+        PresentationProperty::BorderBottomWidth => {
+            write_inset_length(&mut groups.box_.border_width[2], value, size_px);
+        }
+        PresentationProperty::BorderLeftWidth => {
+            write_inset_length(&mut groups.box_.border_width[3], value, size_px);
+        }
+        _ => {}
+    }
 }
 
 // — Flex group resolution — //
@@ -601,11 +626,55 @@ fn resolve_length(value: DeclValue, size_px: f32) -> LengthResolution {
     }
 }
 
-fn write_optional_length(target: &mut Option<f32>, value: DeclValue, size_px: f32) {
-    match resolve_length(value, size_px) {
-        LengthResolution::Unset => *target = None,
-        LengthResolution::Length(px) => *target = Some(px),
-        LengthResolution::Leave => {}
+/// The box-group optional-size writer (width/height/min/max/top/left/right/
+/// bottom): `Px`→`Px`, `Em`→px (own font size), `Unset`→`Auto`,
+/// `Percent`→`Percent`, `Keyword(Auto)`→`Auto`. Any other form leaves the field.
+fn write_box_length(target: &mut BoxLength, value: DeclValue, size_px: f32) {
+    if let Some(length) = resolve_box_length(value, size_px, Keyword::Auto) {
+        *target = length;
+    }
+}
+
+/// Resolves one declared value into a `BoxLength` (the computed/used split).
+/// `unset_for_keyword` names the keyword that maps to `BoxLength::Auto` for the
+/// target field (`Keyword::Auto` for optional sizes and margins; never applied
+/// to padding, whose grammar rejects `auto`).
+fn resolve_box_length(value: DeclValue, size_px: f32, auto_keyword: Keyword) -> Option<BoxLength> {
+    match value {
+        DeclValue::Length(DeclLength::Unset) => Some(BoxLength::Auto),
+        DeclValue::Length(DeclLength::Px(px)) => Some(BoxLength::Px(px)),
+        DeclValue::Length(DeclLength::Em(em)) => Some(BoxLength::Px(em * size_px)),
+        DeclValue::Length(DeclLength::Percent(pct)) => Some(BoxLength::Percent(pct)),
+        DeclValue::Keyword(keyword) if keyword == auto_keyword => Some(BoxLength::Auto),
+        _ => None,
+    }
+}
+
+/// The margin-edge writer: `Px`/`Em`→px, `Unset`→`Px(0.0)`, `Percent`→
+/// `Percent`, `Auto`→`Auto` (the authored `auto` margin is distinct from absent,
+/// which is `Px(0.0)`).
+fn write_margin_edge(target: &mut BoxLength, value: DeclValue, size_px: f32) {
+    match value {
+        DeclValue::Length(DeclLength::Unset) => *target = BoxLength::Px(0.0),
+        DeclValue::Keyword(Keyword::Auto) => *target = BoxLength::Auto,
+        _ => {
+            if let Some(length) = resolve_box_length(value, size_px, Keyword::Auto) {
+                *target = length;
+            }
+        }
+    }
+}
+
+/// The padding-edge writer: `Px`/`Em`→px, `Unset`→`Px(0.0)`, `Percent`→
+/// `Percent`. `auto` never arrives (the grammar rejects it).
+fn write_padding_edge(target: &mut BoxLength, value: DeclValue, size_px: f32) {
+    match value {
+        DeclValue::Length(DeclLength::Unset) => *target = BoxLength::Px(0.0),
+        _ => {
+            if let Some(length) = resolve_box_length(value, size_px, Keyword::Auto) {
+                *target = length;
+            }
+        }
     }
 }
 
@@ -784,7 +853,7 @@ mod tests {
             &mut context,
         );
 
-        assert_eq!(groups.box_.width, Some(120.0));
+        assert_eq!(groups.box_.width, BoxLength::Px(120.0));
         assert_eq!(groups.visual.background_rgba, [1.0, 0.0, 0.0, 1.0]);
     }
 

@@ -27,6 +27,8 @@ use crate::domains::style::computed::{
 use crate::types::{DomNode, DomNodeSlotKey, RootDom};
 
 #[cfg(test)]
+use crate::domains::style::computed::BoxLength;
+#[cfg(test)]
 use crate::domains::style::computed::DisplayKw;
 #[cfg(test)]
 use crate::types::{DomTag, RootDomContext};
@@ -148,7 +150,7 @@ mod tests {
             let node = root.nodes.get_mut(element).expect("live element");
             match node {
                 DomNode::Element(node) => {
-                    node.base.presentation.computed.box_.width = Some(42.0);
+                    node.base.presentation.computed.box_.width = BoxLength::Px(42.0);
                 }
                 _ => panic!("created element should stay an element"),
             }
@@ -159,7 +161,7 @@ mod tests {
                 .expect("live element")
                 .as_box()
                 .width,
-            Some(42.0)
+            BoxLength::Px(42.0)
         );
     }
 }

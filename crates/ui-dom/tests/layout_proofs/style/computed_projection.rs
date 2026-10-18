@@ -21,14 +21,14 @@
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_input_to, assert_load_root_stylesheet,
     assert_root_dom_update, assert_set_attr_str, assert_style_set,
-    attached_gpu_root_dom_default_viewport_setup,
+    attached_gpu_root_dom_default_viewport_setup, box_px,
 };
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomAttributeValue, DomNodeSlotKey, DomPointerUpdate, FlexBasisKw, FlexDirectionKw, FlexWrapKw,
-    Keyword, PresentationProperty, RootDom, StyleRuleOrigin, TransitionLonghandProperty,
-    parse_css_color_rgba,
+    BoxLength, DomAttributeValue, DomNodeSlotKey, DomPointerUpdate, FlexBasisKw, FlexDirectionKw,
+    FlexWrapKw, Keyword, PresentationProperty, RootDom, StyleRuleOrigin,
+    TransitionLonghandProperty, parse_css_color_rgba,
 };
 
 fn theme_origin() -> StyleRuleOrigin {
@@ -62,12 +62,12 @@ fn box_group_agrees_with_stylesheet_lengths_and_unset() {
     update(&mut world, &mut root);
 
     let box_ = root.computed_style(container).expect("container").as_box();
-    assert_eq!(box_.width, Some(120.0));
-    assert_eq!(box_.height, Some(40.0));
-    assert_eq!(box_.min_width, Some(20.0));
-    assert_eq!(box_.min_height, None);
+    assert_eq!(box_.width, box_px(120.0));
+    assert_eq!(box_.height, box_px(40.0));
+    assert_eq!(box_.min_width, box_px(20.0));
+    assert_eq!(box_.min_height, BoxLength::Auto);
 
-    // `unset` width removes the longhand, so the group field is `None`.
+    // `unset` width removes the longhand, so the group field is `Auto`.
     assert_load_root_stylesheet(
         &root,
         StyleRuleOrigin::new("late", 1),
@@ -79,7 +79,7 @@ fn box_group_agrees_with_stylesheet_lengths_and_unset() {
             .expect("container")
             .as_box()
             .width,
-        None
+        BoxLength::Auto
     );
 }
 
@@ -94,8 +94,11 @@ fn box_group_agrees_with_margin_edges_and_negative_margins() {
     update(&mut world, &mut root);
 
     let box_ = root.computed_style(container).expect("container").as_box();
-    assert_eq!(box_.margin, [4.0, 6.0, -10.0, 2.0]);
-    assert_eq!(box_.padding, [0.0; 4]);
+    assert_eq!(
+        box_.margin,
+        [box_px(4.0), box_px(6.0), box_px(-10.0), box_px(2.0)]
+    );
+    assert_eq!(box_.padding, [box_px(0.0); 4]);
 }
 
 // — Flex group: shorthand fallback — //
@@ -462,7 +465,7 @@ fn direct_width_write_applies_on_the_next_pass() {
             .expect("container")
             .as_box()
             .width,
-        Some(20.0)
+        box_px(20.0)
     );
 
     assert_style_set(&mut root, container, "width", "10px");
@@ -474,7 +477,7 @@ fn direct_width_write_applies_on_the_next_pass() {
             .expect("container")
             .as_box()
             .width,
-        Some(20.0),
+        box_px(20.0),
         "the computed group should not change until the next pass",
     );
     update(&mut world, &mut root);
@@ -483,7 +486,7 @@ fn direct_width_write_applies_on_the_next_pass() {
             .expect("container")
             .as_box()
             .width,
-        Some(10.0)
+        box_px(10.0)
     );
 }
 
@@ -534,8 +537,8 @@ fn transition_overlay_merges_mid_flight_left_into_computed_box() {
     assert_root_dom_update(&mut world, &mut root, 0.09, DomPointerUpdate::Unchanged);
 
     let left = root.computed_style(panel).expect("panel").as_box().left;
-    let Some(left) = left else {
-        panic!("left should present a mid-flight value via the transition overlay");
+    let BoxLength::Px(left) = left else {
+        panic!("left should present a mid-flight px value via the transition overlay");
     };
     assert!(
         left > -100.0 && left < 0.0,

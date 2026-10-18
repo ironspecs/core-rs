@@ -78,7 +78,7 @@ pub use style_runtime::StyleRuntime;
 pub(crate) use text_interner::TextInterner;
 
 pub use computed::{
-    AlignContentKw, AlignItemsKw, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
+    AlignContentKw, AlignItemsKw, BoxLength, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
     ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedStyleRef, ComputedTextGroup,
     ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw,
     FlexWrapKw, JustifyContentKw, NodePresentation, OverflowKw, PositionKw,
@@ -641,6 +641,10 @@ fn hash_decl_length(hasher: &mut std::collections::hash_map::DefaultHasher, leng
         }
         DeclLength::Em(value) => {
             2u8.hash(hasher);
+            value.to_bits().hash(hasher);
+        }
+        DeclLength::Percent(value) => {
+            3u8.hash(hasher);
             value.to_bits().hash(hasher);
         }
     }

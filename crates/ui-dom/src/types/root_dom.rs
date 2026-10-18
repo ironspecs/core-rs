@@ -41,7 +41,7 @@ use crate::domains::paint::{
 };
 use crate::domains::style::computed::project;
 use crate::domains::style::computed::{
-    ComputedGroups, FlexBasisKw, GroupDirtyClassification, ResolvedTransitionLonghands,
+    BoxLength, ComputedGroups, FlexBasisKw, GroupDirtyClassification, ResolvedTransitionLonghands,
     for_each_moved_field,
 };
 use crate::domains::style::{
@@ -4594,30 +4594,14 @@ pub(crate) fn decl_value_for_groups(
         PresentationProperty::Left => Some(box_edge_decl_value(groups.box_.left)),
         PresentationProperty::Right => Some(box_edge_decl_value(groups.box_.right)),
         PresentationProperty::Bottom => Some(box_edge_decl_value(groups.box_.bottom)),
-        PresentationProperty::MarginTop => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[0])))
-        }
-        PresentationProperty::MarginRight => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[1])))
-        }
-        PresentationProperty::MarginBottom => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[2])))
-        }
-        PresentationProperty::MarginLeft => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[3])))
-        }
-        PresentationProperty::PaddingTop => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[0])))
-        }
-        PresentationProperty::PaddingRight => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[1])))
-        }
-        PresentationProperty::PaddingBottom => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[2])))
-        }
-        PresentationProperty::PaddingLeft => {
-            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[3])))
-        }
+        PresentationProperty::MarginTop => Some(margin_edge_decl_value(groups.box_.margin[0])),
+        PresentationProperty::MarginRight => Some(margin_edge_decl_value(groups.box_.margin[1])),
+        PresentationProperty::MarginBottom => Some(margin_edge_decl_value(groups.box_.margin[2])),
+        PresentationProperty::MarginLeft => Some(margin_edge_decl_value(groups.box_.margin[3])),
+        PresentationProperty::PaddingTop => Some(inset_edge_decl_value(groups.box_.padding[0])),
+        PresentationProperty::PaddingRight => Some(inset_edge_decl_value(groups.box_.padding[1])),
+        PresentationProperty::PaddingBottom => Some(inset_edge_decl_value(groups.box_.padding[2])),
+        PresentationProperty::PaddingLeft => Some(inset_edge_decl_value(groups.box_.padding[3])),
         PresentationProperty::BorderTopWidth => Some(DeclValue::Length(DeclLength::Px(
             groups.box_.border_width[0],
         ))),
@@ -4729,19 +4713,44 @@ pub(crate) fn decl_value_for_groups(
     }
 }
 
-/// Maps an `Option<f32>` length field back to a `DeclValue`; `None` (unset) is
-/// the group's default `Length(Unset)`.
-fn optional_length_decl_value(value: Option<f32>) -> DeclValue {
+/// Maps a `BoxLength` optional-size field back to a `DeclValue`; `Auto` (unset/
+/// `auto`) is the group's default `Length(Unset)`.
+fn optional_length_decl_value(value: BoxLength) -> DeclValue {
     match value {
-        Some(px) => DeclValue::Length(DeclLength::Px(px)),
-        None => DeclValue::Length(DeclLength::Unset),
+        BoxLength::Auto => DeclValue::Length(DeclLength::Unset),
+        BoxLength::Px(px) => DeclValue::Length(DeclLength::Px(px)),
+        BoxLength::Percent(pct) => DeclValue::Length(DeclLength::Percent(pct)),
     }
 }
 
-/// Maps an `Option<f32>` box-edge field back to a `DeclValue`; a missing edge
-/// defaults to zero (`attribute_uses_zero_when_missing` semantics).
-fn box_edge_decl_value(value: Option<f32>) -> DeclValue {
-    DeclValue::Length(DeclLength::Px(value.unwrap_or(0.0)))
+/// Maps a `BoxLength` box-edge offset field back to a `DeclValue`; a missing
+/// edge defaults to zero (`attribute_uses_zero_when_missing` semantics).
+fn box_edge_decl_value(value: BoxLength) -> DeclValue {
+    match value {
+        BoxLength::Auto => DeclValue::Length(DeclLength::Px(0.0)),
+        BoxLength::Px(px) => DeclValue::Length(DeclLength::Px(px)),
+        BoxLength::Percent(pct) => DeclValue::Length(DeclLength::Percent(pct)),
+    }
+}
+
+/// Maps a `BoxLength` margin edge back to a `DeclValue`; `Auto` (authored
+/// `margin: auto`) is `Keyword(Auto)`, distinct from the absent `Px(0.0)`.
+fn margin_edge_decl_value(value: BoxLength) -> DeclValue {
+    match value {
+        BoxLength::Auto => DeclValue::Keyword(Keyword::Auto),
+        BoxLength::Px(px) => DeclValue::Length(DeclLength::Px(px)),
+        BoxLength::Percent(pct) => DeclValue::Length(DeclLength::Percent(pct)),
+    }
+}
+
+/// Maps a `BoxLength` padding edge back to a `DeclValue`; `Auto` never arrives
+/// (the grammar rejects `padding: auto`), so it maps to the absent `Px(0.0)`.
+fn inset_edge_decl_value(value: BoxLength) -> DeclValue {
+    match value {
+        BoxLength::Auto => DeclValue::Length(DeclLength::Px(0.0)),
+        BoxLength::Px(px) => DeclValue::Length(DeclLength::Px(px)),
+        BoxLength::Percent(pct) => DeclValue::Length(DeclLength::Percent(pct)),
+    }
 }
 
 /// Resolves a keyword-grammar group field's canonical name back to its
@@ -6248,7 +6257,7 @@ mod tests {
                 .expect("node should exist")
                 .computed_box()
                 .left,
-            Some(0.0)
+            BoxLength::Px(0.0)
         );
 
         root.style_mut(node)
@@ -6261,7 +6270,7 @@ mod tests {
                 .expect("node should exist")
                 .computed_box()
                 .top,
-            Some(100.0)
+            BoxLength::Px(100.0)
         );
     }
 

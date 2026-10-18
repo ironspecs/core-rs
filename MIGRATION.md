@@ -54,7 +54,7 @@ attr writes are gone — that was the bug (PLAN.md P1/P2).
 
 | v0.5 (removed) | v0.6 |
 | --- | --- |
-| `node.presented_attr(&DomAttribute::Width)` | `root.computed_style(key).expect(..).as_box().width` (`Option<f32>`, px-resolved) |
+| `node.presented_attr(&DomAttribute::Width)` | `root.computed_style(key).expect(..).as_box().width` (`BoxLength`, the computed form) |
 | `node.presented_attr(&DomAttribute::Custom("color"))` | `root.computed_style(key).expect(..).as_color().color_rgba` |
 | `root.compute_style_map(key, parent_map)` | `root.compute_style_map(key)` → `BTreeMap<PresentationProperty, DomAttributeValue>` — an on-demand **debug-priced** recalc (the `getComputedStyle` freedom); do not call per-frame |
 | `node.canonical_style_snapshot()` | `root.canonical_style_snapshot(key)` — serializes the node's inline declarations as `(String, DomAttributeValue)` pairs (arena keys are never serialized) |
@@ -136,6 +136,36 @@ Other notes:
 - Text-valued properties (`font-family`, `transform`, transition lists)
   intern in a bounded arena; `TextKey`s are store-relative and never
   serialized.
+
+## PR 1 item 7: the computed/used `BoxLength` split (hard API break)
+
+The box group's length fields moved from `Option<f32>` / `[f32; 4]` to the
+computed/used split (CSS Cascade §4.5, CSS Values §percentages, CSS 2.1
+§10.3.3). This is a **compile-time break** on the computed read surface:
+
+- `as_box().width` / `height` / `min_width` / `min_height` / `max_width` /
+  `max_height` / `top` / `left` / `right` / `bottom` are now `BoxLength`
+  (`Auto | Px(f32) | Percent(f32)`) instead of `Option<f32>`. `Auto` carries
+  exactly the old `None`/`auto` semantics; `Px` is style-resolved; `Percent`
+  stays symbolic into the group.
+- `as_box().margin` / `as_box().padding` are now `[BoxLength; 4]` instead of
+  `[f32; 4]`. The initial is `BoxLength::Px(0.0)`; an authored `margin: auto`
+  is `BoxLength::Auto` (distinct from absent), and `padding: auto` never
+  arrives (the grammar rejects it). `as_box().border_width` stays `[f32; 4]`
+  (no percentages, no `auto` in CSS border-width).
+- Box-group percentages resolve to the used value at layout (`width`/`margin`/
+  `padding` against the containing-block WIDTH, even vertically); `font-size`
+  and `line-height` percentages resolve at style time. Auto horizontal margins
+  absorb free space for block-level non-replaced boxes in normal flow
+  (§10.3.3); flex-item auto margins are deferred (Flexbox §8.1) and compute to
+  0 for now.
+- `as_box().width` reads `BoxLength::Percent(50.0)` for `width: 50%`; the used
+  width is resolved through layout (the public computed read surface keeps the
+  symbolic form, matching CSS computed values).
+
+Migration: replace `Some(px)` box assertions with `BoxLength::Px(px)`, `None`
+with `BoxLength::Auto`, and `[x.0; 4]` margin/padding assertions with
+`[BoxLength::Px(x.0); 4]`.
 
 ## Behavior notes (functional, not parse)
 

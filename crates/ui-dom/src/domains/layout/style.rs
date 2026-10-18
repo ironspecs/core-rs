@@ -31,7 +31,7 @@
 //! - if a helper is only needed by one solver branch, keep it there instead of
 //!   teaching `style.rs` a broader concept than the DOM actually exposes
 //!
-use crate::domains::style::computed::{BoxSizingKw, DisplayKw, PositionKw};
+use crate::domains::style::computed::{BoxLength, BoxSizingKw, DisplayKw, PositionKw};
 use crate::types::primitives::PointPx;
 use crate::types::{
     BoxEdgeInsets, DomBoxModel, DomError, DomIntrinsic, DomLayerKind, DomNode, DomRect,
@@ -76,6 +76,12 @@ pub(super) struct NodeStyle {
     pub layer_kind: DomLayerKind,
     pub font_size_px: f32,
     pub sides: BoxSides,
+    /// `[top, right, bottom, left]` — `true` marks an authored `auto` margin
+    /// edge (CSS `margin-*: auto`), resolved at layout time per CSS 2.1
+    /// §10.3.3. Group array order, matching `ComputedBoxGroup::margin`. The
+    /// resolved `sides.margin` edge for an auto margin is a 0.0 placeholder
+    /// that the block auto-margin solver overwrites.
+    pub margin_auto: [bool; 4],
     /// CSS UI 4 §3.1: whether the specified `width`/`height` names the content
     /// box (`ContentBox`) or the border box (`BorderBox`). The sizing
     /// projection (`flow.rs`) reads this to subtract insets under `BorderBox`.
@@ -218,31 +224,63 @@ pub(crate) fn layer_allows_local_size_update(node: &DomNode) -> bool {
 /// assert_eq!(style.position, PositionMode::Static);
 /// ```
 #[allow(clippy::unnecessary_wraps)]
-pub(super) fn node_style(node: &DomNode) -> Result<NodeStyle, DomError> {
+pub(super) fn node_style(
+    node: &DomNode,
+    basis_width_px: f32,
+    basis_height_px: f32,
+) -> Result<NodeStyle, DomError> {
     let box_ = node.computed_box();
     let font = node.computed_font();
+    let (margin_edges, margin_auto) = resolve_margin_edges(box_.margin, basis_width_px);
+    let padding_edges = resolve_padding_edges(box_.padding, basis_width_px);
     Ok(NodeStyle {
         display: presented_display(node),
         position: presented_position(node),
         layer_kind: layer_kind_for_node(node),
         font_size_px: font.size_px,
         sides: BoxSides {
-            margin: box_edge_insets_from_array(box_.margin),
+            margin: box_edge_insets_from_array(margin_edges),
             border: box_edge_insets_from_array(box_.border_width),
-            padding: box_edge_insets_from_array(box_.padding),
+            padding: box_edge_insets_from_array(padding_edges),
         },
+        margin_auto,
         box_sizing: box_.box_sizing,
-        width_px: box_.width,
-        height_px: box_.height,
-        min_width_px: box_.min_width,
-        min_height_px: box_.min_height,
-        max_width_px: box_.max_width,
-        max_height_px: box_.max_height,
-        top_px: box_.top,
-        left_px: box_.left,
-        right_px: box_.right,
-        bottom_px: box_.bottom,
+        width_px: box_.width.resolve(basis_width_px),
+        height_px: box_.height.resolve(basis_height_px),
+        min_width_px: box_.min_width.resolve(basis_width_px),
+        min_height_px: box_.min_height.resolve(basis_height_px),
+        max_width_px: box_.max_width.resolve(basis_width_px),
+        max_height_px: box_.max_height.resolve(basis_height_px),
+        top_px: box_.top.resolve(basis_height_px),
+        left_px: box_.left.resolve(basis_width_px),
+        right_px: box_.right.resolve(basis_width_px),
+        bottom_px: box_.bottom.resolve(basis_height_px),
     })
+}
+
+/// Resolves the four `[top, right, bottom, left]` margin `BoxLength`s against
+/// the containing-block WIDTH (CSS Values §percentages: margin percentages
+/// resolve against the containing block width, even vertically). Returns the
+/// resolved px edges (auto edges are a 0.0 placeholder) and the parallel auto
+/// flags in the same `[top, right, bottom, left]` order.
+fn resolve_margin_edges(edges: [BoxLength; 4], basis_width_px: f32) -> ([f32; 4], [bool; 4]) {
+    let mut resolved = [0.0; 4];
+    let mut auto = [false; 4];
+    for (index, edge) in edges.into_iter().enumerate() {
+        match edge {
+            BoxLength::Auto => auto[index] = true,
+            BoxLength::Px(px) => resolved[index] = px,
+            BoxLength::Percent(pct) => resolved[index] = basis_width_px * pct / 100.0,
+        }
+    }
+    (resolved, auto)
+}
+
+/// Resolves the four padding `BoxLength`s against the containing-block WIDTH
+/// (CSS Values §percentages, even vertically). `auto` never arrives (the
+/// grammar rejects `padding: auto`), but maps to the absent 0.0 defensively.
+fn resolve_padding_edges(edges: [BoxLength; 4], basis_width_px: f32) -> [f32; 4] {
+    edges.map(|edge| edge.resolve_or(basis_width_px, 0.0))
 }
 
 /// Returns the intrinsic or previously-measured box for one node. This
@@ -510,7 +548,7 @@ mod tests {
     }
 
     fn node_style_of(node: &DomNode) -> super::NodeStyle {
-        node_style(node).expect("style")
+        node_style(node, 0.0, 0.0).expect("style")
     }
 
     #[test]
@@ -546,11 +584,11 @@ mod tests {
     fn node_style_reads_pixel_edges_and_sizes() {
         let node = with_computed_groups(div_node(), |groups| {
             // `margin`/`padding`/`border_width` are [top, right, bottom, left].
-            groups.box_.margin[3] = 6.0; // margin-left
-            groups.box_.padding[0] = 4.0; // padding-top
+            groups.box_.margin[3] = BoxLength::Px(6.0); // margin-left
+            groups.box_.padding[0] = BoxLength::Px(4.0); // padding-top
             groups.box_.border_width[1] = 2.0; // border-right
-            groups.box_.width = Some(40.0);
-            groups.box_.bottom = Some(0.0);
+            groups.box_.width = BoxLength::Px(40.0);
+            groups.box_.bottom = BoxLength::Px(0.0);
         });
 
         let style = node_style_of(&node);
@@ -570,9 +608,9 @@ mod tests {
         // margin-top all resolved against a 10px parent seed -> 20/60/20/10).
         let node = with_computed_groups(div_node(), |groups| {
             groups.font.size_px = 20.0;
-            groups.box_.width = Some(60.0);
-            groups.box_.padding[3] = 20.0; // padding-left
-            groups.box_.margin[0] = 10.0; // margin-top
+            groups.box_.width = BoxLength::Px(60.0);
+            groups.box_.padding[3] = BoxLength::Px(20.0); // padding-left
+            groups.box_.margin[0] = BoxLength::Px(10.0); // margin-top
         });
 
         let style = node_style_of(&node);
