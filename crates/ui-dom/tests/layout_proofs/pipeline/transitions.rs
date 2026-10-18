@@ -826,3 +826,60 @@ fn transition_overlay_beats_important_declarations_while_running() {
         "after completion the cascaded important-inline target (100.0) is presented, not the important rule's 10.0",
     );
 }
+
+#[test]
+// CSS Transitions 1 interpolates length-percentage endpoints (the percentage
+// resolves against the containing block and the px pair lerps). Our
+// scheduler's `interpolate_value` (`dom_transition.rs`) only lerps `Px → Px`,
+// so a `DeclLength::Percent` endpoint carries no used basis at interpolation
+// time and steps today: mid-flight presents the from-shape's used value and
+// the target is taken only at completion. Follow-up (deferred, admission-gated
+// per D6): resolve percentage endpoints against the containing-block width at
+// schedule time and lerp the px pair.
+// <https://www.w3.org/TR/css-transitions-1/>
+fn percentage_authored_transitions_step_at_completion_for_now() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, container, "width", "200px");
+    let target = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, target, "width", "50%");
+    assert_style_set(&mut root, target, "transition", "width 200ms linear");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_style_set(&mut root, target, "width", "100px");
+    // Detection update schedules the transition (presented == from-shape).
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    // Progress 0.5: the step rule keeps the symbolic from-shape, which resolves
+    // to 100.0 (50% of the 200px container) — not an interpolated intermediate.
+    assert_root_dom_update(&mut world, &mut root, 0.1, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        ui_dom::BoxLength::Percent(50.0),
+        "mid-flight should keep the symbolic from-shape (Percent(50.0)), not an interpolated px",
+    );
+    assert_eq!(
+        ui_dom::node_box(&root, target)
+            .expect("box")
+            .border_box
+            .width_px,
+        100.0,
+        "mid-flight width should present the from-shape's used value (100.0)",
+    );
+
+    // Completion: the target is taken exactly.
+    assert_root_dom_update(&mut world, &mut root, 0.4, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        ui_dom::BoxLength::Px(100.0),
+        "completion should take the target (Px(100.0))",
+    );
+    assert_eq!(
+        ui_dom::node_box(&root, target)
+            .expect("box")
+            .border_box
+            .width_px,
+        100.0,
+        "completion width should be exactly 100.0",
+    );
+}

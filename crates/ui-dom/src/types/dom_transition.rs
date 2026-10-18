@@ -492,6 +492,8 @@ fn interpolate_value(from: &DeclValue, to: &DeclValue, progress: f32) -> DeclVal
             from[0] + (to[0] - from[0]) * progress,
             from[1] + (to[1] - from[1]) * progress,
         ]),
+        // A percentage `DeclLength` steps here (no used basis at interpolation
+        // time); deferred per D6 — schedule-time basis resolution, not this step.
         _ if progress >= 1.0 => *to,
         _ => *from,
     }
