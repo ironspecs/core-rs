@@ -4,18 +4,26 @@
 // computed-group comparisons in this module are deliberate exact checks.
 #![allow(clippy::float_cmp)]
 
-//! Sign-rule and numeric-edge pins for the style system (PLAN.md B1, landing b).
+//! Sign-rule, numeric-edge, and units/sizing-keyword pins for the style system
+//! (PLAN.md B1 + B2).
 //!
 //! Purpose: pin the observable behavior of the admitted length grammar at its
-//! sign-rule and numeric edges — the on-spec rejects (negative lengths dropped
-//! through both the longhand and shorthand paths), the on-spec keeps (legal
-//! negatives, the already-rejected illegal ones, `font-size: unset`
+//! sign-rule and numeric edges (B1) and the deliberately-unadmitted unit and
+//! sizing-keyword grammar (B2). B1 covers the on-spec rejects (negative lengths
+//! dropped through both the longhand and shorthand paths), the on-spec keeps
+//! (legal negatives, the already-rejected illegal ones, `font-size: unset`
 //! inheritance, and the unitless-zero normalization), the deliberate
 //! `line-height: 0` render floor, and the crash-resistance robustness pins over
-//! adversarial numeric inputs.
+//! adversarial numeric inputs. B2 pins every unadmitted unit (percentages,
+//! `calc()`/`min()`/`max()`/`clamp()`, viewport and font-relative units) and
+//! sizing keyword (`auto`, intrinsic-size keywords, CSS-wide keywords) as a
+//! drop-and-continue gate: the declaration is dropped + counted and the computed
+//! value stays at the group initial.
 //!
-//! Class notes: the `negative_*`, `width_zero_*`, `fractional_*`, and
-//! `font_size_unset_*` rows are on-spec keeps; `robustness_*` rows assert
+//! Class notes: the `negative_*`, `width_zero_*`, `fractional_*`,
+//! `unitless_nonzero_*`, and `font_size_unset_*` rows are on-spec keeps;
+//! `unsupported_*` rows are unimplemented (D6 admission-gated drop-and-continue
+//! — the value or grammar form is not admitted); `robustness_*` rows assert
 //! no-panic plus the defined outcome; `line_height_zero_floors_at_one_px` is a
 //! deliberate crate-owned render floor (see its per-test header). The only
 //! remaining off-spec row in this file is `off_spec_opacity_out_of_range_rejected`
@@ -705,4 +713,290 @@ fn robustness_zero_font_size_textarea_caret_does_not_crash() {
         !plans.is_empty(),
         "focused textarea should stage a paint plan",
     );
+}
+
+// — B2: units & sizing keywords — //
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Values 4 §percentages — `width`, `margin-left`, `font-size`, and
+//   `line-height` each admit a `<percentage>` (resolved against the containing
+//   block or a font-relative axis at computed/used time).
+//   <https://drafts.csswg.org/css-values-4/#percentages>
+// - CURRENT (asserted): each percentage form drops + counts
+//   (`declarations_dropped == 1`); the computed value stays at the group initial
+//   (width `None`, margin `0.0`, font-size seed, line-height `normal`).
+// - SPEC-CORRECT: admit percentages per shape (box vs font vs line-height
+//   resolution — see PLAN.md B2 data structures).
+// - D6: admission requires a named consumer need + spec citation + Blink/Gecko
+//   algorithm reference.
+fn unsupported_percentage_lengths_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "width_percent",
+            body: "width: 50%",
+        },
+        Case {
+            name: "margin_left_percent",
+            body: "margin-left: 10%",
+        },
+        Case {
+            name: "font_size_percent",
+            body: "font-size: 120%",
+        },
+        Case {
+            name: "line_height_percent",
+            body: "line-height: 150%",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Values 4 §10 — `calc()`, `min()`, `max()`, `clamp()` are math
+//   functions admissible wherever a length is.
+//   <https://drafts.csswg.org/css-values-4/#math>
+// - CURRENT (asserted): each drops + counts. The paren-bearing values reach the
+//   grammar (the declaration splitter is semicolon-based, so nothing splits on
+//   the commas/parens) and fail there — no crash, no fatal load rejection.
+// - SPEC-CORRECT: admit a bounded `CalcExpr` (see PLAN.md B2 data structures).
+// - D6: admission-gated.
+fn unsupported_math_functions_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "calc_mixed_percent",
+            body: "width: calc(100% - 10px)",
+        },
+        Case {
+            name: "calc_px_sum",
+            body: "width: calc(1px + 1px)",
+        },
+        Case {
+            name: "min_fn",
+            body: "width: min(1px, 2px)",
+        },
+        Case {
+            name: "max_fn",
+            body: "width: max(1px, 2px)",
+        },
+        Case {
+            name: "clamp_fn",
+            body: "width: clamp(1px, 2px, 3px)",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Values 4 §7 — `vw`, `vh`, `vmin`, `vmax` are viewport-percentage
+//   lengths resolved against the viewport dimensions.
+//   <https://drafts.csswg.org/css-values-4/#viewport-relative-lengths>
+// - CURRENT (asserted): each viewport unit drops + counts.
+// - SPEC-CORRECT: admit viewport units (style-time resolution against the
+//   viewport the composite stage knows — see PLAN.md B2).
+// - D6: admission-gated.
+fn unsupported_viewport_units_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "vw",
+            body: "width: 100vw",
+        },
+        Case {
+            name: "vh",
+            body: "height: 50vh",
+        },
+        Case {
+            name: "vmin",
+            body: "width: 10vmin",
+        },
+        Case {
+            name: "vmax",
+            body: "width: 10vmax",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Values 4 §7.1 — `rem` (root em), `ex`, `ch`, `lh`, `rlh` are
+//   font-relative lengths.
+//   <https://drafts.csswg.org/css-values-4/#font-relative-lengths>
+// - CURRENT (asserted): each font-relative unit drops + counts (the grammar
+//   admits only `px` and `em` today).
+// - SPEC-CORRECT: admit font-relative units (`rem` against the root font size,
+//   etc. — see PLAN.md B2).
+// - D6: admission-gated.
+fn unsupported_font_relative_units_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "rem",
+            body: "font-size: 2rem",
+        },
+        Case {
+            name: "ex",
+            body: "width: 1ex",
+        },
+        Case {
+            name: "ch",
+            body: "width: 2ch",
+        },
+        Case {
+            name: "lh",
+            body: "line-height: 1lh",
+        },
+        Case {
+            name: "rlh",
+            body: "line-height: 1rlh",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Sizing 3 §3.1 `width` admits `auto` (available/shrink-to-fit);
+//   CSS Box 3 §4.2 `margin-top` admits `auto` (free-space absorption at layout).
+//   <https://drafts.csswg.org/css-sizing-3/#preferred-size-properties>
+// - CURRENT (asserted): BOTH drop + count. The two-sided pin also asserts the
+//   computed value stays at the group initial — `width` `None`, `margin[0]`
+//   `0.0` — so "correct outcome" is never confused with "admitted grammar".
+// - SPEC-CORRECT: admit `auto` (margins resolve at layout — see PLAN.md B2).
+// - D6: admission-gated.
+fn unsupported_auto_lengths_drop() {
+    // (a) width: auto — dropped AND computed width stays None (the initial).
+    assert_decl_drop(".x { width: auto }", 0, 1);
+    let (mut world, mut root, target, _report) = styled_target_load(".x { width: auto }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        None,
+        "width: auto should stay at its initial None",
+    );
+
+    // (b) margin-top: auto — dropped AND computed margin-top stays 0.0.
+    assert_decl_drop(".x { margin-top: auto }", 0, 1);
+    let (mut world, mut root, target, _report) = styled_target_load(".x { margin-top: auto }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().margin[0],
+        0.0,
+        "margin-top: auto should stay at its 0.0 initial",
+    );
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Sizing 3 §5 — `min-content`, `max-content`, `fit-content` are
+//   intrinsic-size keywords for `width`/`height`.
+//   <https://drafts.csswg.org/css-sizing-3/#intrinsic>
+// - CURRENT (asserted): each drops + counts.
+// - SPEC-CORRECT: admit intrinsic keywords (see PLAN.md B2).
+// - D6: admission-gated.
+fn unsupported_intrinsic_size_keywords_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "min_content",
+            body: "width: min-content",
+        },
+        Case {
+            name: "max_content",
+            body: "width: max-content",
+        },
+        Case {
+            name: "fit_content",
+            body: "width: fit-content",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+}
+
+#[test]
+// ON-SPEC: CSS Values 4 §4.1.1 — a non-zero `<length>` requires a unit;
+// `width: 10` is invalid. The grammar's `0` arm admits only the literal zero,
+// so `10` drops + counts. Pin to keep (a unitless non-zero length must never
+// silently become admitted).
+fn unitless_nonzero_length_rejected() {
+    assert_decl_drop(".x { width: 10 }", 0, 1);
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Cascade 5 §4 — `inherit`, `initial`, `revert`, `revert-layer`
+//   are CSS-wide keywords valid on every property.
+//   <https://drafts.csswg.org/css-cascade-5/#defaulting-keywords>
+// - CURRENT (asserted): each drops + counts; only `unset` is admitted, and only
+//   where the grammar says so (see `font_size_unset_resolves_to_inherited_seed`).
+// - SPEC-CORRECT: admit the CSS-wide keyword family.
+// - D6: admission-gated.
+fn unsupported_css_wide_keywords_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "inherit",
+            body: "width: inherit",
+        },
+        Case {
+            name: "initial",
+            body: "width: initial",
+        },
+        Case {
+            name: "revert",
+            body: "width: revert",
+        },
+        Case {
+            name: "revert_layer",
+            body: "width: revert-layer",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
 }

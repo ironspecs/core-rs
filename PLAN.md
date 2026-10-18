@@ -451,7 +451,7 @@ diffs rely on).
 | `width: min-content` / `max-content` / `fit-content` | dropped+counted | intrinsic size keywords | unimplemented |
 | `width: 10` (unitless non-zero) | dropped+counted | **CSS also rejects** | on-spec (pin to keep) |
 | `width: inherit` / `initial` / `revert` / `revert-layer` | dropped+counted (only `unset` admitted) | CSS-wide keywords | unimplemented |
-| `font-size: unset` | dropped+counted (grammar is `LengthNoUnset`) | `unset` is CSS-wide | unimplemented |
+| ~~`font-size: unset`~~ | **RESOLVED in B1b** — admitted, resolves to the inherited seed; pinned on-spec by `font_size_unset_resolves_to_inherited_seed` (`style/unsupported_values.rs`) | `unset` is CSS-wide | on-spec |
 
 **B2 scope and changes.**
 
@@ -1275,7 +1275,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | Batch 0 — suite reorganization | done |
 | B1 — sign rules & numeric edges | **done** (a `4cb6acd` pins; b — fix + flips, incl. the font-size: 0 guard; caret-path follow-up queued below) |
 | B1 (a) — pins of current behavior (`style/unsupported_values.rs`) | done |
-| B2 — units & sizing keywords | not started |
+| B2 — units & sizing keywords | **done** (pins; all rows verified; the stale `font-size: unset` row was resolved by B1b and is marked above) |
 | B3 — box shorthands | not started |
 | B4 — text consumption & admitted quirks | not started |
 | B5 — preserved candidates | not started |
