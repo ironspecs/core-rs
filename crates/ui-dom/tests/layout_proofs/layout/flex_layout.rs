@@ -6329,6 +6329,126 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
     f32::from(value_u16)
 }
 
+// CSS Flexbox 1 §7.3.3 (flex-basis): `content` indicates automatic sizing
+// based on the item's content — typically the max-content size; `<length>`
+// units (em included) resolve against the item's font size; `0` sets a zero
+// base. Closest WPT oracle: `css/css-flexbox/flex-basis-*` (the `content`
+// keyword resolves to max-content). Gecko (`FlexItem::GetFlexBaseSize`,
+// `nsFlexContainerFrame.cpp`) and Blink (`flex_layout_algorithm.cc` flex-basis
+// resolution) both size `content` from the content's max-content.
+//
+// NOT OFF-SPEC (Run A F11 false positive): the coverage matrix suspected
+// `flex-basis: content` resolved to an available-width (fit-content) measure
+// rather than max-content (`preferred_flex_basis_px`/`measured_flex_base_size_px`,
+// `flex.rs:1233`/`flex.rs:1241`). The pinned behavior shows `content` measures
+// the max-content size — a 100px container's `content`-basis text item measures
+// its full ~140.5px max-content width — so the family lands on-spec, with no
+// `off_spec_` name and no registry row. Rows (c)/(d) pin the em and zero unit
+// forms alongside.
+#[test]
+fn flex_basis_content_and_unit_forms() {
+    let rows: [FlexBasisRow; 4] = [
+        (
+            "content_resolves_to_max_content_on_text_item",
+            assert_content_resolves_to_max_content_on_text_item,
+        ),
+        (
+            "content_resolves_to_max_content_on_block_item",
+            assert_content_resolves_to_max_content_on_block_item,
+        ),
+        (
+            "em_basis_resolves_against_own_font_size",
+            assert_em_basis_resolves,
+        ),
+        (
+            "zero_basis_grows_to_fill_free_space",
+            assert_zero_basis_grows,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named flex-basis form probe: row name plus a runner.
+type FlexBasisRow = (&'static str, fn(&str));
+
+fn assert_content_resolves_to_max_content_on_text_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "content");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "height", "20px");
+    let text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // On-spec: `content` measures the max-content width, overflowing the 100px
+    // container instead of shrinking to fit it.
+    let max_content_px = assert_text_intrinsic(&root, text).max_content_width_px;
+    assert_close(
+        rects[1].size_px[0],
+        max_content_px,
+        &format!("{name}: item width equals text max-content"),
+    );
+}
+
+fn assert_content_resolves_to_max_content_on_block_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "content");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "height", "20px");
+    let child = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, child, "width", "40px");
+    assert_style_set(&mut root, child, "height", "10px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + item + child");
+    // On-spec: `content` measures the block item's max-content (its 40px child).
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 40.0, 20.0, &format!("{name}: item"));
+}
+
+fn assert_em_basis_resolves(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "font-size", "10px");
+    assert_style_set(&mut root, item, "flex-basis", "3em");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // On-spec: 3em resolves against the item's own 10px font size → 30px.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 20.0, &format!("{name}: item"));
+}
+
+fn assert_zero_basis_grows(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "0px");
+    assert_style_set(&mut root, item, "flex-grow", "1");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // On-spec: a zero base plus grow:1 fills the container's 200px free space.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 200.0, 20.0, &format!("{name}: item"));
+}
+
 // CSS Flexbox 1 §8.2 (main axis) and §8.4 (cross axis): with negative free
 // space, `space-between` falls back to flex-start and `space-around` /
 // `space-evenly` fall back to center (offset = remaining/2). Closest WPT

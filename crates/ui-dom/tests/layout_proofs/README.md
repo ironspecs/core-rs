@@ -186,9 +186,10 @@ Flex coverage map:
   `off_spec_hypothetical_main_size_not_floored_by_auto_min` (§4.5/§9.2),
   `off_spec_flex_container_ignores_min_max_main_cross_sizes` (§9.2/§10.7),
   `off_spec_space_evenly_negative_free_space_does_not_fall_back_to_center` (§8.2/§8.4);
-  one suspected divergence resolved on-spec (no registry row):
+  two suspected divergences resolved on-spec (no registry row):
   `cross_axis_min_max_clamps_apply_via_block_measure_and_relayout` (§8.3/§9.2/§9.4,
-  F6 false positive).
+  F6 false positive), `flex_basis_content_and_unit_forms` (§7.3.3, F11 false
+  positive — `content` resolves to max-content).
 
 Normal-flow coverage map:
 
