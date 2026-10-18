@@ -1,18 +1,18 @@
 //! Fixed bitset over `PresentationProperty` for `ui-dom`.
 //!
-//! This file owns `PropertySet`, a 68-bit set in two words that answers O(1)
+//! This file owns `PropertySet`, a 69-bit set in two words that answers O(1)
 //! membership without scanning a block's declarations. It backs `DeclBlock`'s
 //! `present` membership tracking.
 //!
 //! Invariants and rules:
 //!
-//! - bit index is `PresentationProperty::index` (0..=67), split across two
-//!   `u64` words at word 0 (bits 0..=63) and word 1 (bits 64..=67)
+//! - bit index is `PresentationProperty::index` (0..=68), split across two
+//!   `u64` words at word 0 (bits 0..=63) and word 1 (bits 64..=68)
 //! - `set`/`clear` are idempotent; no out-of-range bit is ever touched
 
 use super::presentation_property::PresentationProperty;
 
-/// Fixed-capacity bitset over `PresentationProperty` (68 bits in two words):
+/// Fixed-capacity bitset over `PresentationProperty` (69 bits in two words):
 /// O(1) membership without scanning a block's declarations.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PropertySet([u64; 2]);

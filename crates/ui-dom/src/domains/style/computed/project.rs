@@ -24,6 +24,7 @@ use arrayvec::ArrayVec;
 
 use super::align_content_kw::AlignContentKw;
 use super::align_items_kw::AlignItemsKw;
+use super::box_sizing_kw::BoxSizingKw;
 use super::computed_groups::ComputedGroups;
 use super::display_kw::DisplayKw;
 use super::flex_basis_kw::FlexBasisKw;
@@ -302,7 +303,8 @@ fn resolve_box_field(
         PresentationProperty::Display
         | PresentationProperty::Position
         | PresentationProperty::Overflow
-        | PresentationProperty::Isolate => resolve_box_keyword(groups, property, value),
+        | PresentationProperty::Isolate
+        | PresentationProperty::BoxSizing => resolve_box_keyword(groups, property, value),
         PresentationProperty::Width
         | PresentationProperty::Height
         | PresentationProperty::MinWidth
@@ -345,6 +347,11 @@ fn resolve_box_keyword(
         }
         PresentationProperty::Isolate => {
             groups.box_.isolate = keyword == Keyword::Isolate;
+        }
+        PresentationProperty::BoxSizing => {
+            if let Some(box_sizing) = BoxSizingKw::from_keyword(keyword) {
+                groups.box_.box_sizing = box_sizing;
+            }
         }
         _ => {}
     }

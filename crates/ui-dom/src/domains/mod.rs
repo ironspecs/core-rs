@@ -59,12 +59,12 @@ pub use render_ops::{
     StagedLayerApply, register_render_ops_handler,
 };
 pub use style::{
-    AlignContentKw, AlignItemsKw, ComputedBoxGroup, ComputedColorGroup, ComputedFlexGroup,
-    ComputedFontGroup, ComputedGroups, ComputedStyleMap, ComputedStyleRef, ComputedTextGroup,
-    ComputedTransformGroup, ComputedVisualGroup, DeclBlockKey, DeclDropReport, DeclLength,
-    DeclStore, DeclValue, Declaration, DisplayKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw,
-    JustifyContentKw, Keyword, NodePresentation, OverflowKw, PositionKw, PresentationProperty,
-    ResolvedTransitionLonghands, StyleMut, StyleRuleKey, StyleRuleOrigin, StylesheetLoadReport,
-    TRANSITION_LONGHAND_CAPACITY, TextKey, TransitionLonghandProperty,
+    AlignContentKw, AlignItemsKw, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
+    ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedStyleMap, ComputedStyleRef,
+    ComputedTextGroup, ComputedTransformGroup, ComputedVisualGroup, DeclBlockKey, DeclDropReport,
+    DeclLength, DeclStore, DeclValue, Declaration, DisplayKw, FlexBasisKw, FlexDirectionKw,
+    FlexWrapKw, JustifyContentKw, Keyword, NodePresentation, OverflowKw, PositionKw,
+    PresentationProperty, ResolvedTransitionLonghands, StyleMut, StyleRuleKey, StyleRuleOrigin,
+    StylesheetLoadReport, TRANSITION_LONGHAND_CAPACITY, TextKey, TransitionLonghandProperty,
 };
 pub use text_layout::{TextAlign, TextWrapMode};

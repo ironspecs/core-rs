@@ -53,6 +53,8 @@ use crate::domains::layout::IdentityDomLayoutResolver;
 #[cfg(test)]
 use crate::domains::layout::style::{layout_dirty_from_ref, node_box_from_ref};
 #[cfg(test)]
+use crate::domains::style::computed::BoxSizingKw;
+#[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
 use crate::types::{BoxEdgeInsets, DomLayerKind, DomLayoutState, DomTag, RootDomContext};
@@ -4908,6 +4910,7 @@ mod tests {
                     border: BoxEdgeInsets::default(),
                     padding: BoxEdgeInsets::default(),
                 },
+                box_sizing: BoxSizingKw::ContentBox,
                 width_px: None,
                 height_px: Some(12.0),
                 min_width_px: None,

@@ -54,10 +54,10 @@ use crate::domains::style::computed::project::{
     word_break as word_break_from_keyword,
 };
 use crate::domains::style::computed::{
-    AlignContentKw, AlignItemsKw, ComputedBoxGroup, ComputedColorGroup, ComputedFlexGroup,
-    ComputedFontGroup, ComputedGroups, ComputedTextGroup, ComputedTransformGroup,
-    ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw,
-    GroupDirtyClassification, JustifyContentKw, OverflowKw, PositionKw,
+    AlignContentKw, AlignItemsKw, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
+    ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedTextGroup,
+    ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw,
+    FlexWrapKw, GroupDirtyClassification, JustifyContentKw, OverflowKw, PositionKw,
     ResolvedTransitionLonghands,
 };
 use crate::domains::style::{DeclBlockKey, DeclLength, DeclValue, Keyword, PresentationProperty};
@@ -546,6 +546,11 @@ impl DomNode {
         }
         if let Some(isolate) = self.presented_isolate() {
             box_.isolate = isolate;
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::BoxSizing)
+            && let Some(box_sizing) = BoxSizingKw::from_keyword(keyword)
+        {
+            box_.box_sizing = box_sizing;
         }
         apply_optional_px(
             &mut box_.width,

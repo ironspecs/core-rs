@@ -98,7 +98,7 @@ attr writes are gone — that was the bug (PLAN.md P1/P2).
 
 ## The parse-tightening table (D5)
 
-The closed property table (68 properties, `PresentationProperty`) parses
+The closed property table (69 properties, `PresentationProperty` — 68 at v0.6.0, growing only through the D6 admission policy below; `box-sizing` was the first post-release admission) parses
 typed values at the declaration boundary. These grammars tighten what v0.5
 tolerated as free strings. Anything outside the table is unsupported by
 policy (the D6 admission policy: a named consumer need, a spec citation

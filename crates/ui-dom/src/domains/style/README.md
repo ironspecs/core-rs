@@ -36,7 +36,8 @@ fold), or the computed read surface (`RootDom::computed_style`).
   blocks keyed by `NodePresentation::decl`; freed with their owner). The
   winners fold reads the inline block as the top cascade tier.
 - The typed declaration model owns itself, one type per file:
-  `presentation_property.rs` (the closed 68-property vocabulary with its
+  `presentation_property.rs` (the closed 69-property vocabulary — 68 at v0.6.0,
+  growing via admission per the D6 policy — with its
   per-property name, group, inherited flag, and grammar), `keyword.rs` (the
   closed keyword vocabulary), `decl_value.rs` (`DeclValue`/`DeclLength`/
   `TextKey`/`Precedence`), `declaration.rs` (one typed declaration),
@@ -49,7 +50,7 @@ fold), or the computed read surface (`RootDom::computed_style`).
   admission surface `name_is_presentation`).
 - The computed-value store owns itself, one file per behavior-bearing type
   under `computed/`: seven `computed_*_group.rs` files (the S1.1
-  inheritance-grouped `Copy` structs), nine `*_kw.rs` files (the box/flex
+  inheritance-grouped `Copy` structs), ten `*_kw.rs` files (the box/flex
   keyword vocabularies, one enum per file), `computed_groups.rs` (the seven
   held together), `node_presentation.rs` (inline block key + computed groups +
   last-pass `previous_computed` baseline + transition longhands),
@@ -137,8 +138,9 @@ fold), or the computed read surface (`RootDom::computed_style`).
 
 ## Invariants, rules, and decisions
 
-- The presentation vocabulary is closed at 68 properties (the value table in
-  `PLAN.md`), each with a closed grammar. A property or grammar form enters
+- The presentation vocabulary is closed at 69 properties (the value table in
+  `PLAN.md`; 68 at v0.6.0, growing via admission per the D6 policy), each with
+  a closed grammar. A property or grammar form enters
   only through the admission policy: a named consumer need, a spec citation
   plus the Blink/Gecko algorithm reference, and a proof in the same change.
   Unadmitted declarations are dropped at parse (counted), never silently

@@ -4568,6 +4568,10 @@ pub(crate) fn decl_value_for_groups(
         } else {
             Keyword::Auto
         })),
+        PresentationProperty::BoxSizing => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::BoxSizing,
+            groups.box_.box_sizing.name(),
+        )?)),
         PresentationProperty::Width => Some(optional_length_decl_value(groups.box_.width)),
         PresentationProperty::Height => Some(optional_length_decl_value(groups.box_.height)),
         PresentationProperty::MinWidth => Some(optional_length_decl_value(groups.box_.min_width)),
@@ -6974,7 +6978,7 @@ mod tests {
 
     #[test]
     fn name_is_presentation_covers_all_presentation_properties_and_shorthands() {
-        // Every longhand name of the 68-property vocabulary is presentation.
+        // Every longhand name of the 69-property vocabulary is presentation.
         for property in PresentationProperty::ALL {
             assert!(
                 name_is_presentation(property.name()),

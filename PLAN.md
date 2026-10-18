@@ -29,7 +29,7 @@ third-party agreement named in their section before code lands.
 Five problems, in the order this arc addresses them.
 
 - **P1 — The vocabulary gap is now the top consumer pain.** The style
-  engine's admitted vocabulary (68 properties, closed by design per the D6
+  engine's admitted vocabulary (69 properties, 68 at v0.6.0 and growing via admission per the D6
   admission policy) is *correct* but narrow. Real CSS that consumers write
   every day — `margin: 8px`, `box-sizing: border-box`, `!important`,
   `width: 50%`, `margin: auto`, `opacity: 1.2`, `transition: transform` —
@@ -108,7 +108,7 @@ it does well, and where it is weak. Citations are load-bearing.
 - **Typed values.** `DeclValue { Length(DeclLength), Color([f32;4]),
   Keyword(Keyword), Number(f32), Integer(i64), Text(TextKey) }` — parsed
   once at the declaration boundary by A1 (`decl_parse.rs`) against the
-  closed `DeclGrammar` table in `presentation_property.rs` (68 properties;
+  closed `DeclGrammar` table in `presentation_property.rs` (69 properties, growing via admission;
   per-property grammar, group, inherited flag, name). Fail-closed: anything
   outside the table drops with a counted report (CSS 2.1 §4.1.7, the scoped
   exception recorded in AGENTS.md).
@@ -117,7 +117,7 @@ it does well, and where it is weak. Citations are load-bearing.
   active pseudo-state behavior → matched rules ascending
   `Precedence { origin_priority, inline, specificity, order }`
   (`decl_value.rs:39-44`) → inline block (`i32::MAX`, `inline: true`), into
-  a stack-local `[Option<(DeclValue, Precedence)>; 68]`. The fold and
+  a stack-local `[Option<(DeclValue, Precedence)>; PresentationProperty::COUNT]` (69 today). The fold and
   resolution are zero-allocation per element; the collect phase carries
   two pinned per-element allocations plus a dedup `HashSet`
   (`winners_fold.rs:140-146` — the deferred proposal J's target, see the

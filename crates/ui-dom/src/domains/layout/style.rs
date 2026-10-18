@@ -31,7 +31,7 @@
 //! - if a helper is only needed by one solver branch, keep it there instead of
 //!   teaching `style.rs` a broader concept than the DOM actually exposes
 //!
-use crate::domains::style::computed::{DisplayKw, PositionKw};
+use crate::domains::style::computed::{BoxSizingKw, DisplayKw, PositionKw};
 use crate::types::primitives::PointPx;
 use crate::types::{
     BoxEdgeInsets, DomBoxModel, DomError, DomIntrinsic, DomLayerKind, DomNode, DomRect,
@@ -76,6 +76,10 @@ pub(super) struct NodeStyle {
     pub layer_kind: DomLayerKind,
     pub font_size_px: f32,
     pub sides: BoxSides,
+    /// CSS UI 4 §3.1: whether the specified `width`/`height` names the content
+    /// box (`ContentBox`) or the border box (`BorderBox`). The sizing
+    /// projection (`flow.rs`) reads this to subtract insets under `BorderBox`.
+    pub box_sizing: BoxSizingKw,
     pub width_px: Option<f32>,
     pub height_px: Option<f32>,
     pub min_width_px: Option<f32>,
@@ -227,6 +231,7 @@ pub(super) fn node_style(node: &DomNode) -> Result<NodeStyle, DomError> {
             border: box_edge_insets_from_array(box_.border_width),
             padding: box_edge_insets_from_array(box_.padding),
         },
+        box_sizing: box_.box_sizing,
         width_px: box_.width,
         height_px: box_.height,
         min_width_px: box_.min_width,

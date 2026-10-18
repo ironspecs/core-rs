@@ -3,8 +3,9 @@
 //! This file owns the `PresentationProperty` enum, per-property metadata
 //! (canonical name, cascade group, inherited flag, declaration grammar), and
 //! name lookup. It is the single admission table for the typed declaration
-//! family: the 68 properties, their groups, and the grammar each property's
-//! declared value must satisfy.
+//! family: the 69 properties, their groups, and the grammar each property's
+//! declared value must satisfy (68 at v0.6.0, growing via admission per the D6
+//! policy).
 //!
 //! Invariants and rules:
 //!
@@ -17,9 +18,10 @@
 
 use super::keyword::Keyword;
 
-/// The closed presentation vocabulary: 68 properties across the inherited
+/// The closed presentation vocabulary: 69 properties across the inherited
 /// font/text/color groups and the non-inherited box/flex/visual/transform
-/// groups, plus the four transition scheduler slots.
+/// groups, plus the four transition scheduler slots (68 at v0.6.0, growing via
+/// admission per the D6 policy).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PresentationProperty {
     // Inherited — font group
@@ -41,6 +43,7 @@ pub enum PresentationProperty {
     Position,
     Overflow,
     Isolate,
+    BoxSizing,
     Width,
     Height,
     MinWidth,
@@ -182,6 +185,8 @@ const OVERFLOW_KEYWORDS: &[Keyword] = &[
 ];
 
 const ISOLATE_KEYWORDS: &[Keyword] = &[Keyword::Auto, Keyword::Isolate];
+
+const BOX_SIZING_KEYWORDS: &[Keyword] = &[Keyword::ContentBox, Keyword::BorderBox];
 
 const TEXT_ALIGN_KEYWORDS: &[Keyword] = &[
     Keyword::Start,
@@ -335,6 +340,11 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
         "isolate",
         PresentationGroup::Box,
         DeclGrammar::Keywords(ISOLATE_KEYWORDS),
+    ),
+    (
+        "box-sizing",
+        PresentationGroup::Box,
+        DeclGrammar::Keywords(BOX_SIZING_KEYWORDS),
     ),
     (
         "width",
@@ -553,7 +563,7 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
 
 impl PresentationProperty {
     /// Number of defined `PresentationProperty` variants.
-    pub const COUNT: usize = 68;
+    pub const COUNT: usize = 69;
 
     /// Every variant, in enum order.
     pub const ALL: [PresentationProperty; Self::COUNT] = [
@@ -572,6 +582,7 @@ impl PresentationProperty {
         PresentationProperty::Position,
         PresentationProperty::Overflow,
         PresentationProperty::Isolate,
+        PresentationProperty::BoxSizing,
         PresentationProperty::Width,
         PresentationProperty::Height,
         PresentationProperty::MinWidth,
@@ -646,59 +657,60 @@ impl PresentationProperty {
             Self::Position => 12,
             Self::Overflow => 13,
             Self::Isolate => 14,
-            Self::Width => 15,
-            Self::Height => 16,
-            Self::MinWidth => 17,
-            Self::MinHeight => 18,
-            Self::MaxWidth => 19,
-            Self::MaxHeight => 20,
-            Self::Top => 21,
-            Self::Left => 22,
-            Self::Right => 23,
-            Self::Bottom => 24,
-            Self::MarginTop => 25,
-            Self::MarginRight => 26,
-            Self::MarginBottom => 27,
-            Self::MarginLeft => 28,
-            Self::PaddingTop => 29,
-            Self::PaddingRight => 30,
-            Self::PaddingBottom => 31,
-            Self::PaddingLeft => 32,
-            Self::BorderTopWidth => 33,
-            Self::BorderRightWidth => 34,
-            Self::BorderBottomWidth => 35,
-            Self::BorderLeftWidth => 36,
-            Self::FlexDirection => 37,
-            Self::FlexWrap => 38,
-            Self::FlexGrow => 39,
-            Self::FlexShrink => 40,
-            Self::FlexBasis => 41,
-            Self::Order => 42,
-            Self::JustifyContent => 43,
-            Self::AlignItems => 44,
-            Self::AlignSelf => 45,
-            Self::AlignContent => 46,
-            Self::RowGap => 47,
-            Self::ColumnGap => 48,
-            Self::Opacity => 49,
-            Self::BackgroundColor => 50,
-            Self::BorderTopColor => 51,
-            Self::BorderRightColor => 52,
-            Self::BorderBottomColor => 53,
-            Self::BorderLeftColor => 54,
-            Self::OutlineColor => 55,
-            Self::OutlineWidth => 56,
-            Self::OutlineOffset => 57,
-            Self::CaretColor => 58,
-            Self::BorderTopLeftRadius => 59,
-            Self::BorderTopRightRadius => 60,
-            Self::BorderBottomRightRadius => 61,
-            Self::BorderBottomLeftRadius => 62,
-            Self::Transform => 63,
-            Self::TransitionProperty => 64,
-            Self::TransitionDuration => 65,
-            Self::TransitionTimingFunction => 66,
-            Self::TransitionDelay => 67,
+            Self::BoxSizing => 15,
+            Self::Width => 16,
+            Self::Height => 17,
+            Self::MinWidth => 18,
+            Self::MinHeight => 19,
+            Self::MaxWidth => 20,
+            Self::MaxHeight => 21,
+            Self::Top => 22,
+            Self::Left => 23,
+            Self::Right => 24,
+            Self::Bottom => 25,
+            Self::MarginTop => 26,
+            Self::MarginRight => 27,
+            Self::MarginBottom => 28,
+            Self::MarginLeft => 29,
+            Self::PaddingTop => 30,
+            Self::PaddingRight => 31,
+            Self::PaddingBottom => 32,
+            Self::PaddingLeft => 33,
+            Self::BorderTopWidth => 34,
+            Self::BorderRightWidth => 35,
+            Self::BorderBottomWidth => 36,
+            Self::BorderLeftWidth => 37,
+            Self::FlexDirection => 38,
+            Self::FlexWrap => 39,
+            Self::FlexGrow => 40,
+            Self::FlexShrink => 41,
+            Self::FlexBasis => 42,
+            Self::Order => 43,
+            Self::JustifyContent => 44,
+            Self::AlignItems => 45,
+            Self::AlignSelf => 46,
+            Self::AlignContent => 47,
+            Self::RowGap => 48,
+            Self::ColumnGap => 49,
+            Self::Opacity => 50,
+            Self::BackgroundColor => 51,
+            Self::BorderTopColor => 52,
+            Self::BorderRightColor => 53,
+            Self::BorderBottomColor => 54,
+            Self::BorderLeftColor => 55,
+            Self::OutlineColor => 56,
+            Self::OutlineWidth => 57,
+            Self::OutlineOffset => 58,
+            Self::CaretColor => 59,
+            Self::BorderTopLeftRadius => 60,
+            Self::BorderTopRightRadius => 61,
+            Self::BorderBottomRightRadius => 62,
+            Self::BorderBottomLeftRadius => 63,
+            Self::Transform => 64,
+            Self::TransitionProperty => 65,
+            Self::TransitionDuration => 66,
+            Self::TransitionTimingFunction => 67,
+            Self::TransitionDelay => 68,
         }
     }
 
@@ -744,9 +756,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn count_is_sixty_eight_and_all_round_trips() {
-        assert_eq!(PresentationProperty::COUNT, 68);
-        assert_eq!(PresentationProperty::ALL.len(), 68);
+    fn count_is_sixty_nine_and_all_round_trips() {
+        assert_eq!(PresentationProperty::COUNT, 69);
+        assert_eq!(PresentationProperty::ALL.len(), 69);
         for property in PresentationProperty::ALL {
             assert_eq!(
                 PresentationProperty::from_name(property.name()),

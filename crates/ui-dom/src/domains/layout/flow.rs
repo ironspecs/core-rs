@@ -33,6 +33,7 @@
 //! - if a value is only useful during this call stack, keep it local and let it
 //!   disappear when the node finishes
 //!
+use crate::domains::style::computed::BoxSizingKw;
 use crate::domains::text_layout::{
     TextLayoutRequest, text_wrap_mode_for_css_layout, with_repo_text_layout_context,
 };
@@ -826,6 +827,16 @@ fn style_with_node_content_size_overrides(
     if let Some(height_px) = context.node_content_height_override_px {
         style.height_px = Some(assert_node_content_size_override_px(height_px, "height"));
     }
+    // The flex solver's size overrides are already CONTENT-box sizes (the
+    // solver strips border+padding before re-measuring the item). Feeding one
+    // through `content_box_size_px` under `BorderBox` would subtract the insets
+    // a second time, so the override reinterprets the specified size as the
+    // content box (CSS UI 4 §3.1's `content-box` mode, verbatim).
+    if context.node_content_width_override_px.is_some()
+        || context.node_content_height_override_px.is_some()
+    {
+        style.box_sizing = BoxSizingKw::ContentBox;
+    }
     style
 }
 
@@ -1437,7 +1448,12 @@ pub(super) fn resolved_content_size_px(
         };
     }
     let content_width_px = clamp_length(
-        style.width_px.unwrap_or(auto_content_width_px.max(0.0)),
+        content_box_size_px(
+            style.width_px,
+            style.box_sizing,
+            horizontal_border_padding_px(style.sides),
+        )
+        .unwrap_or(auto_content_width_px.max(0.0)),
         style.min_width_px,
         style.max_width_px,
     );
@@ -1447,7 +1463,12 @@ pub(super) fn resolved_content_size_px(
         auto_content_height_px,
     );
     let content_height_px = clamp_length(
-        style.height_px.unwrap_or(auto_content_height_px),
+        content_box_size_px(
+            style.height_px,
+            style.box_sizing,
+            vertical_border_padding_px(style.sides),
+        )
+        .unwrap_or(auto_content_height_px),
         style.min_height_px,
         style.max_height_px,
     );
@@ -1465,7 +1486,16 @@ fn img_ratio_content_size_px(
     let aspect_ratio = img_intrinsic_aspect_ratio?;
     match (style.width_px, style.height_px) {
         (Some(width_px), None) => {
-            let content_width_px = clamp_length(width_px, style.min_width_px, style.max_width_px);
+            let content_width_px = clamp_length(
+                content_box_size_px(
+                    Some(width_px),
+                    style.box_sizing,
+                    horizontal_border_padding_px(style.sides),
+                )
+                .unwrap_or(width_px),
+                style.min_width_px,
+                style.max_width_px,
+            );
             let content_height_px = clamp_length(
                 content_width_px / aspect_ratio,
                 style.min_height_px,
@@ -1474,8 +1504,16 @@ fn img_ratio_content_size_px(
             Some((content_width_px, content_height_px))
         }
         (None, Some(height_px)) => {
-            let content_height_px =
-                clamp_length(height_px, style.min_height_px, style.max_height_px);
+            let content_height_px = clamp_length(
+                content_box_size_px(
+                    Some(height_px),
+                    style.box_sizing,
+                    vertical_border_padding_px(style.sides),
+                )
+                .unwrap_or(height_px),
+                style.min_height_px,
+                style.max_height_px,
+            );
             let content_width_px = clamp_length(
                 content_height_px * aspect_ratio,
                 style.min_width_px,
@@ -1603,7 +1641,12 @@ fn resolve_content_width(
         intrinsic_width_px
     };
     clamp_length(
-        style.width_px.unwrap_or(auto_width_px),
+        content_box_size_px(
+            style.width_px,
+            style.box_sizing,
+            horizontal_border_padding_px(style.sides),
+        )
+        .unwrap_or(auto_width_px),
         style.min_width_px,
         style.max_width_px,
     )
@@ -1621,7 +1664,12 @@ fn resolve_node_content_width(
     let intrinsic_width_px = intrinsic_content_width(intrinsic_box);
     let auto_width_px = available_width_px.unwrap_or(intrinsic_width_px);
     clamp_length(
-        style.width_px.unwrap_or(auto_width_px.max(0.0)),
+        content_box_size_px(
+            style.width_px,
+            style.box_sizing,
+            horizontal_border_padding_px(style.sides),
+        )
+        .unwrap_or(auto_width_px.max(0.0)),
         style.min_width_px,
         style.max_width_px,
     )
@@ -1791,6 +1839,38 @@ pub(super) fn border_box_height(sides: BoxSides, content_height_px: f32) -> f32 
         + sides.border.top_px
         + sides.border.bottom_px)
         .max(0.0)
+}
+
+/// The single box-sizing projection (CSS UI 4 §3.1): maps a specified
+/// `width`/`height` (the computed `Option<f32>`) to the content-box size for
+/// one axis. `content-box` (the initial) passes the specified size through
+/// unchanged — it IS the content box, and `border_box_width`/`border_box_height`
+/// add padding+border outside it (today's math verbatim). `border-box` treats
+/// the specified size as the border box and subtracts the per-axis
+/// padding+border insets to reach the content box, floored at 0 (CSS never
+/// produces negative content sizes). `None` (auto) has no specified size to
+/// reinterpret, so it passes through on both modes.
+pub(super) fn content_box_size_px(
+    specified_px: Option<f32>,
+    box_sizing: BoxSizingKw,
+    insets_px: f32,
+) -> Option<f32> {
+    match box_sizing {
+        BoxSizingKw::ContentBox => specified_px,
+        BoxSizingKw::BorderBox => specified_px.map(|px| (px - insets_px).max(0.0)),
+    }
+}
+
+/// Horizontal padding+border insets (no margin — box-sizing subtracts only
+/// padding and border).
+pub(super) fn horizontal_border_padding_px(sides: BoxSides) -> f32 {
+    sides.border.left_px + sides.border.right_px + sides.padding.left_px + sides.padding.right_px
+}
+
+/// Vertical padding+border insets (no margin — box-sizing subtracts only
+/// padding and border).
+pub(super) fn vertical_border_padding_px(sides: BoxSides) -> f32 {
+    sides.border.top_px + sides.border.bottom_px + sides.padding.top_px + sides.padding.bottom_px
 }
 
 pub(super) fn intrinsic_content_width(box_model: DomBoxModel) -> f32 {

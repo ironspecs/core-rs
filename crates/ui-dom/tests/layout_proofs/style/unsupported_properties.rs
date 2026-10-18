@@ -7,14 +7,14 @@
 //! Layout-impact and text/effects property-table absence pins (PLAN.md B6, B11).
 //!
 //! Purpose: pin the observable behavior of the layout-impact properties that
-//! are NOT in the 68-property table (`presentation_property.rs`). Each name (or
+//! are NOT in the 69-property table (`presentation_property.rs`). Each name (or
 //! value) is dropped + counted, inert, and crash-free. Every row is two-sided:
 //! the declaration drop is counted (`assert_decl_drop`) AND the defined
 //! no-effect holds for its family — sibling paint order stays DOM order
 //! (`z-index`), sticky behaves as static, unadmitted display values fall back
 //! to the initial display, `float`/`clear` leave block flow stacking unchanged,
-//! replaced-element sizing stays on the intrinsic path, and the sizing model is
-//! unchanged by `box-sizing`. B11's text/effects tail family (`text-decoration`
+//! and replaced-element sizing stays on the intrinsic path. B11's text/effects
+//! tail family (`text-decoration`
 //! shorthand + longhands, `box-shadow`, `text-transform`, `text-indent`,
 //! `text-shadow`, `text-overflow`, `letter-spacing`, `word-spacing`,
 //! `line-clamp`/`-webkit-line-clamp`, `hyphens`, `vertical-align`,
@@ -36,20 +36,16 @@
 //! (B11) is owned by this file.
 //!
 //! Honesty notes (divergences from PLAN.md B6's stated model, pinned actual):
-//! - **`box-sizing` is content-box, not border-box.** PLAN.md B6 says
-//!   "border-box is the crate's single sizing model"; the actual sizing
-//!   projection (`domains/layout/flow.rs::border_box_width`) computes
-//!   `border_box = content + padding + border` — the CSS `content-box` model
-//!   (also the CSS initial). `box-sizing: content-box` therefore names the
-//!   already-active model and drops with zero sizing change: a `width: 100px`
-//!   plus `padding-left/right: 10px` box has a 120px border box, not 100px.
-//!   The `unsupported_box_sizing_drops_and_border_box_sizing_holds` row pins
-//!   120px.
 //! - **A bare unloaded `img` resolves to 160×0, not 160×90.** The 160×90 is
 //!   the intrinsic `ImgIntrinsic` placeholder; its 90px height materializes
 //!   only through the intrinsic-ratio transfer when one dimension is authored
 //!   (`layout/replaced_elements.rs`). The pin asserts the 160×90 intrinsic and
 //!   the ratio-transfer baseline (width 320 → height 180) directly.
+//! - **`box-sizing` is on-spec since PR 1 item 3.** It left this file's
+//!   unsupported registry when the property was admitted; the relabeled
+//!   `box_sizing_border_box_subtracts_insets` proof pins the CSS UI 4 §3.1
+//!   relationship (border-box specified size = border box; content box =
+//!   specified − padding − border).
 
 use bevy::prelude::World;
 use ui_dom::{
@@ -284,44 +280,67 @@ fn unsupported_display_values_drop_to_initial() {
 }
 
 #[test]
-// UNSUPPORTED (class: unimplemented — D6 admission-gated):
-// - SPEC: CSS UI 4 §box-sizing — `box-sizing: content-box` makes `width`/
-//   `height` the CONTENT box, with padding/border added outside.
+// ON-SPEC (relabeled from `unsupported_box_sizing_drops_and_border_box_sizing_holds`
+// in PR 1 item 3 — the first post-v0.6.0 vocabulary admission):
+// - SPEC: CSS UI 4 §3.1 `box-sizing` — `content-box` (the initial) makes
+//   `width`/`height` the CONTENT box with padding/border outside it;
+//   `border-box` makes `width`/`height` the BORDER box, with the content box
+//   computed as `specified − (padding + border)`, floored at 0 per axis.
 //   <https://drafts.csswg.org/css-ui-4/#box-sizing>
-// - CURRENT (asserted): `box-sizing` drops + counts (width/paddings apply
-//   normally), and the crate's single sizing model is CONTENT-box — the
-//   authored `width: 100px` is the content box, so the 10px left + 10px right
-//   padding expand the border box to **120px**. NOTE: PLAN.md B6's "border-box
-//   is the crate's single sizing model" is divergent; the actual projection is
-//   `border_box_width = content + padding + border` (`flow.rs`), and
-//   `box-sizing: content-box` names that already-active model, so it changes
-//   nothing.
-// - SPEC-CORRECT: `BoxSizingKw { BorderBox, ContentBox }` with the sizing
-//   projection moved into one function; admission per D6.
-fn unsupported_box_sizing_drops_and_border_box_sizing_holds() {
-    const CSS: &str =
-        ".x { box-sizing: content-box; width: 100px; padding-left: 10px; padding-right: 10px }";
-    assert_decl_drop(CSS, 3, 1);
+// - ASSERTED: `box-sizing: border-box; width: 100px` with 10px left + 10px
+//   right padding produces a 100px border box (content box 80px); the
+//   content-box initial and an explicit `content-box` both produce the
+//   unchanged 120px border box. The closed grammar still drops the garbage
+//   value `box-sizing: border`.
+fn box_sizing_border_box_subtracts_insets() {
+    // Drop guard: `border` is not in the closed `content-box | border-box`
+    // keyword grammar, so it drops + counts (the grammar stays closed).
+    assert_decl_drop(".x { box-sizing: border }", 0, 1);
 
-    let (mut world, mut root, target, _report) = styled_target_load(CSS);
-    // Height comes inline (not part of the spec's declaration block) so the
-    // box has a non-zero height and stages a rect.
+    // `border-box`: the specified `width: 100px` IS the border box; the 10px
+    // left + 10px right padding are laid out inside it, so the border box is
+    // exactly 100px and the content box is 80px.
+    assert_eq!(
+        sized_target_border_box_width(
+            ".x { box-sizing: border-box; width: 100px; padding-left: 10px; padding-right: 10px }",
+        ),
+        100.0,
+        "border-box: specified size is the border box",
+    );
+
+    // Control A (no box-sizing declared): the content-box initial — the
+    // specified 100px is the content box, and the paddings expand the border
+    // box to 120px (today's behavior, unchanged).
+    assert_eq!(
+        sized_target_border_box_width(
+            ".x { width: 100px; padding-left: 10px; padding-right: 10px }",
+        ),
+        120.0,
+        "absent box-sizing is the content-box initial",
+    );
+
+    // Control B (`content-box` explicit): also 120px — naming the already-active
+    // model changes nothing.
+    assert_eq!(
+        sized_target_border_box_width(
+            ".x { box-sizing: content-box; width: 100px; padding-left: 10px; padding-right: 10px }",
+        ),
+        120.0,
+        "explicit content-box matches the initial",
+    );
+}
+
+/// Loads `css` on a fresh root with a class-"x" div target, gives the target an
+/// inline 40px height so a rect stages, runs one update, and returns the staged
+/// rect's border-box width (`size_px[0]`).
+fn sized_target_border_box_width(css: &str) -> f32 {
+    let (mut world, mut root, target, _report) = styled_target_load(css);
     assert_style_set(&mut root, target, "height", "40px");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-
     let plans = take_staged_layer_paint_plans(&root);
     assert_eq!(plans.len(), 1, "one document-root layer plan");
     assert_eq!(plans[0].rects.len(), 1, "one rect");
-    // Content-box model: `width: 100px` is the content box; the paddings add
-    // 20px of horizontal edges, so the border box is 120px (not 100px).
-    assert_rect_op_geometry(
-        &plans[0].rects[0],
-        0.0,
-        0.0,
-        120.0,
-        40.0,
-        "content-box border box (width 100 + padding 20)",
-    );
+    plans[0].rects[0].size_px[0]
 }
 
 #[test]
@@ -639,7 +658,7 @@ fn unsupported_box_shadow_drops() {
 //   the names are absent from `property_shape` (`decl_parse.rs`), so each
 //   declaration drops at name lookup, inert and crash-free.
 // - SPEC-CORRECT: per-property admission, gated by D6; the B11 tail table is
-//   regenerated from a CSS property index diffed against the 68-name table at
+//   regenerated from a CSS property index diffed against the 69-name table at
 //   each admission.
 fn unsupported_property_tail_drops() {
     const TAIL: &[(&str, &str)] = &[

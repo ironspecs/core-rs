@@ -1,8 +1,8 @@
 //! Non-inherited box computed group (PLAN.md S1.1).
 //!
-//! This file owns the `ComputedBoxGroup` struct only. Its three field
-//! vocabularies live in their own files (`display_kw.rs`, `position_kw.rs`,
-//! `overflow_kw.rs`), each owning its keyword enum + helpers (structural rule
+//! This file owns the `ComputedBoxGroup` struct only. Its field vocabularies
+//! live in their own files (`display_kw.rs`, `position_kw.rs`, `overflow_kw.rs`,
+//! `box_sizing_kw.rs`), each owning its keyword enum + helpers (structural rule
 //! 1). It is plain `Copy` data plus `initial()`; resolution lives in the
 //! step-3.3 resolver.
 //!
@@ -16,6 +16,7 @@
 //!   initial `[0.0; 4]` each — mirroring today's absent-edge default of
 //!   `unwrap_or(0.0)` in `domains/layout/style.rs::box_edge_insets_for`.
 
+use super::box_sizing_kw::BoxSizingKw;
 use super::display_kw::DisplayKw;
 use super::overflow_kw::OverflowKw;
 use super::position_kw::PositionKw;
@@ -33,6 +34,10 @@ pub struct ComputedBoxGroup {
     /// `auto = false`, `isolate = true`; absent defaults to false today
     /// (`domains/layout/style.rs::isolate_creates_clipped_layer`).
     pub isolate: bool,
+    /// `ContentBox` is today's single sizing model (the CSS UI 4 §3.1 initial):
+    /// the specified `width`/`height` is the content box, padding and border
+    /// outside it.
+    pub box_sizing: BoxSizingKw,
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub min_width: Option<f32>,
@@ -61,6 +66,7 @@ impl ComputedBoxGroup {
             position: PositionKw::Static,
             overflow: OverflowKw::Visible,
             isolate: false,
+            box_sizing: BoxSizingKw::ContentBox,
             width: None,
             height: None,
             min_width: None,
@@ -90,6 +96,7 @@ mod tests {
         assert_eq!(box_.position, PositionKw::Static);
         assert_eq!(box_.overflow, OverflowKw::Visible);
         assert!(!box_.isolate);
+        assert_eq!(box_.box_sizing, BoxSizingKw::ContentBox);
         assert_eq!(box_.width, None);
         assert_eq!(box_.height, None);
         assert_eq!(box_.min_width, None);

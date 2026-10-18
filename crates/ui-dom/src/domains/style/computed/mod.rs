@@ -33,6 +33,7 @@
 
 mod align_content_kw;
 mod align_items_kw;
+mod box_sizing_kw;
 mod computed_box_group;
 mod computed_color_group;
 mod computed_flex_group;
@@ -57,6 +58,7 @@ mod resolved_transition_longhands;
 
 pub use align_content_kw::AlignContentKw;
 pub use align_items_kw::AlignItemsKw;
+pub use box_sizing_kw::BoxSizingKw;
 pub use computed_box_group::ComputedBoxGroup;
 pub use computed_color_group::ComputedColorGroup;
 pub use computed_flex_group::ComputedFlexGroup;

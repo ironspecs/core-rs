@@ -95,6 +95,9 @@ pub(crate) fn for_each_moved_field(
     if old.box_.isolate != new.box_.isolate {
         visit(PresentationProperty::Isolate);
     }
+    if old.box_.box_sizing != new.box_.box_sizing {
+        visit(PresentationProperty::BoxSizing);
+    }
     if old.box_.width != new.box_.width {
         visit(PresentationProperty::Width);
     }

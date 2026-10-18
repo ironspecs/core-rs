@@ -73,11 +73,11 @@ pub use style_runtime::StyleRuntime;
 pub(crate) use text_interner::TextInterner;
 
 pub use computed::{
-    AlignContentKw, AlignItemsKw, ComputedBoxGroup, ComputedColorGroup, ComputedFlexGroup,
-    ComputedFontGroup, ComputedGroups, ComputedStyleRef, ComputedTextGroup, ComputedTransformGroup,
-    ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw, JustifyContentKw,
-    NodePresentation, OverflowKw, PositionKw, ResolvedTransitionLonghands,
-    TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
+    AlignContentKw, AlignItemsKw, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
+    ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedStyleRef, ComputedTextGroup,
+    ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw,
+    FlexWrapKw, JustifyContentKw, NodePresentation, OverflowKw, PositionKw,
+    ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
 };
 pub(crate) use decl_parse::{name_is_presentation, parse_declaration_block};
 pub(crate) use decl_value::decl_value_to_dom_value;
