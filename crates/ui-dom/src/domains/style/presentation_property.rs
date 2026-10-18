@@ -131,7 +131,8 @@ pub enum DeclGrammar {
     LineHeight,
     /// `transparent | #rrggbb | #rrggbbaa | rgb()/rgba() | white|black|red|green|blue`.
     Color,
-    /// `<f32>` clamped to the 0.0..=1.0 range (opacity).
+    /// `<f32>` clamped to the 0.0–1.0 range — the grammar admits any finite
+    /// f32 and clamps (opacity).
     Opacity,
     /// `<f32 >= 0>` (flex-grow, flex-shrink).
     NonNegativeNumber,

@@ -356,9 +356,9 @@ fn robustness_volume() {
 // (b) `margin-left: -3.4e38px` — a legal negative margin (finite f32) is
 //     admitted and reaches the computed box group unclamped.
 // (c) `opacity: 1.0000001` — the f32 round-trip lands at 1.000000119…, just
-//     above the 0.0..=1.0 range `parse_opacity` (`decl_parse.rs:368-375`)
-//     enforces, so it drops + counts (same reject-side behavior as the B1
-//     opacity pin).
+//     above 1.0; `parse_opacity` (`decl_parse.rs`) clamps any finite f32 into
+//     `[0, 1]`, so it is admitted and computes to exactly `1.0` (same clamp
+//     behavior as the on-spec opacity pin).
 fn robustness_extreme_values() {
     // (a) giant font-size renders without crash.
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
@@ -399,8 +399,28 @@ fn robustness_extreme_values() {
         -3.4e38_f32,
     );
 
-    // (c) opacity just past the range drops (f32 1.000000119 > 1.0).
-    assert_decl_drop(".x { opacity: 1.0000001 }", 0, 1);
+    // (c) opacity just past 1.0 clamps to exactly 1.0 (f32 1.000000119 → 1.0).
+    let (mut world, mut root, target, report) = {
+        let (world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+        let document_root = root.document_node().0;
+        let target = assert_append_div_to(&mut root, document_root);
+        assert_set_attr_str(&mut root, target, "class", "x");
+        let report = root
+            .context()
+            .load_stylesheet(theme_stylesheet_origin(), ".x { opacity: 1.0000001 }")
+            .expect("opacity: 1.0000001 should admit");
+        (world, root, target, report)
+    };
+    assert_eq!(report.declarations_applied, 1);
+    assert_eq!(report.declarations_dropped, 0);
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_visual()
+            .opacity,
+        1.0,
+    );
 }
 
 #[test]

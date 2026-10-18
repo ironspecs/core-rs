@@ -23,13 +23,14 @@
 //! Class notes: the `negative_*`, `width_zero_*`, `fractional_*`,
 //! `unitless_nonzero_*`, `font_size_unset_*`, and `gap_unset_*` rows are
 //! on-spec keeps;
+//! `opacity_out_of_range_clamps_at_computed_time` is on-spec (relabeled from
+//! `off_spec_opacity_out_of_range_rejected` in PR 1 item 5 after the opacity
+//! grammar moved from reject to clamp);
 //! `unsupported_*` rows are unimplemented (D6 admission-gated drop-and-continue
 //! — the value or grammar form is not admitted); `robustness_*` rows assert
 //! no-panic plus the defined outcome; `line_height_zero_floors_at_one_px` is a
-//! deliberate crate-owned render floor (see its per-test header). The only
-//! remaining off-spec row in this file is `off_spec_opacity_out_of_range_rejected`
-//! (opacity is still rejected at parse rather than clamped at computed time; it
-//! moves on-spec through the D6 admission policy, NOT the B1 sign-rule fix).
+//! deliberate crate-owned render floor (see its per-test header). There are no
+//! `off_spec_*` rows in this file.
 
 use bevy::prelude::World;
 use ui_dom::{
@@ -372,37 +373,53 @@ fn gap_unset_resolves_to_zero() {
 }
 
 #[test]
-// OFF-SPEC (divergent, reject-side — does NOT flip in landing b):
+// ON-SPEC (relabeled from `off_spec_opacity_out_of_range_rejected` in PR 1
+// item 5 after the grammar moved from reject to clamp):
 // - SPEC: CSS Color 4 §12.2 `opacity` clamps out-of-range `<opacity-value>`
 //   to `[0, 1]` at computed-value time; `1.5` → `1.0`, `-0.5` → `0.0`.
 //   <https://drafts.csswg.org/css-color-4/#transparency>
-// - CURRENT (asserted): `opacity: 1.5` and `opacity: -0.5` each drop + count
-//   (`declarations_dropped == 1`) — range enforced at parse, not computed time.
-// - SPEC-CORRECT: admit and clamp at computed time (reject-side divergence of
-//   an admitted property's semantics — moves through the D6 admission policy).
-// - ROOT CAUSE: `parse_opacity` (`decl_parse.rs:368-375`) rejects the 0.0..=1.0
-//   range rather than clamping.
-// - RECLASSIFY: stays divergent (reject-side); moves on-spec through admission,
-//   NOT through the B1 sign-rule fix.
-fn off_spec_opacity_out_of_range_rejected() {
+// - `parse_opacity` (`decl_parse.rs`) now admits any finite f32 and clamps to
+//   `[0, 1]`, so `opacity: 1.5` computes to `1.0` and `opacity: -0.5` to
+//   `0.0` (the declaration is valid at any finite value — it clamps, never
+//   drops).
+fn opacity_out_of_range_clamps_at_computed_time() {
     struct Case {
         name: &'static str,
         body: &'static str,
+        expected: f32,
     }
 
     let cases = [
         Case {
             name: "opacity_above_one",
             body: "opacity: 1.5",
+            expected: 1.0,
         },
         Case {
             name: "opacity_below_zero",
             body: "opacity: -0.5",
+            expected: 0.0,
         },
     ];
 
     for case in cases {
-        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+        let (mut world, mut root, target, report) =
+            styled_target_load(&format!(".x {{ {} }}", case.body));
+        assert_eq!(
+            report.declarations_dropped, 0,
+            "{} should be admitted, not dropped",
+            case.name,
+        );
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target)
+                .expect("target")
+                .as_visual()
+                .opacity,
+            case.expected,
+            "{} should clamp to the [0, 1] range",
+            case.name,
+        );
     }
 }
 

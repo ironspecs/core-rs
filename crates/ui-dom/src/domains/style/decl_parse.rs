@@ -443,11 +443,11 @@ fn parse_non_negative_f32(value: &str) -> Option<f32> {
 
 fn parse_opacity(value: &str) -> Option<DeclValue> {
     let number = value.trim().parse::<f32>().ok()?;
-    if number.is_finite() && (0.0..=1.0).contains(&number) {
-        Some(DeclValue::Number(number))
-    } else {
-        None
-    }
+    // CSS Color 4 §12.2: opacity clamps to [0, 1] at computed time — the
+    // declaration is valid at any finite value and clamps, never drops.
+    number
+        .is_finite()
+        .then(|| DeclValue::Number(number.clamp(0.0, 1.0)))
 }
 
 fn parse_non_negative_number(value: &str) -> Option<DeclValue> {
@@ -1298,7 +1298,15 @@ mod tests {
             parse_value(DeclGrammar::Opacity, "1", &mut interner),
             Some(DeclValue::Number(1.0))
         );
-        for invalid in ["1.5", "-0.1", "NaN", "inf"] {
+        assert_eq!(
+            parse_value(DeclGrammar::Opacity, "1.5", &mut interner),
+            Some(DeclValue::Number(1.0))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::Opacity, "-0.5", &mut interner),
+            Some(DeclValue::Number(0.0))
+        );
+        for invalid in ["NaN", "inf", "-inf"] {
             assert_eq!(
                 parse_value(DeclGrammar::Opacity, invalid, &mut interner),
                 None,
