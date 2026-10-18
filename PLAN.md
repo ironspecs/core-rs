@@ -740,8 +740,11 @@ drop), `display: grid` / `inline-grid` / `table` / `inline-table` /
     `position` at initial `Static`).
   - `display: grid`/`table`/`contents`/…: layout equals the initial display
     (the value drop leaves `DisplayKw::Block` for div).
-  - `box-sizing`: sizing stays border-box (our only model — note in the pin
-    header that `border-box` is the crate's single sizing model).
+  - `box-sizing`: sizing stays content-box (our only model — the pin header
+    notes that `content-box` is the crate's single sizing model, so
+    `box-sizing: content-box` names the already-active model and changes
+    nothing; a `width: 100px` + `padding: 10px 10px` box has a 120px border
+    box, not 100px).
   - `aspect-ratio`, `object-fit`, `object-position`: replaced-element sizing
     and paint unchanged (img keeps intrinsic/placeholder behavior pinned in
     `layout/replaced_elements.rs`).
@@ -768,7 +771,7 @@ Position 3 §sticky; the scroll machinery at `domains/visitor/scroll.rs`
 already knows the container). `box-sizing` → `BoxSizingKw { BorderBox,
 ContentBox }` on the box group; layout's width/height interpretation moves
 inside one function (the sizing projection in `domains/layout/style.rs` —
-border-box stays the default and the crate's current single model).
+content-box stays the default and the crate's current single model).
 `aspect-ratio` → `Option<f32>` field; the CSS Sizing 4 preferred-ratio rule
 constrains auto sizes in the replaced-element and absolute sizing paths.
 `object-fit`/`object-position` → img paint algorithm (contain/cover/fill
@@ -1280,7 +1283,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B3 — box shorthands | done (pins; all rows verified dropped+counted + group-initial) |
 | B4 — text consumption & admitted quirks | done (pins; all rows verified; break-spaces classed divergent as a pre-wrap fold; see `style/admitted_gaps.rs`) |
 | B5 — preserved candidates | **done** (pins; three adjudications recorded in the B5 section and decision log: near-white initial `color` deliberate, `line-height: normal` → 1.0× divergent, border widths initial `0` deliberate; see `style/admitted_gaps.rs`) |
-| B6 — layout-impact properties | not started |
+| B6 — layout-impact properties | **done** (pins; all rows verified dropped+counted + per-family no-effect; two honesty corrections recorded: the crate's single sizing model is content-box — not the "border-box" this plan previously stated — and a bare unloaded `img` resolves 160×0 while the 160×90 placeholder is the intrinsic, materialized via ratio transfer; see `style/unsupported_properties.rs`) |
 | B7 — color grammar | not started |
 | B8 — selectors & at-rules (+F1 fix) | not started |
 | B9 — cascade tiers | not started |
