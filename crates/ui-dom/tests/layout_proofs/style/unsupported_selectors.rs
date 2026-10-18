@@ -1,9 +1,4 @@
 #![allow(rustdoc::bare_urls)]
-// The F1 divergent pin asserts the partially-applied `.good { width: 1px }`
-// materializes as an exact `Some(1.0)` (a `1px` length parses to the exact
-// `f32` literal 1.0), so the one typed computed-group comparison in this
-// module is a deliberate exact check.
-#![allow(clippy::float_cmp)]
 
 //! Selector-subset and at-rule boundary pins for the style system (PLAN.md B8).
 //!
@@ -19,10 +14,10 @@
 //! `src/domains/style/mod.rs` (`parse_css_blocks`, `parse_selector`,
 //! `parse_simple_selector`).
 //!
-//! Class notes: every row is `unsupported_*` = unimplemented (D6 admission-gated
-//! absence per `MIGRATION.md`) except the single `off_spec_*` F1 row, which is
-//! divergent. The unimplemented rows pin the load-error gate (no crash, typed
-//! `Err`) so a later admission flips exactly these rows on-spec. The
+//! Class notes: every `unsupported_*` row is unimplemented (D6 admission-gated
+//! absence per `MIGRATION.md`). The unimplemented rows pin the load-error gate
+//! (no crash, typed `Err`) so a later admission flips exactly these rows
+//! on-spec; the F1 atomicity row is on-spec (see the F1 note). The
 //! combinator/attribute/pseudo-element/pseudo-class/selector-list syntax is
 //! rejected by `contains_unsupported_selector_syntax` (`[`, `]`, `>`, `+`, `~`,
 //! `,`, `(`, `)`, `{`, `}`, `=`, whitespace controls) and by
@@ -33,13 +28,11 @@
 //! `{`/selector grammar each fail with `InvalidSelector` (verified actual; see
 //! the per-test notes).
 //!
-//! F1 note: `off_spec_stylesheet_load_failure_partially_applies` pins the
-//! CURRENT non-atomic error path (`load_stylesheet` inserts+indexes each rule
-//! inside the block loop and bumps `revision` only after the loop, so a failed
-//! load silently leaves the valid prefix live). That pin FLIPS to atomic in
-//! landing (b) (buffer-then-commit): after the fix, `Err` means nothing
-//! applied and this row relabels on-spec. See PLAN.md B8 "The atomicity truth
-//! (F1, adjudicated)".
+//! F1 note (on-spec, relabeled from `off_spec_stylesheet_load_failure_partially_applies`
+//! in B8 landing (b)): `stylesheet_load_failure_is_atomic` pins the atomic
+//! load — `load_stylesheet` is buffer-then-commit, so rules, indexes, order,
+//! and revision mutate only after every block parses, and a typed `Err` means
+//! nothing applied. See PLAN.md B8 "The atomicity truth (F1, adjudicated)".
 
 use ui_dom::{DomError, DomPointerUpdate, StylesheetLoadReport};
 
@@ -432,27 +425,20 @@ fn malformed_block_structure_fails_the_load() {
 }
 
 #[test]
-// OFF-SPEC (divergent; the F1 atomicity truth, PLAN.md B8 — flips to atomic in
-// landing (b)):
+// ON-SPEC (relabeled from the F1 divergent `off_spec_stylesheet_load_failure_partially_applies`
+// row in B8 landing (b)):
 // - SPEC: a failed stylesheet load must be atomic — a typed `Err` means
 //   "nothing happened". CSS Syntax 3 parse errors reject the whole sheet
 //   without side effects.
 // - CURRENT (asserted): loading `.good { width: 1px } div > span { }` returns
-//   `Err(DomError::InvalidSelector)`, BUT the `.good` prefix was already
-//   inserted, indexed, and activated before the `div > span` selector failed;
-//   after classing a target div "good" and running an update, the partial rule
-//   materializes (`computed width == Some(1.0)`). The valid prefix silently
-//   applies at the next recompute even though the caller holds `Err`.
-// - SPEC-CORRECT: `Err` AND nothing applies (buffer-then-commit, landing (b)).
-// - ROOT CAUSE: `style_runtime.rs::load_stylesheet` inserts+indexes each rule
-//   inside the block loop (`rules.insert`, `index_rule`) and bumps `revision`
-//   only after the loop, so the early return skips the bump — but the class
-//   write's own style-dirtying runs the pass anyway, which matches the live
-//   partial rule.
-// - RECLASSIFY per the registry when landing (b) lands: the fix + this pin's
-//   relabel on-spec + the registry update + the corrected doc rows move
-//   together atomically.
-fn off_spec_stylesheet_load_failure_partially_applies() {
+//   `Err(DomError::InvalidSelector)` AND nothing applies — the valid `.good`
+//   prefix is not committed, so after classing the target "good" and running
+//   an update, `computed width == None`.
+// - IMPLEMENTATION: `style_runtime.rs::load_stylesheet` is buffer-then-commit
+//   (rules, indexes, order, and revision mutate only after every block
+//   parses), so the early return discards the staged prefix with no side
+//   effects.
+fn stylesheet_load_failure_is_atomic() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let target = assert_append_div_to(&mut root, document_root);
@@ -470,23 +456,43 @@ fn off_spec_stylesheet_load_failure_partially_applies() {
         "the load should fail on the `div > span` combinator selector",
     );
 
-    // Before the class write the partial rule is dormant: no style pass has run
-    // it into the record, so the target's width is still the group initial.
-    assert_eq!(
-        root.computed_style(target).expect("target").as_box().width,
-        None,
-        "no rule should have applied before the class write + update",
-    );
-
     // The class write dirties the node; the update runs the style pass, which
-    // matches the LIVE partial `.good` rule (revision was never bumped, but the
-    // pass runs anyway).
+    // must find NO `.good` rule (the failed load committed nothing).
     assert_set_attr_str(&mut root, target, "class", "good");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,
-        Some(1.0),
-        "THE PARTIAL RULE APPLIED: the valid `.good` prefix is live despite the load Err",
+        None,
+        "NOTHING applied: the valid `.good` prefix must not be live after the load Err",
+    );
+}
+
+#[test]
+// ON-SPEC (the G drop-report contract surviving the atomicity fix): a malformed
+// declaration in the valid prefix still counts its drop even when a later
+// block's selector fails the whole load. Drops are observations of malformed
+// input, not rule-store mutations, so the counter moves while nothing applies.
+fn failed_stylesheet_load_still_reports_declaration_drops() {
+    let (_world, root) = attached_gpu_root_dom_default_viewport_setup();
+    let before = root.context().declaration_drop_count();
+
+    let error = root
+        .context()
+        .load_stylesheet(
+            theme_stylesheet_origin(),
+            ".good { width: 1px; bogus } div > span { }",
+        )
+        .expect_err("the bad `div > span` selector should fail the load");
+    assert_eq!(
+        error,
+        DomError::InvalidSelector,
+        "the load should fail on the `div > span` combinator selector",
+    );
+
+    assert_eq!(
+        root.context().declaration_drop_count(),
+        before + 1,
+        "the malformed `bogus` declaration in the valid prefix still counts its drop",
     );
 }

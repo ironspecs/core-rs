@@ -18,8 +18,14 @@
 //!   `declarations_dropped` counter, never silently swallowed
 //! - the indexes are retained per origin and per right-most selector so
 //!   candidate lookup and origin unload stay O(indexed) rather than O(rules)
-//! - dedup runs before a block is inserted, so a duplicate load never leaks a
+//! - dedup runs before a block is committed, so a duplicate load never leaks a
 //!   declaration block into the arena
+//! - `load_stylesheet` is atomic (buffer-then-commit): the rule store, the
+//!   indexes, `order_counter`, and `revision` mutate only after every block
+//!   has parsed, so a typed `Err` means nothing happened to the rule store;
+//!   declaration drops are still counted and reported on a failing load (the
+//!   G drop-report contract — drops are observations, not rule-store
+//!   mutations)
 //! - pseudo-state counts and the revision counter are kept exact and
 //!   zero-allocation; both are updated under the same retained-store lock
 
@@ -32,8 +38,8 @@ use super::decl_drop_report::StylesheetLoadReport;
 use super::decl_parse::parse_declaration_block;
 use super::{
     CompiledRule, DeclBlockKey, DeclStore, Declaration, NodeLookup, NodeStyleIndex,
-    PrecedenceTuple, PseudoStateCounts, SelectorSpecificity, SimpleSelector, StyleRuleKey,
-    StyleRuleOrigin, TextKey, append_rule_keys, compute_rule_identity_hash,
+    PrecedenceTuple, PseudoStateCounts, RightMostSelector, SelectorSpecificity, SimpleSelector,
+    StyleRuleKey, StyleRuleOrigin, TextKey, append_rule_keys, compute_rule_identity_hash,
     extract_right_most_selector, parse_css_blocks, parse_selector, pseudo_state_counts,
     selector_matches_node, specificity_for_selector_parts,
 };
@@ -61,7 +67,54 @@ pub struct StyleRuntime {
     revision: u64,
 }
 
+/// One rule staged by phase 1 of `load_stylesheet` before any rule-store or
+/// index mutation: `(decl_block, selector, selector_parts, right_most,
+/// specificity, identity_hash)`. The `selector` string is retained for
+/// diagnostics/debug only (no matching or hashing role). The origin is uniform
+/// across a load, so phase 2 reconstructs it rather than staging it per rule.
+type StagedRule = (
+    DeclBlock,
+    String,
+    Vec<SimpleSelector>,
+    RightMostSelector,
+    SelectorSpecificity,
+    u64,
+);
+
+/// The equivalence-relevant fields of one rule, extracted from either an
+/// active `CompiledRule` or a staged `StagedRule`, so the active-rule dedup
+/// and the same-load staged dedup share one comparison.
+struct RuleEquivalence<'a> {
+    selector_parts: &'a [SimpleSelector],
+    declarations: &'a [Declaration],
+    specificity: SelectorSpecificity,
+    origin: &'a StyleRuleOrigin,
+}
+
+/// Equivalence test shared by the active-rule dedup and the same-load staged
+/// dedup. Two rules are equivalent when their selector parts, declarations,
+/// specificity, and origin all match — the exact field set the pre-restructure
+/// mid-loop insert compared. Both dedup tiers ride this one comparison so they
+/// can never drift apart.
+fn rules_are_equivalent(a: &RuleEquivalence<'_>, b: &RuleEquivalence<'_>) -> bool {
+    a.selector_parts == b.selector_parts
+        && a.declarations == b.declarations
+        && a.specificity == b.specificity
+        && a.origin == b.origin
+}
+
 impl StyleRuntime {
+    /// Loads one stylesheet origin's rules into the retained store atomically.
+    ///
+    /// The load is buffer-then-commit: phase 1 parses and stages every block
+    /// (selector parse, right-most extraction, specificity, declaration parse,
+    /// identity hash, dedup check) without mutating the rule store, the
+    /// indexes, `order_counter`, or `revision`; phase 2 commits the staged
+    /// rules only after every block has parsed. A typed `Err` therefore means
+    /// nothing happened to the rule store. Declaration drops are still counted
+    /// and reported on a failing load (the G drop-report contract): drops are
+    /// observations of malformed input, not rule-store mutations, so they
+    /// accumulate even when a later block fails the whole load.
     pub(crate) fn load_stylesheet(
         &mut self,
         origin: StyleRuleOrigin,
@@ -71,8 +124,18 @@ impl StyleRuntime {
             key: origin_key,
             priority: origin_priority,
         } = origin;
+        let origin = StyleRuleOrigin {
+            key: origin_key.clone(),
+            priority: origin_priority,
+        };
+
+        // Phase 1 — parse and stage. Nothing here mutates `self.rules`, the
+        // indexes, `order_counter`, or `revision`. Declaration text is
+        // interned and drops are counted (the G contract), but no block is
+        // inserted until every block has parsed.
         let blocks = parse_css_blocks(css_text)?;
         let mut report = StylesheetLoadReport::default();
+        let mut staged: Vec<StagedRule> = Vec::new();
         for block in blocks {
             let selector_parts = parse_selector(&block.selector)?;
             let right_most = extract_right_most_selector(&selector_parts)?;
@@ -86,33 +149,70 @@ impl StyleRuntime {
                     .expect("declaration drop count should fit into u64"),
             );
 
-            let origin = StyleRuleOrigin {
-                key: origin_key.clone(),
-                priority: origin_priority,
-            };
             let identity_hash = compute_rule_identity_hash(
                 &origin,
                 specificity,
                 &selector_parts,
                 decl_block.declarations(),
             );
+            // Two-tier dedup: skip a block that matches an already-committed
+            // active rule (reload dedup) OR an already-staged rule in this
+            // same load (same-load dedup); both tiers share
+            // `rules_are_equivalent`.
             if self.has_equivalent_active_rule(
                 identity_hash,
                 &selector_parts,
                 decl_block.declarations(),
                 specificity,
                 &origin,
-            ) {
+            ) || staged
+                .iter()
+                .any(|(staged_decl, _, staged_parts, _, staged_spec, _)| {
+                    rules_are_equivalent(
+                        &RuleEquivalence {
+                            selector_parts: &selector_parts,
+                            declarations: decl_block.declarations(),
+                            specificity,
+                            origin: &origin,
+                        },
+                        &RuleEquivalence {
+                            selector_parts: staged_parts.as_slice(),
+                            declarations: staged_decl.declarations(),
+                            specificity: *staged_spec,
+                            origin: &origin,
+                        },
+                    )
+                })
+            {
                 continue;
             }
+            staged.push((
+                decl_block,
+                block.selector,
+                selector_parts,
+                right_most,
+                specificity,
+                identity_hash,
+            ));
+        }
+
+        // Phase 2 — commit. Only reached when every block parsed. Order is
+        // assigned from `order_counter` in buffer order, and `revision` bumps
+        // exactly once when at least one rule committed.
+        for (decl_block, selector, selector_parts, right_most, specificity, identity_hash) in staged
+        {
             let decl = self.decl_store.insert(decl_block);
             let order = self.order_counter;
             self.order_counter = self
                 .order_counter
                 .checked_add(1)
                 .expect("style rule order counter should not overflow");
+            let origin = StyleRuleOrigin {
+                key: origin_key.clone(),
+                priority: origin_priority,
+            };
             let key = self.rules.insert(CompiledRule {
-                selector: block.selector,
+                selector,
                 selector_parts,
                 right_most,
                 decl,
@@ -286,13 +386,22 @@ impl StyleRuntime {
         keys.iter().any(|key| {
             self.rules.get(*key).is_some_and(|existing| {
                 existing.active
-                    && existing.selector_parts.as_slice() == selector_parts
-                    && existing.specificity == specificity
-                    && &existing.origin == origin
-                    && self
-                        .decl_store
-                        .get(existing.decl)
-                        .is_some_and(|block| block.declarations() == declarations)
+                    && self.decl_store.get(existing.decl).is_some_and(|block| {
+                        rules_are_equivalent(
+                            &RuleEquivalence {
+                                selector_parts,
+                                declarations,
+                                specificity,
+                                origin,
+                            },
+                            &RuleEquivalence {
+                                selector_parts: existing.selector_parts.as_slice(),
+                                declarations: block.declarations(),
+                                specificity: existing.specificity,
+                                origin: &existing.origin,
+                            },
+                        )
+                    })
             })
         })
     }
@@ -367,6 +476,57 @@ mod tests {
             )
             .expect_err("unsupported tag-plus-id selector should fail");
         assert_eq!(error, DomError::InvalidSelector);
+    }
+
+    #[test]
+    fn failed_load_is_atomic() {
+        let mut runtime = StyleRuntime::default();
+
+        let error = runtime
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 0),
+                ".good { width: 1px } div > span { }",
+            )
+            .expect_err("the bad `div > span` selector should fail the load");
+        assert_eq!(error, DomError::InvalidSelector);
+
+        // Nothing happened to the rule store, the arena, the indexes, or the
+        // revision: an `Err` means "nothing applied".
+        assert!(runtime.rules.is_empty());
+        assert_eq!(runtime.decl_store.live_block_count(), 0);
+        assert!(runtime.id_index.is_empty());
+        assert!(runtime.class_index.is_empty());
+        assert!(runtime.tag_index.is_empty());
+        assert!(runtime.universal_index.is_empty());
+        assert!(runtime.origin_index.is_empty());
+        assert!(runtime.identity_index.is_empty());
+        assert_eq!(runtime.revision(), 0);
+
+        // A later valid load must not resurrect the failed load's valid prefix:
+        // a `.good` candidate lookup returns nothing attributable to it.
+        runtime
+            .load_stylesheet(StyleRuleOrigin::new("theme", 0), ".other { width: 2px }")
+            .expect("valid sheet should load");
+        assert!(!runtime.class_index.contains_key("good"));
+        assert_eq!(runtime.class_index.get("other").map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn failed_load_still_counts_declaration_drops() {
+        let mut runtime = StyleRuntime::default();
+
+        let error = runtime
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 0),
+                ".good { width: 1px; bogus } div > span { }",
+            )
+            .expect_err("the bad `div > span` selector should fail the load");
+        assert_eq!(error, DomError::InvalidSelector);
+
+        // The G drop-report contract survives the atomicity fix: the malformed
+        // `bogus` declaration in the valid prefix is still counted even though
+        // the load failed (drops are observations, not rule-store mutations).
+        assert_eq!(runtime.declarations_dropped_count(), 1);
     }
 
     #[test]
@@ -672,6 +832,41 @@ mod tests {
                 .filter(|rule| rule.origin.key == "base")
                 .all(|rule| rule.active)
         );
+    }
+
+    #[test]
+    fn same_load_duplicate_rule_dedups_to_one_commit() {
+        let mut runtime = StyleRuntime::default();
+        let report = runtime
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 1),
+                ".a { width: 1px } .a { width: 1px }",
+            )
+            .expect("duplicate same-load rules should dedup");
+        assert_eq!(report.rules_inserted, 1);
+        assert_eq!(runtime.decl_block_count(), 1);
+        assert_eq!(runtime.class_index.get("a").map(Vec::len), Some(1));
+
+        // Control: same selector, different declarations are not duplicates.
+        let mut control = StyleRuntime::default();
+        let report = control
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 1),
+                ".a { width: 1px } .a { width: 2px }",
+            )
+            .expect("different declarations should both commit");
+        assert_eq!(report.rules_inserted, 2);
+
+        // Reload dedup still holds: a second load of the same sheet inserts 0.
+        let mut reload = StyleRuntime::default();
+        let first = reload
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".a { width: 1px }")
+            .expect("first load");
+        let second = reload
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".a { width: 1px }")
+            .expect("second load");
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 0);
     }
 
     #[test]

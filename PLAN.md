@@ -1292,9 +1292,10 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B4 — text consumption & admitted quirks | done (pins; all rows verified; break-spaces classed divergent as a pre-wrap fold; see `style/admitted_gaps.rs`) |
 | B5 — preserved candidates | **done** (pins; three adjudications recorded in the B5 section and decision log: near-white initial `color` deliberate, `line-height: normal` → 1.0× divergent, border widths initial `0` deliberate; see `style/admitted_gaps.rs`) |
 | B6 — layout-impact properties | **done** (pins; all rows verified dropped+counted + per-family no-effect; two honesty corrections recorded: the crate's single sizing model is content-box — not the "border-box" this plan previously stated — and a bare unloaded `img` resolves 160×0 while the 160×90 placeholder is the intrinsic, materialized via ratio transfer; see `style/unsupported_properties.rs`) |
-| B7 — color grammar | not started |
-| B8 — selectors & at-rules (+F1 fix) | **in progress** (a — pins done; b — F1 atomicity fix + pin flip pending) |
+| B7 — color grammar | **done** (`d15c13b` — pins; the verified modern-rgb accept/drop map recorded: comma/space/percent admitted, slash-alpha dropped) |
+| B8 — selectors & at-rules (+F1 fix) | **done** (a — pins; b — F1 atomicity fix + pin flip) |
 | B8 (a) — pins of the non-F1 rows + the F1 off-spec pin (`style/unsupported_selectors.rs`) | done |
+| B8 (b) — F1 atomicity fix (buffer-then-commit) + pin flip (`stylesheet_load_failure_is_atomic`) | done |
 | B9 — cascade tiers | not started |
 | B10 — other shorthands & overflow axes | not started |
 | B11 — text/effects property tail | not started |

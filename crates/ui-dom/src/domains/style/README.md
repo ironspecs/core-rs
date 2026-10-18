@@ -172,6 +172,14 @@ fold), or the computed read surface (`RootDom::computed_style`).
   `domains/visitor/README.md` for the dirty-bit doctrine.
 - Stylesheet text is boundary data: parse and match failures are typed errors
   (`DomError`), never panics.
+- `StyleRuntime::load_stylesheet` is atomic (buffer-then-commit): selector
+  parsing, right-most extraction, specificity, declaration parsing, the
+  identity hash, and the dedup check happen in a staging phase that mutates
+  nothing retained; the rule store, the indexes, `order_counter`, and
+  `revision` commit only after every block has parsed. A typed `Err` therefore
+  means "nothing happened" to the rule store. Declaration drops still
+  accumulate on a failing load (the G drop-report contract — drops are
+  observations of malformed input, not rule-store mutations).
 - Pseudo-state rule counts (`hover_rule_count` and friends) are kept exact so
   `uses_pseudo_state` answers without scanning rules: incremented at index
   time, decremented on tombstone, asserted against underflow.
