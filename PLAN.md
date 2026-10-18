@@ -926,12 +926,15 @@ the same change, recorded above.
 ## Open verifications (resolve at pin time; correct the doc in the same change)
 
 - `rgb()` space-separated / slash-alpha handling in the current color parser.
-- `pointer-events`: the actual attribute channel and consumed values
-  (hit_test.rs reads something — name it).
 - `text-align: justified` and the `pre*`/`break-spaces` white-space modes:
-  real consumption in text layout or keyword-only.
-- `order` clamp target (i64 → i32 saturate vs wrap).
+  real consumption in text layout or keyword-only (justify is verified
+  CONSUMED — `text_render.rs:106`; the white-space modes are open).
 - `border-radius` paint clamp behavior on oversized radii.
 - Whether `font-size: 0` and negative sizes can reach a panic in
   cosmic-text metrics (then harden: grammar rejects `< 0`, and `0` renders
   nothing without crashing).
+
+Resolved this session: the `pointer-events` channel (content-side
+`Custom("pointer-events")`, `none`/`auto`/inherit at `hit_test.rs:332-336`
+— see B4) and the `order` clamp target (saturating i64→i32 at
+`project.rs:444-445` — see B1).
