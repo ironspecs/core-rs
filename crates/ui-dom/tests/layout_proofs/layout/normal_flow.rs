@@ -21,7 +21,7 @@
 //!   `third_party/blink/renderer/core/layout/block_layout_algorithm.cc`,
 //!   `third_party/blink/renderer/core/layout/ng/ng_constraint_space_builder.cc`
 
-use ui_dom::{DomPointerUpdate, node_box};
+use ui_dom::{DomLayerKind, DomPointerUpdate, node_box};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_close, assert_node_layout, assert_rect_op_geometry,
@@ -571,25 +571,22 @@ fn empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_
 }
 
 #[test]
-// OFF-SPEC (divergent): CSS 2.1 §8.3.1 collapsing margins, final paragraph —
+// CSS 2.1 §8.3.1 collapsing margins, final paragraph —
 // <https://www.w3.org/TR/CSS21/box.html#collapsing-margins>
 // Closest WPT: the CSS21 margin-collapse suite
 // (css/CSS2/normal-flow/margin-collapse-*.xht).
 // Gecko: nsBlockFrame.cpp margin-collapse path.
 // Blink: third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc.
 //
-// CURRENT (asserted below): the adjoining -10px bottom and -5px top margins
-// SUM to -15px, so `lower`'s border box lands at top -4px and the parent
-// border-box height is 7px.
-// SPEC-CORRECT: with no positive adjoining margins, the collapsed margin is
-// the most negative adjoining margin (-10px): `lower` at top 1px, parent
-// border-box height 12px.
-// ROOT CAUSE: collapsed_sibling_margin_overlap_px in
-// src/domains/layout/flow.rs clamps the collapse overlap to >= 0, so signed
-// negative-margin collapse is not admitted.
-// RECLASSIFY: if this proof fails, the divergence moved — see the off-spec
-// registry in tests/layout_proofs/README.md.
-fn off_spec_adjacent_negative_block_margins_collapse_to_most_negative() {
+// Adjoining negative margins collapse to the most negative: the -10px bottom
+// margin and -5px top margin collapse to -10px, so `lower`'s border box lands
+// at top 1px (overlapping `upper`) and the parent border-box height is 12px.
+//
+// RELABEL: relabeled from
+// off_spec_adjacent_negative_block_margins_collapse_to_most_negative in PR 1
+// item 2 after the three-branch used-margin rule landed in
+// collapsed_sibling_margin_overlap_px (src/domains/layout/flow.rs).
+fn adjacent_negative_block_margins_collapse_to_most_negative() {
     let (mut world, mut root) =
         crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
@@ -611,18 +608,178 @@ fn off_spec_adjacent_negative_block_margins_collapse_to_most_negative() {
 
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
-    // rects[0] = parent, rects[1] = upper, rects[2] = lower. Off-spec pinning:
-    // the summed -15px margin places `lower`'s border box at top -4px past
-    // `upper`'s top edge and leaves the parent content height at 5px
-    // (border box 7px). Spec-correct values are named in the OFF-SPEC header.
+    // rects[0] = parent, rects[1] = upper, rects[2] = lower. The -10px and
+    // -5px adjoining margins collapse to the most negative (-10px), so
+    // `lower` overlaps `upper` (both border boxes at top 1px) and the parent
+    // border box is 12px tall.
     assert_rect_op_geometry(&rects[1], 0.0, 1.0, 180.0, 10.0, "upper block");
     assert_rect_op_geometry(
         &rects[2],
         0.0,
-        -4.0,
+        1.0,
         180.0,
         10.0,
-        "lower block after off-spec summed negative margins",
+        "lower block after negative margins collapse to the most negative",
     );
-    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 180.0, 7.0, "parent border box");
+    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 180.0, 12.0, "parent border box");
+}
+
+#[test]
+// CSS 2.1 §8.3.1 collapsing margins: one positive and one negative adjoining
+// margin SUM to their used gap (no min/max branch), matching the engines'
+// mixed-sign branch in nsBlockFrame.cpp / ng_margin_collapse.cc. The 10px
+// bottom margin and -5px top margin sum to 5px, so `lower`'s border box lands
+// at top 16px and the parent border-box height is 27px. This guards the
+// mixed-sign branch of the three-branch used-margin rule, which was
+// spec-correct before the PR 1 item 2 change and is pinned so it cannot regress.
+fn mixed_sign_adjacent_block_margins_sum_to_used_gap() {
+    let (mut world, mut root) =
+        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let parent = assert_append_div_to(&mut root, document_root);
+    let upper = assert_append_div_to(&mut root, parent);
+    let lower = assert_append_div_to(&mut root, parent);
+
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-top", "1px");
+    assert_style_set(&mut root, parent, "border-bottom", "1px");
+    assert_style_set(&mut root, upper, "width", "180px");
+    assert_style_set(&mut root, upper, "height", "10px");
+    assert_style_set(&mut root, upper, "margin-bottom", "10px");
+    assert_style_set(&mut root, lower, "width", "180px");
+    assert_style_set(&mut root, lower, "height", "10px");
+    assert_style_set(&mut root, lower, "margin-top", "-5px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = parent, rects[1] = upper, rects[2] = lower. The 10px and
+    // -5px adjoining margins sum to a 5px used gap, so `lower` sits 5px below
+    // `upper`'s bottom edge (top 16px) and the parent border box is 27px tall.
+    assert_rect_op_geometry(&rects[1], 0.0, 1.0, 180.0, 10.0, "upper block");
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        16.0,
+        180.0,
+        10.0,
+        "lower block after mixed-sign margins sum",
+    );
+    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 180.0, 27.0, "parent border box");
+}
+
+#[test]
+// DELIBERATE (the 2026-10-18 layer-spillover decision, PLAN.md decision log):
+// a clipped layer's bounds clip content that spills outside them — negative
+// margins, `overflow: visible` children, transforms — where a browser would
+// paint it. Rationale: bounded layer surfaces ARE the render cache (scroll,
+// animation, targeted repaint); surface expansion defeats the cache geometry
+// and the damage-rect model. The escape hatch is an unclipped (Normal) layer —
+// see `normal_layer_paints_spillover_escape_hatch`.
+//
+// Split pin: this proof guards the integration-visible half — the container is
+// classified as a Clipped layer (`layer_kind_for_node`), its border box is the
+// bounded surface (100×100), and the negative-margin child's rect is staged
+// ABOVE that bound (top −20px). The actual clip is the composite stage's
+// `clip_world` (the layer's border box for Clipped layers), which is pub(crate)
+// and pinned in `src/domains/composite/mod.rs::
+// nested_clipped_layer_clip_world_uses_layer_tree_world_offset`. The staged
+// paint plan is NOT itself clipped: it carries the spilled rect at −20px, the
+// same as the Normal-layer escape hatch below — the clip is applied at draw
+// time, never by the paint plan.
+fn layer_bounds_clip_spillover_by_design() {
+    let (mut world, mut root) =
+        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let clipped = assert_append_div_to(&mut root, document_root);
+    let child = assert_append_div_to(&mut root, clipped);
+
+    assert_style_set(&mut root, clipped, "width", "100px");
+    assert_style_set(&mut root, clipped, "height", "100px");
+    assert_style_set(&mut root, clipped, "overflow", "hidden");
+    assert_style_set(&mut root, child, "width", "100px");
+    assert_style_set(&mut root, child, "height", "20px");
+    assert_style_set(&mut root, child, "margin-top", "-20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The container is a Clipped layer: overflow:hidden arms the composite
+    // clip_world (border box), which is what trims the spill below.
+    assert_eq!(
+        assert_node_layout(&root, clipped).layer_kind,
+        DomLayerKind::Clipped,
+        "overflow:hidden container should classify as a Clipped layer",
+    );
+    let clipped_box = node_box(&root, clipped).expect("clipped layer should expose a box");
+    assert_close(clipped_box.border_box.top_px, 0.0, "clipped layer top");
+    assert_close(
+        clipped_box.border_box.width_px,
+        100.0,
+        "clipped layer border-box width (the bounded surface)",
+    );
+    assert_close(
+        clipped_box.border_box.height_px,
+        100.0,
+        "clipped layer border-box height (the bounded surface)",
+    );
+
+    // The staged paint plan carries the child's border box at its negative
+    // offset (top −20px), above the layer's top bound; the composite clip_world
+    // trims that spilled region at draw time.
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 100.0, 100.0, "clipped layer container");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        -20.0,
+        100.0,
+        20.0,
+        "negative-margin child staged above the clipped layer bounds",
+    );
+}
+
+#[test]
+// CSS 2.1 §9.4.3 plus the layer-spillover escape hatch: an unclipped (Normal)
+// layer paints content that spills outside its border box. A `position:
+// relative` container is a Normal layer (`node_has_unclipped_layer`), so its
+// −20px-top child's border box is staged at its negative offset and paints —
+// the deliberate clipped-layer divergence (see `layer_bounds_clip_spillover_by_design`)
+// does NOT apply here. This is on-spec: a browser paints the spill.
+fn normal_layer_paints_spillover_escape_hatch() {
+    let (mut world, mut root) =
+        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let normal = assert_append_div_to(&mut root, document_root);
+    let child = assert_append_div_to(&mut root, normal);
+
+    assert_style_set(&mut root, normal, "position", "relative");
+    assert_style_set(&mut root, normal, "width", "100px");
+    assert_style_set(&mut root, normal, "height", "100px");
+    assert_style_set(&mut root, child, "width", "100px");
+    assert_style_set(&mut root, child, "height", "20px");
+    assert_style_set(&mut root, child, "margin-top", "-20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        assert_node_layout(&root, normal).layer_kind,
+        DomLayerKind::Normal,
+        "relative container should classify as a Normal (unclipped) layer",
+    );
+
+    // The child's rect op exists at its negative-offset position: the spill
+    // paints through the unclipped escape hatch.
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_rect_op_geometry(&rects[0], 0.0, 0.0, 100.0, 100.0, "normal layer container");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        -20.0,
+        100.0,
+        20.0,
+        "negative-margin child paints at its negative offset",
+    );
 }

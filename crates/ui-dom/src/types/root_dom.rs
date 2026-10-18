@@ -6997,6 +6997,8 @@ mod tests {
             "border-right",
             "border-bottom",
             "border-left",
+            "margin",
+            "padding",
         ] {
             assert!(name_is_presentation(name), "{name} should be presentation");
         }

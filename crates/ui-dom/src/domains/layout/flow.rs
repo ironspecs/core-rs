@@ -960,18 +960,27 @@ fn update_block_flow(
 }
 
 fn collapsed_sibling_margin_overlap_px(flow: BlockFlowState, child_style: NodeStyle) -> f32 {
-    // CSS 2.1 8.3.1 (collapsing margins): adjoining vertical margins collapse
-    // so the used gap is the larger margin, i.e. the overlap saved is the
-    // smaller one. Gecko and Blink run the same max-collapse in
-    // nsBlockFrame.cpp / block_layout_algorithm.cc. Subset note: this path
-    // covers the non-negative margin slice; signed negative-margin collapse
-    // from the same section is not admitted yet.
+    // CSS 2.1 8.3.1 (collapsing margins): the used margin between adjoining
+    // vertical margins is the larger of two positive margins, the more
+    // negative of two negative margins, and the sum of a positive and a
+    // negative margin; the overlap saved is then a + b − used. Gecko and
+    // Blink run the same three-branch rule in nsBlockFrame.cpp /
+    // block_layout_algorithm.cc. Verification: (−10, −5) → used = −10 →
+    // overlap = −5 → gap = −10 ✓; (10, 5) → used = 10 → overlap = 5 ✓
+    // unchanged; (10, −5) → used = 5 → overlap = 0 ✓ unchanged.
     if !flow.has_block_children || flow.line_height_px > 0.0 {
         return 0.0;
     }
-    flow.previous_block_margin_bottom_px
-        .min(child_style.sides.margin.top_px)
-        .max(0.0)
+    let a = flow.previous_block_margin_bottom_px;
+    let b = child_style.sides.margin.top_px;
+    let used_margin_px = if a >= 0.0 && b >= 0.0 {
+        a.max(b)
+    } else if a < 0.0 && b < 0.0 {
+        a.min(b)
+    } else {
+        a + b
+    };
+    a + b - used_margin_px
 }
 
 fn collapsed_parent_top_margin_px(
