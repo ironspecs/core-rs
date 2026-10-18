@@ -160,8 +160,12 @@ fold), or the computed read surface (`RootDom::computed_style`).
   fail-fast rule for boundary data (see AGENTS.md); single-declaration APIs
   stay strict.
 - The precedence model is exactly `{ origin_priority, inline, specificity,
-  order }` (the `inline` flag sorts above any selector per css-style-attr §4).
-  There is no `!important`, no built-in UA stylesheet (consumers may model one
+  order }` — the `Precedence` record in `decl_value.rs`, whose `inline` flag
+  sorts above any selector per css-style-attr §4. (The matched-rule pre-sort
+  uses a narrower `(priority, specificity, order)` tuple, which omits the
+  flag because rules are never inline; inline declarations enter the fold
+  through the inline block at the top precedence.) There is no `!important`,
+  no built-in UA stylesheet (consumers may model one
   as a low-priority origin), and no cascade layers. These are known
   divergences from CSS Cascading and are pinned as labeled off-spec proofs in
   `tests/layout_proofs/`.

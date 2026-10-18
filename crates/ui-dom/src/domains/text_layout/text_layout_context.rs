@@ -15,6 +15,7 @@
 use cosmic_text::FontSystem;
 
 use crate::numeric::usize_to_f32;
+use crate::types::DomWhiteSpace;
 
 use super::text_render;
 use super::{
@@ -32,7 +33,7 @@ use super::{
     text_wrap_mode_for_css_layout,
 };
 #[cfg(test)]
-use crate::types::{DomOverflowWrap, DomWhiteSpace, DomWordBreak};
+use crate::types::{DomOverflowWrap, DomWordBreak};
 
 pub(crate) struct TextLayoutContext {
     pub(super) font_system: FontSystem,
@@ -91,17 +92,22 @@ impl TextLayoutContext {
         request: &TextLayoutRequest<'_>,
     ) -> WrappedTextLayout {
         if request.font_size_px == 0.0 {
-            // Same zero guard: zero-width text occupies exactly one line.
+            // Same zero guard: zero-width text occupies one line per source
+            // line under newline-preserving white-space, one line otherwise.
             let line_height_px = effective_line_height_px(&mut self.font_system, request);
+            let line_count = zero_size_line_count(request);
+            let lines = (0..line_count)
+                .map(|index| WrappedTextLineLayout {
+                    width_px: 0.0,
+                    baseline_y_px: usize_to_f32(index) * line_height_px,
+                    height_px: line_height_px,
+                })
+                .collect();
             return WrappedTextLayout {
                 width_px: 0.0,
-                height_px: line_height_px,
-                line_count: 1,
-                lines: vec![WrappedTextLineLayout {
-                    width_px: 0.0,
-                    baseline_y_px: 0.0,
-                    height_px: line_height_px,
-                }],
+                height_px: usize_to_f32(line_count) * line_height_px,
+                line_count,
+                lines,
             };
         }
         wrapped_text_layout_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
@@ -110,8 +116,10 @@ impl TextLayoutContext {
     #[must_use]
     pub(crate) fn measure_wrapped_text_height(&mut self, request: &TextLayoutRequest<'_>) -> f32 {
         if request.font_size_px == 0.0 {
-            // Same zero guard: zero-width text occupies exactly one line.
-            return effective_line_height_px(&mut self.font_system, request);
+            // Same zero guard: height is the line count for the white-space
+            // policy times the line height.
+            return usize_to_f32(zero_size_line_count(request))
+                * effective_line_height_px(&mut self.font_system, request);
         }
         wrapped_text_height_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
     }
@@ -180,10 +188,38 @@ impl TextLayoutContext {
     }
 }
 
-/// The caret map for zero-size text: one line per source line, every stop
-/// at x = 0 (positions coincide without glyph data; cosmic-text asserts a
-/// non-zero font size, so the map is built without it).
+/// The line count for zero-size text: newline-preserving wrap policies keep
+/// one line per source line; collapsing policies render one line (zero-width
+/// text never wraps). Shared by the zero-size guards so the wrapped layout,
+/// the height measure, and the caret map cannot disagree.
+fn zero_size_line_count(request: &TextLayoutRequest<'_>) -> usize {
+    match request.white_space {
+        DomWhiteSpace::Pre
+        | DomWhiteSpace::PreWrap
+        | DomWhiteSpace::PreLine
+        | DomWhiteSpace::BreakSpaces => super::line_start_byte_indices(request.text).len().max(1),
+        DomWhiteSpace::Normal | DomWhiteSpace::Nowrap => 1,
+    }
+}
+
+/// The caret map for zero-size text: newline-preserving white-space keeps one
+/// line per source line, collapsing white-space keeps one line; every stop
+/// sits at x = 0 (positions coincide without glyph data; cosmic-text asserts
+/// a non-zero font size, so the map is built without it).
 fn zero_size_caret_map(request: &TextLayoutRequest<'_>, line_height_px: f32) -> TextCaretMap {
+    if zero_size_line_count(request) == 1 {
+        // Collapsing white-space renders newlines as a single zero-width line.
+        return TextCaretMap {
+            lines: vec![TextCaretLine {
+                top_px: 0.0,
+                height_px: line_height_px,
+                stops: vec![CaretStop {
+                    byte_index: 0,
+                    x_px: 0.0,
+                }],
+            }],
+        };
+    }
     let lines = super::line_start_byte_indices(request.text)
         .iter()
         .enumerate()
@@ -638,6 +674,7 @@ mod tests {
         let request = TextLayoutRequest {
             font_size_px: 0.0,
             line_height_px: Some(20.0),
+            white_space: DomWhiteSpace::Pre,
             ..TextLayoutRequest::for_text("a\nb", 0.0)
         };
 
@@ -651,6 +688,44 @@ mod tests {
             assert_eq!(line.stops[0].x_px, 0.0);
         }
         assert_eq!(caret_map.lines[0].stops[0].byte_index, 0);
+        assert_eq!(caret_map.lines[1].stops[0].byte_index, 2);
+    }
+
+    #[test]
+    fn zero_size_multiline_collapsing_modes_render_one_line() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            white_space: DomWhiteSpace::Normal,
+            ..TextLayoutRequest::for_text("a\nb", 0.0)
+        };
+
+        let wrapped_text = context.layout_wrapped_text(&request);
+        let caret_map = context.layout_text_caret_map(&request);
+
+        assert_eq!(wrapped_text.line_count, 1);
+        assert_eq!(context.measure_wrapped_text_height(&request), 20.0);
+        assert_eq!(caret_map.lines.len(), 1);
+    }
+
+    #[test]
+    fn zero_size_multiline_preserving_modes_render_one_line_per_source_line() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            white_space: DomWhiteSpace::Pre,
+            ..TextLayoutRequest::for_text("a\nb", 0.0)
+        };
+
+        let wrapped_text = context.layout_wrapped_text(&request);
+        let caret_map = context.layout_text_caret_map(&request);
+
+        assert_eq!(wrapped_text.line_count, 2);
+        assert_eq!(context.measure_wrapped_text_height(&request), 40.0);
+        assert_eq!(caret_map.lines.len(), 2);
+        assert_eq!(caret_map.lines[1].top_px, 20.0);
         assert_eq!(caret_map.lines[1].stops[0].byte_index, 2);
     }
 

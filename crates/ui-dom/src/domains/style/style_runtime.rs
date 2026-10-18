@@ -103,6 +103,43 @@ fn rules_are_equivalent(a: &RuleEquivalence<'_>, b: &RuleEquivalence<'_>) -> boo
         && a.origin == b.origin
 }
 
+/// Same-load staged dedup, hash-bucketed by identity hash to mirror the active
+/// tier's `identity_index` discipline: only the staged entries in the matching
+/// bucket are re-checked with the shared `rules_are_equivalent`, so a load is
+/// O(N) with hash collisions re-checked rather than a full linear scan of
+/// every staged rule.
+fn has_equivalent_staged_rule(
+    staged: &[StagedRule],
+    staged_identity_index: &HashMap<u64, Vec<usize>>,
+    identity_hash: u64,
+    selector_parts: &[SimpleSelector],
+    declarations: &[Declaration],
+    specificity: SelectorSpecificity,
+    origin: &StyleRuleOrigin,
+) -> bool {
+    staged_identity_index
+        .get(&identity_hash)
+        .is_some_and(|positions| {
+            positions.iter().any(|&pos| {
+                let (staged_decl, _, staged_parts, _, staged_spec, _) = &staged[pos];
+                rules_are_equivalent(
+                    &RuleEquivalence {
+                        selector_parts,
+                        declarations,
+                        specificity,
+                        origin,
+                    },
+                    &RuleEquivalence {
+                        selector_parts: staged_parts.as_slice(),
+                        declarations: staged_decl.declarations(),
+                        specificity: *staged_spec,
+                        origin,
+                    },
+                )
+            })
+        })
+}
+
 impl StyleRuntime {
     /// Loads one stylesheet origin's rules into the retained store atomically.
     ///
@@ -136,6 +173,8 @@ impl StyleRuntime {
         let blocks = parse_css_blocks(css_text)?;
         let mut report = StylesheetLoadReport::default();
         let mut staged: Vec<StagedRule> = Vec::new();
+        let mut staged_identity_index: std::collections::HashMap<u64, Vec<usize>> =
+            std::collections::HashMap::new();
         for block in blocks {
             let selector_parts = parse_selector(&block.selector)?;
             let right_most = extract_right_most_selector(&selector_parts)?;
@@ -158,32 +197,26 @@ impl StyleRuntime {
             // Two-tier dedup: skip a block that matches an already-committed
             // active rule (reload dedup) OR an already-staged rule in this
             // same load (same-load dedup); both tiers share
-            // `rules_are_equivalent`.
-            if self.has_equivalent_active_rule(
+            // `rules_are_equivalent`. Same-load dedup is hash-bucketed by
+            // identity hash, mirroring the active tier's `identity_index`, so a
+            // load is O(N) with `rules_are_equivalent` re-checking collisions.
+            let has_active_equivalent = self.has_equivalent_active_rule(
                 identity_hash,
                 &selector_parts,
                 decl_block.declarations(),
                 specificity,
                 &origin,
-            ) || staged
-                .iter()
-                .any(|(staged_decl, _, staged_parts, _, staged_spec, _)| {
-                    rules_are_equivalent(
-                        &RuleEquivalence {
-                            selector_parts: &selector_parts,
-                            declarations: decl_block.declarations(),
-                            specificity,
-                            origin: &origin,
-                        },
-                        &RuleEquivalence {
-                            selector_parts: staged_parts.as_slice(),
-                            declarations: staged_decl.declarations(),
-                            specificity: *staged_spec,
-                            origin: &origin,
-                        },
-                    )
-                })
-            {
+            );
+            let has_staged_equivalent = has_equivalent_staged_rule(
+                &staged,
+                &staged_identity_index,
+                identity_hash,
+                &selector_parts,
+                decl_block.declarations(),
+                specificity,
+                &origin,
+            );
+            if has_active_equivalent || has_staged_equivalent {
                 continue;
             }
             staged.push((
@@ -194,6 +227,10 @@ impl StyleRuntime {
                 specificity,
                 identity_hash,
             ));
+            staged_identity_index
+                .entry(identity_hash)
+                .or_default()
+                .push(staged.len() - 1);
         }
 
         // Phase 2 — commit. Only reached when every block parsed. Order is
@@ -867,6 +904,36 @@ mod tests {
             .expect("second load");
         assert_eq!(first.rules_inserted, 1);
         assert_eq!(second.rules_inserted, 0);
+    }
+
+    #[test]
+    fn same_load_dedup_uses_identity_hash_buckets() {
+        // The same-load dedup tier is hash-bucketed by identity hash (mirroring
+        // the active tier's `identity_index`), so a load is O(N) rather than
+        // O(N²). This pins the O(N) shape at volume by correctness, not
+        // wall-clock timing: an exact duplicate of the first rule at the end of
+        // a 200-distinct-rule sheet is still deduped, and the control commits
+        // all 200.
+        let mut rules = Vec::with_capacity(201);
+        for i in 0..200 {
+            rules.push(format!(".r{i} {{ width: 1px }}"));
+        }
+        rules.push(".r0 { width: 1px }".to_string());
+        let sheet = rules.join(" ");
+        let report = StyleRuntime::default()
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), &sheet)
+            .expect("duplicate-bearing sheet should load");
+        assert_eq!(report.rules_inserted, 200);
+
+        let mut control_rules = Vec::with_capacity(200);
+        for i in 0..200 {
+            control_rules.push(format!(".r{i} {{ width: 1px }}"));
+        }
+        let control_sheet = control_rules.join(" ");
+        let report = StyleRuntime::default()
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), &control_sheet)
+            .expect("control sheet should load");
+        assert_eq!(report.rules_inserted, 200);
     }
 
     #[test]
