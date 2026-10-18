@@ -13,6 +13,13 @@ pub(crate) fn u16_to_u8(value: u16) -> u8 {
 }
 
 #[must_use]
+pub(crate) fn f32_to_u8(value: f32) -> u8 {
+    value
+        .to_u8()
+        .expect("f32 should be finite and in u8 range before conversion")
+}
+
+#[must_use]
 pub(crate) fn u32_to_u16(value: u32) -> u16 {
     u16::try_from(value).expect("u32 glyph id should fit into u16 for swash rendering")
 }

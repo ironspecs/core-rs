@@ -47,7 +47,8 @@ use crate::domains::style::computed::{
 use crate::domains::style::{
     ComputedStyleRef, DeclBlock, DeclDropReport, DeclGrammar, DeclLength, DeclStore, DeclValue,
     Declaration, Keyword, ParsedDeclaration, PresentationProperty, StyleMut, TextInterner, TextKey,
-    decl_value_to_dom_value, name_is_presentation, parse_declaration_block,
+    decl_value_to_css_string, decl_value_to_dom_value, name_is_presentation,
+    parse_declaration_block,
 };
 use crate::domains::visitor::event_target::{
     DomPointEventTarget, dispatch_event_from_point_and_finish, dispatch_event_to_target_and_finish,
@@ -122,9 +123,13 @@ use crate::domains::layer_hit::topmost_attached_layer_hit_from_root_point;
 #[cfg(test)]
 use crate::domains::paint::build_layer_paint_plan;
 #[cfg(test)]
+use crate::domains::style::StyleRuleOrigin;
+#[cfg(test)]
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
 #[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
+use crate::types::parse_css_color_rgba;
 #[cfg(test)]
 use crate::types::primitives::DomRect;
 #[cfg(test)]
@@ -2035,21 +2040,30 @@ impl RootDom {
     /// declarations in block order, projected to the public wire shape
     /// `(property-name, value)` (spine 3.3g-2a). `Text` values resolve through
     /// the inline store's interner; lengths/keywords/numbers/colors use the
-    /// same formatter `compute_style_map` shares. An important declaration's
-    /// `String` value carries the CSS-compatible ` !important` suffix so the
-    /// list replays through the style-attribute route unchanged. A missing
-    /// node yields an empty list (it has no inline declarations).
+    /// same formatter `compute_style_map` shares. An important declaration
+    /// serializes EVERY value kind to its CSS string form with the
+    /// CSS-compatible ` !important` suffix (a typed `Color` has no importance
+    /// channel), so the list replays authored style inputs through the
+    /// style-attribute route with importance preserved for every value kind.
+    /// A missing node yields an empty list (it has no inline declarations).
     #[must_use]
     pub fn canonical_style_snapshot(&self, node_key: DomNodeSlotKey) -> DomCanonicalStyleSnapshot {
         let mut styles = Vec::new();
         if let Some(block) = self.inline_decl_block(node_key) {
             for (declaration, important) in block.declarations().iter().zip(block.importance()) {
-                let mut value = decl_value_to_dom_value(&declaration.value, |key| {
-                    self.resolve_inline_text(key)
-                });
-                if *important && let DomAttributeValue::String(text) = &mut value {
+                let value = if *important {
+                    // An important declaration must replay through the
+                    // style-attribute route unchanged: serialize every value
+                    // kind to its CSS string (a typed `Color` would drop the
+                    // importance channel on replay) and append the suffix.
+                    let mut text = decl_value_to_css_string(&declaration.value, |key| {
+                        self.resolve_inline_text(key)
+                    });
                     text.push_str(" !important");
-                }
+                    DomAttributeValue::String(text)
+                } else {
+                    decl_value_to_dom_value(&declaration.value, |key| self.resolve_inline_text(key))
+                };
                 styles.push((declaration.property.name().to_string(), value));
             }
         }
@@ -5929,6 +5943,78 @@ mod tests {
         root.set_attr_str(node, "style", &replayed)
             .expect("style round-trip");
         assert_eq!(root.canonical_style_snapshot(node), snapshot);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // the replayed color must equal the parsed pin bit-exactly
+    fn canonical_style_snapshot_preserves_importance_for_color_values_and_replays() {
+        let context = RootDomContext::new_cpu();
+        context
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 1),
+                ".x { background-color: #000000 }",
+            )
+            .expect("the normal background rule should load");
+        let mut root = RootDom::new(context);
+        let node = root.create_element(DomTag::Div).expect("div");
+        root.append_child(root.document_node().0, node)
+            .expect("node attach");
+        root.set_attr_str(node, "class", "x")
+            .expect("class should set");
+
+        // An important Color-valued declaration serializes to its CSS string
+        // form (not the typed `DomAttributeValue::Color`, which has no
+        // importance channel), so importance survives replay.
+        root.style_mut(node)
+            .set("background-color", "#112233 !important")
+            .expect("important background-color");
+        root.style_mut(node)
+            .set("caret-color", "#7aa2ff !important")
+            .expect("important caret-color");
+        let snapshot = root.canonical_style_snapshot(node);
+        assert_eq!(
+            snapshot.styles,
+            vec![
+                (
+                    "background-color".to_string(),
+                    DomAttributeValue::String("#112233 !important".to_string())
+                ),
+                (
+                    "caret-color".to_string(),
+                    DomAttributeValue::String("#7aa2ff !important".to_string())
+                ),
+            ]
+        );
+
+        // Replaying through the style-attribute route round-trips to the same
+        // snapshot (both color strings re-parse through `parse_css_color_rgba`).
+        let replayed = snapshot
+            .styles
+            .iter()
+            .map(|(name, value)| {
+                let DomAttributeValue::String(text) = value else {
+                    panic!("important declarations serialize to string values only");
+                };
+                format!("{name}: {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        root.set_attr_str(node, "style", &replayed)
+            .expect("style round-trip");
+        assert_eq!(root.canonical_style_snapshot(node), snapshot);
+
+        // The replayed important background-color wins the cascade over the
+        // normal `.x { background-color: #000000 }` rule (CSS Cascade 5 §6.4.1).
+        let document_key = root.document_node().0;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("recompute");
+        assert_eq!(
+            root.computed_style(node)
+                .expect("node should exist")
+                .as_visual()
+                .background_rgba,
+            parse_css_color_rgba("#112233").expect("#112233"),
+            "the replayed important background-color should beat the normal rule",
+        );
     }
 
     #[test]

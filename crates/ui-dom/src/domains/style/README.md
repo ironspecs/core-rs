@@ -25,10 +25,13 @@ fold), or the computed read surface (`RootDom::computed_style`).
   the rule identity hash over typed declarations. It never stores rules or
   blocks; the retained recompute visitor folds typed winners itself in
   `domains/visitor/winners_fold.rs` (spine 3.3g-2a).
-- `decl_value.rs` owns `decl_value_to_dom_value`, the surviving value formatter
+- `decl_value.rs` owns `decl_value_to_dom_value` (the surviving value formatter
   the debug-priced `compute_style_map` uses to project winners to the public
-  wire shape (moved here from the deleted `decl_bridge.rs` at spine 3.4, when
-  the presentation variants left `DomAttribute`).
+  wire shape, moved here from the deleted `decl_bridge.rs` at spine 3.4, when
+  the presentation variants left `DomAttribute`) and its CSS-string sibling
+  `decl_value_to_css_string` (plus the `format_color_rgba` color serializer),
+  which `canonical_style_snapshot` uses to keep important declarations
+  replay-faithful for every value kind.
 - `style_rule_origin.rs` owns `StyleRuleOrigin`, the crate's stylesheet-origin
   identity (`key` + `priority`).
 - `style_mut.rs` owns the programmatic declaration write API (the two D5

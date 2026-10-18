@@ -21,6 +21,9 @@ use super::cascade_tier::CascadeTier;
 use super::keyword::Keyword;
 use crate::types::DomAttributeValue;
 
+#[cfg(test)]
+use crate::types::parse_css_color_rgba;
+
 /// A parsed length: the closed `unset | 0 | <px> | <em> | <percentage>`
 /// grammar. `Percent` is the declaration form for ALL percentages; resolution
 /// is per property (font contexts resolve at style time; box lengths stay
@@ -81,6 +84,54 @@ impl DeclValue {
     }
 }
 
+/// Formats one typed `DeclValue` to its CSS string form. This is the
+/// serialization `decl_value_to_dom_value` uses for every kind EXCEPT `Color`
+/// (which that function keeps as the typed `DomAttributeValue::Color` wire
+/// form). Here `Color` also serializes to its CSS string (`#rrggbb` /
+/// `rgba(...)`) so an important declaration can carry a replay-faithful
+/// ` !important` suffix through the style-attribute route.
+///
+/// `resolve_text` resolves store-owned interned text; it must resolve (the
+/// interner and the block live in the same store, so a `Text` key here is a
+/// self-owned structural invariant — the `expect` is never on boundary data).
+pub(crate) fn decl_value_to_css_string<'a>(
+    value: &DeclValue,
+    resolve_text: impl Fn(TextKey) -> Option<&'a str>,
+) -> String {
+    match value {
+        DeclValue::Length(DeclLength::Unset) => "unset".to_string(),
+        DeclValue::Length(DeclLength::Px(value)) => format!("{value}px"),
+        DeclValue::Length(DeclLength::Em(value)) => format!("{value}em"),
+        DeclValue::Length(DeclLength::Percent(value)) => format!("{value}%"),
+        DeclValue::Color(rgba) => format_color_rgba(*rgba),
+        DeclValue::Keyword(keyword) => keyword.name().to_string(),
+        DeclValue::Number(value) => format!("{value}"),
+        DeclValue::Integer(value) => value.to_string(),
+        DeclValue::Text(key) => resolve_text(*key)
+            .expect("interned text must resolve in its owning store")
+            .to_string(),
+        DeclValue::Translate([x, y]) => format!("translate({x}px, {y}px)"),
+    }
+}
+
+/// Serializes a normalized `[red, green, blue, alpha]` color to the CSS string
+/// form `parse_css_color_rgba` accepts back: `#rrggbb` when fully opaque, else
+/// `rgba(R, G, B, A)` with 0–255 integer channels and the shortest float alpha.
+/// Both forms round-trip through `parse_css_color_rgba` for colors it produces
+/// (channels are exact `n / 255` and alpha is preserved bit-exactly).
+#[allow(clippy::float_cmp)] // the opaque test is an exact 1.0 alpha comparison
+fn format_color_rgba(rgba: [f32; 4]) -> String {
+    let [red, green, blue, alpha] = rgba;
+    let r = crate::numeric::f32_to_u8((red * 255.0).round());
+    let g = crate::numeric::f32_to_u8((green * 255.0).round());
+    let b = crate::numeric::f32_to_u8((blue * 255.0).round());
+    if alpha == 1.0 {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    } else {
+        format!("rgba({r}, {g}, {b}, {alpha})")
+    }
+}
+
 /// Projects one typed `DeclValue` to its public wire `DomAttributeValue`.
 /// `resolve_text` resolves store-owned interned text; it must resolve (the
 /// interner and the block live in the same store, so a `Text` key here is a
@@ -90,24 +141,10 @@ pub(crate) fn decl_value_to_dom_value<'a>(
     resolve_text: impl Fn(TextKey) -> Option<&'a str>,
 ) -> DomAttributeValue {
     match value {
-        DeclValue::Length(DeclLength::Unset) => DomAttributeValue::String("unset".to_string()),
-        DeclValue::Length(DeclLength::Px(value)) => DomAttributeValue::String(format!("{value}px")),
-        DeclValue::Length(DeclLength::Em(value)) => DomAttributeValue::String(format!("{value}em")),
-        DeclValue::Length(DeclLength::Percent(value)) => {
-            DomAttributeValue::String(format!("{value}%"))
-        }
+        // `Color` keeps its typed wire form (the serde fixture pins it); the
+        // CSS string form for colors lives in `decl_value_to_css_string`.
         DeclValue::Color(rgba) => DomAttributeValue::Color(*rgba),
-        DeclValue::Keyword(keyword) => DomAttributeValue::String(keyword.name().to_string()),
-        DeclValue::Number(value) => DomAttributeValue::String(format!("{value}")),
-        DeclValue::Integer(value) => DomAttributeValue::String(value.to_string()),
-        DeclValue::Text(key) => DomAttributeValue::String(
-            resolve_text(*key)
-                .expect("interned text must resolve in its owning store")
-                .to_string(),
-        ),
-        DeclValue::Translate([x, y]) => {
-            DomAttributeValue::String(format!("translate({x}px, {y}px)"))
-        }
+        _ => DomAttributeValue::String(decl_value_to_css_string(value, resolve_text)),
     }
 }
 
@@ -226,6 +263,40 @@ mod tests {
         assert_eq!(
             decl_value_to_dom_value(&DeclValue::Translate([0.0, -3.5]), resolve_none),
             DomAttributeValue::String("translate(0px, -3.5px)".to_string())
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // round-trip equality is bit-exact by contract
+    fn format_color_rgba_round_trips_through_the_color_parser() {
+        // Opaque colors serialize to 6-digit hex and round-trip bit-exactly.
+        let opaque = parse_css_color_rgba("#112233").expect("#112233");
+        assert_eq!(format_color_rgba(opaque), "#112233");
+        assert_eq!(
+            parse_css_color_rgba(&format_color_rgba(opaque)).expect("round-trip"),
+            opaque,
+        );
+
+        // Non-opaque colors serialize to rgba(R, G, B, A) with 0-255 integer
+        // channels and the shortest float alpha; the form round-trips too.
+        let translucent = parse_css_color_rgba("rgba(255, 128, 0, 0.25)").expect("rgba");
+        assert_eq!(format_color_rgba(translucent), "rgba(255, 128, 0, 0.25)");
+        assert_eq!(
+            parse_css_color_rgba(&format_color_rgba(translucent)).expect("round-trip"),
+            translucent,
+        );
+    }
+
+    #[test]
+    fn decl_value_to_css_string_formats_color_as_css_text() {
+        let resolve_none = |_key: TextKey| -> Option<&str> { None };
+        assert_eq!(
+            decl_value_to_css_string(&DeclValue::Color([0.0, 0.0, 0.0, 1.0]), resolve_none),
+            "#000000",
+        );
+        assert_eq!(
+            decl_value_to_css_string(&DeclValue::Color([1.0, 0.0, 0.0, 0.5]), resolve_none),
+            "rgba(255, 0, 0, 0.5)",
         );
     }
 }
