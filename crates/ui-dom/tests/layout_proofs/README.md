@@ -197,6 +197,31 @@ Flex coverage map:
   F6 false positive), `flex_basis_content_and_unit_forms` (§7.3.3, F11 false
   positive — `content` resolves to max-content).
 
+### Flex/grid spec-surface matrix (Run A + Run B close-out)
+
+Census: 405 → 412 proofs; 14 → 16 divergent rows; two new unimplemented gates
+(alignment keywords, grid property names). The seven axis-groups and the grid
+vocabulary close as follows — every cell is PROVED, registered, or gated:
+
+| Group | Proved cells (rows) | Divergent rows landed | Unimplemented gates | Closing families |
+|---|---|---|---|---|
+| A axes | batch 4 (row/column/reverse) + blockified `inline-flex` | — | — | existing batch 4 |
+| B lines | 4 | — | — | family 11 (`column_wrap_gap_geometry`) |
+| C factors | 4 + 3 | `off_spec_mixed_violation_freeze_ordering` | `flex_basis_percentage_drops` | F11 (`flex_basis_content_and_unit_forms`), F12 |
+| D auto-min | 5 + 3 + 4 + 4 | `off_spec_inflexible_items_skip_hypothetical_clamps`, `off_spec_hypothetical_main_size_not_floored_by_auto_min`, `off_spec_flex_container_ignores_min_max_main_cross_sizes` | `flex_container_content_based_auto_min_is_supported` (active-solver subset, `flex.rs`) | F3, F4, F5, F6 (`cross_axis_min_max_clamps_apply_via_block_measure_and_relayout`) |
+| E alignment | 4 + 3 + 8 | `off_spec_space_evenly_negative_free_space_does_not_fall_back_to_center` | `unsupported_rejected_alignment_keywords_drop` | F7, family 15 (`single_line_align_content_is_inert`), family 16 |
+| F item interactions | 4 + 4 + 4 + 7 | `off_spec_anonymous_inline_runs_are_not_merged`, `off_spec_abspos_and_display_none_children_occupy_flex_slots`, `off_spec_flex_paint_ignores_order_modified_sequence`, `off_spec_percentage_resolution_against_flex_container` | — | F1, F2, F8, family 9 |
+| G container interactions | 4 | — | — | family 13 (`flex_container_overflow_and_borders`) |
+| Grid | 14 | — | `unsupported_grid_property_names_drop` (full vocabulary below) | family 17 |
+
+Grid gate vocabulary: `grid-template-columns` `grid-template-rows`
+`grid-template-areas` `grid-template` `grid-auto-flow` `grid-auto-columns`
+`grid-auto-rows` `grid-column` `grid-row` `grid-column-start` `grid-area`
+`grid` (shorthand) `justify-items` `justify-self` — each drops + counts at name
+lookup; the `display: grid`/`inline-grid` VALUE gate is
+`unsupported_display_values_drop_to_initial`.
+
+
 Normal-flow coverage map:
 
 - `layout/block_inline.rs`: block stacking, inline line building, block-after-inline
