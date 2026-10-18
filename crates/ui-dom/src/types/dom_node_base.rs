@@ -13,9 +13,12 @@
 //!   callers holding a bare base reference
 //! - event-listener buckets and exact-name presence bits stay synchronized
 //!   through the `EventListenerNameBits` helpers
+//! - `presentation` (spine 3.3a) is written only by the style pass's
+//!   projection; nothing else mutates it, and text nodes keep the default
 
 use std::collections::BTreeMap;
 
+use crate::domains::style::computed::NodePresentation;
 use crate::types::box_model::DomBoxModel;
 use crate::types::dom_event_name::DomEventName;
 use crate::types::dom_node::{
@@ -34,6 +37,12 @@ pub struct DomNodeBase {
     pub layout: DomLayoutState,
     pub paint: DomPaintState,
     pub style: DomStyleObject,
+    /// The seven computed presentation groups + the transition-longhand slot
+    /// (PLAN.md spine 3.3a dual-write). Written by the style pass's projection
+    /// from the node's stored presentation attrs; read only by the NEW
+    /// computed-style view accessors. Text nodes carry the default and are
+    /// never projected.
+    pub presentation: NodePresentation,
     pub(crate) transitions: DomTransitionState,
     pub(crate) parent_key: Option<DomNodeSlotKey>,
     pub(crate) first_child_key: Option<DomNodeSlotKey>,
@@ -67,6 +76,7 @@ impl DomNodeBase {
                 dirty: true,
                 ..DomStyleObject::default()
             },
+            presentation: NodePresentation::default(),
             transitions: DomTransitionState::default(),
             parent_key: None,
             first_child_key: None,

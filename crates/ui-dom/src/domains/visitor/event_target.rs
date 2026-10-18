@@ -339,9 +339,11 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(underlay, "position", "absolute")
+        root.style_mut(underlay)
+            .set("position", "absolute")
             .expect("underlay layer");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("overlay layer");
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
@@ -429,19 +431,26 @@ mod tests {
             .expect("append first item");
         root.append_child(scroll_root, second_item)
             .expect("append second item");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(scroll_root, "overflow", "scroll")
+        root.style_mut(scroll_root)
+            .set("overflow", "scroll")
             .expect("scroll overflow");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "40px")
+        root.style_mut(second_item)
+            .set("height", "40px")
             .expect("second height");
 
         let mut world = World::new();
@@ -556,9 +565,11 @@ mod tests {
         root.append_child(root.root, button).expect("append button");
         root.set_attr_str(button, "pointer-events", "none")
             .expect("button pointer-events should apply");
-        root.set_attr_str(button, "width", "40px")
+        root.style_mut(button)
+            .set("width", "40px")
             .expect("button width");
-        root.set_attr_str(button, "height", "40px")
+        root.style_mut(button)
+            .set("height", "40px")
             .expect("button height");
 
         let mut world = World::new();
@@ -610,13 +621,17 @@ mod tests {
             .expect("blocker pointer-events should apply");
         root.set_attr_str(button, "pointer-events", "auto")
             .expect("button pointer-events should apply");
-        root.set_attr_str(blocker, "width", "40px")
+        root.style_mut(blocker)
+            .set("width", "40px")
             .expect("blocker width");
-        root.set_attr_str(blocker, "height", "40px")
+        root.style_mut(blocker)
+            .set("height", "40px")
             .expect("blocker height");
-        root.set_attr_str(button, "width", "40px")
+        root.style_mut(button)
+            .set("width", "40px")
             .expect("button width");
-        root.set_attr_str(button, "height", "40px")
+        root.style_mut(button)
+            .set("height", "40px")
             .expect("button height");
 
         let mut world = World::new();

@@ -23,11 +23,11 @@
 //!   `servo/components/style/properties/shorthands.toml` (revision-pinned):
 //!   <https://searchfox.org/firefox-main/rev/ad704963dac696aa26a7cb39eded9642c10c0ae0/servo/components/style/properties/shorthands.toml>
 
-use ui_dom::{DomAttribute, DomAttributeValue, DomIntrinsic, DomNode, DomPointerUpdate};
+use ui_dom::{DomIntrinsic, DomNode, DomPointerUpdate};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_text_to, assert_close, assert_load_root_stylesheet,
-    assert_node_layout, assert_root_dom_update, assert_set_attr_str,
+    assert_node_layout, assert_root_dom_update, assert_set_attr_str, assert_style_set,
     attached_gpu_root_dom_default_viewport_setup, theme_stylesheet_origin,
 };
 
@@ -113,15 +113,15 @@ fn live_white_space_change_to_nowrap_reduces_used_height_to_one_line() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha Beta Gamma Delta");
 
-    assert_set_attr_str(&mut root, container, "width", "54px");
-    assert_set_attr_str(&mut root, block, "display", "block");
+    assert_style_set(&mut root, container, "width", "54px");
+    assert_style_set(&mut root, block, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text_node);
     let baseline_intrinsic = assert_text_intrinsic(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "white-space", "nowrap");
+    assert_style_set(&mut root, block, "white-space", "nowrap");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let nowrap_layout = assert_node_layout(&root, text_node);
@@ -159,7 +159,7 @@ fn stylesheet_white_space_nowrap_stays_single_line_after_recompute() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha Beta Gamma Delta");
 
-    assert_set_attr_str(&mut root, container, "width", "54px");
+    assert_style_set(&mut root, container, "width", "54px");
     assert_set_attr_str(&mut root, block, "class", "nowrap-block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -167,7 +167,7 @@ fn stylesheet_white_space_nowrap_stays_single_line_after_recompute() {
     let intrinsic = assert_text_intrinsic(&root, text_node);
     let first_layout = assert_node_layout(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_layout = assert_node_layout(&root, text_node);
@@ -206,7 +206,7 @@ fn removing_stylesheet_white_space_nowrap_restores_wrapping() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha Beta Gamma Delta");
 
-    assert_set_attr_str(&mut root, container, "width", "54px");
+    assert_style_set(&mut root, container, "width", "54px");
     assert_set_attr_str(&mut root, block, "class", "nowrap-block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -253,8 +253,8 @@ fn stylesheet_white_space_pre_preserves_spaces_after_recompute() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha    Beta");
 
-    assert_set_attr_str(&mut root, container, "width", "54px");
-    assert_set_attr_str(&mut root, baseline_block, "display", "block");
+    assert_style_set(&mut root, container, "width", "54px");
+    assert_style_set(&mut root, baseline_block, "display", "block");
     assert_set_attr_str(&mut root, block, "class", "pre-block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -263,7 +263,7 @@ fn stylesheet_white_space_pre_preserves_spaces_after_recompute() {
     let first_intrinsic = assert_text_intrinsic(&root, text_node);
     let first_layout = assert_node_layout(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_intrinsic = assert_text_intrinsic(&root, text_node);
@@ -302,15 +302,15 @@ fn live_white_space_change_to_pre_preserves_spaces_and_disables_soft_wrap() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha    Beta");
 
-    assert_set_attr_str(&mut root, container, "width", "54px");
-    assert_set_attr_str(&mut root, block, "display", "block");
+    assert_style_set(&mut root, container, "width", "54px");
+    assert_style_set(&mut root, block, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text_node);
     let baseline_intrinsic = assert_text_intrinsic(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "white-space", "pre");
+    assert_style_set(&mut root, block, "white-space", "pre");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let pre_layout = assert_node_layout(&root, text_node);
@@ -361,16 +361,16 @@ fn live_white_space_change_to_pre_line_collapses_spaces_but_keeps_explicit_break
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha    Beta\nGamma");
 
-    assert_set_attr_str(&mut root, container, "width", "300px");
-    assert_set_attr_str(&mut root, block, "display", "block");
-    assert_set_attr_str(&mut root, block, "white-space", "pre-wrap");
+    assert_style_set(&mut root, container, "width", "300px");
+    assert_style_set(&mut root, block, "display", "block");
+    assert_style_set(&mut root, block, "white-space", "pre-wrap");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let pre_wrap_layout = assert_node_layout(&root, text_node);
     let pre_wrap_intrinsic = assert_text_intrinsic(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "white-space", "pre-line");
+    assert_style_set(&mut root, block, "white-space", "pre-line");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let pre_line_layout = assert_node_layout(&root, text_node);
@@ -411,9 +411,9 @@ fn stylesheet_white_space_pre_line_preserves_breaks_after_recompute() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha    Beta\nGamma");
 
-    assert_set_attr_str(&mut root, container, "width", "300px");
-    assert_set_attr_str(&mut root, baseline_block, "display", "block");
-    assert_set_attr_str(&mut root, baseline_block, "white-space", "pre-line");
+    assert_style_set(&mut root, container, "width", "300px");
+    assert_style_set(&mut root, baseline_block, "display", "block");
+    assert_style_set(&mut root, baseline_block, "white-space", "pre-line");
     assert_set_attr_str(&mut root, block, "class", "pre-line-block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -422,7 +422,7 @@ fn stylesheet_white_space_pre_line_preserves_breaks_after_recompute() {
     let first_intrinsic = assert_text_intrinsic(&root, text_node);
     let first_layout = assert_node_layout(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_intrinsic = assert_text_intrinsic(&root, text_node);
@@ -501,14 +501,14 @@ fn live_white_space_change_to_break_spaces_increases_preserved_space_width() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha    Beta");
 
-    assert_set_attr_str(&mut root, container, "width", "300px");
-    assert_set_attr_str(&mut root, block, "display", "block");
+    assert_style_set(&mut root, container, "width", "300px");
+    assert_style_set(&mut root, block, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let normal_intrinsic = assert_text_intrinsic(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "white-space", "break-spaces");
+    assert_style_set(&mut root, block, "white-space", "break-spaces");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let break_spaces_intrinsic = assert_text_intrinsic(&root, text_node);
@@ -542,8 +542,8 @@ fn stylesheet_white_space_break_spaces_preserves_space_width_after_recompute() {
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, "Alpha    Beta");
 
-    assert_set_attr_str(&mut root, container, "width", "300px");
-    assert_set_attr_str(&mut root, baseline_block, "display", "block");
+    assert_style_set(&mut root, container, "width", "300px");
+    assert_style_set(&mut root, baseline_block, "display", "block");
     assert_set_attr_str(&mut root, block, "class", "break-spaces-block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -551,7 +551,7 @@ fn stylesheet_white_space_break_spaces_preserves_space_width_after_recompute() {
     let baseline_intrinsic = assert_text_intrinsic(&root, baseline_text);
     let first_intrinsic = assert_text_intrinsic(&root, text_node);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_intrinsic = assert_text_intrinsic(&root, text_node);
@@ -614,15 +614,17 @@ fn layout_for_text_with_white_space(
     let block = assert_append_div_to(&mut root, container);
     let text_node = assert_append_text_to(&mut root, block, text);
 
-    assert_set_attr_str(&mut root, container, "width", &format!("{width_px}px"));
-    assert_set_attr_str(&mut root, block, "display", "block");
-    assert_set_attr_str(&mut root, block, "white-space", white_space);
+    assert_style_set(&mut root, container, "width", &format!("{width_px}px"));
+    assert_style_set(&mut root, block, "display", "block");
+    assert_style_set(&mut root, block, "white-space", white_space);
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
-        root.node(block)
-            .and_then(|node| node.presented_attr(&DomAttribute::WhiteSpace)),
-        Some(&DomAttributeValue::String(white_space.to_string())),
+        root.computed_style(block)
+            .expect("block should remain readable")
+            .as_text()
+            .white_space,
+        white_space_enum(white_space),
     );
 
     let block_layout = assert_node_layout(&root, block);
@@ -644,5 +646,19 @@ fn assert_text_intrinsic(
     match root.node(text).map(DomNode::intrinsic) {
         Some(DomIntrinsic::Text(intrinsic)) => intrinsic.clone(),
         _ => panic!("white-space proof node should keep text intrinsic state"),
+    }
+}
+
+/// Maps an authored `white-space` keyword back to the computed text group's
+/// `DomWhiteSpace` variant (the proof's canonical keyword set).
+fn white_space_enum(keyword: &str) -> ui_dom::DomWhiteSpace {
+    match keyword {
+        "normal" => ui_dom::DomWhiteSpace::Normal,
+        "nowrap" => ui_dom::DomWhiteSpace::Nowrap,
+        "pre" => ui_dom::DomWhiteSpace::Pre,
+        "pre-wrap" => ui_dom::DomWhiteSpace::PreWrap,
+        "pre-line" => ui_dom::DomWhiteSpace::PreLine,
+        "break-spaces" => ui_dom::DomWhiteSpace::BreakSpaces,
+        _ => panic!("white-space proof uses an unadmitted keyword `{keyword}`"),
     }
 }

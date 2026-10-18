@@ -43,6 +43,8 @@ use crate::domains::hit_test::{
 };
 use crate::domains::layer_hit::{LayerClusterHit, visit_attached_layer_hits_from_root_point};
 #[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
 use crate::types::dom_event::DomEventListener;
 use crate::types::primitives::PointPx;
 use crate::types::{
@@ -577,7 +579,8 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("absolute overlay");
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
@@ -692,29 +695,40 @@ mod tests {
             .expect("append titlebar");
         root.append_child(graph_node, body).expect("append body");
 
-        root.set_attr_str(graph_node, "position", "fixed")
+        root.style_mut(graph_node)
+            .set("position", "fixed")
             .expect("graph node fixed");
-        root.set_attr_str(graph_node, "width", "120px")
+        root.style_mut(graph_node)
+            .set("width", "120px")
             .expect("graph node width");
-        root.set_attr_str(graph_node, "height", "80px")
+        root.style_mut(graph_node)
+            .set("height", "80px")
             .expect("graph node height");
-        root.set_attr_str(titlebar, "position", "absolute")
+        root.style_mut(titlebar)
+            .set("position", "absolute")
             .expect("titlebar absolute");
-        root.set_attr_str(titlebar, "left", "0px")
+        root.style_mut(titlebar)
+            .set("left", "0px")
             .expect("titlebar left");
-        root.set_attr_str(titlebar, "top", "0px")
+        root.style_mut(titlebar)
+            .set("top", "0px")
             .expect("titlebar top");
-        root.set_attr_str(titlebar, "width", "120px")
+        root.style_mut(titlebar)
+            .set("width", "120px")
             .expect("titlebar width");
-        root.set_attr_str(titlebar, "height", "20px")
+        root.style_mut(titlebar)
+            .set("height", "20px")
             .expect("titlebar height");
-        root.set_attr_str(body, "position", "absolute")
+        root.style_mut(body)
+            .set("position", "absolute")
             .expect("body absolute");
-        root.set_attr_str(body, "left", "0px").expect("body left");
-        root.set_attr_str(body, "top", "20px").expect("body top");
-        root.set_attr_str(body, "width", "120px")
+        root.style_mut(body).set("left", "0px").expect("body left");
+        root.style_mut(body).set("top", "20px").expect("body top");
+        root.style_mut(body)
+            .set("width", "120px")
             .expect("body width");
-        root.set_attr_str(body, "height", "60px")
+        root.style_mut(body)
+            .set("height", "60px")
             .expect("body height");
         set_box(&mut root, graph_node, 0.0, 0.0, 120.0, 80.0);
         set_box(&mut root, titlebar, 0.0, 0.0, 120.0, 20.0);
@@ -751,29 +765,40 @@ mod tests {
             .expect("append titlebar");
         root.append_child(graph_node, body).expect("append body");
 
-        root.set_attr_str(graph_node, "position", "fixed")
+        root.style_mut(graph_node)
+            .set("position", "fixed")
             .expect("graph node fixed");
-        root.set_attr_str(graph_node, "width", "120px")
+        root.style_mut(graph_node)
+            .set("width", "120px")
             .expect("graph node width");
-        root.set_attr_str(graph_node, "height", "80px")
+        root.style_mut(graph_node)
+            .set("height", "80px")
             .expect("graph node height");
-        root.set_attr_str(titlebar, "position", "absolute")
+        root.style_mut(titlebar)
+            .set("position", "absolute")
             .expect("titlebar absolute");
-        root.set_attr_str(titlebar, "left", "0px")
+        root.style_mut(titlebar)
+            .set("left", "0px")
             .expect("titlebar left");
-        root.set_attr_str(titlebar, "top", "0px")
+        root.style_mut(titlebar)
+            .set("top", "0px")
             .expect("titlebar top");
-        root.set_attr_str(titlebar, "width", "120px")
+        root.style_mut(titlebar)
+            .set("width", "120px")
             .expect("titlebar width");
-        root.set_attr_str(titlebar, "height", "20px")
+        root.style_mut(titlebar)
+            .set("height", "20px")
             .expect("titlebar height");
-        root.set_attr_str(body, "position", "absolute")
+        root.style_mut(body)
+            .set("position", "absolute")
             .expect("body absolute");
-        root.set_attr_str(body, "left", "0px").expect("body left");
-        root.set_attr_str(body, "top", "20px").expect("body top");
-        root.set_attr_str(body, "width", "120px")
+        root.style_mut(body).set("left", "0px").expect("body left");
+        root.style_mut(body).set("top", "20px").expect("body top");
+        root.style_mut(body)
+            .set("width", "120px")
             .expect("body width");
-        root.set_attr_str(body, "height", "60px")
+        root.style_mut(body)
+            .set("height", "60px")
             .expect("body height");
         set_box(&mut root, graph_node, 0.0, 0.0, 120.0, 80.0);
         set_box(&mut root, titlebar, 0.0, 0.0, 120.0, 20.0);
@@ -807,12 +832,15 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(underlay, "position", "absolute")
+        root.style_mut(underlay)
+            .set("position", "absolute")
             .expect("absolute underlay");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("absolute overlay");
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
+        resolve_styles(&mut root);
 
         let target = active_pointer_target_from_point(
             &root,
@@ -839,19 +867,26 @@ mod tests {
             .expect("append first item");
         root.append_child(scroll_root, second_item)
             .expect("append second item");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(scroll_root, "overflow", "scroll")
+        root.style_mut(scroll_root)
+            .set("overflow", "scroll")
             .expect("scroll overflow");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "40px")
+        root.style_mut(second_item)
+            .set("height", "40px")
             .expect("second height");
 
         let mut world = World::new();
@@ -894,19 +929,26 @@ mod tests {
             .expect("append first item");
         root.append_child(scroll_root, second_item)
             .expect("append second item");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(scroll_root, "overflow", "scroll")
+        root.style_mut(scroll_root)
+            .set("overflow", "scroll")
             .expect("scroll overflow");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "40px")
+        root.style_mut(second_item)
+            .set("height", "40px")
             .expect("second height");
 
         let mut world = World::new();
@@ -961,12 +1003,15 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(underlay, "position", "absolute")
+        root.style_mut(underlay)
+            .set("position", "absolute")
             .expect("absolute underlay");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("absolute overlay");
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
+        resolve_styles(&mut root);
 
         let target = active_pointer_target_from_point(
             &root,
@@ -1020,9 +1065,11 @@ mod tests {
         root.append_child(root.root, button).expect("append button");
         root.set_attr_str(button, "pointer-events", "none")
             .expect("button pointer-events should apply");
-        root.set_attr_str(button, "width", "40px")
+        root.style_mut(button)
+            .set("width", "40px")
             .expect("button width");
-        root.set_attr_str(button, "height", "40px")
+        root.style_mut(button)
+            .set("height", "40px")
             .expect("button height");
 
         let mut world = World::new();
@@ -1065,13 +1112,17 @@ mod tests {
             .expect("blocker pointer-events should apply");
         root.set_attr_str(button, "pointer-events", "auto")
             .expect("button pointer-events should apply");
-        root.set_attr_str(blocker, "width", "40px")
+        root.style_mut(blocker)
+            .set("width", "40px")
             .expect("blocker width");
-        root.set_attr_str(blocker, "height", "40px")
+        root.style_mut(blocker)
+            .set("height", "40px")
             .expect("blocker height");
-        root.set_attr_str(button, "width", "40px")
+        root.style_mut(button)
+            .set("width", "40px")
             .expect("button width");
-        root.set_attr_str(button, "height", "40px")
+        root.style_mut(button)
+            .set("height", "40px")
             .expect("button height");
         set_box(&mut root, blocker, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, button, 0.0, 0.0, 40.0, 40.0);
@@ -1125,9 +1176,11 @@ mod tests {
         root.append_child(root.root, button).expect("append button");
         root.set_attr_str(button, "pointer-events", "none")
             .expect("button pointer-events should apply");
-        root.set_attr_str(button, "width", "40px")
+        root.style_mut(button)
+            .set("width", "40px")
             .expect("button width");
-        root.set_attr_str(button, "height", "40px")
+        root.style_mut(button)
+            .set("height", "40px")
             .expect("button height");
 
         let mut world = World::new();
@@ -1186,6 +1239,11 @@ mod tests {
         root.node(key)
             .and_then(DomNode::as_element)
             .is_some_and(|element| element.has_pseudo_state(pseudo_state))
+    }
+
+    fn resolve_styles(root: &mut RootDom) {
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
     }
 
     fn set_box(

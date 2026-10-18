@@ -45,13 +45,24 @@
 //!     .and_then(|(_, node)| node.next_sibling(|key| root_dom.node(key)))
 //! ```
 //!
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::domains::paint::{measure_text_intrinsic, measure_text_intrinsic_with_font_size};
-pub(crate) use crate::types::attribute_invalidation::AttributeInvalidation;
-use crate::types::dom_attr_parse::{
-    layout_length_attr_uses_unset, parse_class_attr_list, parse_style_attr_map,
+use crate::domains::style::computed::project::{
+    overflow_wrap as overflow_wrap_from_keyword, text_align as text_align_from_keyword,
+    text_direction as text_direction_from_keyword, white_space as white_space_from_keyword,
+    word_break as word_break_from_keyword,
 };
+use crate::domains::style::computed::{
+    AlignContentKw, AlignItemsKw, ComputedBoxGroup, ComputedColorGroup, ComputedFlexGroup,
+    ComputedFontGroup, ComputedGroups, ComputedTextGroup, ComputedTransformGroup,
+    ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw,
+    GroupDirtyClassification, JustifyContentKw, OverflowKw, PositionKw,
+    ResolvedTransitionLonghands,
+};
+use crate::domains::style::{DeclBlockKey, DeclLength, DeclValue, Keyword, PresentationProperty};
+pub(crate) use crate::types::attribute_invalidation::AttributeInvalidation;
+use crate::types::dom_attr_parse::parse_class_attr_list;
 pub use crate::types::dom_document_fragment_node::DomDocumentFragmentNode;
 pub use crate::types::dom_document_node::DomDocumentNode;
 pub use crate::types::dom_element_node::DomElementNode;
@@ -70,7 +81,7 @@ use crate::types::element_behaviors::{
 };
 use crate::types::{
     DomAttribute, DomAttributeNode, DomAttributeValue, DomAttrs, DomCanonicalLayoutSnapshot,
-    DomCanonicalSnapshot, DomCanonicalStyleSnapshot, DomError,
+    DomError, DomOverflowWrap, DomTextAlign, DomTextDirection, DomWhiteSpace, DomWordBreak,
 };
 use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
@@ -84,10 +95,7 @@ use crate::types::dom_event::{
 #[cfg(test)]
 use crate::types::element_behaviors::{input_default_width_sample, measured_text_width_px};
 #[cfg(test)]
-use crate::types::{
-    DomEventListenerContext, DomOverflowWrap, DomWhiteSpace, DomWordBreak, RootDom, RootDomContext,
-    parse_css_color_rgba,
-};
+use crate::types::{DomEventListenerContext, RootDom, RootDomContext, parse_css_color_rgba};
 
 new_key_type! {
     pub struct DomNodeSlotKey;
@@ -187,14 +195,15 @@ pub(crate) struct DomDispatchedEventListener {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DomTransitionSyncResult {
-    pub invalidation: AttributeInvalidation,
+    pub invalidation: GroupDirtyClassification,
+    pub inherited_progress: bool,
     pub still_active: bool,
-    pub finished_attributes: Vec<FinishedDomTransition>,
+    pub finished_properties: Vec<FinishedDomTransition>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FinishedDomTransition {
-    pub attribute: DomAttribute,
+    pub property: PresentationProperty,
     pub elapsed_s: f64,
 }
 
@@ -381,23 +390,581 @@ impl DomNode {
         &self.base().intrinsic
     }
 
-    /// Returns the canonical public snapshot for this node.
-    ///
-    /// This is the primary public export surface for replaying browser-style
-    /// style and layout calculations from one node-owned record.
+    /// The node's stored seven computed groups, without the transition-overlay
+    /// merge (spine 3.3d). This is the transition-free projection output: the
+    /// write path and style pass compute it from stored attrs only. The
+    /// inheritance seed now reads the *merged* accessors (`computed_*`) instead
+    /// of this (CSS Cascade §6.1 — the transition tier wins the cascade, so the
+    /// interpolated values are the cascaded values and inherit). Text nodes are
+    /// never projected, so they return `ComputedGroups::initial()` here.
     #[must_use]
-    pub fn snapshot(&self) -> DomCanonicalSnapshot {
-        DomCanonicalSnapshot {
-            style: self.canonical_style_snapshot(),
-            layout: self.canonical_layout_snapshot(),
+    pub(crate) fn stored_computed_groups(&self) -> ComputedGroups {
+        self.base().presentation.computed
+    }
+
+    /// The node's computed groups as of the last *completed* style pass, or
+    /// `None` before the first pass (spine 3.3g-1b). The pass diffs this
+    /// against the freshly resolved groups to schedule transitions and classify
+    /// dirtiness (D2 one-timing); the write path re-projects `computed` without
+    /// touching this, so the last-pass value survives a direct write.
+    #[must_use]
+    pub(crate) fn previous_computed(&self) -> Option<ComputedGroups> {
+        self.base().presentation.previous_computed
+    }
+
+    /// Records the freshly resolved groups as the last-pass baseline (spine
+    /// 3.3g-1b). Called by the style pass after resolving the seven groups.
+    #[allow(clippy::large_types_passed_by_value)] // `ComputedGroups` is Copy; by-value is deliberate
+    pub(crate) fn set_previous_computed(&mut self, groups: ComputedGroups) {
+        self.base_mut().presentation.previous_computed = Some(groups);
+    }
+
+    /// The node's resolved transition-longhand scheduler slot (S1.1), written
+    /// by the pass's projection. The pass clones it before scheduling so it can
+    /// drop the node borrow while mutating the scheduler.
+    #[must_use]
+    pub(crate) fn resolved_transition_longhands(&self) -> &ResolvedTransitionLonghands {
+        &self.base().presentation.transition_longhands
+    }
+
+    /// The node's inline declaration block key (S1.1; the single source of the
+    /// css-style-attr store), or `None` when the node's inline `style` was
+    /// never written. The block lives and frees with the node: the store
+    /// mutators write this key through the root and `remove_node` frees the
+    /// block it names.
+    #[must_use]
+    pub(crate) fn inline_decl(&self) -> Option<DeclBlockKey> {
+        self.base().presentation.decl
+    }
+
+    /// Records the node's inline declaration block key (S1.1). Only the
+    /// root-owned store mutators call this, so the key always names a live
+    /// block in the document's inline store.
+    pub(crate) fn set_inline_decl(&mut self, key: Option<DeclBlockKey>) {
+        self.base_mut().presentation.decl = key;
+    }
+
+    /// Writes the freshly resolved seven groups and transition-longhand slot
+    /// (spine 3.3g-2a): the typed winners fold resolves and writes these
+    /// directly on the node record — no attr-projection channel.
+    #[allow(clippy::large_types_passed_by_value)] // Copy data; the by-value groups are deliberate
+    pub(crate) fn set_computed_groups(
+        &mut self,
+        groups: ComputedGroups,
+        longhands: ResolvedTransitionLonghands,
+    ) {
+        let presentation = &mut self.base_mut().presentation;
+        presentation.computed = groups;
+        presentation.transition_longhands = longhands;
+    }
+
+    /// The seven internal computed-group reads (PLAN.md spine 3.3b).
+    ///
+    /// These are the visit-local reads the layout/paint consumers use instead
+    /// of re-parsing stringly presented attrs. Each returns the node's stored
+    /// group *copy* (groups are `Copy`), then merges the active-transition
+    /// overlay for its group's transitionable properties (the transition
+    /// scheduler's presented value wins where a transition is running — CSS
+    /// Transitions tier, above computed style).
+    ///
+    /// The merge only *converts* the transition's already-interpolated
+    /// `presented` value into the field's type; it never interpolates. A
+    /// `presented` `DeclValue` kind that cannot apply to a field (e.g. an `em`
+    /// length where a resolved `f32` is expected) falls back to the stored
+    /// group field — transition interpolation never produces those shapes for
+    /// the transitionable set.
+    #[must_use]
+    pub fn computed_font(&self) -> ComputedFontGroup {
+        let mut font = self.base().presentation.computed.font;
+        if let Some(size_px) = self.presented_font_size() {
+            font.size_px = size_px;
         }
+        apply_optional_px(
+            &mut font.line_height_px,
+            self.presented_line_height(font.size_px),
+        );
+        if let Some(weight) = self.presented_font_weight() {
+            font.weight = weight;
+        }
+        if let Some(style) = self.presented_font_style() {
+            font.style = style;
+        }
+        // `family` is an interned `TextKey`; the overlay cannot re-intern a
+        // presented string without the document interner, so it falls back to
+        // the stored group value (family transitions are not a real path).
+        font
+    }
+
+    #[must_use]
+    pub fn computed_text(&self) -> ComputedTextGroup {
+        let mut text = self.base().presentation.computed.text;
+        if let Some(align) = self.presented_text_align() {
+            text.align = align;
+        }
+        if let Some(direction) = self.presented_text_direction() {
+            text.direction = direction;
+        }
+        if let Some(white_space) = self.presented_white_space() {
+            text.white_space = white_space;
+        }
+        if let Some(overflow_wrap) = self.presented_overflow_wrap() {
+            text.overflow_wrap = overflow_wrap;
+        }
+        if let Some(word_break) = self.presented_word_break() {
+            text.word_break = word_break;
+        }
+        text
+    }
+
+    #[must_use]
+    pub fn computed_color(&self) -> ComputedColorGroup {
+        let mut color = self.base().presentation.computed.color;
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::Color) {
+            color.color_rgba = rgba;
+        }
+        color
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // mechanical field-by-field overlay merge, low complexity
+    pub fn computed_box(&self) -> ComputedBoxGroup {
+        let mut box_ = self.base().presentation.computed.box_;
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::Display)
+            && let Some(display) = DisplayKw::from_keyword(keyword)
+        {
+            box_.display = display;
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::Position)
+            && let Some(position) = PositionKw::from_keyword(keyword)
+        {
+            box_.position = position;
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::Overflow)
+            && let Some(overflow) = OverflowKw::from_keyword(keyword)
+        {
+            box_.overflow = overflow;
+        }
+        if let Some(isolate) = self.presented_isolate() {
+            box_.isolate = isolate;
+        }
+        apply_optional_px(
+            &mut box_.width,
+            self.presented_optional_px(PresentationProperty::Width),
+        );
+        apply_optional_px(
+            &mut box_.height,
+            self.presented_optional_px(PresentationProperty::Height),
+        );
+        apply_optional_px(
+            &mut box_.min_width,
+            self.presented_optional_px(PresentationProperty::MinWidth),
+        );
+        apply_optional_px(
+            &mut box_.min_height,
+            self.presented_optional_px(PresentationProperty::MinHeight),
+        );
+        apply_optional_px(
+            &mut box_.max_width,
+            self.presented_optional_px(PresentationProperty::MaxWidth),
+        );
+        apply_optional_px(
+            &mut box_.max_height,
+            self.presented_optional_px(PresentationProperty::MaxHeight),
+        );
+        apply_optional_px(
+            &mut box_.top,
+            self.presented_optional_px(PresentationProperty::Top),
+        );
+        apply_optional_px(
+            &mut box_.left,
+            self.presented_optional_px(PresentationProperty::Left),
+        );
+        apply_optional_px(
+            &mut box_.right,
+            self.presented_optional_px(PresentationProperty::Right),
+        );
+        apply_optional_px(
+            &mut box_.bottom,
+            self.presented_optional_px(PresentationProperty::Bottom),
+        );
+        apply_px(
+            &mut box_.margin[0],
+            self.presented_px(PresentationProperty::MarginTop),
+        );
+        apply_px(
+            &mut box_.margin[1],
+            self.presented_px(PresentationProperty::MarginRight),
+        );
+        apply_px(
+            &mut box_.margin[2],
+            self.presented_px(PresentationProperty::MarginBottom),
+        );
+        apply_px(
+            &mut box_.margin[3],
+            self.presented_px(PresentationProperty::MarginLeft),
+        );
+        apply_px(
+            &mut box_.padding[0],
+            self.presented_px(PresentationProperty::PaddingTop),
+        );
+        apply_px(
+            &mut box_.padding[1],
+            self.presented_px(PresentationProperty::PaddingRight),
+        );
+        apply_px(
+            &mut box_.padding[2],
+            self.presented_px(PresentationProperty::PaddingBottom),
+        );
+        apply_px(
+            &mut box_.padding[3],
+            self.presented_px(PresentationProperty::PaddingLeft),
+        );
+        apply_px(
+            &mut box_.border_width[0],
+            self.presented_px(PresentationProperty::BorderTopWidth),
+        );
+        apply_px(
+            &mut box_.border_width[1],
+            self.presented_px(PresentationProperty::BorderRightWidth),
+        );
+        apply_px(
+            &mut box_.border_width[2],
+            self.presented_px(PresentationProperty::BorderBottomWidth),
+        );
+        apply_px(
+            &mut box_.border_width[3],
+            self.presented_px(PresentationProperty::BorderLeftWidth),
+        );
+        box_
+    }
+
+    #[must_use]
+    pub fn computed_flex(&self) -> ComputedFlexGroup {
+        let mut flex = self.base().presentation.computed.flex;
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::FlexDirection)
+            && let Some(direction) = FlexDirectionKw::from_keyword(keyword)
+        {
+            flex.direction = direction;
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::FlexWrap)
+            && let Some(wrap) = FlexWrapKw::from_keyword(keyword)
+        {
+            flex.wrap = wrap;
+        }
+        if let Some(grow) = self.presented_non_negative_number(PresentationProperty::FlexGrow) {
+            flex.grow = grow;
+        }
+        if let Some(shrink) = self.presented_non_negative_number(PresentationProperty::FlexShrink) {
+            flex.shrink = shrink;
+        }
+        if let Some(basis) = self.presented_flex_basis() {
+            flex.basis = basis;
+        }
+        if let Some(order) = self.presented_order() {
+            flex.order = order;
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::JustifyContent)
+            && let Some(justify) = JustifyContentKw::from_keyword(keyword)
+        {
+            flex.justify_content = justify;
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::AlignItems)
+            && let Some(align) = AlignItemsKw::from_keyword(keyword)
+        {
+            flex.align_items = align;
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::AlignSelf) {
+            flex.align_self = if keyword == Keyword::Auto {
+                None
+            } else {
+                AlignItemsKw::from_keyword(keyword)
+            };
+        }
+        if let Some(keyword) = self.presented_keyword(PresentationProperty::AlignContent)
+            && let Some(align) = AlignContentKw::from_keyword(keyword)
+        {
+            flex.align_content = align;
+        }
+        apply_px(
+            &mut flex.gap[0],
+            self.presented_px(PresentationProperty::RowGap),
+        );
+        apply_px(
+            &mut flex.gap[1],
+            self.presented_px(PresentationProperty::ColumnGap),
+        );
+        flex
+    }
+
+    #[must_use]
+    pub fn computed_visual(&self) -> ComputedVisualGroup {
+        let mut visual = self.base().presentation.computed.visual;
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::BackgroundColor) {
+            visual.background_rgba = rgba;
+        }
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::BorderTopColor) {
+            visual.border_rgba[0] = rgba;
+        }
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::BorderRightColor) {
+            visual.border_rgba[1] = rgba;
+        }
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::BorderBottomColor) {
+            visual.border_rgba[2] = rgba;
+        }
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::BorderLeftColor) {
+            visual.border_rgba[3] = rgba;
+        }
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::OutlineColor) {
+            visual.outline_rgba = rgba;
+        }
+        if let Some(rgba) = self.presented_rgba(PresentationProperty::CaretColor) {
+            visual.caret_rgba = Some(rgba);
+        }
+        if let Some(opacity) = self.presented_opacity() {
+            visual.opacity = opacity;
+        }
+        apply_px(
+            &mut visual.outline_width,
+            self.presented_px(PresentationProperty::OutlineWidth),
+        );
+        apply_px(
+            &mut visual.outline_offset,
+            self.presented_px(PresentationProperty::OutlineOffset),
+        );
+        apply_px(
+            &mut visual.radius[0],
+            self.presented_px(PresentationProperty::BorderTopLeftRadius),
+        );
+        apply_px(
+            &mut visual.radius[1],
+            self.presented_px(PresentationProperty::BorderTopRightRadius),
+        );
+        apply_px(
+            &mut visual.radius[2],
+            self.presented_px(PresentationProperty::BorderBottomRightRadius),
+        );
+        apply_px(
+            &mut visual.radius[3],
+            self.presented_px(PresentationProperty::BorderBottomLeftRadius),
+        );
+        visual
+    }
+
+    #[must_use]
+    pub fn computed_transform(&self) -> ComputedTransformGroup {
+        let mut transform = self.base().presentation.computed.transform;
+        if let Some((translate_px, has_transform)) = self.presented_transform() {
+            transform.translate_px = translate_px;
+            transform.has_transform = has_transform;
+        }
+        transform
+    }
+
+    /// The active transition's presented value for `property`, if any.
+    ///
+    /// This is the single lookup the overlay merge keys on (spine 3.3e:
+    /// re-keyed from `DomAttribute` to `PresentationProperty`).
+    fn active_presented(&self, property: PresentationProperty) -> Option<&DeclValue> {
+        self.base()
+            .transitions
+            .active
+            .get(&property)
+            .map(|transition| &transition.presented)
+    }
+
+    /// Converts a presented value to a resolved px length for a plain-`f32`
+    /// field (`margin`/`padding`/`border` edges, gap, radius, outline).
+    /// `None` = not convertible (leave the stored field).
+    fn presented_px(&self, property: PresentationProperty) -> Option<f32> {
+        match self.active_presented(property)? {
+            DeclValue::Length(DeclLength::Px(value)) => Some(*value),
+            DeclValue::Length(DeclLength::Unset) => Some(0.0),
+            DeclValue::Length(DeclLength::Em(_))
+            | DeclValue::Color(_)
+            | DeclValue::Keyword(_)
+            | DeclValue::Number(_)
+            | DeclValue::Integer(_)
+            | DeclValue::Text(_) => None,
+        }
+    }
+
+    /// Converts a presented value to an `Option<f32>` field (`width`, `height`,
+    /// min/max, edges): `Set(Some(px))` writes a length, `Set(None)` is `unset`
+    /// (the field clears), `Leave` means the value could not convert and the
+    /// stored field is left untouched.
+    fn presented_optional_px(&self, property: PresentationProperty) -> PresentedOptionalPx {
+        match self.active_presented(property) {
+            Some(DeclValue::Length(DeclLength::Px(value))) => {
+                PresentedOptionalPx::Set(Some(*value))
+            }
+            Some(DeclValue::Length(DeclLength::Unset)) => PresentedOptionalPx::Set(None),
+            _ => PresentedOptionalPx::Leave,
+        }
+    }
+
+    /// Converts a presented value to a color (color interpolation lerps the
+    /// normalized channels; `presented` is already a `Color`).
+    fn presented_rgba(&self, property: PresentationProperty) -> Option<[f32; 4]> {
+        match self.active_presented(property)? {
+            DeclValue::Color(rgba) => Some(*rgba),
+            _ => None,
+        }
+    }
+
+    /// Converts a presented value to a `Keyword` (the transition's `presented`
+    /// is already a `Keyword`; the field writes only when it applies).
+    fn presented_keyword(&self, property: PresentationProperty) -> Option<Keyword> {
+        match self.active_presented(property)? {
+            DeclValue::Keyword(keyword) => Some(*keyword),
+            _ => None,
+        }
+    }
+
+    fn presented_opacity(&self) -> Option<f32> {
+        match self.active_presented(PresentationProperty::Opacity)? {
+            DeclValue::Number(value) if value.is_finite() => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn presented_non_negative_number(&self, property: PresentationProperty) -> Option<f32> {
+        match self.active_presented(property)? {
+            DeclValue::Number(value) if value.is_finite() => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn presented_order(&self) -> Option<i32> {
+        match self.active_presented(PresentationProperty::Order)? {
+            DeclValue::Integer(value) => Some(clamp_i64_to_i32(*value)),
+            // `order` transitions step; a `Number` presented order is not a
+            // shape interpolation produces for it.
+            _ => None,
+        }
+    }
+
+    fn presented_flex_basis(&self) -> Option<FlexBasisKw> {
+        match self.active_presented(PresentationProperty::FlexBasis)? {
+            DeclValue::Keyword(Keyword::Auto) => Some(FlexBasisKw::Auto),
+            DeclValue::Keyword(Keyword::Content) => Some(FlexBasisKw::Content),
+            DeclValue::Length(DeclLength::Px(value)) => Some(FlexBasisKw::Length(*value)),
+            // `em`/`unset` need the own font size, which this accessor does not
+            // carry; fall back to the stored group field.
+            _ => None,
+        }
+    }
+
+    fn presented_font_size(&self) -> Option<f32> {
+        match self.active_presented(PresentationProperty::FontSize)? {
+            DeclValue::Length(DeclLength::Px(value)) if value.is_finite() => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn presented_font_weight(&self) -> Option<u16> {
+        match self.active_presented(PresentationProperty::FontWeight)? {
+            DeclValue::Keyword(Keyword::Normal) => Some(400),
+            DeclValue::Keyword(Keyword::Bold) => Some(700),
+            DeclValue::Integer(value) => u16::try_from(*value).ok(),
+            // `bolder`/`lighter` resolve against the parent weight, which this
+            // accessor does not carry; fall back to the stored group field.
+            _ => None,
+        }
+    }
+
+    fn presented_font_style(&self) -> Option<Keyword> {
+        match self.active_presented(PresentationProperty::FontStyle)? {
+            DeclValue::Keyword(keyword) => Some(*keyword),
+            _ => None,
+        }
+    }
+
+    fn presented_transform(&self) -> Option<([f32; 2], bool)> {
+        match self.active_presented(PresentationProperty::Transform)? {
+            DeclValue::Keyword(Keyword::None) => Some(([0.0, 0.0], false)),
+            // A `Text` transform cannot be re-parsed without the document
+            // interner; transform transitions step and the stored group already
+            // holds the final resolved translate — fall back to it.
+            _ => None,
+        }
+    }
+
+    fn presented_isolate(&self) -> Option<bool> {
+        match self.active_presented(PresentationProperty::Isolate)? {
+            DeclValue::Keyword(Keyword::Isolate) => Some(true),
+            DeclValue::Keyword(Keyword::Auto) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Converts a presented line-height to the resolved `Option<f32>` field via
+    /// `PresentedOptionalPx`: `Set(None)` = `normal` (the field clears),
+    /// `Set(Some(px))` = a resolved line box, `Leave` = not convertible.
+    fn presented_line_height(&self, size_px: f32) -> PresentedOptionalPx {
+        match self.active_presented(PresentationProperty::LineHeight) {
+            Some(DeclValue::Keyword(Keyword::Normal)) => PresentedOptionalPx::Set(None),
+            Some(DeclValue::Length(DeclLength::Px(px))) => {
+                PresentedOptionalPx::Set(Some(px.max(1.0)))
+            }
+            Some(DeclValue::Length(DeclLength::Em(em))) => {
+                PresentedOptionalPx::Set(Some((em * size_px).max(1.0)))
+            }
+            Some(DeclValue::Number(scale)) => {
+                PresentedOptionalPx::Set(Some((scale * size_px).max(1.0)))
+            }
+            _ => PresentedOptionalPx::Leave,
+        }
+    }
+
+    fn presented_text_align(&self) -> Option<DomTextAlign> {
+        let DeclValue::Keyword(keyword) = self.active_presented(PresentationProperty::TextAlign)?
+        else {
+            return None;
+        };
+        text_align_from_keyword(*keyword)
+    }
+
+    fn presented_text_direction(&self) -> Option<DomTextDirection> {
+        let DeclValue::Keyword(keyword) = self.active_presented(PresentationProperty::Direction)?
+        else {
+            return None;
+        };
+        text_direction_from_keyword(*keyword)
+    }
+
+    fn presented_white_space(&self) -> Option<DomWhiteSpace> {
+        let DeclValue::Keyword(keyword) =
+            self.active_presented(PresentationProperty::WhiteSpace)?
+        else {
+            return None;
+        };
+        white_space_from_keyword(*keyword)
+    }
+
+    fn presented_overflow_wrap(&self) -> Option<DomOverflowWrap> {
+        let DeclValue::Keyword(keyword) =
+            self.active_presented(PresentationProperty::OverflowWrap)?
+        else {
+            return None;
+        };
+        overflow_wrap_from_keyword(*keyword)
+    }
+
+    fn presented_word_break(&self) -> Option<DomWordBreak> {
+        let DeclValue::Keyword(keyword) = self.active_presented(PresentationProperty::WordBreak)?
+        else {
+            return None;
+        };
+        word_break_from_keyword(*keyword)
     }
 
     /// Returns the canonical public layout variables for this node.
     ///
     /// This surface is limited to intrinsic sizing, available size, and used
     /// size so external callers can replay browser-style layout calculations
-    /// without depending on internal node state bundles.
+    /// without depending on internal node state bundles. The style side of the
+    /// canonical snapshot lives on `RootDom::canonical_style_snapshot` (the node
+    /// cannot resolve the inline declaration store).
     #[must_use]
     pub fn canonical_layout_snapshot(&self) -> DomCanonicalLayoutSnapshot {
         let layout = self.layout();
@@ -408,34 +975,6 @@ impl DomNode {
             used_width_px: layout.width_px,
             used_height_px: layout.height_px,
         }
-    }
-
-    /// Returns the canonical public style list for this node.
-    ///
-    /// The returned declaration list is the public authored-style boundary for
-    /// this node and does not expose internal style caches or pseudo-state
-    /// declarations.
-    #[must_use]
-    pub fn canonical_style_snapshot(&self) -> DomCanonicalStyleSnapshot {
-        let styles = match self {
-            Self::Document(node) => node
-                .attribute_style_map
-                .iter()
-                .map(|(attribute, value)| (attribute.clone(), value.clone()))
-                .collect(),
-            Self::DocumentFragment(node) => node
-                .attribute_style_map
-                .iter()
-                .map(|(attribute, value)| (attribute.clone(), value.clone()))
-                .collect(),
-            Self::Element(node) => node
-                .attribute_style_map
-                .iter()
-                .map(|(attribute, value)| (attribute.clone(), value.clone()))
-                .collect(),
-            Self::Text(_) => Vec::new(),
-        };
-        DomCanonicalStyleSnapshot { styles }
     }
 
     pub(crate) fn intrinsic_mut(&mut self) -> &mut DomIntrinsic {
@@ -551,48 +1090,32 @@ impl DomNode {
         self.base_mut()
             .transitions
             .active
-            .insert(transition.attribute.clone(), transition);
+            .insert(transition.property, transition);
     }
 
-    pub(crate) fn clear_transition(&mut self, attribute: &DomAttribute) {
-        self.base_mut().transitions.active.remove(attribute);
+    pub(crate) fn clear_transition(&mut self, property: PresentationProperty) {
+        self.base_mut().transitions.active.remove(&property);
     }
 
     #[must_use]
-    pub(crate) fn active_transition(&self, attribute: &DomAttribute) -> Option<&DomTransition> {
-        self.base().transitions.active.get(attribute)
+    pub(crate) fn active_transition(
+        &self,
+        property: PresentationProperty,
+    ) -> Option<&DomTransition> {
+        self.base().transitions.active.get(&property)
     }
 
-    /// Returns one presented value by preferring the active transition output
-    /// over the authored attribute value when that property is animating.
+    /// Returns one stored attribute value. Content-only (spine 3.3g-2a):
+    /// presentation attrs are never stored anymore, so there is no
+    /// transition-overlay materialization here — the typed overlay merge runs
+    /// inside the `computed_*` accessors. The name stays for the content
+    /// callers that read stored attrs (e.g. `pointer-events`, `id`, `class`).
     #[must_use]
     pub fn presented_attr(&self, attribute: &DomAttribute) -> Option<&DomAttributeValue> {
-        if let Some(transition) = self.base().transitions.active.get(attribute) {
-            return Some(&transition.presented);
-        }
         match self {
             Self::Document(node) => stored_attribute_value(&node.attrs, attribute),
             Self::DocumentFragment(node) => stored_attribute_value(&node.attrs, attribute),
             Self::Element(node) => stored_attribute_value(&node.attrs, attribute),
-            Self::Text(_) => None,
-        }
-    }
-
-    pub(crate) fn presented_custom_attr(&self, name: &str) -> Option<&DomAttributeValue> {
-        if let Some(value) = self.base().transitions.active.iter().find_map(
-            |(attribute, transition)| match attribute {
-                DomAttribute::Custom(attribute_name) if attribute_name == name => {
-                    Some(&transition.presented)
-                }
-                _ => None,
-            },
-        ) {
-            return Some(value);
-        }
-        match self {
-            Self::Document(node) => stored_custom_attribute_value(&node.attrs, name),
-            Self::DocumentFragment(node) => stored_custom_attribute_value(&node.attrs, name),
-            Self::Element(node) => stored_custom_attribute_value(&node.attrs, name),
             Self::Text(_) => None,
         }
     }
@@ -695,15 +1218,20 @@ impl DomNode {
     /// whether the node still needs scheduler ticks afterward.
     pub(crate) fn sync_transitions(&mut self, now_s: f64) -> DomTransitionSyncResult {
         let base = self.base_mut();
-        let mut invalidation = AttributeInvalidation::default();
-        let mut finished_attributes = Vec::new();
-        base.transitions.active.retain(|attribute, transition| {
+        let mut invalidation = GroupDirtyClassification::NONE;
+        let mut inherited_progress = false;
+        let mut finished_properties = Vec::new();
+        base.transitions.active.retain(|property, transition| {
             if transition.sync(now_s) {
-                invalidation = invalidation.merge(attribute_invalidation(attribute));
+                invalidation =
+                    invalidation.union(GroupDirtyClassification::for_group(property.group()));
+                if property.inherited() {
+                    inherited_progress = true;
+                }
             }
             if transition.is_finished(now_s) {
-                finished_attributes.push(FinishedDomTransition {
-                    attribute: attribute.clone(),
+                finished_properties.push(FinishedDomTransition {
+                    property: *property,
                     elapsed_s: transition.effective_end_s() - transition.effective_start_s(),
                 });
                 return false;
@@ -712,12 +1240,15 @@ impl DomNode {
         });
         DomTransitionSyncResult {
             invalidation,
+            inherited_progress,
             still_active: !base.transitions.active.is_empty(),
-            finished_attributes,
+            finished_properties,
         }
     }
 
-    pub(crate) fn active_transition_attributes(&self) -> impl Iterator<Item = &DomAttribute> + '_ {
+    pub(crate) fn active_transition_properties(
+        &self,
+    ) -> impl Iterator<Item = &PresentationProperty> + '_ {
         self.base().transitions.active.keys()
     }
 
@@ -1020,6 +1551,41 @@ impl DomNode {
     }
 }
 
+/// Writes a presented px length into a plain-`f32` field when it converts;
+/// leaves the field untouched otherwise (the transition-overlay merge's
+/// fall-back-to-stored contract).
+fn apply_px(target: &mut f32, presented: Option<f32>) {
+    if let Some(px) = presented {
+        *target = px;
+    }
+}
+
+/// Writes a presented `Option<f32>` length into an optional field.
+/// `Set(Some(px))` writes a length; `Set(None)` is `unset` (the field clears);
+/// `Leave` means the value could not convert and the stored field is left
+/// untouched.
+fn apply_optional_px(target: &mut Option<f32>, presented: PresentedOptionalPx) {
+    if let PresentedOptionalPx::Set(value) = presented {
+        *target = value;
+    }
+}
+
+/// The outcome of converting a presented value to an `Option<f32>` length
+/// field: a resolved value (or `unset`) to write, or a signal to leave the
+/// stored field untouched.
+#[derive(Clone, Copy)]
+enum PresentedOptionalPx {
+    Set(Option<f32>),
+    Leave,
+}
+
+/// Clamps an authored order integer into the `i32` field range (mirrors the
+/// projection's `order` resolution clamp).
+fn clamp_i64_to_i32(value: i64) -> i32 {
+    i32::try_from(value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
+        .expect("clamped i64 order should fit into i32")
+}
+
 fn coalesce_or_append_damage_rect(
     damaged_rects: &mut ArrayVec<crate::types::DomRect, 8>,
     damaged_rect: crate::types::DomRect,
@@ -1109,12 +1675,10 @@ fn invoke_dispatched_listeners_for_test(
 
 pub(crate) fn write_attribute(
     attrs: &mut DomAttrs,
-    attribute_style_map: &mut BTreeMap<DomAttribute, DomAttributeValue>,
     class_list: &mut Vec<String>,
     attribute: &DomAttribute,
     value: Option<DomAttributeValue>,
-) -> Result<(), DomError> {
-    let next_attribute_style_map = parse_next_attribute_style_map(attribute, value.as_ref())?;
+) {
     let next_class_list = parse_next_class_list(attribute, value.as_ref());
 
     if *attribute == DomAttribute::Id {
@@ -1131,15 +1695,10 @@ pub(crate) fn write_attribute(
                 attrs.attributes.remove(attribute);
             }
         }
-        return Ok(());
+        return;
     }
 
     match value {
-        Some(DomAttributeValue::String(value))
-            if layout_length_attr_uses_unset(attribute) && value == "unset" =>
-        {
-            attrs.attributes.remove(attribute);
-        }
         Some(value) => {
             attrs.attributes.insert(attribute.clone(), value);
         }
@@ -1148,26 +1707,8 @@ pub(crate) fn write_attribute(
         }
     }
 
-    if let Some(next_attribute_style_map) = next_attribute_style_map {
-        *attribute_style_map = next_attribute_style_map;
-    }
     if let Some(next_class_list) = next_class_list {
         *class_list = next_class_list;
-    }
-    Ok(())
-}
-
-fn parse_next_attribute_style_map(
-    attribute: &DomAttribute,
-    value: Option<&DomAttributeValue>,
-) -> Result<Option<BTreeMap<DomAttribute, DomAttributeValue>>, DomError> {
-    if *attribute != DomAttribute::Style {
-        return Ok(None);
-    }
-    match value {
-        None => Ok(Some(BTreeMap::new())),
-        Some(DomAttributeValue::String(value)) => parse_style_attr_map(value).map(Some),
-        _ => unreachable!("validated style attribute must be string or none"),
     }
 }
 
@@ -1213,142 +1754,40 @@ pub(crate) fn stored_attribute_value<'a>(
     attrs.attributes.get(attribute)
 }
 
-fn stored_custom_attribute_value<'a>(
-    attrs: &'a DomAttrs,
-    name: &str,
-) -> Option<&'a DomAttributeValue> {
-    attrs
-        .attributes
-        .iter()
-        .find_map(|(attribute, value)| match attribute {
-            DomAttribute::Custom(attribute_name) if attribute_name == name => Some(value),
-            _ => None,
-        })
-}
-
+/// The content-attribute invalidation table (spine 3.3g-2a). Presentation
+/// attributes error at the D5 enforcement gate before this runs, so their rows
+/// are gone: only the content attributes that move layout/paint/style remain.
+/// Intrinsic-driven layout marks (`src`, `type`, `placeholder`) arrive through
+/// `before_attr_write_intrinsic_update`, never through this table.
 pub(crate) fn attribute_invalidation(attribute: &DomAttribute) -> AttributeInvalidation {
-    let layout = attribute_affects_layout(attribute);
     let mut invalidation = AttributeInvalidation::default();
-    if layout {
-        invalidation = invalidation.with_layout();
-        invalidation = invalidation.with_paint();
-    } else if attribute_affects_paint(attribute) {
+    if attribute_affects_paint(attribute) {
         invalidation = invalidation.with_paint();
     }
     if attribute_affects_style_object(attribute) {
         invalidation = invalidation.with_style();
     }
-    if attribute_changes_layer_membership(attribute) {
-        invalidation = invalidation.with_layer_membership();
-    }
     invalidation
 }
 
-pub(crate) fn attribute_affects_layout(attribute: &DomAttribute) -> bool {
-    matches!(
-        attribute,
-        DomAttribute::Display
-            | DomAttribute::Overflow
-            | DomAttribute::Isolate
-            | DomAttribute::Position
-            | DomAttribute::FlexDirection
-            | DomAttribute::FlexWrap
-            | DomAttribute::FlexFlow
-            | DomAttribute::FlexGrow
-            | DomAttribute::FlexShrink
-            | DomAttribute::FlexBasis
-            | DomAttribute::Flex
-            | DomAttribute::Order
-            | DomAttribute::JustifyContent
-            | DomAttribute::AlignItems
-            | DomAttribute::AlignSelf
-            | DomAttribute::AlignContent
-            | DomAttribute::Gap
-            | DomAttribute::RowGap
-            | DomAttribute::ColumnGap
-            | DomAttribute::PlaceContent
-            | DomAttribute::PlaceItems
-            | DomAttribute::PlaceSelf
-            | DomAttribute::Width
-            | DomAttribute::Height
-            | DomAttribute::MinWidth
-            | DomAttribute::MinHeight
-            | DomAttribute::MaxWidth
-            | DomAttribute::MaxHeight
-            | DomAttribute::Top
-            | DomAttribute::Left
-            | DomAttribute::Right
-            | DomAttribute::Bottom
-            | DomAttribute::MarginTop
-            | DomAttribute::MarginLeft
-            | DomAttribute::MarginRight
-            | DomAttribute::MarginBottom
-            | DomAttribute::PaddingTop
-            | DomAttribute::PaddingLeft
-            | DomAttribute::PaddingRight
-            | DomAttribute::PaddingBottom
-            | DomAttribute::BorderTop
-            | DomAttribute::BorderLeft
-            | DomAttribute::BorderRight
-            | DomAttribute::BorderBottom
-            | DomAttribute::FontSize
-            | DomAttribute::LineHeight
-            | DomAttribute::WhiteSpace
-            | DomAttribute::OverflowWrap
-            | DomAttribute::WordBreak
-    )
-}
-
+/// The content attributes that change paint (form-control state and text
+/// content): `Src`, `Label`, `Value`, `Checked`, `Selected`, `Multiple`.
 pub(crate) fn attribute_affects_paint(attribute: &DomAttribute) -> bool {
-    match attribute {
-        DomAttribute::Transform
-        | DomAttribute::Src
-        | DomAttribute::Label
-        | DomAttribute::TextAlign
-        | DomAttribute::Direction
-        | DomAttribute::Value
-        | DomAttribute::Checked
-        | DomAttribute::Selected
-        | DomAttribute::Multiple => true,
-        DomAttribute::Custom(name) => matches!(
-            name.as_str(),
-            "background-color"
-                | "color"
-                | "border-color"
-                | "border-top-color"
-                | "border-right-color"
-                | "border-bottom-color"
-                | "border-left-color"
-                | "outline-color"
-                | "border-radius"
-        ),
-        _ => false,
-    }
+    matches!(
+        attribute,
+        DomAttribute::Src
+            | DomAttribute::Label
+            | DomAttribute::Value
+            | DomAttribute::Checked
+            | DomAttribute::Selected
+            | DomAttribute::Multiple
+    )
 }
 
+/// The content attributes that change the style object (restyle the node's
+/// matched rules): `Class` only.
 pub(crate) fn attribute_affects_style_object(attribute: &DomAttribute) -> bool {
-    matches!(
-        attribute,
-        DomAttribute::Class
-            | DomAttribute::Style
-            | DomAttribute::LineHeight
-            | DomAttribute::TextAlign
-            | DomAttribute::Direction
-            | DomAttribute::WhiteSpace
-            | DomAttribute::OverflowWrap
-            | DomAttribute::WordBreak
-    )
-}
-
-pub(crate) fn attribute_changes_layer_membership(attribute: &DomAttribute) -> bool {
-    matches!(
-        attribute,
-        DomAttribute::Display
-            | DomAttribute::Overflow
-            | DomAttribute::Transform
-            | DomAttribute::Isolate
-            | DomAttribute::Position
-    )
+    matches!(attribute, DomAttribute::Class)
 }
 
 #[cfg(test)]
@@ -1377,46 +1816,6 @@ mod tests {
     }
 
     #[test]
-    fn set_attr_does_not_recompute_layer_kind_for_overflow() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        let original_layer_kind = node
-            .as_element()
-            .expect("element node")
-            .base
-            .layout
-            .layer_kind;
-
-        node.set_attr(
-            DomAttribute::Overflow,
-            Some(DomAttributeValue::String("hidden".to_string())),
-        )
-        .expect("overflow should be accepted");
-
-        let element = node.as_element().expect("element node");
-        assert_eq!(element.base.layout.layer_kind, original_layer_kind);
-    }
-
-    #[test]
-    fn set_attr_does_not_recompute_layer_kind_for_transform() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        let original_layer_kind = node
-            .as_element()
-            .expect("element node")
-            .base
-            .layout
-            .layer_kind;
-
-        node.set_attr(
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("scale(2)".to_string())),
-        )
-        .expect("transform should be accepted");
-
-        let element = node.as_element().expect("element node");
-        assert_eq!(element.base.layout.layer_kind, original_layer_kind);
-    }
-
-    #[test]
     fn checked_attribute_invalidates_paint() {
         let invalidation = attribute_invalidation(&DomAttribute::Checked);
         assert!(invalidation.paint());
@@ -1435,227 +1834,16 @@ mod tests {
     }
 
     #[test]
-    fn line_height_attribute_invalidates_layout_paint_and_style() {
-        let invalidation = attribute_invalidation(&DomAttribute::LineHeight);
-        assert!(invalidation.layout());
-        assert!(invalidation.paint());
-        assert!(invalidation.style());
-        assert!(!invalidation.layer_membership());
-    }
-
-    #[test]
-    fn text_align_attribute_invalidates_paint_and_style_without_layout() {
-        let invalidation = attribute_invalidation(&DomAttribute::TextAlign);
-        assert!(!invalidation.layout());
-        assert!(invalidation.paint());
-        assert!(invalidation.style());
-        assert!(!invalidation.layer_membership());
-    }
-
-    #[test]
-    fn direction_attribute_invalidates_paint_and_style_without_layout() {
-        let invalidation = attribute_invalidation(&DomAttribute::Direction);
-        assert!(!invalidation.layout());
-        assert!(invalidation.paint());
-        assert!(invalidation.style());
-        assert!(!invalidation.layer_membership());
-    }
-
-    #[test]
-    fn text_wrap_policy_attributes_invalidate_layout_paint_and_style() {
-        for attribute in [DomAttribute::OverflowWrap, DomAttribute::WordBreak] {
-            let invalidation = attribute_invalidation(&attribute);
-            assert!(invalidation.layout());
-            assert!(invalidation.paint());
-            assert!(invalidation.style());
-            assert!(!invalidation.layer_membership());
-        }
-    }
-
-    #[test]
-    fn set_attr_accepts_supported_position_values() {
-        for position in ["static", "relative", "absolute", "fixed"] {
-            let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-            node.set_attr(
-                DomAttribute::Position,
-                Some(DomAttributeValue::String(position.to_string())),
-            )
-            .expect("position should be accepted");
-        }
-    }
-
-    #[test]
-    fn set_attr_rejects_unknown_position_value() {
+    fn set_attr_rejects_invalid_content_values() {
+        // Content attrs that have closed grammars still reject boundary data.
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-
         let error = node
             .set_attr(
-                DomAttribute::Position,
-                Some(DomAttributeValue::String("sticky".to_string())),
+                DomAttribute::Dir,
+                Some(DomAttributeValue::String("diagonal".to_string())),
             )
-            .expect_err("unknown position should fail");
-
+            .expect_err("unknown dir should fail");
         assert_eq!(error, DomError::InvalidAttributeValue);
-    }
-
-    #[test]
-    fn set_attr_rejects_non_string_position_value() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-
-        let error = node
-            .set_attr(DomAttribute::Position, Some(DomAttributeValue::Bool(true)))
-            .expect_err("non-string position should fail");
-
-        assert_eq!(error, DomError::InvalidAttributeValue);
-    }
-
-    #[test]
-    fn set_attr_accepts_clearing_position_value() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("relative".to_string())),
-        )
-        .expect("position should be accepted");
-
-        node.set_attr(DomAttribute::Position, None)
-            .expect("clearing position should be accepted");
-    }
-
-    #[test]
-    fn set_attr_accepts_supported_display_values() {
-        for display in [
-            "block",
-            "inline",
-            "inline-block",
-            "none",
-            "flex",
-            "inline-flex",
-        ] {
-            let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-            node.set_attr(
-                DomAttribute::Display,
-                Some(DomAttributeValue::String(display.to_string())),
-            )
-            .expect("display should be accepted");
-        }
-    }
-
-    #[test]
-    fn set_attr_rejects_unknown_display_value() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-
-        let error = node
-            .set_attr(
-                DomAttribute::Display,
-                Some(DomAttributeValue::String("grid".to_string())),
-            )
-            .expect_err("unknown display should fail");
-
-        assert_eq!(error, DomError::InvalidAttributeValue);
-    }
-
-    #[test]
-    fn pixel_attrs_accept_unset_zero_and_pixel_strings() {
-        for attribute in [
-            DomAttribute::Width,
-            DomAttribute::MinWidth,
-            DomAttribute::Top,
-            DomAttribute::Right,
-        ] {
-            let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-            node.set_attr(
-                attribute.clone(),
-                Some(DomAttributeValue::String("unset".to_string())),
-            )
-            .expect("unset should be accepted");
-            node.set_attr(
-                attribute.clone(),
-                Some(DomAttributeValue::String("0".to_string())),
-            )
-            .expect("zero should be accepted");
-            node.set_attr(
-                attribute,
-                Some(DomAttributeValue::String("-12px".to_string())),
-            )
-            .expect("pixel string should be accepted");
-        }
-    }
-
-    #[test]
-    fn pixel_attrs_reject_invalid_values() {
-        for value in ["12", "12%", "auto", "12p", "px", "--1px", "NaNpx", "infpx"] {
-            let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-            let error = node
-                .set_attr(
-                    DomAttribute::Width,
-                    Some(DomAttributeValue::String(value.to_string())),
-                )
-                .expect_err("invalid width should fail");
-            assert_eq!(error, DomError::InvalidAttributeValue);
-        }
-    }
-
-    #[test]
-    fn pixel_attrs_reject_non_string_values() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        let error = node
-            .set_attr(DomAttribute::Top, Some(DomAttributeValue::Integer(12)))
-            .expect_err("non-string top should fail");
-
-        assert_eq!(error, DomError::InvalidAttributeValue);
-    }
-
-    #[test]
-    fn pixel_attrs_remove_authored_value_on_unset() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("12px".to_string())),
-        )
-        .expect("width should be accepted");
-        node.set_attr(
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("unset".to_string())),
-        )
-        .expect("unset should clear width");
-
-        let element = node.as_element().expect("element node");
-        assert!(!element.attrs.attributes.contains_key(&DomAttribute::Width));
-    }
-
-    #[test]
-    fn font_size_attr_accepts_zero_and_pixel_strings() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("0".to_string())),
-        )
-        .expect("zero font-size should be accepted");
-        node.set_attr(
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("14px".to_string())),
-        )
-        .expect("pixel font-size should be accepted");
-        node.set_attr(
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("1em".to_string())),
-        )
-        .expect("em font-size should be accepted");
-    }
-
-    #[test]
-    fn font_size_attr_rejects_invalid_strings() {
-        for value in ["14", "auto", "unset", "NaNpx"] {
-            let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-            let error = node
-                .set_attr(
-                    DomAttribute::FontSize,
-                    Some(DomAttributeValue::String(value.to_string())),
-                )
-                .expect_err("invalid font-size should fail");
-            assert_eq!(error, DomError::InvalidAttributeValue);
-        }
     }
 
     #[test]
@@ -1666,71 +1854,34 @@ mod tests {
         let div = DomNode::element(test_owner_document_key(), DomTag::Div);
 
         assert!(img.after_attr_write_updates_intrinsic(&DomAttribute::Src));
-        assert!(img.after_attr_write_updates_intrinsic(&DomAttribute::Width));
-        assert!(img.after_attr_write_updates_intrinsic(&DomAttribute::Height));
         assert!(input.after_attr_write_updates_intrinsic(&DomAttribute::Value));
         assert!(input.after_attr_write_updates_intrinsic(&DomAttribute::Placeholder));
-        assert!(input.after_attr_write_updates_intrinsic(&DomAttribute::LineHeight));
         assert!(input.after_attr_write_updates_intrinsic(&DomAttribute::Type));
         assert!(textarea.after_attr_write_updates_intrinsic(&DomAttribute::Value));
         assert!(textarea.after_attr_write_updates_intrinsic(&DomAttribute::Placeholder));
-        assert!(textarea.after_attr_write_updates_intrinsic(&DomAttribute::LineHeight));
-        assert!(!img.after_attr_write_updates_intrinsic(&DomAttribute::FontSize));
-        assert!(!input.after_attr_write_updates_intrinsic(&DomAttribute::Width));
+        assert!(!img.after_attr_write_updates_intrinsic(&DomAttribute::Value));
+        assert!(!input.after_attr_write_updates_intrinsic(&DomAttribute::Src));
         assert!(!textarea.after_attr_write_updates_intrinsic(&DomAttribute::Type));
-        assert!(!div.after_attr_write_updates_intrinsic(&DomAttribute::Width));
+        assert!(!div.after_attr_write_updates_intrinsic(&DomAttribute::Src));
     }
 
     #[test]
     fn dom_node_before_attr_write_intrinsic_update_returns_none_without_behavior_match() {
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("12px".to_string())),
-        )
-        .expect("width should set");
 
+        // A plain `div` has no `src`-driven intrinsic behavior, so previewing a
+        // `src` write returns no prepared intrinsic.
         let prepared_intrinsic = node
             .before_attr_write_intrinsic_update(
-                &DomAttribute::Width,
-                Some(&DomAttributeValue::String("12px".to_string())),
+                &DomAttribute::Src,
+                Some(&DomAttributeValue::String("icon:arrow".to_string())),
             )
-            .expect("non-img width should not prepare intrinsic");
+            .expect("non-img src should not prepare intrinsic");
 
         assert_eq!(prepared_intrinsic, None);
         let intrinsic_changed = node.after_attr_write_intrinsic_update(prepared_intrinsic);
         assert!(!intrinsic_changed);
         assert_eq!(node.intrinsic(), &DomIntrinsic::None);
-    }
-
-    #[test]
-    fn dom_node_before_and_after_attr_write_intrinsic_update_use_img_lifecycle() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Img);
-        node.set_attr(
-            DomAttribute::Src,
-            Some(DomAttributeValue::String("memory://a.png".to_string())),
-        )
-        .expect("src");
-        node.set_attr(
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("48px".to_string())),
-        )
-        .expect("width");
-        let prepared_intrinsic = node
-            .before_attr_write_intrinsic_update(
-                &DomAttribute::Height,
-                Some(&DomAttributeValue::String("48px".to_string())),
-            )
-            .expect("img height should prepare intrinsic");
-        node.set_attr(
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("48px".to_string())),
-        )
-        .expect("height");
-        let intrinsic_changed = node.after_attr_write_intrinsic_update(prepared_intrinsic);
-
-        assert!(intrinsic_changed);
-        assert!(matches!(node.intrinsic(), DomIntrinsic::Img(_)));
     }
 
     #[test]
@@ -1769,33 +1920,6 @@ mod tests {
         };
         assert_f32_eq(after.width_px, before.width_px);
         assert_f32_eq(after.font_size_px, before.font_size_px);
-    }
-
-    #[test]
-    fn dom_node_before_and_after_attr_write_intrinsic_update_use_input_line_height() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Input);
-        node.after_create_intrinsic_update()
-            .expect("input create intrinsic should measure");
-
-        let prepared_intrinsic = node
-            .before_attr_write_intrinsic_update(
-                &DomAttribute::LineHeight,
-                Some(&DomAttributeValue::String("2".to_string())),
-            )
-            .expect("input line-height should prepare intrinsic");
-        node.set_attr(
-            DomAttribute::LineHeight,
-            Some(DomAttributeValue::String("2".to_string())),
-        )
-        .expect("line-height");
-        let intrinsic_changed = node.after_attr_write_intrinsic_update(prepared_intrinsic);
-
-        assert!(intrinsic_changed);
-        let DomIntrinsic::ElementDefaultPreferredSize(after) = node.intrinsic() else {
-            panic!("input should keep preferred-size intrinsic after line-height write");
-        };
-        assert_f32_eq(after.line_height_px, 28.0);
-        assert_f32_eq(after.height_px, 28.0);
     }
 
     #[test]
@@ -1928,134 +2052,6 @@ mod tests {
     }
 
     #[test]
-    fn style_attr_stores_raw_string_and_parsed_style_map() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-
-        node.set_attr(
-            DomAttribute::Style,
-            Some(DomAttributeValue::String(
-                "width: 12px; background-color: #112233; width: 14px".to_string(),
-            )),
-        )
-        .expect("style should parse");
-
-        let element = node.as_element().expect("element node");
-        assert_eq!(
-            element.attrs.attributes.get(&DomAttribute::Style),
-            Some(&DomAttributeValue::String(
-                "width: 12px; background-color: #112233; width: 14px".to_string()
-            ))
-        );
-        assert_eq!(
-            element.attribute_style_map().get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("14px".to_string()))
-        );
-        assert_eq!(
-            element
-                .attribute_style_map()
-                .get(&DomAttribute::Custom("background-color".to_string())),
-            Some(&color("#112233"))
-        );
-        assert_eq!(element.attrs.attributes.get(&DomAttribute::Width), None);
-    }
-
-    #[test]
-    fn color_attribute_strings_store_normalized_color_values() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-
-        node.set_attr(
-            DomAttribute::Custom("background-color".to_string()),
-            Some(DomAttributeValue::String("#112233".to_string())),
-        )
-        .expect("color string should parse");
-
-        let element = node.as_element().expect("element node");
-        assert_eq!(
-            element
-                .attrs
-                .attributes
-                .get(&DomAttribute::Custom("background-color".to_string())),
-            Some(&color("#112233"))
-        );
-    }
-
-    #[test]
-    fn color_attribute_accepts_direct_color_and_rejects_other_value_types() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        let attribute = DomAttribute::Custom("color".to_string());
-
-        node.set_attr(attribute.clone(), Some(color("rgba(255, 0, 0, 0.5)")))
-            .expect("direct color should store");
-        let error = node
-            .set_attr(attribute, Some(DomAttributeValue::Float(1.0)))
-            .expect_err("non-color payload should fail");
-
-        assert_eq!(error, DomError::InvalidAttributeValue);
-    }
-
-    #[test]
-    fn invalid_style_attr_leaves_existing_raw_and_parsed_state_unchanged() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::Style,
-            Some(DomAttributeValue::String("width: 12px".to_string())),
-        )
-        .expect("style should parse");
-
-        let error = node
-            .set_attr(
-                DomAttribute::Style,
-                Some(DomAttributeValue::String("width 12px".to_string())),
-            )
-            .expect_err("invalid style should fail");
-
-        assert_eq!(error, DomError::InvalidAttributeValue);
-        let element = node.as_element().expect("element node");
-        assert_eq!(
-            element.attrs.attributes.get(&DomAttribute::Style),
-            Some(&DomAttributeValue::String("width: 12px".to_string()))
-        );
-        assert_eq!(
-            element.attribute_style_map().get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("12px".to_string()))
-        );
-    }
-
-    #[test]
-    fn style_attr_rejects_non_style_property_names() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-
-        let error = node
-            .set_attr(
-                DomAttribute::Style,
-                Some(DomAttributeValue::String("slot: panel".to_string())),
-            )
-            .expect_err("slot should fail");
-
-        assert_eq!(error, DomError::InvalidAttributeValue);
-        let element = node.as_element().expect("element node");
-        assert_eq!(element.attrs.attributes.get(&DomAttribute::Style), None);
-        assert!(element.attribute_style_map().is_empty());
-    }
-
-    #[test]
-    fn clearing_style_attr_removes_raw_string_and_parsed_style_map() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::Style,
-            Some(DomAttributeValue::String("width: 12px".to_string())),
-        )
-        .expect("style should parse");
-
-        node.set_attr(DomAttribute::Style, None)
-            .expect("clearing style should work");
-
-        let element = node.as_element().expect("element node");
-        assert_eq!(element.attrs.attributes.get(&DomAttribute::Style), None);
-        assert!(element.attribute_style_map().is_empty());
-    }
-
-    #[test]
     fn class_attr_stores_raw_string_and_parsedclass_list() {
         let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
 
@@ -2127,93 +2123,6 @@ mod tests {
             .expect_err("text nodes should reject class");
 
         assert_eq!(error, DomError::InvalidAttributeTarget);
-    }
-
-    #[test]
-    fn edge_attrs_remove_authored_value_on_unset() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::Top,
-            Some(DomAttributeValue::String("-12px".to_string())),
-        )
-        .expect("top should be accepted");
-        node.set_attr(
-            DomAttribute::Top,
-            Some(DomAttributeValue::String("unset".to_string())),
-        )
-        .expect("unset should clear top");
-
-        let element = node.as_element().expect("element node");
-        assert!(!element.attrs.attributes.contains_key(&DomAttribute::Top));
-    }
-
-    #[test]
-    fn margin_attrs_remove_authored_value_on_unset() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::MarginLeft,
-            Some(DomAttributeValue::String("12px".to_string())),
-        )
-        .expect("margin-left should be accepted");
-        node.set_attr(
-            DomAttribute::MarginLeft,
-            Some(DomAttributeValue::String("unset".to_string())),
-        )
-        .expect("unset should clear margin-left");
-
-        let element = node.as_element().expect("element node");
-        assert!(
-            !element
-                .attrs
-                .attributes
-                .contains_key(&DomAttribute::MarginLeft)
-        );
-    }
-
-    #[test]
-    fn padding_attrs_remove_authored_value_on_unset() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::PaddingTop,
-            Some(DomAttributeValue::String("8px".to_string())),
-        )
-        .expect("padding-top should be accepted");
-        node.set_attr(
-            DomAttribute::PaddingTop,
-            Some(DomAttributeValue::String("unset".to_string())),
-        )
-        .expect("unset should clear padding-top");
-
-        let element = node.as_element().expect("element node");
-        assert!(
-            !element
-                .attrs
-                .attributes
-                .contains_key(&DomAttribute::PaddingTop)
-        );
-    }
-
-    #[test]
-    fn border_attrs_remove_authored_value_on_unset() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::BorderBottom,
-            Some(DomAttributeValue::String("2px".to_string())),
-        )
-        .expect("border-bottom should be accepted");
-        node.set_attr(
-            DomAttribute::BorderBottom,
-            Some(DomAttributeValue::String("unset".to_string())),
-        )
-        .expect("unset should clear border-bottom");
-
-        let element = node.as_element().expect("element node");
-        assert!(
-            !element
-                .attrs
-                .attributes
-                .contains_key(&DomAttribute::BorderBottom)
-        );
     }
 
     #[test]
@@ -2420,69 +2329,6 @@ mod tests {
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(!node.has_listener_for_event_name(DomEventName::Click));
-    }
-
-    #[test]
-    fn snapshot_uses_public_browser_style_variables() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.base_mut().intrinsic = DomIntrinsic::Text(TextIntrinsic {
-            font_size_px: 16.0,
-            min_content_width_px: 24.0,
-            max_content_width_px: 48.0,
-            line_height_px: 20.0,
-        });
-        node.base_mut().layout.available_width_px = 320.0;
-        node.base_mut().layout.available_height_px = 180.0;
-        node.base_mut().layout.width_px = 120.0;
-        node.base_mut().layout.height_px = 40.0;
-
-        let snapshot = node.snapshot();
-
-        assert!(snapshot.style.styles.is_empty());
-        assert_eq!(snapshot.layout.intrinsic, *node.intrinsic());
-        assert_eq!(snapshot.layout.available_width_px, 320.0);
-        assert_eq!(snapshot.layout.available_height_px, 180.0);
-        assert_eq!(snapshot.layout.used_width_px, 120.0);
-        assert_eq!(snapshot.layout.used_height_px, 40.0);
-
-        let encoded =
-            serde_json::to_string(&snapshot).expect("canonical node snapshot should serialize");
-        let decoded: DomCanonicalSnapshot =
-            serde_json::from_str(&encoded).expect("canonical node snapshot should deserialize");
-        assert_eq!(decoded, snapshot);
-    }
-
-    #[test]
-    fn snapshot_uses_the_public_style_list_only() {
-        let mut node = DomNode::element(test_owner_document_key(), DomTag::Div);
-        node.set_attr(
-            DomAttribute::Style,
-            Some(DomAttributeValue::String(
-                "width: 12px; color: #ffffff; width: 14px".to_string(),
-            )),
-        )
-        .expect("style should parse");
-
-        let snapshot = node.snapshot();
-
-        assert_eq!(
-            snapshot.style.styles,
-            vec![
-                (
-                    DomAttribute::Width,
-                    DomAttributeValue::String("14px".to_string()),
-                ),
-                (DomAttribute::Custom("color".to_string()), color("#ffffff")),
-            ]
-        );
-        assert_eq!(snapshot.layout, DomCanonicalLayoutSnapshot::default());
-
-        let encoded = snapshot
-            .to_json()
-            .expect("canonical node snapshot should serialize");
-        let decoded: DomCanonicalSnapshot =
-            serde_json::from_str(&encoded).expect("canonical node snapshot should deserialize");
-        assert_eq!(decoded, snapshot);
     }
 
     fn click_event() -> DomEvent {

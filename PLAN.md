@@ -9,6 +9,29 @@ markers survive only where a measurement checkpoint still gates the call
 spine; every step names its proof obligations and, where applicable, its
 structural-compliance budget.
 
+**Implementation status (2026-10-18, post-landing).** Spine steps 0–4 and
+6 are LANDED; the full workspace gate (fmt, clippy, tests, lint) is green
+at v0.6.0. The declaration store (A+B+C) owns stylesheet and inline
+declarations; the seven-group computed projection (S1) is the node's
+presentation state; the winners fold (A4), group-copy inheritance (A5),
+em resolution (A6), group-diff classification (A7), and pass-scheduled
+transitions run in the one style pass; `apply_styles` and
+`style_pass_attrs_by_node` are deleted; the D5 enforcement is active
+(compile break + `DomError::PresentationRequiresStyleMut`);
+`MIGRATION.md` ships the API mapping and the parse-tightening table.
+P1's acceptance proof (`inline_style_beats_stylesheet_and_survives_unload`)
+is on-spec, as are the declaration-error-handling, font-inheritance,
+shorthand-expansion, and transition-shorthand proofs; the off-spec
+registry has one entry (negative margins, unrelated). Step 4's
+measurements: allocation pins fell 68–88% in the styled windows;
+`StylePassNodeVisited/Changed` counters pin the pass's work (visited 1–3
+per scenario — proposal J stays asleep); open question 6 settles for
+SlotMap unless future evidence demands; the open-question-9 audit found
+all 13 `compute_style_map` call sites test-side. Step 5's followers are
+open work, staged per their verdicts: damage-rect consumption (I),
+matched-rule caching (J, evidence-gated), tier admissions (F), and
+font-family consumption in text layout.
+
 **Reading map (2026-10-17, self-contained edition).** This document is
 written to be implementable by a reader with no conversation context:
 

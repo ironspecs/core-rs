@@ -8,6 +8,9 @@
 //! Invariants and rules:
 //!
 //! - transition data here is crate-owned and deterministic
+//! - transitions are keyed by `PresentationProperty` and interpolate typed
+//!   `DeclValue`s (spine 3.3e); the `DomAttribute`/`DomAttributeValue` keying
+//!   is gone from the retained objects
 //! - these types describe interpolation state, not higher-level animation policy
 //! - callers should not need to know internal scheduler details to use them
 //!
@@ -20,18 +23,22 @@ use std::{
     fmt::Write as _,
 };
 
+use arrayvec::ArrayVec;
 use num_traits::ToPrimitive;
 
-use crate::types::dom_attr_parse::style_attr_allows_property;
+use crate::domains::style::computed::{
+    ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
+};
+use crate::domains::style::{DeclLength, DeclValue, Keyword, PresentationProperty};
+use crate::types::DomAttributeValue;
 use crate::types::dom_node::DomNodeSlotKey;
-use crate::types::{DomAttribute, DomAttributeValue};
 
 #[cfg(test)]
 use crate::types::DomError;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DomTransitionState {
-    pub active: BTreeMap<DomAttribute, DomTransition>,
+    pub active: BTreeMap<PresentationProperty, DomTransition>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -52,22 +59,22 @@ pub enum DomTimingFunction {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DomTransition {
     pub node_key: DomNodeSlotKey,
-    pub attribute: DomAttribute,
-    pub from: DomAttributeValue,
-    pub to: DomAttributeValue,
-    pub presented: DomAttributeValue,
+    pub property: PresentationProperty,
+    pub from: DeclValue,
+    pub to: DeclValue,
+    pub presented: DeclValue,
     pub started_at_s: f64,
     pub duration_s: f32,
     pub delay_s: f32,
     pub timing: DomTimingFunction,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DomTransitionConfig {
     pub node_key: DomNodeSlotKey,
-    pub attribute: DomAttribute,
-    pub from: DomAttributeValue,
-    pub to: DomAttributeValue,
+    pub property: PresentationProperty,
+    pub from: DeclValue,
+    pub to: DeclValue,
     pub started_at_s: f64,
     pub duration_s: f32,
     pub delay_s: f32,
@@ -99,7 +106,7 @@ impl DomTransition {
     pub fn new(config: DomTransitionConfig) -> Self {
         let DomTransitionConfig {
             node_key,
-            attribute,
+            property,
             from,
             to,
             started_at_s,
@@ -107,12 +114,13 @@ impl DomTransition {
             delay_s,
             timing,
         } = config;
+        let presented = from;
         Self {
             node_key,
-            attribute,
-            presented: from.clone(),
+            property,
             from,
             to,
+            presented,
             started_at_s,
             duration_s,
             delay_s,
@@ -126,16 +134,14 @@ impl DomTransition {
     /// state for the current moment. It does not decide whether the owning root
     /// should keep scheduling the node afterward.
     pub fn sync(&mut self, now_s: f64) -> bool {
-        let previous_presented = self.presented.clone();
+        let previous_presented = self.presented;
         if now_s <= self.effective_start_s() {
-            self.presented = self.from.clone();
-            return self.presented != previous_presented;
+            self.presented = self.from;
+        } else if self.is_finished(now_s) {
+            self.presented = self.to;
+        } else {
+            self.presented = interpolate_value(&self.from, &self.to, self.eased_progress(now_s));
         }
-        if self.is_finished(now_s) {
-            self.presented = self.to.clone();
-            return self.presented != previous_presented;
-        }
-        self.presented = interpolate_value(&self.from, &self.to, self.eased_progress(now_s));
         self.presented != previous_presented
     }
 
@@ -171,30 +177,71 @@ impl DomTransition {
     }
 }
 
-pub(crate) fn transition_spec_for_attribute(
-    transition_property: Option<&DomAttributeValue>,
-    transition_duration: Option<&DomAttributeValue>,
-    transition_timing_function: Option<&DomAttributeValue>,
-    transition_delay: Option<&DomAttributeValue>,
-    target_attribute: &DomAttribute,
-) -> Result<Option<DomTransitionSpec>, crate::types::DomError> {
-    if transition_config_attribute(target_attribute) {
-        return Ok(None);
+/// Resolves the transition spec for one property from the pass-written
+/// `ResolvedTransitionLonghands` slot (spine 3.3g-1b). This replaces the
+/// stringly `transition_spec_for_property` for pass-driven changes: the slot
+/// stores the cascaded longhands as typed, bounded lists, so the scheduler
+/// reads the slot instead of re-parsing the string longhand. Mirrors the CSS
+/// list-repeat and last-matching-index semantics of the string form: an empty
+/// property list defaults to `all` (CSS initial), an empty duration list to
+/// `0s` (no transition), an empty timing list to `ease`, an empty delay list
+/// to `0s`.
+pub(crate) fn transition_spec_for_longhands(
+    slot: &ResolvedTransitionLonghands,
+    target: PresentationProperty,
+) -> Option<DomTransitionSpec> {
+    if transition_config_property(target) {
+        return None;
     }
-    let Some(index) =
-        transition_property_index_for_attribute(transition_property, target_attribute)?
-    else {
-        return Ok(None);
-    };
-    let duration_s = transition_duration_for_index(transition_duration, index)?;
+    let index = transition_property_index_in_slot(&slot.properties, target)?;
+    let duration_s = repeated_slot_value(&slot.durations_s, index).unwrap_or(0.0);
     if duration_s == 0.0 {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(DomTransitionSpec {
+    Some(DomTransitionSpec {
         duration_s,
-        delay_s: transition_delay_for_index(transition_delay, index)?,
-        timing: transition_timing_for_index(transition_timing_function, index)?,
-    }))
+        delay_s: repeated_slot_value(&slot.delays_s, index).unwrap_or(0.0),
+        timing: repeated_slot_value(&slot.timing_functions, index)
+            .and_then(timing_function_from_kw)
+            .unwrap_or(DomTimingFunction::Ease),
+    })
+}
+
+/// Finds the index of the last `transition-property` list entry that matches
+/// the target, over the slot's typed list. An empty list defaults to `all`
+/// (CSS `transition-property` initial); `None` entries never match (the whole
+/// list being `none` therefore disables, matching the string form).
+fn transition_property_index_in_slot(
+    properties: &ArrayVec<TransitionLonghandProperty, TRANSITION_LONGHAND_CAPACITY>,
+    target: PresentationProperty,
+) -> Option<usize> {
+    if properties.is_empty() {
+        return Some(0);
+    }
+    let mut matched = None;
+    for (index, entry) in properties.iter().enumerate() {
+        match entry {
+            TransitionLonghandProperty::All => matched = Some(index),
+            TransitionLonghandProperty::Property(property) if *property == target => {
+                matched = Some(index);
+            }
+            TransitionLonghandProperty::None | TransitionLonghandProperty::Property(_) => {}
+        }
+    }
+    matched
+}
+
+/// Reads one entry of a bounded typed transition list with CSS list-repeat
+/// (`index % len`); an empty list yields `None` (the callers apply the
+/// longhand's CSS initial value).
+fn repeated_slot_value<T: Copy>(
+    list: &ArrayVec<T, TRANSITION_LONGHAND_CAPACITY>,
+    index: usize,
+) -> Option<T> {
+    if list.is_empty() {
+        return None;
+    }
+    Some(list[index % list.len()])
 }
 
 pub(crate) fn transition_longhand_values_from_shorthand(
@@ -312,19 +359,7 @@ fn parse_transition_item(item: &str) -> Result<ParsedTransitionItem<'_>, crate::
     })
 }
 
-fn string_attr_value(
-    value: Option<&DomAttributeValue>,
-) -> Result<Option<&str>, crate::types::DomError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let DomAttributeValue::String(value) = value else {
-        return Err(crate::types::DomError::InvalidAttributeValue);
-    };
-    Ok(Some(value))
-}
-
-fn for_each_comma_separated_css_value(
+pub(crate) fn for_each_comma_separated_css_value(
     value: &str,
     mut visit: impl FnMut(usize, &str) -> Result<(), crate::types::DomError>,
 ) -> Result<usize, crate::types::DomError> {
@@ -362,111 +397,17 @@ fn trim_non_empty(value: &str) -> Result<&str, crate::types::DomError> {
     Ok(trimmed)
 }
 
-fn transition_property_index_for_attribute(
-    transition_property: Option<&DomAttributeValue>,
-    target_attribute: &DomAttribute,
-) -> Result<Option<usize>, crate::types::DomError> {
-    let property_value = string_attr_value(transition_property)?
-        .unwrap_or("all")
-        .trim();
-    if property_value == "none" {
-        return Ok(None);
-    }
-    let mut matched_index = None;
-    for_each_comma_separated_css_value(property_value, |index, property_name| {
-        if !valid_transition_property_name(property_name) || property_name == "none" {
-            return Err(crate::types::DomError::InvalidAttributeValue);
-        }
-        if property_name == "all" {
-            if transition_target_attribute_allowed(target_attribute) {
-                matched_index = Some(index);
-            }
-            return Ok(());
-        }
-        if transition_property_name_matches_attribute(property_name, target_attribute)? {
-            matched_index = Some(index);
-        }
-        Ok(())
-    })?;
-    Ok(matched_index)
-}
-
-fn transition_property_name_matches_attribute(
-    property_name: &str,
-    target_attribute: &DomAttribute,
-) -> Result<bool, crate::types::DomError> {
-    let attribute = DomAttribute::try_from(property_name)?;
-    if !transition_target_attribute_allowed(&attribute) {
-        return Ok(false);
-    }
-    Ok(attribute == *target_attribute)
-}
-
-fn transition_duration_for_index(
-    transition_duration: Option<&DomAttributeValue>,
-    index: usize,
-) -> Result<f32, crate::types::DomError> {
-    repeated_transition_list_value(transition_duration, index, "0ms", |value| {
-        let duration_s = parse_transition_time_s(value)?;
-        (duration_s >= 0.0).then_some(duration_s)
-    })
-}
-
-fn transition_delay_for_index(
-    transition_delay: Option<&DomAttributeValue>,
-    index: usize,
-) -> Result<f32, crate::types::DomError> {
-    repeated_transition_list_value(transition_delay, index, "0ms", parse_transition_time_s)
-}
-
-fn transition_timing_for_index(
-    transition_timing_function: Option<&DomAttributeValue>,
-    index: usize,
-) -> Result<DomTimingFunction, crate::types::DomError> {
-    repeated_transition_list_value(
-        transition_timing_function,
-        index,
-        "ease",
-        parse_timing_function,
-    )
-}
-
-fn repeated_transition_list_value<T: Copy>(
-    value: Option<&DomAttributeValue>,
-    index: usize,
-    initial_value: &str,
-    parse: impl Fn(&str) -> Option<T>,
-) -> Result<T, crate::types::DomError> {
-    let value = string_attr_value(value)?.unwrap_or(initial_value);
-    let count = for_each_comma_separated_css_value(value, |_, item| {
-        parse(item)
-            .map(|_| ())
-            .ok_or(crate::types::DomError::InvalidAttributeValue)
-    })?;
-    let target_index = index % count;
-    let mut matched_value = None;
-    for_each_comma_separated_css_value(value, |item_index, item| {
-        if item_index == target_index {
-            matched_value = Some(parse(item).ok_or(crate::types::DomError::InvalidAttributeValue)?);
-        }
-        Ok(())
-    })?;
-    matched_value.ok_or(crate::types::DomError::InvalidAttributeValue)
-}
-
-fn transition_config_attribute(attribute: &DomAttribute) -> bool {
+/// The four transition longhands cannot themselves transition (the scheduler
+/// config tier is excluded, matching the pre-re-key `transition_config_attribute`
+/// rule).
+fn transition_config_property(property: PresentationProperty) -> bool {
     matches!(
-        attribute,
-        DomAttribute::Transition
-            | DomAttribute::TransitionProperty
-            | DomAttribute::TransitionDuration
-            | DomAttribute::TransitionTimingFunction
-            | DomAttribute::TransitionDelay
+        property,
+        PresentationProperty::TransitionProperty
+            | PresentationProperty::TransitionDuration
+            | PresentationProperty::TransitionTimingFunction
+            | PresentationProperty::TransitionDelay
     )
-}
-
-fn transition_target_attribute_allowed(attribute: &DomAttribute) -> bool {
-    style_attr_allows_property(attribute) && !transition_config_attribute(attribute)
 }
 
 fn valid_transition_property_name(name: &str) -> bool {
@@ -492,18 +433,33 @@ fn timing_function_name(timing: DomTimingFunction) -> &'static str {
     }
 }
 
-fn parse_timing_function(token: &str) -> Option<DomTimingFunction> {
-    match token {
-        "linear" => Some(DomTimingFunction::Linear),
-        "ease" => Some(DomTimingFunction::Ease),
-        "ease-in" => Some(DomTimingFunction::EaseIn),
-        "ease-out" => Some(DomTimingFunction::EaseOut),
-        "ease-in-out" => Some(DomTimingFunction::EaseInOut),
+const TIMING_KEYWORDS: &[Keyword] = &[
+    Keyword::Linear,
+    Keyword::Ease,
+    Keyword::EaseIn,
+    Keyword::EaseOut,
+    Keyword::EaseInOut,
+];
+
+/// Maps the computed transition-longhand slot's timing `Keyword` to the public
+/// closed `DomTimingFunction` enum (the 3.3g scheduler reads the slot, which
+/// stores `Keyword`, instead of re-parsing the string longhand).
+pub(crate) fn timing_function_from_kw(keyword: Keyword) -> Option<DomTimingFunction> {
+    match keyword {
+        Keyword::Linear => Some(DomTimingFunction::Linear),
+        Keyword::Ease => Some(DomTimingFunction::Ease),
+        Keyword::EaseIn => Some(DomTimingFunction::EaseIn),
+        Keyword::EaseOut => Some(DomTimingFunction::EaseOut),
+        Keyword::EaseInOut => Some(DomTimingFunction::EaseInOut),
         _ => None,
     }
 }
 
-fn parse_transition_time_s(token: &str) -> Option<f32> {
+pub(crate) fn parse_timing_function(token: &str) -> Option<DomTimingFunction> {
+    Keyword::from_name_in(TIMING_KEYWORDS, token).and_then(timing_function_from_kw)
+}
+
+pub(crate) fn parse_transition_time_s(token: &str) -> Option<f32> {
     if let Some(milliseconds) = token.strip_suffix("ms") {
         let value = milliseconds.parse::<f32>().ok()?;
         return value.is_finite().then_some(value / 1000.0);
@@ -518,25 +474,22 @@ fn write_transition_time_s(output: &mut String, seconds: f32) {
 }
 
 #[must_use]
-fn interpolate_value(
-    from: &DomAttributeValue,
-    to: &DomAttributeValue,
-    progress: f32,
-) -> DomAttributeValue {
-    match (from, to) {
-        (DomAttributeValue::Float(from), DomAttributeValue::Float(to)) => {
-            DomAttributeValue::Float(from + (to - from) * progress)
+fn interpolate_value(from: &DeclValue, to: &DeclValue, progress: f32) -> DeclValue {
+    match (*from, *to) {
+        (DeclValue::Length(DeclLength::Px(from)), DeclValue::Length(DeclLength::Px(to))) => {
+            DeclValue::Length(DeclLength::Px(from + (to - from) * progress))
         }
-        (DomAttributeValue::Color(from), DomAttributeValue::Color(to)) => {
-            DomAttributeValue::Color([
-                from[0] + (to[0] - from[0]) * progress,
-                from[1] + (to[1] - from[1]) * progress,
-                from[2] + (to[2] - from[2]) * progress,
-                from[3] + (to[3] - from[3]) * progress,
-            ])
+        (DeclValue::Color(from), DeclValue::Color(to)) => DeclValue::Color([
+            from[0] + (to[0] - from[0]) * progress,
+            from[1] + (to[1] - from[1]) * progress,
+            from[2] + (to[2] - from[2]) * progress,
+            from[3] + (to[3] - from[3]) * progress,
+        ]),
+        (DeclValue::Number(from), DeclValue::Number(to)) => {
+            DeclValue::Number(from + (to - from) * progress)
         }
-        _ if progress >= 1.0 => to.clone(),
-        _ => from.clone(),
+        _ if progress >= 1.0 => *to,
+        _ => *from,
     }
 }
 
@@ -579,113 +532,205 @@ fn cubic_bezier_value(t: f32, point1: f32, point2: f32) -> f32 {
 mod tests {
     use super::*;
 
+    fn slot_from(
+        properties: &[TransitionLonghandProperty],
+        durations: &[f32],
+        timings: &[Keyword],
+        delays: &[f32],
+    ) -> ResolvedTransitionLonghands {
+        let mut slot = ResolvedTransitionLonghands::default();
+        slot.properties.extend(properties.iter().copied());
+        slot.durations_s.extend(durations.iter().copied());
+        slot.timing_functions.extend(timings.iter().copied());
+        slot.delays_s.extend(delays.iter().copied());
+        slot
+    }
+
     #[test]
     fn transition_shorthand_feeds_longhands() {
         let longhands = transition_longhand_values_from_shorthand(Some(
             &DomAttributeValue::String("width 120ms ease-in 40ms, transform 80ms".to_string()),
         ))
         .expect("transition shorthand should parse");
-        let parsed = spec_from_longhands(&longhands, &DomAttribute::Width);
 
-        assert_spec(parsed, 0.12, 0.04, DomTimingFunction::EaseIn);
+        assert_eq!(
+            longhand_text(longhands.property.as_ref()),
+            Some("width, transform")
+        );
+        assert_eq!(
+            longhand_text(longhands.duration.as_ref()),
+            Some("0.12s, 0.08s")
+        );
+        assert_eq!(
+            longhand_text(longhands.timing_function.as_ref()),
+            Some("ease-in, ease")
+        );
+        assert_eq!(longhand_text(longhands.delay.as_ref()), Some("0.04s, 0s"));
     }
 
     #[test]
     fn transition_spec_uses_matching_longhand_index() {
-        let parsed = transition_spec_for_attribute(
-            Some(&DomAttributeValue::String("width, left".to_string())),
-            Some(&DomAttributeValue::String("120ms, 80ms".to_string())),
-            Some(&DomAttributeValue::String("ease-in, ease-out".to_string())),
-            Some(&DomAttributeValue::String("40ms, -20ms".to_string())),
-            &DomAttribute::Left,
-        )
-        .expect("transition longhands should parse");
+        let slot = slot_from(
+            &[
+                TransitionLonghandProperty::Property(PresentationProperty::Width),
+                TransitionLonghandProperty::Property(PresentationProperty::Left),
+            ],
+            &[0.12, 0.08],
+            &[Keyword::EaseIn, Keyword::EaseOut],
+            &[0.04, -0.02],
+        );
 
-        assert_spec(parsed, 0.08, -0.02, DomTimingFunction::EaseOut);
+        assert_spec(
+            transition_spec_for_longhands(&slot, PresentationProperty::Left),
+            0.08,
+            -0.02,
+            DomTimingFunction::EaseOut,
+        );
     }
 
     #[test]
     fn transition_spec_accepts_fractional_time_values() {
-        let parsed = transition_spec_for_attribute(
-            Some(&DomAttributeValue::String("left".to_string())),
-            Some(&DomAttributeValue::String("0.25s".to_string())),
-            None,
-            Some(&DomAttributeValue::String("-12.5ms".to_string())),
-            &DomAttribute::Left,
-        )
-        .expect("fractional transition times should parse");
+        let slot = slot_from(
+            &[TransitionLonghandProperty::Property(
+                PresentationProperty::Left,
+            )],
+            &[0.25],
+            &[Keyword::Ease],
+            &[-0.0125],
+        );
 
-        assert_spec(parsed, 0.25, -0.0125, DomTimingFunction::Ease);
+        assert_spec(
+            transition_spec_for_longhands(&slot, PresentationProperty::Left),
+            0.25,
+            -0.0125,
+            DomTimingFunction::Ease,
+        );
     }
 
     #[test]
     fn transition_spec_repeats_shorter_longhand_lists() {
-        let parsed = transition_spec_for_attribute(
-            Some(&DomAttributeValue::String("top, left".to_string())),
-            Some(&DomAttributeValue::String("80ms".to_string())),
-            Some(&DomAttributeValue::String("linear".to_string())),
-            Some(&DomAttributeValue::String("0ms".to_string())),
-            &DomAttribute::Left,
-        )
-        .expect("transition longhands should parse");
+        let slot = slot_from(
+            &[
+                TransitionLonghandProperty::Property(PresentationProperty::Top),
+                TransitionLonghandProperty::Property(PresentationProperty::Left),
+            ],
+            &[0.08],
+            &[Keyword::Linear],
+            &[0.0],
+        );
 
-        assert_spec(parsed, 0.08, 0.0, DomTimingFunction::Linear);
+        assert_spec(
+            transition_spec_for_longhands(&slot, PresentationProperty::Left),
+            0.08,
+            0.0,
+            DomTimingFunction::Linear,
+        );
     }
 
     #[test]
     fn transition_spec_uses_last_matching_property_entry() {
-        let parsed = transition_spec_for_attribute(
-            Some(&DomAttributeValue::String("all, left".to_string())),
-            Some(&DomAttributeValue::String("80ms, 180ms".to_string())),
-            None,
-            None,
-            &DomAttribute::Left,
-        )
-        .expect("transition longhands should parse");
+        let slot = slot_from(
+            &[
+                TransitionLonghandProperty::All,
+                TransitionLonghandProperty::Property(PresentationProperty::Left),
+            ],
+            &[0.08, 0.18],
+            &[Keyword::Ease],
+            &[0.0],
+        );
 
-        assert_spec(parsed, 0.18, 0.0, DomTimingFunction::Ease);
+        assert_spec(
+            transition_spec_for_longhands(&slot, PresentationProperty::Left),
+            0.18,
+            0.0,
+            DomTimingFunction::Ease,
+        );
     }
 
     #[test]
-    fn transition_spec_preserves_unknown_property_indices() {
-        let parsed = transition_spec_for_attribute(
-            Some(&DomAttributeValue::String("mystery, width".to_string())),
-            Some(&DomAttributeValue::String("80ms, 180ms".to_string())),
-            None,
-            None,
-            &DomAttribute::Width,
-        )
-        .expect("unknown transition-property identifiers should be kept");
+    fn transition_spec_matches_the_admitted_property_index() {
+        // Unknown names never enter the slot (the projection drops them at
+        // admission), so the property list is the admitted subset and its
+        // indices align against that subset, not the raw authored list.
+        let slot = slot_from(
+            &[TransitionLonghandProperty::Property(
+                PresentationProperty::Width,
+            )],
+            &[0.08, 0.18],
+            &[Keyword::Ease],
+            &[0.0],
+        );
 
-        assert_spec(parsed, 0.18, 0.0, DomTimingFunction::Ease);
+        assert_spec(
+            transition_spec_for_longhands(&slot, PresentationProperty::Width),
+            0.08,
+            0.0,
+            DomTimingFunction::Ease,
+        );
     }
 
     #[test]
     fn transition_property_none_disables_transitions() {
-        let parsed = transition_spec_for_attribute(
-            Some(&DomAttributeValue::String("none".to_string())),
-            Some(&DomAttributeValue::String("180ms".to_string())),
-            None,
-            None,
-            &DomAttribute::Width,
-        )
-        .expect("transition-property none should parse");
+        let slot = slot_from(
+            &[TransitionLonghandProperty::None],
+            &[0.18],
+            &[Keyword::Ease],
+            &[0.0],
+        );
 
-        assert_eq!(parsed, None);
+        assert_eq!(
+            transition_spec_for_longhands(&slot, PresentationProperty::Width),
+            None
+        );
     }
 
     #[test]
     fn missing_transition_duration_uses_initial_zero_duration() {
-        let parsed = transition_spec_for_attribute(
-            Some(&DomAttributeValue::String("width".to_string())),
-            None,
-            None,
-            None,
-            &DomAttribute::Width,
-        )
-        .expect("initial transition-duration should parse");
+        let slot = slot_from(
+            &[TransitionLonghandProperty::Property(
+                PresentationProperty::Width,
+            )],
+            &[],
+            &[Keyword::Ease],
+            &[0.0],
+        );
 
-        assert_eq!(parsed, None);
+        assert_eq!(
+            transition_spec_for_longhands(&slot, PresentationProperty::Width),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_property_list_defaults_to_all() {
+        // Absent `transition-property` defaults to `all` (CSS initial), so a
+        // non-zero duration transitions any property.
+        let slot = slot_from(&[], &[0.18], &[Keyword::Ease], &[0.0]);
+
+        assert_spec(
+            transition_spec_for_longhands(&slot, PresentationProperty::Width),
+            0.18,
+            0.0,
+            DomTimingFunction::Ease,
+        );
+    }
+
+    #[test]
+    fn transition_config_properties_never_transition() {
+        let slot = slot_from(
+            &[TransitionLonghandProperty::All],
+            &[0.18],
+            &[Keyword::Ease],
+            &[0.0],
+        );
+        for property in [
+            PresentationProperty::TransitionProperty,
+            PresentationProperty::TransitionDuration,
+            PresentationProperty::TransitionTimingFunction,
+            PresentationProperty::TransitionDelay,
+        ] {
+            assert_eq!(transition_spec_for_longhands(&slot, property), None);
+        }
     }
 
     #[test]
@@ -708,18 +753,49 @@ mod tests {
         assert_eq!(error, DomError::InvalidAttributeValue);
     }
 
-    fn spec_from_longhands(
-        longhands: &TransitionLonghandValues,
-        target_attribute: &DomAttribute,
-    ) -> Option<DomTransitionSpec> {
-        transition_spec_for_attribute(
-            longhands.property.as_ref(),
-            longhands.duration.as_ref(),
-            longhands.timing_function.as_ref(),
-            longhands.delay.as_ref(),
-            target_attribute,
-        )
-        .expect("longhand values should resolve")
+    #[test]
+    fn interpolate_value_lerps_length_color_and_number_and_steps_other() {
+        let from = DeclValue::Length(DeclLength::Px(0.0));
+        let to = DeclValue::Length(DeclLength::Px(10.0));
+        assert_eq!(
+            interpolate_value(&from, &to, 0.5),
+            DeclValue::Length(DeclLength::Px(5.0))
+        );
+
+        let from = DeclValue::Color([0.0, 0.0, 0.0, 1.0]);
+        let to = DeclValue::Color([1.0, 0.0, 0.0, 1.0]);
+        let mid = interpolate_value(&from, &to, 0.5);
+        let DeclValue::Color(mid) = mid else {
+            panic!("color interpolation should produce a color");
+        };
+        assert!((mid[0] - 0.5).abs() <= f32::EPSILON);
+
+        let from = DeclValue::Number(0.0);
+        let to = DeclValue::Number(2.0);
+        assert_eq!(interpolate_value(&from, &to, 0.25), DeclValue::Number(0.5));
+
+        // Keywords step: mid-flight keeps the `from` value; completion takes `to`.
+        let from = DeclValue::Keyword(Keyword::Block);
+        let to = DeclValue::Keyword(Keyword::Flex);
+        assert_eq!(interpolate_value(&from, &to, 0.5), from);
+        assert_eq!(interpolate_value(&from, &to, 1.0), to);
+    }
+
+    #[test]
+    fn timing_function_from_kw_round_trips_the_closed_set() {
+        for keyword in TIMING_KEYWORDS {
+            let timing = timing_function_from_kw(*keyword)
+                .expect("every timing keyword should map to a timing function");
+            assert_eq!(parse_timing_function(keyword.name()), Some(timing));
+        }
+        assert_eq!(timing_function_from_kw(Keyword::Block), None);
+    }
+
+    fn longhand_text(value: Option<&DomAttributeValue>) -> Option<&str> {
+        match value {
+            Some(DomAttributeValue::String(s)) => Some(s.as_str()),
+            _ => None,
+        }
     }
 
     fn assert_spec(

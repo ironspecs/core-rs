@@ -2,7 +2,9 @@ use crate::domains::layout::{layer_kind_for_node, node_box_from_ref, relative_of
 use crate::types::{DomLayerKind, DomNodeSlotKey, DomPaintState, DomRect, RootDom};
 
 #[cfg(test)]
-use crate::types::{DomAttribute, DomAttributeValue, DomNode, DomTag, RootDomContext};
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
+use crate::types::{DomNode, DomTag, RootDomContext};
 
 pub(crate) fn mark_node_dirty_up_to_layout_root(root_dom: &mut RootDom, key: DomNodeSlotKey) {
     let Some(damaged_rect) = node_damage_rect(root_dom, key) else {
@@ -89,13 +91,11 @@ mod tests {
         key
     }
 
-    fn set_attr(root: &mut RootDom, key: DomNodeSlotKey, attribute: DomAttribute, value: &str) {
-        root.set_attr(
-            key,
-            attribute,
-            Some(DomAttributeValue::String(value.to_string())),
-        )
-        .expect("set attr");
+    fn set_position_fixed(root: &mut RootDom, key: DomNodeSlotKey) {
+        root.style_mut(key)
+            .set("position", "fixed")
+            .expect("position");
+        recompute_dirty_style_subtree_for_layer_root(root, root.root).expect("style pass");
     }
 
     fn set_box(
@@ -202,7 +202,7 @@ mod tests {
         let text = root.create_text_node("label").expect("text");
         root.append_child(child, text).expect("append text");
 
-        set_attr(&mut root, layout_root, DomAttribute::Position, "fixed");
+        set_position_fixed(&mut root, layout_root);
         set_box(&mut root, document_key, 0.0, 0.0, 160.0, 120.0);
         set_box(&mut root, outer, 0.0, 0.0, 160.0, 120.0);
         set_box(&mut root, layout_root, 0.0, 0.0, 80.0, 60.0);
@@ -332,7 +332,7 @@ mod tests {
         let outer = append_element(&mut root, document_key, DomTag::Div);
         let layout_root = append_element(&mut root, outer, DomTag::Div);
         let child = append_element(&mut root, layout_root, DomTag::Div);
-        set_attr(&mut root, layout_root, DomAttribute::Position, "fixed");
+        set_position_fixed(&mut root, layout_root);
         for key in [document_key, outer, layout_root, child] {
             clear_paint_state(&mut root, key);
         }

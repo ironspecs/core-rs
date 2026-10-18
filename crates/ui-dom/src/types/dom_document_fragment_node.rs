@@ -13,10 +13,8 @@
 //! - `DocumentFragment` is the first node kind in its detached tree
 //! - fragment nodes reject the `id` attribute as an invalid attribute target
 
-use std::collections::BTreeMap;
-
 use crate::types::dom_attr_node::DomAttributeNode;
-use crate::types::dom_attr_parse::{normalize_attribute_value, validate_attribute_value};
+use crate::types::dom_attr_parse::validate_attribute_value;
 use crate::types::dom_node::{
     DomNodeSlotKey, stored_attribute_value, validate_document_like_attr_target, write_attribute,
 };
@@ -29,7 +27,6 @@ pub struct DomDocumentFragmentNode {
     pub base: DomNodeBase,
     /// Authored fragment-container attrs used while staging subtree content.
     pub attrs: DomAttrs,
-    pub(crate) attribute_style_map: BTreeMap<DomAttribute, DomAttributeValue>,
     pub(crate) class_list: Vec<String>,
 }
 
@@ -49,7 +46,6 @@ impl DomDocumentFragmentNode {
         Self {
             base: DomNodeBase::new(owner_document_key),
             attrs: DomAttrs::default(),
-            attribute_style_map: BTreeMap::new(),
             class_list: Vec::new(),
         }
     }
@@ -64,10 +60,6 @@ impl DomAttributeNode for DomDocumentFragmentNode {
         &self.attrs
     }
 
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue> {
-        &self.attribute_style_map
-    }
-
     fn class_list(&self) -> &[String] {
         &self.class_list
     }
@@ -77,16 +69,10 @@ impl DomAttributeNode for DomDocumentFragmentNode {
         attribute: DomAttribute,
         value: Option<DomAttributeValue>,
     ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
         validate_document_like_attr_target(&attribute)?;
         validate_attribute_value(&attribute, value.as_ref())?;
-        write_attribute(
-            &mut self.attrs,
-            &mut self.attribute_style_map,
-            &mut self.class_list,
-            &attribute,
-            value,
-        )
+        write_attribute(&mut self.attrs, &mut self.class_list, &attribute, value);
+        Ok(())
     }
 
     fn after_attr_write_updates_intrinsic(&self, _attribute: &DomAttribute) -> bool {
@@ -117,13 +103,13 @@ mod tests {
 
         DomAttributeNode::set_attr(
             &mut node,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("100px".into())),
+            DomAttribute::Class,
+            Some(DomAttributeValue::String("root".into())),
         )
-        .expect("fragment node should accept width");
+        .expect("fragment node should accept content attrs");
         assert_eq!(
-            DomAttributeNode::attr(&node, &DomAttribute::Width),
-            Some(&DomAttributeValue::String("100px".into()))
+            DomAttributeNode::attr(&node, &DomAttribute::Class),
+            Some(&DomAttributeValue::String("root".into()))
         );
     }
 }

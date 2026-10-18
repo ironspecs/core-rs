@@ -16,11 +16,12 @@
 //!
 //! - prefer explicit event variants over loosely typed maps
 //! - keep these shapes stable so tests and callers can depend on them
+use crate::domains::style::PresentationProperty;
 pub use crate::types::dom_event_detail::DomEventDetail;
 pub use crate::types::dom_event_dispatch_context::DomEventDispatchContext;
 pub use crate::types::dom_event_listener::{DomEventListener, DomEventListenerOptions};
 pub use crate::types::dom_event_name::DomEventName;
-use crate::types::{DomAttribute, dom_node::DomNodeSlotKey};
+use crate::types::dom_node::DomNodeSlotKey;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DomEventPhase {
@@ -140,7 +141,7 @@ pub struct DomValueChangeEvent {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DomTransitionEvent {
-    pub attribute: DomAttribute,
+    pub property: PresentationProperty,
     pub elapsed_s: f64,
 }
 

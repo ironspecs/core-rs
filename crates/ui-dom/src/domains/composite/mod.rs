@@ -4,6 +4,13 @@
 //! removes Bevy-backed layers, then style, layout, and paint walk the live
 //! Bevy layer hierarchy in DOM order. Retained surface order is published once
 //! per attached root after those passes.
+//!
+//! Layer-lifecycle preservation (PLAN.md): a style change that turns an
+//! element into a layer root must present the layer by the end of that same
+//! update. The style pass queues newly-connected layer roots mid-update
+//! (write-path queuing is dead, spine 3.3g-2a), so pending appends are drained
+//! again after the style phase, before layout walks the live layer hierarchy.
+//! Removals stay frame-start in `reconcile_layer_frame_lifecycle`.
 
 pub(crate) mod bevy_layer;
 
@@ -34,6 +41,7 @@ struct BevyLayerClipStackEntry {
 
 type BevyLayerClipStack = SmallVec<[BevyLayerClipStackEntry; 32]>;
 
+use crate::domains::style::computed::PositionKw;
 use crate::domains::{
     LayerPoolRenderJobQueue,
     layer_pool::LayerPool,
@@ -145,6 +153,14 @@ fn run_composite_passes(
 ) -> Result<(), DomError> {
     let (root_layer_entity, viewport_size) = prepare_layer_frame(root_dom, world, parent)?;
     run_style_phase_over_bevy_layers(root_dom, world, root_layer_entity)?;
+    // Layer-lifecycle preservation (PLAN.md): a style change that turns an
+    // element into a layer root must present the layer by the end of THIS
+    // update. The style pass queues newly-connected layer roots mid-update
+    // (write-path queuing is dead, spine 3.3g-2a), so pending appends are
+    // processed here — after the style phase, before layout walks the live
+    // Bevy layer hierarchy. Removals stay frame-start (see
+    // `reconcile_layer_frame_lifecycle`).
+    apply_pending_layer_appends(root_dom, world, parent)?;
     run_layout_phase_over_bevy_layers(root_dom, world, root_layer_entity, viewport_size)?;
     run_paint_phase_over_bevy_layers(root_dom, world, root_layer_entity)?;
     sync_root_presentation_and_publish_retained_order(
@@ -162,6 +178,9 @@ fn run_style_layout_passes(
 ) -> Result<(), DomError> {
     let (root_layer_entity, viewport_size) = prepare_layer_frame(root_dom, world, parent)?;
     run_style_phase_over_bevy_layers(root_dom, world, root_layer_entity)?;
+    // Same-update layer materialization (see `run_composite_passes`): pending
+    // appends queued by this update's style pass are processed before layout.
+    apply_pending_layer_appends(root_dom, world, parent)?;
     run_layout_phase_over_bevy_layers(root_dom, world, root_layer_entity, viewport_size)
 }
 
@@ -357,10 +376,7 @@ fn fixed_layer_root_needs_viewport_relayout(
     let node = root_dom
         .node(layer_root_key)
         .ok_or(DomError::InvalidNodeKey)?;
-    if !matches!(
-        node.presented_attr(&DomAttribute::Position),
-        Some(DomAttributeValue::String(value)) if value == "fixed"
-    ) {
+    if node.computed_box().position != PositionKw::Fixed {
         return Ok(false);
     }
     let layout = node.layout();
@@ -584,10 +600,7 @@ fn layout_tree_size(
 }
 
 fn node_uses_viewport_sized_layout_tree(node: &DomNode) -> bool {
-    matches!(
-        node.presented_attr(&DomAttribute::Position),
-        Some(DomAttributeValue::String(value)) if value == "fixed"
-    )
+    node.computed_box().position == PositionKw::Fixed
 }
 
 fn ensure_layer_entity(
@@ -1254,11 +1267,7 @@ fn layer_target_expands_for_vertical_overflow(node: &DomNode) -> bool {
     if layer_kind_for_node(node) != DomLayerKind::Clipped {
         return false;
     }
-    matches!(
-        node.presented_attr(&DomAttribute::Overflow),
-        Some(DomAttributeValue::String(value))
-            if matches!(value.as_str(), "scroll" | "auto" | "hidden")
-    )
+    node.computed_box().overflow.allows_vertical_scroll()
 }
 
 fn current_layer_rect(
@@ -1312,15 +1321,11 @@ fn local_clip_inputs(
     Ok(local_clip_world(node_key, node, clip_world_offset))
 }
 
+/// The node's effective opacity from the computed visual group (spine 3.3c),
+/// which already merges the active-transition overlay.
 fn node_opacity(root_dom: &RootDom, node_key: DomNodeSlotKey) -> Result<f32, DomError> {
     let node = layer_presentation_node(root_dom, node_key)?;
-    Ok(match node.presented_custom_attr("opacity") {
-        Some(crate::types::DomAttributeValue::Float(value)) => *value,
-        Some(crate::types::DomAttributeValue::String(value)) => value
-            .parse::<f32>()
-            .expect("presented opacity should parse as f32"),
-        _ => 1.0,
-    })
+    Ok(node.computed_visual().opacity)
 }
 
 fn world_rect(left_px: f32, top_px: f32, width_px: f32, height_px: f32) -> Vec4 {
@@ -1431,27 +1436,38 @@ mod tests {
             .expect("append clipped root");
         root.append_child(clipped_root, content)
             .expect("append content");
-        root.set_attr_str(clipped_root, "position", "fixed")
+        root.style_mut(clipped_root)
+            .set("position", "fixed")
             .expect("clipped root position");
-        root.set_attr_str(clipped_root, "left", "16px")
+        root.style_mut(clipped_root)
+            .set("left", "16px")
             .expect("clipped root left");
-        root.set_attr_str(clipped_root, "top", "12px")
+        root.style_mut(clipped_root)
+            .set("top", "12px")
             .expect("clipped root top");
-        root.set_attr_str(clipped_root, "width", "180px")
+        root.style_mut(clipped_root)
+            .set("width", "180px")
             .expect("clipped root width");
-        root.set_attr_str(clipped_root, "max-height", "160px")
+        root.style_mut(clipped_root)
+            .set("max-height", "160px")
             .expect("clipped root max height");
-        root.set_attr_str(clipped_root, "overflow", "scroll")
+        root.style_mut(clipped_root)
+            .set("overflow", "scroll")
             .expect("clipped root overflow");
-        root.set_attr_str(content, "width", "172px")
+        root.style_mut(content)
+            .set("width", "172px")
             .expect("content width");
-        root.set_attr_str(content, "padding-left", "4px")
+        root.style_mut(content)
+            .set("padding-left", "4px")
             .expect("content left padding");
-        root.set_attr_str(content, "padding-right", "4px")
+        root.style_mut(content)
+            .set("padding-right", "4px")
             .expect("content right padding");
-        root.set_attr_str(content, "padding-top", "4px")
+        root.style_mut(content)
+            .set("padding-top", "4px")
             .expect("content top padding");
-        root.set_attr_str(content, "padding-bottom", "4px")
+        root.style_mut(content)
+            .set("padding-bottom", "4px")
             .expect("content bottom padding");
 
         let mut rows = Vec::with_capacity(row_count);
@@ -1462,23 +1478,32 @@ mod tests {
                 .expect("label");
             root.append_child(content, row).expect("append row");
             root.append_child(row, label).expect("append label");
-            root.set_attr_str(row, "display", "block")
+            root.style_mut(row)
+                .set("display", "block")
                 .expect("row display");
-            root.set_attr_str(row, "margin-left", "2px")
+            root.style_mut(row)
+                .set("margin-left", "2px")
                 .expect("row margin left");
-            root.set_attr_str(row, "margin-right", "2px")
+            root.style_mut(row)
+                .set("margin-right", "2px")
                 .expect("row margin right");
-            root.set_attr_str(row, "margin-top", "1px")
+            root.style_mut(row)
+                .set("margin-top", "1px")
                 .expect("row margin top");
-            root.set_attr_str(row, "margin-bottom", "1px")
+            root.style_mut(row)
+                .set("margin-bottom", "1px")
                 .expect("row margin bottom");
-            root.set_attr_str(row, "padding-left", "2px")
+            root.style_mut(row)
+                .set("padding-left", "2px")
                 .expect("row padding left");
-            root.set_attr_str(row, "padding-right", "2px")
+            root.style_mut(row)
+                .set("padding-right", "2px")
                 .expect("row padding right");
-            root.set_attr_str(row, "padding-top", "1px")
+            root.style_mut(row)
+                .set("padding-top", "1px")
                 .expect("row padding top");
-            root.set_attr_str(row, "padding-bottom", "1px")
+            root.style_mut(row)
+                .set("padding-bottom", "1px")
                 .expect("row padding bottom");
             rows.push(row);
         }
@@ -1511,29 +1536,41 @@ mod tests {
             .expect("append wrapper");
         root.append_child(wrapper, nested_layer)
             .expect("append nested layer");
-        root.set_attr_str(root_layer, "position", "fixed")
+        root.style_mut(root_layer)
+            .set("position", "fixed")
             .expect("root layer position");
-        root.set_attr_str(root_layer, "width", "160px")
+        root.style_mut(root_layer)
+            .set("width", "160px")
             .expect("root layer width");
-        root.set_attr_str(root_layer, "height", "120px")
+        root.style_mut(root_layer)
+            .set("height", "120px")
             .expect("root layer height");
-        root.set_attr_str(wrapper, "margin-left", "14px")
+        root.style_mut(wrapper)
+            .set("margin-left", "14px")
             .expect("wrapper margin left");
-        root.set_attr_str(wrapper, "margin-top", "11px")
+        root.style_mut(wrapper)
+            .set("margin-top", "11px")
             .expect("wrapper margin top");
-        root.set_attr_str(wrapper, "padding-left", "7px")
+        root.style_mut(wrapper)
+            .set("padding-left", "7px")
             .expect("wrapper padding left");
-        root.set_attr_str(wrapper, "padding-top", "5px")
+        root.style_mut(wrapper)
+            .set("padding-top", "5px")
             .expect("wrapper padding top");
-        root.set_attr_str(wrapper, "width", "50px")
+        root.style_mut(wrapper)
+            .set("width", "50px")
             .expect("wrapper width");
-        root.set_attr_str(wrapper, "height", "40px")
+        root.style_mut(wrapper)
+            .set("height", "40px")
             .expect("wrapper height");
-        root.set_attr_str(nested_layer, "transform", "translateX(1px)")
+        root.style_mut(nested_layer)
+            .set("transform", "translateX(1px)")
             .expect("nested layer transform");
-        root.set_attr_str(nested_layer, "width", "13px")
+        root.style_mut(nested_layer)
+            .set("width", "13px")
             .expect("nested layer width");
-        root.set_attr_str(nested_layer, "height", "9px")
+        root.style_mut(nested_layer)
+            .set("height", "9px")
             .expect("nested layer height");
 
         let mut world = World::new();
@@ -1568,29 +1605,41 @@ mod tests {
         root.append_child(toolbar, slot_row)
             .expect("append slot row");
         root.append_child(toolbar, content).expect("append content");
-        root.set_attr_str(wrapper, "width", "140px")
+        root.style_mut(wrapper)
+            .set("width", "140px")
             .expect("wrapper width");
-        root.set_attr_str(wrapper, "margin-left", "80px")
+        root.style_mut(wrapper)
+            .set("margin-left", "80px")
             .expect("wrapper margin left");
-        root.set_attr_str(toolbar, "position", "fixed")
+        root.style_mut(toolbar)
+            .set("position", "fixed")
             .expect("toolbar position");
-        root.set_attr_str(toolbar, "top", "132px")
+        root.style_mut(toolbar)
+            .set("top", "132px")
             .expect("toolbar top");
-        root.set_attr_str(toolbar, "right", "25px")
+        root.style_mut(toolbar)
+            .set("right", "25px")
             .expect("toolbar right");
-        root.set_attr_str(toolbar, "width", "196px")
+        root.style_mut(toolbar)
+            .set("width", "196px")
             .expect("toolbar width");
-        root.set_attr_str(slot_row, "position", "relative")
+        root.style_mut(slot_row)
+            .set("position", "relative")
             .expect("slot row position");
-        root.set_attr_str(slot_row, "width", "196px")
+        root.style_mut(slot_row)
+            .set("width", "196px")
             .expect("slot row width");
-        root.set_attr_str(slot_row, "height", "44px")
+        root.style_mut(slot_row)
+            .set("height", "44px")
             .expect("slot row height");
-        root.set_attr_str(content, "padding-left", "6px")
+        root.style_mut(content)
+            .set("padding-left", "6px")
             .expect("content left padding");
-        root.set_attr_str(content, "padding-right", "6px")
+        root.style_mut(content)
+            .set("padding-right", "6px")
             .expect("content right padding");
-        root.set_attr_str(content, "padding-bottom", "6px")
+        root.style_mut(content)
+            .set("padding-bottom", "6px")
             .expect("content bottom padding");
 
         let mut world = World::new();
@@ -1624,6 +1673,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // the fixture writes several presentation props
     fn fixed_right_anchored_toolbar_keeps_viewport_anchor_after_text_update() {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let top_right_toolbar = root.create_element(DomTag::Div).expect("top-right toolbar");
@@ -1637,37 +1687,52 @@ mod tests {
         root.append_child(toolbar, slot_row)
             .expect("append slot row");
         root.append_child(toolbar, content).expect("append content");
-        root.set_attr_str(top_right_toolbar, "position", "fixed")
+        root.style_mut(top_right_toolbar)
+            .set("position", "fixed")
             .expect("top-right toolbar position");
-        root.set_attr_str(top_right_toolbar, "top", "25px")
+        root.style_mut(top_right_toolbar)
+            .set("top", "25px")
             .expect("top-right toolbar top");
-        root.set_attr_str(top_right_toolbar, "right", "25px")
+        root.style_mut(top_right_toolbar)
+            .set("right", "25px")
             .expect("top-right toolbar right");
-        root.set_attr_str(top_right_toolbar, "width", "196px")
+        root.style_mut(top_right_toolbar)
+            .set("width", "196px")
             .expect("top-right toolbar width");
-        root.set_attr_str(top_right_toolbar, "height", "82px")
+        root.style_mut(top_right_toolbar)
+            .set("height", "82px")
             .expect("top-right toolbar height");
-        root.set_attr_str(toolbar, "position", "fixed")
+        root.style_mut(toolbar)
+            .set("position", "fixed")
             .expect("toolbar position");
-        root.set_attr_str(toolbar, "top", "132px")
+        root.style_mut(toolbar)
+            .set("top", "132px")
             .expect("toolbar top");
-        root.set_attr_str(toolbar, "right", "25px")
+        root.style_mut(toolbar)
+            .set("right", "25px")
             .expect("toolbar right");
-        root.set_attr_str(toolbar, "width", "196px")
+        root.style_mut(toolbar)
+            .set("width", "196px")
             .expect("toolbar width");
         root.set_attr_str(toolbar, "pointer-events", "none")
             .expect("toolbar pointer-events");
-        root.set_attr_str(slot_row, "position", "relative")
+        root.style_mut(slot_row)
+            .set("position", "relative")
             .expect("slot row position");
-        root.set_attr_str(slot_row, "width", "196px")
+        root.style_mut(slot_row)
+            .set("width", "196px")
             .expect("slot row width");
-        root.set_attr_str(slot_row, "height", "44px")
+        root.style_mut(slot_row)
+            .set("height", "44px")
             .expect("slot row height");
-        root.set_attr_str(content, "padding-left", "6px")
+        root.style_mut(content)
+            .set("padding-left", "6px")
             .expect("content left padding");
-        root.set_attr_str(content, "padding-right", "6px")
+        root.style_mut(content)
+            .set("padding-right", "6px")
             .expect("content right padding");
-        root.set_attr_str(content, "padding-bottom", "6px")
+        root.style_mut(content)
+            .set("padding-bottom", "6px")
             .expect("content bottom padding");
 
         let mut line_text_keys = Vec::new();
@@ -1730,29 +1795,41 @@ mod tests {
         root.append_child(root.root, toolbar)
             .expect("append toolbar");
         root.append_child(toolbar, content).expect("append content");
-        root.set_attr_str(top_right_toolbar, "position", "fixed")
+        root.style_mut(top_right_toolbar)
+            .set("position", "fixed")
             .expect("top-right toolbar position");
-        root.set_attr_str(top_right_toolbar, "top", "25px")
+        root.style_mut(top_right_toolbar)
+            .set("top", "25px")
             .expect("top-right toolbar top");
-        root.set_attr_str(top_right_toolbar, "right", "25px")
+        root.style_mut(top_right_toolbar)
+            .set("right", "25px")
             .expect("top-right toolbar right");
-        root.set_attr_str(top_right_toolbar, "width", "196px")
+        root.style_mut(top_right_toolbar)
+            .set("width", "196px")
             .expect("top-right toolbar width");
-        root.set_attr_str(top_right_toolbar, "height", "82px")
+        root.style_mut(top_right_toolbar)
+            .set("height", "82px")
             .expect("top-right toolbar height");
-        root.set_attr_str(toolbar, "position", "fixed")
+        root.style_mut(toolbar)
+            .set("position", "fixed")
             .expect("toolbar position");
-        root.set_attr_str(toolbar, "top", "132px")
+        root.style_mut(toolbar)
+            .set("top", "132px")
             .expect("toolbar top");
-        root.set_attr_str(toolbar, "right", "25px")
+        root.style_mut(toolbar)
+            .set("right", "25px")
             .expect("toolbar right");
-        root.set_attr_str(toolbar, "width", "196px")
+        root.style_mut(toolbar)
+            .set("width", "196px")
             .expect("toolbar width");
-        root.set_attr_str(content, "padding-left", "6px")
+        root.style_mut(content)
+            .set("padding-left", "6px")
             .expect("content left padding");
-        root.set_attr_str(content, "padding-right", "6px")
+        root.style_mut(content)
+            .set("padding-right", "6px")
             .expect("content right padding");
-        root.set_attr_str(content, "padding-bottom", "6px")
+        root.style_mut(content)
+            .set("padding-bottom", "6px")
             .expect("content bottom padding");
 
         let mut line_text_keys = Vec::new();
@@ -1817,29 +1894,41 @@ mod tests {
         root.append_child(root.root, toolbar)
             .expect("append toolbar");
         root.append_child(toolbar, content).expect("append content");
-        root.set_attr_str(top_right_toolbar, "position", "fixed")
+        root.style_mut(top_right_toolbar)
+            .set("position", "fixed")
             .expect("top-right toolbar position");
-        root.set_attr_str(top_right_toolbar, "top", "25px")
+        root.style_mut(top_right_toolbar)
+            .set("top", "25px")
             .expect("top-right toolbar top");
-        root.set_attr_str(top_right_toolbar, "right", "25px")
+        root.style_mut(top_right_toolbar)
+            .set("right", "25px")
             .expect("top-right toolbar right");
-        root.set_attr_str(top_right_toolbar, "width", "196px")
+        root.style_mut(top_right_toolbar)
+            .set("width", "196px")
             .expect("top-right toolbar width");
-        root.set_attr_str(top_right_toolbar, "height", "82px")
+        root.style_mut(top_right_toolbar)
+            .set("height", "82px")
             .expect("top-right toolbar height");
-        root.set_attr_str(toolbar, "position", "fixed")
+        root.style_mut(toolbar)
+            .set("position", "fixed")
             .expect("toolbar position");
-        root.set_attr_str(toolbar, "top", "132px")
+        root.style_mut(toolbar)
+            .set("top", "132px")
             .expect("toolbar top");
-        root.set_attr_str(toolbar, "right", "25px")
+        root.style_mut(toolbar)
+            .set("right", "25px")
             .expect("toolbar right");
-        root.set_attr_str(toolbar, "width", "196px")
+        root.style_mut(toolbar)
+            .set("width", "196px")
             .expect("toolbar width");
-        root.set_attr_str(content, "padding-left", "6px")
+        root.style_mut(content)
+            .set("padding-left", "6px")
             .expect("content left padding");
-        root.set_attr_str(content, "padding-right", "6px")
+        root.style_mut(content)
+            .set("padding-right", "6px")
             .expect("content right padding");
-        root.set_attr_str(content, "padding-bottom", "6px")
+        root.style_mut(content)
+            .set("padding-bottom", "6px")
             .expect("content bottom padding");
 
         let line = root.create_element(DomTag::Div).expect("line");
@@ -1893,31 +1982,44 @@ mod tests {
             .expect("append top-left panel");
         root.append_child(root.root, panel).expect("append panel");
         root.append_child(panel, content).expect("append content");
-        root.set_attr_str(top_left_panel, "position", "fixed")
+        root.style_mut(top_left_panel)
+            .set("position", "fixed")
             .expect("top-left panel position");
-        root.set_attr_str(top_left_panel, "top", "25px")
+        root.style_mut(top_left_panel)
+            .set("top", "25px")
             .expect("top-left panel top");
-        root.set_attr_str(top_left_panel, "left", "25px")
+        root.style_mut(top_left_panel)
+            .set("left", "25px")
             .expect("top-left panel left");
-        root.set_attr_str(top_left_panel, "width", "96px")
+        root.style_mut(top_left_panel)
+            .set("width", "96px")
             .expect("top-left panel width");
-        root.set_attr_str(top_left_panel, "height", "40px")
+        root.style_mut(top_left_panel)
+            .set("height", "40px")
             .expect("top-left panel height");
-        root.set_attr_str(panel, "position", "fixed")
+        root.style_mut(panel)
+            .set("position", "fixed")
             .expect("panel position");
-        root.set_attr_str(panel, "left", "25px")
+        root.style_mut(panel)
+            .set("left", "25px")
             .expect("panel left");
-        root.set_attr_str(panel, "bottom", "20px")
+        root.style_mut(panel)
+            .set("bottom", "20px")
             .expect("panel bottom");
-        root.set_attr_str(panel, "width", "196px")
+        root.style_mut(panel)
+            .set("width", "196px")
             .expect("panel width");
-        root.set_attr_str(content, "padding-left", "6px")
+        root.style_mut(content)
+            .set("padding-left", "6px")
             .expect("content left padding");
-        root.set_attr_str(content, "padding-right", "6px")
+        root.style_mut(content)
+            .set("padding-right", "6px")
             .expect("content right padding");
-        root.set_attr_str(content, "padding-top", "6px")
+        root.style_mut(content)
+            .set("padding-top", "6px")
             .expect("content top padding");
-        root.set_attr_str(content, "padding-bottom", "6px")
+        root.style_mut(content)
+            .set("padding-bottom", "6px")
             .expect("content bottom padding");
 
         let mut line_text_keys = Vec::new();
@@ -1974,30 +2076,42 @@ mod tests {
             .expect("append top bar");
         root.append_child(root.root, panel).expect("append panel");
         root.append_child(panel, content).expect("append content");
-        root.set_attr_str(top_bar, "position", "fixed")
+        root.style_mut(top_bar)
+            .set("position", "fixed")
             .expect("top bar position");
-        root.set_attr_str(top_bar, "top", "12px")
+        root.style_mut(top_bar)
+            .set("top", "12px")
             .expect("top bar top");
-        root.set_attr_str(top_bar, "left", "12px")
+        root.style_mut(top_bar)
+            .set("left", "12px")
             .expect("top bar left");
-        root.set_attr_str(top_bar, "width", "100px")
+        root.style_mut(top_bar)
+            .set("width", "100px")
             .expect("top bar width");
-        root.set_attr_str(top_bar, "height", "20px")
+        root.style_mut(top_bar)
+            .set("height", "20px")
             .expect("top bar height");
-        root.set_attr_str(panel, "position", "fixed")
+        root.style_mut(panel)
+            .set("position", "fixed")
             .expect("panel position");
-        root.set_attr_str(panel, "top", "60px").expect("panel top");
-        root.set_attr_str(panel, "left", "20px")
+        root.style_mut(panel).set("top", "60px").expect("panel top");
+        root.style_mut(panel)
+            .set("left", "20px")
             .expect("panel left");
-        root.set_attr_str(panel, "right", "20px")
+        root.style_mut(panel)
+            .set("right", "20px")
             .expect("panel right");
-        root.set_attr_str(content, "padding-left", "4px")
+        root.style_mut(content)
+            .set("padding-left", "4px")
             .expect("content left padding");
-        root.set_attr_str(content, "padding-right", "4px")
+        root.style_mut(content)
+            .set("padding-right", "4px")
             .expect("content right padding");
-        root.set_attr_str(content, "padding-top", "4px")
+        root.style_mut(content)
+            .set("padding-top", "4px")
             .expect("content top padding");
-        root.set_attr_str(content, "padding-bottom", "4px")
+        root.style_mut(content)
+            .set("padding-bottom", "4px")
             .expect("content bottom padding");
 
         let text = root.create_text_node("Compact").expect("content text");
@@ -2046,24 +2160,33 @@ mod tests {
         let viewport = root.create_element(DomTag::Div).expect("viewport");
         root.append_child(root.root, panel).expect("append panel");
         root.append_child(panel, viewport).expect("append viewport");
-        root.set_attr_str(panel, "position", "fixed")
+        root.style_mut(panel)
+            .set("position", "fixed")
             .expect("panel position");
-        root.set_attr_str(panel, "left", "920px")
+        root.style_mut(panel)
+            .set("left", "920px")
             .expect("panel left");
-        root.set_attr_str(panel, "top", "22px").expect("panel top");
-        root.set_attr_str(panel, "width", "360px")
+        root.style_mut(panel).set("top", "22px").expect("panel top");
+        root.style_mut(panel)
+            .set("width", "360px")
             .expect("panel width");
-        root.set_attr_str(panel, "height", "686px")
+        root.style_mut(panel)
+            .set("height", "686px")
             .expect("panel height");
-        root.set_attr_str(viewport, "position", "absolute")
+        root.style_mut(viewport)
+            .set("position", "absolute")
             .expect("viewport position");
-        root.set_attr_str(viewport, "top", "30px")
+        root.style_mut(viewport)
+            .set("top", "30px")
             .expect("viewport top");
-        root.set_attr_str(viewport, "width", "360px")
+        root.style_mut(viewport)
+            .set("width", "360px")
             .expect("viewport width");
-        root.set_attr_str(viewport, "height", "656px")
+        root.style_mut(viewport)
+            .set("height", "656px")
             .expect("viewport height");
-        root.set_attr_str(viewport, "overflow", "scroll")
+        root.style_mut(viewport)
+            .set("overflow", "scroll")
             .expect("viewport overflow");
 
         let mut world = World::new();
@@ -2107,16 +2230,21 @@ mod tests {
         root.append_child(root.root, sibling_layer)
             .expect("append sibling layer");
         for layer_key in [root_layer, nested_layer, sibling_layer] {
-            root.set_attr_str(layer_key, "width", "80px")
+            root.style_mut(layer_key)
+                .set("width", "80px")
                 .expect("layer width");
-            root.set_attr_str(layer_key, "height", "40px")
+            root.style_mut(layer_key)
+                .set("height", "40px")
                 .expect("layer height");
         }
-        root.set_attr_str(root_layer, "position", "fixed")
+        root.style_mut(root_layer)
+            .set("position", "fixed")
             .expect("root layer position");
-        root.set_attr_str(nested_layer, "position", "fixed")
+        root.style_mut(nested_layer)
+            .set("position", "fixed")
             .expect("nested layer position");
-        root.set_attr_str(sibling_layer, "position", "fixed")
+        root.style_mut(sibling_layer)
+            .set("position", "fixed")
             .expect("sibling layer position");
 
         let mut world = World::new();
@@ -2165,11 +2293,14 @@ mod tests {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let layer = root.create_element(DomTag::Div).expect("layer");
         root.append_child(root.root, layer).expect("append layer");
-        root.set_attr_str(layer, "transform", "translateX(1px)")
+        root.style_mut(layer)
+            .set("transform", "translateX(1px)")
             .expect("layer transform");
-        root.set_attr_str(layer, "width", "80px")
+        root.style_mut(layer)
+            .set("width", "80px")
             .expect("layer width");
-        root.set_attr_str(layer, "height", "40px")
+        root.style_mut(layer)
+            .set("height", "40px")
             .expect("layer height");
 
         let mut world = World::new();
@@ -2219,20 +2350,13 @@ mod tests {
         fragment
             .append_child(wrapper, nested_layer)
             .expect("attach nested layer");
-        fragment
-            .set_attr_str(nested_layer, "position", "fixed")
-            .expect("nested layer position");
-        fragment
-            .set_attr_str(nested_layer, "width", "64px")
-            .expect("nested layer width");
-        fragment
-            .set_attr_str(nested_layer, "height", "24px")
-            .expect("nested layer height");
 
         root.append_fragment(target, fragment)
             .expect("fragment append should succeed");
-        update(&mut root, &mut world, parent, 32.0).expect("fragment composite update");
 
+        // Fragments cannot author presentation (no inline declaration store,
+        // spine 3.3g-2a), so style the imported nested element after import
+        // before the composite update that materializes its layer.
         let imported_wrapper = root
             .node(target)
             .expect("target node")
@@ -2245,6 +2369,17 @@ mod tests {
             .first_child(|key| root.node(key))
             .map(|(key, _)| key)
             .expect("imported nested layer");
+        root.style_mut(imported_nested_layer)
+            .set("position", "fixed")
+            .expect("nested layer position");
+        root.style_mut(imported_nested_layer)
+            .set("width", "64px")
+            .expect("nested layer width");
+        root.style_mut(imported_nested_layer)
+            .set("height", "24px")
+            .expect("nested layer height");
+
+        update(&mut root, &mut world, parent, 32.0).expect("fragment composite update");
 
         assert!(
             root.layer_entity(imported_nested_layer).is_some(),
@@ -2253,7 +2388,7 @@ mod tests {
     }
 
     #[test]
-    fn stylesheet_promotion_waits_until_the_next_composite_update() {
+    fn stylesheet_promotion_materializes_the_layer_within_the_same_update() {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let promoted = root.create_element(DomTag::Div).expect("promoted");
         root.append_child(root.root, promoted)
@@ -2276,16 +2411,14 @@ mod tests {
         root.set_attr_str(promoted, "class", "floating")
             .expect("floating class");
 
+        // Layer-lifecycle preservation (PLAN.md): a style change that turns an
+        // element into a layer root presents the layer by the end of that same
+        // update. The style pass queues the newly-connected layer root and the
+        // post-style-phase append materializes it before layout.
         update(&mut root, &mut world, parent, 32.0).expect("promotion update");
         assert!(
-            root.layer_entity(promoted).is_none(),
-            "style-pass layer promotion should wait until the next composite update",
-        );
-
-        update(&mut root, &mut world, parent, 48.0).expect("follow-up composite update");
-        assert!(
             root.layer_entity(promoted).is_some(),
-            "queued layer promotion should materialize on the next composite update",
+            "style-pass layer promotion should materialize within the same update",
         );
     }
 
@@ -2302,11 +2435,14 @@ mod tests {
         root.append_child(wrapper, nested_layer)
             .expect("append nested layer");
         for layer_key in [parent_layer, nested_layer] {
-            root.set_attr_str(layer_key, "position", "fixed")
+            root.style_mut(layer_key)
+                .set("position", "fixed")
                 .expect("layer position");
-            root.set_attr_str(layer_key, "width", "80px")
+            root.style_mut(layer_key)
+                .set("width", "80px")
                 .expect("layer width");
-            root.set_attr_str(layer_key, "height", "40px")
+            root.style_mut(layer_key)
+                .set("height", "40px")
                 .expect("layer height");
         }
 
@@ -2364,19 +2500,26 @@ mod tests {
             .expect("append clipped root");
         root.append_child(clipped_root, content_layer)
             .expect("append content layer");
-        root.set_attr_str(clipped_root, "position", "fixed")
+        root.style_mut(clipped_root)
+            .set("position", "fixed")
             .expect("clipped root position");
-        root.set_attr_str(clipped_root, "width", "220px")
+        root.style_mut(clipped_root)
+            .set("width", "220px")
             .expect("clipped root width");
-        root.set_attr_str(clipped_root, "height", "84px")
+        root.style_mut(clipped_root)
+            .set("height", "84px")
             .expect("clipped root height");
-        root.set_attr_str(clipped_root, "overflow", "scroll")
+        root.style_mut(clipped_root)
+            .set("overflow", "scroll")
             .expect("clipped root overflow");
-        root.set_attr_str(content_layer, "transform", "translateX(1px)")
+        root.style_mut(content_layer)
+            .set("transform", "translateX(1px)")
             .expect("content layer transform");
-        root.set_attr_str(content_layer, "width", "220px")
+        root.style_mut(content_layer)
+            .set("width", "220px")
             .expect("content layer width");
-        root.set_attr_str(content_layer, "height", "84px")
+        root.style_mut(content_layer)
+            .set("height", "84px")
             .expect("content layer height");
 
         let mut world = World::new();
@@ -2421,25 +2564,35 @@ mod tests {
             .expect("append parent layer");
         root.append_child(parent_layer, clipped_child)
             .expect("append clipped child");
-        root.set_attr_str(parent_layer, "position", "fixed")
+        root.style_mut(parent_layer)
+            .set("position", "fixed")
             .expect("parent position");
-        root.set_attr_str(parent_layer, "left", "40px")
+        root.style_mut(parent_layer)
+            .set("left", "40px")
             .expect("parent left");
-        root.set_attr_str(parent_layer, "top", "20px")
+        root.style_mut(parent_layer)
+            .set("top", "20px")
             .expect("parent top");
-        root.set_attr_str(parent_layer, "width", "120px")
+        root.style_mut(parent_layer)
+            .set("width", "120px")
             .expect("parent width");
-        root.set_attr_str(parent_layer, "height", "80px")
+        root.style_mut(parent_layer)
+            .set("height", "80px")
             .expect("parent height");
-        root.set_attr_str(clipped_child, "overflow", "scroll")
+        root.style_mut(clipped_child)
+            .set("overflow", "scroll")
             .expect("child overflow");
-        root.set_attr_str(clipped_child, "margin-left", "7px")
+        root.style_mut(clipped_child)
+            .set("margin-left", "7px")
             .expect("child margin left");
-        root.set_attr_str(clipped_child, "margin-top", "9px")
+        root.style_mut(clipped_child)
+            .set("margin-top", "9px")
             .expect("child margin top");
-        root.set_attr_str(clipped_child, "width", "60px")
+        root.style_mut(clipped_child)
+            .set("width", "60px")
             .expect("child width");
-        root.set_attr_str(clipped_child, "height", "30px")
+        root.style_mut(clipped_child)
+            .set("height", "30px")
             .expect("child height");
 
         let mut world = World::new();
@@ -2473,17 +2626,23 @@ mod tests {
             .expect("append clipped root");
         root.append_child(clipped_root, content)
             .expect("append content");
-        root.set_attr_str(clipped_root, "position", "fixed")
+        root.style_mut(clipped_root)
+            .set("position", "fixed")
             .expect("clipped root position");
-        root.set_attr_str(clipped_root, "width", "120px")
+        root.style_mut(clipped_root)
+            .set("width", "120px")
             .expect("clipped root width");
-        root.set_attr_str(clipped_root, "height", "40px")
+        root.style_mut(clipped_root)
+            .set("height", "40px")
             .expect("clipped root height");
-        root.set_attr_str(clipped_root, "overflow", "scroll")
+        root.style_mut(clipped_root)
+            .set("overflow", "scroll")
             .expect("clipped root overflow");
-        root.set_attr_str(content, "width", "120px")
+        root.style_mut(content)
+            .set("width", "120px")
             .expect("content width");
-        root.set_attr_str(content, "height", "100px")
+        root.style_mut(content)
+            .set("height", "100px")
             .expect("content tall height");
 
         let mut world = World::new();
@@ -2495,7 +2654,8 @@ mod tests {
 
         update(&mut root, &mut world, parent, 16.0).expect("first composite update");
 
-        root.set_attr_str(content, "height", "20px")
+        root.style_mut(content)
+            .set("height", "20px")
             .expect("content short height");
         update(&mut root, &mut world, parent, 32.0).expect("second composite update");
 
@@ -2535,17 +2695,23 @@ mod tests {
             .expect("append clipped root");
         root.append_child(clipped_root, content)
             .expect("append content");
-        root.set_attr_str(clipped_root, "position", "fixed")
+        root.style_mut(clipped_root)
+            .set("position", "fixed")
             .expect("clipped root position");
-        root.set_attr_str(clipped_root, "width", "120px")
+        root.style_mut(clipped_root)
+            .set("width", "120px")
             .expect("clipped root width");
-        root.set_attr_str(clipped_root, "height", "40px")
+        root.style_mut(clipped_root)
+            .set("height", "40px")
             .expect("clipped root height");
-        root.set_attr_str(clipped_root, "overflow", "auto")
+        root.style_mut(clipped_root)
+            .set("overflow", "auto")
             .expect("clipped root overflow");
-        root.set_attr_str(content, "width", "120px")
+        root.style_mut(content)
+            .set("width", "120px")
             .expect("content width");
-        root.set_attr_str(content, "height", "100px")
+        root.style_mut(content)
+            .set("height", "100px")
             .expect("content tall height");
 
         let mut world = World::new();
@@ -2557,7 +2723,8 @@ mod tests {
 
         update(&mut root, &mut world, parent, 16.0).expect("first composite update");
 
-        root.set_attr_str(content, "height", "20px")
+        root.style_mut(content)
+            .set("height", "20px")
             .expect("content short height");
         update(&mut root, &mut world, parent, 32.0).expect("second composite update");
 
@@ -2598,17 +2765,23 @@ mod tests {
             .expect("append clipped root");
         root.append_child(clipped_root, content)
             .expect("append content");
-        root.set_attr_str(clipped_root, "position", "fixed")
+        root.style_mut(clipped_root)
+            .set("position", "fixed")
             .expect("clipped root position");
-        root.set_attr_str(clipped_root, "width", "120px")
+        root.style_mut(clipped_root)
+            .set("width", "120px")
             .expect("clipped root width");
-        root.set_attr_str(clipped_root, "height", "40px")
+        root.style_mut(clipped_root)
+            .set("height", "40px")
             .expect("clipped root height");
-        root.set_attr_str(clipped_root, "overflow", "clip")
+        root.style_mut(clipped_root)
+            .set("overflow", "clip")
             .expect("clipped root overflow");
-        root.set_attr_str(content, "width", "120px")
+        root.style_mut(content)
+            .set("width", "120px")
             .expect("content width");
-        root.set_attr_str(content, "height", "100px")
+        root.style_mut(content)
+            .set("height", "100px")
             .expect("content tall height");
 
         let mut world = World::new();
@@ -2659,17 +2832,23 @@ mod tests {
             .expect("append clipped root");
         root.append_child(clipped_root, content)
             .expect("append content");
-        root.set_attr_str(clipped_root, "position", "fixed")
+        root.style_mut(clipped_root)
+            .set("position", "fixed")
             .expect("clipped root position");
-        root.set_attr_str(clipped_root, "width", "120px")
+        root.style_mut(clipped_root)
+            .set("width", "120px")
             .expect("clipped root width");
-        root.set_attr_str(clipped_root, "height", "40px")
+        root.style_mut(clipped_root)
+            .set("height", "40px")
             .expect("clipped root height");
-        root.set_attr_str(clipped_root, "overflow", "hidden")
+        root.style_mut(clipped_root)
+            .set("overflow", "hidden")
             .expect("clipped root overflow");
-        root.set_attr_str(content, "width", "120px")
+        root.style_mut(content)
+            .set("width", "120px")
             .expect("content width");
-        root.set_attr_str(content, "height", "100px")
+        root.style_mut(content)
+            .set("height", "100px")
             .expect("content tall height");
 
         let mut world = World::new();
@@ -2723,9 +2902,11 @@ mod tests {
 
         update(&mut root, &mut world, parent, 16.0).expect("first composite update");
 
-        root.set_attr_str(content, "height", "20px")
+        root.style_mut(content)
+            .set("height", "20px")
             .expect("content short height");
-        root.set_attr_str(clipped_root, "color", "#ffffff")
+        root.style_mut(clipped_root)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         update(&mut root, &mut world, parent, 32.0).expect("second composite update");
 
@@ -2824,9 +3005,11 @@ mod tests {
             .expect("append content");
         root.set_attr_str(clipped_root, "class", "scroll-hidden")
             .expect("hidden class");
-        root.set_attr_str(content, "width", "120px")
+        root.style_mut(content)
+            .set("width", "120px")
             .expect("content width");
-        root.set_attr_str(content, "height", "100px")
+        root.style_mut(content)
+            .set("height", "100px")
             .expect("content height");
 
         let mut world = World::new();
@@ -2890,9 +3073,11 @@ mod tests {
             .expect("append content");
         root.set_attr_str(clipped_root, "class", class_name)
             .expect("clipped root class");
-        root.set_attr_str(content, "width", "120px")
+        root.style_mut(content)
+            .set("width", "120px")
             .expect("content width");
-        root.set_attr_str(content, "height", "100px")
+        root.style_mut(content)
+            .set("height", "100px")
             .expect("content tall height");
 
         let mut world = World::new();
@@ -3034,11 +3219,14 @@ mod tests {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let layer = root.create_element(DomTag::Div).expect("layer");
         root.append_child(root.root, layer).expect("append layer");
-        root.set_attr_str(layer, "position", "fixed")
+        root.style_mut(layer)
+            .set("position", "fixed")
             .expect("layer position");
-        root.set_attr_str(layer, "width", "120px")
+        root.style_mut(layer)
+            .set("width", "120px")
             .expect("layer width");
-        root.set_attr_str(layer, "height", "40px")
+        root.style_mut(layer)
+            .set("height", "40px")
             .expect("layer height");
 
         let mut world = World::new();

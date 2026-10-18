@@ -42,15 +42,15 @@ mod tests {
     #[test]
     fn matches_only_for_intrinsic_relevant_attributes() {
         let none = DomAfterAttrWriteIntrinsicUpdate::None;
-        assert!(!none.matches(&DomAttribute::Width));
+        assert!(!none.matches(&DomAttribute::Src));
         assert!(!none.matches(&DomAttribute::Class));
 
         let relevant = DomAfterAttrWriteIntrinsicUpdate::AttributeList(smallvec![
-            DomAttribute::Width,
-            DomAttribute::Height,
+            DomAttribute::Src,
+            DomAttribute::Value,
         ]);
-        assert!(relevant.matches(&DomAttribute::Width));
-        assert!(relevant.matches(&DomAttribute::Height));
+        assert!(relevant.matches(&DomAttribute::Src));
+        assert!(relevant.matches(&DomAttribute::Value));
         assert!(!relevant.matches(&DomAttribute::Class));
     }
 }

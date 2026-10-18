@@ -167,7 +167,7 @@ render executor while keeping the caller-owned source buffer retained outside
 
 `ui-dom` should be understood like a browser engine with an authored DOM input and retained derived pipelines.
 
-- outsiders edit DOM nodes and DOM attributes
+- outsiders edit DOM nodes, content attributes, and style declarations
 - outsiders also provide one Bevy parent entity as an anchor so `ui-dom` can place its presented output in the correct 2D/3D space
 - Bevy is not the source of truth for layout, paint, or ordering decisions
 
@@ -180,7 +180,7 @@ Internally, DOM edits mark one or more retained dirty flags on nodes:
 
 Those flags drive the internal sync pipelines on the next frame. The pipelines are separate on purpose:
 
-- style recomputes matched rules and resolved attributes for dirty layer-root subtrees; insertions, style-affecting attribute changes, pseudo-state changes, and stylesheet revisions all propagate style dirtiness up to the enclosing layer root
+- style resolves declarations from every source (inline `style_mut`/`style` attribute, matched stylesheet rules, the behavior sheet) into the node's computed groups for dirty layer-root subtrees — one pass, one timing; see `src/domains/style/README.md` and `src/domains/visitor/README.md`
 - layout updates the retained geometric results for one layout tree
 - paint draws directly into the Bevy image owned by one composite layer
 - composite arranges owned layers relative to the foreign anchor parent and in the correct sibling order

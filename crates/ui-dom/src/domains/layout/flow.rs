@@ -54,6 +54,10 @@ use crate::domains::layout::walker::relayout_tree;
 #[cfg(test)]
 use crate::domains::layout::{IdentityDomLayoutResolver, node_box};
 #[cfg(test)]
+use crate::domains::style::computed::{ComputedGroups, DisplayKw, OverflowKw, PositionKw};
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
 use crate::types::{BoxEdgeInsets, DomAttribute, DomAttributeValue, RootDomContext};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -259,9 +263,7 @@ where
                 .nodes
                 .get(current_child_key)
                 .ok_or(DomError::InvalidNodeKey)?;
-            let child_inherited_style =
-                inherited_context_from_node(child_node, &child_context.inherited_style)?;
-            node_style(child_node, &child_inherited_style)?
+            node_style(child_node)?
         };
         let child_participates_in_flow = node_participates_in_normal_flow(child_style);
         let collapsed_parent_top_margin_px =
@@ -354,9 +356,7 @@ where
                 .nodes
                 .get(current_child_key)
                 .ok_or(DomError::InvalidNodeKey)?;
-            let child_inherited_style =
-                inherited_context_from_node(child_node, &child_context.inherited_style)?;
-            node_style(child_node, &child_inherited_style)?
+            node_style(child_node)?
         };
         let child_participates_in_flow = node_participates_in_normal_flow(child_style);
         let next_child_context = if child_participates_in_flow {
@@ -1276,8 +1276,8 @@ fn separate_tree_flow_size(
     inherited_style: &InheritedStyleContext,
     image_size_px: (f32, f32),
 ) -> Result<FlowSize, DomError> {
-    let node_inherited_style = inherited_context_from_node(node, inherited_style)?;
-    let style = node_style(node, &node_inherited_style)?;
+    let node_inherited_style = inherited_context_from_node(node, inherited_style);
+    let style = node_style(node)?;
     if style.display == LayoutDisplay::None
         || matches!(style.position, PositionMode::Absolute | PositionMode::Fixed)
     {
@@ -1385,8 +1385,8 @@ pub(super) fn resolved_node_style(
     inherited_style: &InheritedStyleContext,
 ) -> Result<(NodeStyle, InheritedStyleContext), DomError> {
     let node = root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
-    let node_inherited_style = inherited_context_from_node(node, inherited_style)?;
-    let style = node_style(node, &node_inherited_style)?;
+    let node_inherited_style = inherited_context_from_node(node, inherited_style);
+    let style = node_style(node)?;
     Ok((style, node_inherited_style))
 }
 
@@ -1921,20 +1921,14 @@ mod tests {
         )
         .expect("src should set");
         if let Some(width) = width {
-            root.set_attr(
-                img_key,
-                DomAttribute::Width,
-                Some(DomAttributeValue::String(width.to_string())),
-            )
-            .expect("width should set");
+            root.style_mut(img_key)
+                .set("width", width)
+                .expect("width should set");
         }
         if let Some(height) = height {
-            root.set_attr(
-                img_key,
-                DomAttribute::Height,
-                Some(DomAttributeValue::String(height.to_string())),
-            )
-            .expect("height should set");
+            root.style_mut(img_key)
+                .set("height", height)
+                .expect("height should set");
         }
         (root, document_key, img_key)
     }
@@ -1953,13 +1947,12 @@ mod tests {
         }
     }
 
-    fn node_with_attr(attribute: DomAttribute, value: &str) -> DomNode {
+    fn node_with_groups<F: FnOnce(&mut ComputedGroups)>(update: F) -> DomNode {
         let mut node = div_node();
-        node.set_attr(
-            attribute,
-            Some(DomAttributeValue::String(value.to_string())),
-        )
-        .expect("attribute should set");
+        match &mut node {
+            DomNode::Element(element) => update(&mut element.base.presentation.computed),
+            _ => unreachable!("flow tests feed element nodes"),
+        }
         node
     }
 
@@ -1999,9 +1992,7 @@ mod tests {
     }
 
     fn resolved_node_style(node: &DomNode) -> NodeStyle {
-        let inherited =
-            inherited_context_from_node(node, &default_inherited_style()).expect("node context");
-        node_style(node, &inherited).expect("node style")
+        node_style(node).expect("node style")
     }
 
     #[test]
@@ -2028,31 +2019,19 @@ mod tests {
 
     #[test]
     fn content_width_uses_available_width_for_block_and_intrinsic_for_inline() {
-        let mut block = div_node();
-        block
-            .set_attr(
-                DomAttribute::MarginLeft,
-                Some(DomAttributeValue::String("6px".to_string())),
-            )
-            .expect("margin-left");
-        block
-            .set_attr(
-                DomAttribute::PaddingRight,
-                Some(DomAttributeValue::String("4px".to_string())),
-            )
-            .expect("padding-right");
+        let block = node_with_groups(|groups| {
+            // `margin`/`padding` are [top, right, bottom, left].
+            groups.box_.margin[3] = 6.0; // margin-left
+            groups.box_.padding[1] = 4.0; // padding-right
+        });
         let block_style = resolved_node_style(&block);
         let block_width =
             resolve_content_width(block_style, Some(100.0), intrinsic_box(40.0, 12.0));
         assert_close(block_width, 90.0);
 
-        let mut inline = div_node();
-        inline
-            .set_attr(
-                DomAttribute::Display,
-                Some(DomAttributeValue::String("inline".to_string())),
-            )
-            .expect("inline display");
+        let inline = node_with_groups(|groups| {
+            groups.box_.display = DisplayKw::Inline;
+        });
         let inline_style = resolved_node_style(&inline);
         let inline_width =
             resolve_content_width(inline_style, Some(100.0), intrinsic_box(40.0, 12.0));
@@ -2070,43 +2049,15 @@ mod tests {
 
     #[test]
     fn non_replaced_inline_size_properties_do_not_constrain_children_or_content_box() {
-        let mut inline = node_with_attr(DomAttribute::Display, "inline");
-        inline
-            .set_attr(
-                DomAttribute::Width,
-                Some(DomAttributeValue::String("20px".to_string())),
-            )
-            .expect("width");
-        inline
-            .set_attr(
-                DomAttribute::Height,
-                Some(DomAttributeValue::String("40px".to_string())),
-            )
-            .expect("height");
-        inline
-            .set_attr(
-                DomAttribute::MinWidth,
-                Some(DomAttributeValue::String("10px".to_string())),
-            )
-            .expect("min-width");
-        inline
-            .set_attr(
-                DomAttribute::MinHeight,
-                Some(DomAttributeValue::String("12px".to_string())),
-            )
-            .expect("min-height");
-        inline
-            .set_attr(
-                DomAttribute::MaxWidth,
-                Some(DomAttributeValue::String("14px".to_string())),
-            )
-            .expect("max-width");
-        inline
-            .set_attr(
-                DomAttribute::MaxHeight,
-                Some(DomAttributeValue::String("16px".to_string())),
-            )
-            .expect("max-height");
+        let inline = node_with_groups(|groups| {
+            groups.box_.display = DisplayKw::Inline;
+            groups.box_.width = Some(20.0);
+            groups.box_.height = Some(40.0);
+            groups.box_.min_width = Some(10.0);
+            groups.box_.min_height = Some(12.0);
+            groups.box_.max_width = Some(14.0);
+            groups.box_.max_height = Some(16.0);
+        });
         let inline_style = resolved_node_style(&inline);
 
         assert!(node_defers_child_width_to_intrinsic_inline_measurement(
@@ -2122,20 +2073,19 @@ mod tests {
         assert_eq!(applicable_inline_style.max_width_px, None);
         assert_eq!(applicable_inline_style.max_height_px, None);
 
-        let inline_block = node_with_attr(DomAttribute::Display, "inline-block");
+        let inline_block = node_with_groups(|groups| {
+            groups.box_.display = DisplayKw::InlineBlock;
+        });
         assert!(node_defers_child_width_to_intrinsic_inline_measurement(
             resolved_node_style(&inline_block),
             None,
             None
         ));
 
-        let mut explicit_inline_block = node_with_attr(DomAttribute::Display, "inline-block");
-        explicit_inline_block
-            .set_attr(
-                DomAttribute::Width,
-                Some(DomAttributeValue::String("20px".to_string())),
-            )
-            .expect("width");
+        let explicit_inline_block = node_with_groups(|groups| {
+            groups.box_.display = DisplayKw::InlineBlock;
+            groups.box_.width = Some(20.0);
+        });
         assert!(!node_defers_child_width_to_intrinsic_inline_measurement(
             resolved_node_style(&explicit_inline_block),
             None,
@@ -2152,43 +2102,14 @@ mod tests {
 
     #[test]
     fn block_auto_width_subtracts_all_non_content_edges() {
-        let mut block = div_node();
-        block
-            .set_attr(
-                DomAttribute::MarginLeft,
-                Some(DomAttributeValue::String("4px".to_string())),
-            )
-            .expect("margin-left");
-        block
-            .set_attr(
-                DomAttribute::MarginRight,
-                Some(DomAttributeValue::String("6px".to_string())),
-            )
-            .expect("margin-right");
-        block
-            .set_attr(
-                DomAttribute::PaddingLeft,
-                Some(DomAttributeValue::String("3px".to_string())),
-            )
-            .expect("padding-left");
-        block
-            .set_attr(
-                DomAttribute::PaddingRight,
-                Some(DomAttributeValue::String("2px".to_string())),
-            )
-            .expect("padding-right");
-        block
-            .set_attr(
-                DomAttribute::BorderLeft,
-                Some(DomAttributeValue::String("1px".to_string())),
-            )
-            .expect("border-left");
-        block
-            .set_attr(
-                DomAttribute::BorderRight,
-                Some(DomAttributeValue::String("5px".to_string())),
-            )
-            .expect("border-right");
+        let block = node_with_groups(|groups| {
+            groups.box_.margin[3] = 4.0; // margin-left
+            groups.box_.margin[1] = 6.0; // margin-right
+            groups.box_.padding[3] = 3.0; // padding-left
+            groups.box_.padding[1] = 2.0; // padding-right
+            groups.box_.border_width[3] = 1.0; // border-left
+            groups.box_.border_width[1] = 5.0; // border-right
+        });
 
         let content_width_px = resolve_content_width(
             resolved_node_style(&block),
@@ -2201,22 +2122,11 @@ mod tests {
 
     #[test]
     fn explicit_width_and_clamps_stay_consistent() {
-        let mut node = div_node();
-        node.set_attr(
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("10px".to_string())),
-        )
-        .expect("width");
-        node.set_attr(
-            DomAttribute::MinWidth,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("min-width");
-        node.set_attr(
-            DomAttribute::MaxWidth,
-            Some(DomAttributeValue::String("30px".to_string())),
-        )
-        .expect("max-width");
+        let node = node_with_groups(|groups| {
+            groups.box_.width = Some(10.0);
+            groups.box_.min_width = Some(20.0);
+            groups.box_.max_width = Some(30.0);
+        });
 
         let content_width_px = resolve_content_width(
             resolved_node_style(&node),
@@ -2230,20 +2140,18 @@ mod tests {
 
     #[test]
     fn separate_tree_flow_size_skips_out_of_flow_and_display_none_nodes() {
-        let mut absolute = div_node();
-        absolute
-            .set_attr(
-                DomAttribute::Position,
-                Some(DomAttributeValue::String("absolute".to_string())),
-            )
-            .expect("absolute");
+        let absolute = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Absolute;
+        });
         let absolute_flow =
             separate_tree_flow_size(&absolute, &default_inherited_style(), (20.0, 10.0))
                 .expect("absolute flow");
         assert_close(absolute_flow.width_px, 0.0);
         assert_close(absolute_flow.height_px, 0.0);
 
-        let hidden = node_with_attr(DomAttribute::Display, "none");
+        let hidden = node_with_groups(|groups| {
+            groups.box_.display = DisplayKw::None;
+        });
         let hidden_flow =
             separate_tree_flow_size(&hidden, &default_inherited_style(), (20.0, 10.0))
                 .expect("hidden flow");
@@ -2253,25 +2161,11 @@ mod tests {
 
     #[test]
     fn separate_tree_flow_size_keeps_in_flow_hidden_overflow_nodes() {
-        let mut hidden = div_node();
-        hidden
-            .set_attr(
-                DomAttribute::Overflow,
-                Some(DomAttributeValue::String("hidden".to_string())),
-            )
-            .expect("overflow");
-        hidden
-            .set_attr(
-                DomAttribute::Width,
-                Some(DomAttributeValue::String("24px".to_string())),
-            )
-            .expect("width");
-        hidden
-            .set_attr(
-                DomAttribute::Height,
-                Some(DomAttributeValue::String("12px".to_string())),
-            )
-            .expect("height");
+        let hidden = node_with_groups(|groups| {
+            groups.box_.overflow = OverflowKw::Hidden;
+            groups.box_.width = Some(24.0);
+            groups.box_.height = Some(12.0);
+        });
         let flow = separate_tree_flow_size(&hidden, &default_inherited_style(), (20.0, 10.0))
             .expect("hidden flow");
         assert_close(flow.width_px, 24.0);
@@ -2280,43 +2174,15 @@ mod tests {
 
     #[test]
     fn separate_tree_flow_size_keeps_relative_nodes_in_normal_flow() {
-        let mut relative = node_with_attr(DomAttribute::Position, "relative");
-        relative
-            .set_attr(
-                DomAttribute::Width,
-                Some(DomAttributeValue::String("10px".to_string())),
-            )
-            .expect("width");
-        relative
-            .set_attr(
-                DomAttribute::Height,
-                Some(DomAttributeValue::String("12px".to_string())),
-            )
-            .expect("height");
-        relative
-            .set_attr(
-                DomAttribute::MarginLeft,
-                Some(DomAttributeValue::String("2px".to_string())),
-            )
-            .expect("margin-left");
-        relative
-            .set_attr(
-                DomAttribute::MarginRight,
-                Some(DomAttributeValue::String("3px".to_string())),
-            )
-            .expect("margin-right");
-        relative
-            .set_attr(
-                DomAttribute::MarginTop,
-                Some(DomAttributeValue::String("4px".to_string())),
-            )
-            .expect("margin-top");
-        relative
-            .set_attr(
-                DomAttribute::MarginBottom,
-                Some(DomAttributeValue::String("5px".to_string())),
-            )
-            .expect("margin-bottom");
+        let relative = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Relative;
+            groups.box_.width = Some(10.0);
+            groups.box_.height = Some(12.0);
+            groups.box_.margin[3] = 2.0; // margin-left
+            groups.box_.margin[1] = 3.0; // margin-right
+            groups.box_.margin[0] = 4.0; // margin-top
+            groups.box_.margin[2] = 5.0; // margin-bottom
+        });
 
         let flow = separate_tree_flow_size(&relative, &default_inherited_style(), (20.0, 10.0))
             .expect("relative flow");
@@ -2340,24 +2206,32 @@ mod tests {
             .append_child(scroll_root, second_item)
             .expect("append second item");
         root_dom
-            .set_attr_str(scroll_root, "width", "80px")
+            .style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
         root_dom
-            .set_attr_str(scroll_root, "height", "40px")
+            .style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
         root_dom
-            .set_attr_str(first_item, "width", "80px")
+            .style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
         root_dom
-            .set_attr_str(first_item, "height", "40px")
+            .style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
         root_dom
-            .set_attr_str(second_item, "width", "80px")
+            .style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
         root_dom
-            .set_attr_str(second_item, "height", "40px")
+            .style_mut(second_item)
+            .set("height", "40px")
             .expect("second height");
-
+        let document_key = root_dom.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root_dom, document_key)
+            .expect("style pass");
         let mut resolver = IdentityDomLayoutResolver;
         relayout_tree_walker_node(
             &mut root_dom,
@@ -2394,8 +2268,12 @@ mod tests {
 
     #[test]
     fn absolute_and_fixed_offsets_use_their_expected_reference_spaces() {
-        let absolute = node_with_attr(DomAttribute::Position, "absolute");
-        let fixed = node_with_attr(DomAttribute::Position, "fixed");
+        let absolute = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Absolute;
+        });
+        let fixed = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Fixed;
+        });
 
         let absolute_left_px = resolve_local_left(
             resolved_node_style(&absolute),
@@ -2416,8 +2294,12 @@ mod tests {
 
     #[test]
     fn nested_out_of_flow_layer_offsets_ignore_non_layer_parent_absolute_position() {
-        let absolute = node_with_attr(DomAttribute::Position, "absolute");
-        let fixed = node_with_attr(DomAttribute::Position, "fixed");
+        let absolute = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Absolute;
+        });
+        let fixed = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Fixed;
+        });
         let mut context = base_context();
         context.parent_absolute_left_px = 80.0;
         context.parent_absolute_top_px = 80.0;
@@ -2455,19 +2337,11 @@ mod tests {
 
     #[test]
     fn right_and_bottom_offsets_pin_against_available_space() {
-        let mut absolute = node_with_attr(DomAttribute::Position, "absolute");
-        absolute
-            .set_attr(
-                DomAttribute::Right,
-                Some(DomAttributeValue::String("12px".to_string())),
-            )
-            .expect("right");
-        absolute
-            .set_attr(
-                DomAttribute::Bottom,
-                Some(DomAttributeValue::String("14px".to_string())),
-            )
-            .expect("bottom");
+        let absolute = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Absolute;
+            groups.box_.right = Some(12.0);
+            groups.box_.bottom = Some(14.0);
+        });
 
         let style = resolved_node_style(&absolute);
         let context = base_context();
@@ -2536,13 +2410,10 @@ mod tests {
 
     #[test]
     fn layout_flow_size_ignores_absolute_and_fixed_nodes() {
-        let mut absolute = node_with_attr(DomAttribute::Position, "absolute");
-        absolute
-            .set_attr(
-                DomAttribute::MarginLeft,
-                Some(DomAttributeValue::String("5px".to_string())),
-            )
-            .expect("margin-left");
+        let absolute = node_with_groups(|groups| {
+            groups.box_.position = PositionKw::Absolute;
+            groups.box_.margin[3] = 5.0; // margin-left
+        });
 
         let style = resolved_node_style(&absolute);
         let box_model = DomBoxModel {
@@ -2646,6 +2517,8 @@ mod tests {
     fn separate_tree_and_normal_layout_both_use_img_ratio_for_one_sided_sizes() {
         let (mut width_root, width_document_key, width_img_key) =
             img_root_with_attrs(Some("320px"), None);
+        recompute_dirty_style_subtree_for_layer_root(&mut width_root, width_document_key)
+            .expect("width style pass");
         let width_node = width_root
             .node(width_img_key)
             .expect("img should exist")
@@ -2669,6 +2542,8 @@ mod tests {
 
         let (mut height_root, height_document_key, height_img_key) =
             img_root_with_attrs(None, Some("45px"));
+        recompute_dirty_style_subtree_for_layer_root(&mut height_root, height_document_key)
+            .expect("height style pass");
         let height_node = height_root
             .node(height_img_key)
             .expect("img should exist")

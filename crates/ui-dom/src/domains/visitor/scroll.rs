@@ -87,29 +87,41 @@ mod tests {
         root.append_child(root.root, top_overlay)
             .expect("append top overlay");
 
-        root.set_attr_str(scroll_root, "overflow", "scroll")
+        root.style_mut(scroll_root)
+            .set("overflow", "scroll")
             .expect("scroll overflow");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "80px")
+        root.style_mut(second_item)
+            .set("height", "80px")
             .expect("second height");
-        root.set_attr_str(top_overlay, "position", "absolute")
+        root.style_mut(top_overlay)
+            .set("position", "absolute")
             .expect("overlay layer");
-        root.set_attr_str(top_overlay, "left", "0px")
+        root.style_mut(top_overlay)
+            .set("left", "0px")
             .expect("overlay left");
-        root.set_attr_str(top_overlay, "top", "0px")
+        root.style_mut(top_overlay)
+            .set("top", "0px")
             .expect("overlay top");
-        root.set_attr_str(top_overlay, "width", "80px")
+        root.style_mut(top_overlay)
+            .set("width", "80px")
             .expect("overlay width");
-        root.set_attr_str(top_overlay, "height", "80px")
+        root.style_mut(top_overlay)
+            .set("height", "80px")
             .expect("overlay height");
 
         let mut world = World::new();
@@ -165,19 +177,26 @@ mod tests {
         root.append_child(scroll_root, second_item)
             .expect("append second item");
 
-        root.set_attr_str(scroll_root, "overflow", "auto")
+        root.style_mut(scroll_root)
+            .set("overflow", "auto")
             .expect("auto overflow");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "80px")
+        root.style_mut(second_item)
+            .set("height", "80px")
             .expect("second height");
 
         let mut world = World::new();
@@ -227,19 +246,26 @@ mod tests {
         root.append_child(scroll_root, second_item)
             .expect("append second item");
 
-        root.set_attr_str(scroll_root, "overflow", "hidden")
+        root.style_mut(scroll_root)
+            .set("overflow", "hidden")
             .expect("hidden overflow");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "80px")
+        root.style_mut(second_item)
+            .set("height", "80px")
             .expect("second height");
 
         let mut world = World::new();
@@ -284,7 +310,8 @@ mod tests {
         root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("auto overflow proof should present once before wheel update");
 
-        root.set_attr_str(scroll_root, "color", "#ffffff")
+        root.style_mut(scroll_root)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         root.update(&mut world, 1.0, DomPointerUpdate::Unchanged)
             .expect("style recompute update should succeed");
@@ -317,7 +344,8 @@ mod tests {
         root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("hidden overflow proof should present once before wheel update");
 
-        root.set_attr_str(scroll_root, "color", "#ffffff")
+        root.style_mut(scroll_root)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         root.update(&mut world, 1.0, DomPointerUpdate::Unchanged)
             .expect("style recompute update should succeed");
@@ -364,13 +392,17 @@ mod tests {
             .expect("append second item");
         root.set_attr_str(scroll_root, "class", "scroll-hidden")
             .expect("hidden class");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "80px")
+        root.style_mut(second_item)
+            .set("height", "80px")
             .expect("second height");
 
         let mut world = World::new();
@@ -443,19 +475,26 @@ mod tests {
         root.append_child(clipped_root, second_item)
             .expect("append second item");
 
-        root.set_attr_str(clipped_root, "overflow", "clip")
+        root.style_mut(clipped_root)
+            .set("overflow", "clip")
             .expect("clip overflow");
-        root.set_attr_str(clipped_root, "width", "80px")
+        root.style_mut(clipped_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(clipped_root, "height", "40px")
+        root.style_mut(clipped_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "80px")
+        root.style_mut(second_item)
+            .set("height", "80px")
             .expect("second height");
 
         let mut world = World::new();
@@ -509,30 +548,42 @@ mod tests {
             root.append_child(content, *row).expect("append row");
         }
 
-        root.set_attr_str(parent_layer, "position", "relative")
+        root.style_mut(parent_layer)
+            .set("position", "relative")
             .expect("parent position");
-        root.set_attr_str(parent_layer, "width", "20px")
+        root.style_mut(parent_layer)
+            .set("width", "20px")
             .expect("parent width");
-        root.set_attr_str(parent_layer, "height", "20px")
+        root.style_mut(parent_layer)
+            .set("height", "20px")
             .expect("parent height");
-        root.set_attr_str(scroll_root, "position", "absolute")
+        root.style_mut(scroll_root)
+            .set("position", "absolute")
             .expect("scroll position");
-        root.set_attr_str(scroll_root, "left", "100px")
+        root.style_mut(scroll_root)
+            .set("left", "100px")
             .expect("scroll left");
-        root.set_attr_str(scroll_root, "top", "100px")
+        root.style_mut(scroll_root)
+            .set("top", "100px")
             .expect("scroll top");
-        root.set_attr_str(scroll_root, "width", "160px")
+        root.style_mut(scroll_root)
+            .set("width", "160px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "120px")
+        root.style_mut(scroll_root)
+            .set("height", "120px")
             .expect("scroll height");
-        root.set_attr_str(scroll_root, "overflow", "scroll")
+        root.style_mut(scroll_root)
+            .set("overflow", "scroll")
             .expect("scroll overflow");
-        root.set_attr_str(content, "width", "160px")
+        root.style_mut(content)
+            .set("width", "160px")
             .expect("content width");
         for row in &rows {
-            root.set_attr_str(*row, "width", "160px")
+            root.style_mut(*row)
+                .set("width", "160px")
                 .expect("row width");
-            root.set_attr_str(*row, "height", "40px")
+            root.style_mut(*row)
+                .set("height", "40px")
                 .expect("row height");
         }
 
@@ -631,7 +682,8 @@ mod tests {
         root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("clip overflow proof should present once before wheel update");
 
-        root.set_attr_str(scroll_root, "color", "#ffffff")
+        root.style_mut(scroll_root)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         root.update(&mut world, 1.0, DomPointerUpdate::Unchanged)
             .expect("style recompute update should succeed");
@@ -679,13 +731,17 @@ mod tests {
 
         root.set_attr_str(scroll_root, "class", class_name)
             .expect("scroll class");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "80px")
+        root.style_mut(second_item)
+            .set("height", "80px")
             .expect("second height");
 
         let mut world = World::new();

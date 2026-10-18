@@ -46,7 +46,7 @@ pub use identity_dom_layout_resolver::IdentityDomLayoutResolver;
 
 pub use walker::{node_box, node_layout_dirty, node_paint_dirty, root_key};
 
-pub(crate) use style::{layer_kind_for_node, node_box_from_ref};
+pub(crate) use style::{layer_kind_for_node, node_box_from_ref, parse_translate};
 #[allow(unused_imports)]
 pub(crate) use walker::{
     layer_offset_from_dom_climb, relative_offset_for_node, relayout_tree,

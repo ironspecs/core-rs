@@ -9,8 +9,8 @@
 //! - canonical layout stays limited to intrinsic, available, and used sizes
 
 use ui_dom::{
-    DomAttribute, DomAttributeValue, DomCanonicalLayoutSnapshot, DomCanonicalSnapshot,
-    DomCanonicalStyleSnapshot, DomIntrinsic, TextIntrinsic,
+    DomAttributeValue, DomCanonicalLayoutSnapshot, DomCanonicalSnapshot, DomCanonicalStyleSnapshot,
+    DomIntrinsic, DomTag, RootDom, RootDomContext, TextIntrinsic,
 };
 
 #[test]
@@ -21,17 +21,26 @@ fn canonical_style_snapshot_fixture_matches_public_wire_shape() {
     let expected = DomCanonicalStyleSnapshot {
         styles: vec![
             (
-                DomAttribute::Width,
+                "width".to_string(),
                 DomAttributeValue::String("14px".to_string()),
             ),
             (
-                DomAttribute::Custom("color".to_string()),
+                "color".to_string(),
                 DomAttributeValue::Color([1.0, 1.0, 1.0, 1.0]),
             ),
         ],
     };
 
     assert_eq!(snapshot, expected);
+
+    // The production surface resolves the same list from style_mut writes:
+    // `canonical_style_snapshot` serializes the node's inline declarations in
+    // block order to the (property-name, value) wire shape.
+    let mut root = RootDom::new(RootDomContext::new_cpu());
+    let node = root.create_element(DomTag::Div).expect("div");
+    root.style_mut(node).set("width", "14px").expect("width");
+    root.style_mut(node).set("color", "#ffffff").expect("color");
+    assert_eq!(root.canonical_style_snapshot(node), expected);
 
     let serialized = serde_json::to_value(&snapshot).expect("style snapshot should serialize");
     let fixture_value: serde_json::Value =
@@ -74,11 +83,11 @@ fn canonical_snapshot_fixture_matches_public_wire_shape() {
         style: DomCanonicalStyleSnapshot {
             styles: vec![
                 (
-                    DomAttribute::Width,
+                    "width".to_string(),
                     DomAttributeValue::String("14px".to_string()),
                 ),
                 (
-                    DomAttribute::Custom("color".to_string()),
+                    "color".to_string(),
                     DomAttributeValue::Color([1.0, 1.0, 1.0, 1.0]),
                 ),
             ],

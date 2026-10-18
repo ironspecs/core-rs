@@ -14,9 +14,15 @@ and write retained node state through `RootDom`.
 ## Ownership boundaries
 
 - `style_recompute.rs` owns the dirty-subtree style recompute visitor.
-- `inherited_style.rs` owns the ancestor seed climb shared by the style and
-  layout passes; `inherited_style_context.rs` owns the resolved
-  `InheritedStyleContext` record the climb produces.
+- `winners_fold.rs` owns the per-element typed winners fold (spine 3.3g-2a): it
+  folds the behavior sheets, matched rules, and inline block into a winners
+  array, then RESOLVES and WRITES the seven computed groups plus the
+  transition-longhand slot directly on the node record. There is no legacy-map
+  rebuild and no `apply_styles`.
+- `inherited_style.rs` owns the ancestor group seed shared by the style,
+  layout, and paint passes; `inherited_style_context.rs` owns the resolved
+  `InheritedStyleContext` record (the three inherited groups) the seed
+  produces.
 - `event_target.rs`, `pseudo_state.rs`, `scroll.rs` own pointer targeting,
   pseudo-state tracking, and scroll application.
 
@@ -63,19 +69,34 @@ back-pointer from the shared runtime to its roots can exist.
 
 `style_recompute.rs` runs, per dirty layer-root subtree:
 
-1. Seed an `InheritedStyleContext` by climbing ancestors outside the layer
-   root, capturing only the transmitting inherited properties.
+1. Seed an `InheritedStyleContext` by climbing to the nearest ancestor element
+   outside the layer root and reading its three inherited groups.
 2. Walk the subtree in DFS, carrying only traversal-local inherited state.
 3. Match stylesheet rules for each element in the same visit.
-4. Build the element's effective stylesheet-owned map from the carried
-   inherited state plus the matched declarations.
-5. Apply that map onto retained node attrs via `RootDom::apply_styles`, so
-   style writes ride the same dirty-flag invalidation as authored writes.
-6. Derive the child traversal state from the element's effective retained
-   result, including transition-presented values.
+4. Fold the element's TYPED winners — the unconditional base behavior sheet,
+   the active pseudo-state behavior sheet, matched rules (ascending
+   precedence), then the inline block — and resolve + write the seven computed
+   groups and the transition-longhand slot directly on the node record
+   (`winners_fold.rs`). This is the ONLY channel from the cascade to the
+   computed groups: the legacy attr-projection channel is dead.
+5. Diff the freshly resolved groups against the last completed pass's groups
+   (`NodePresentation::previous_computed`, captured before the fold). The diff
+   drives two things (spine 3.3g-1b, D2 one-timing): pass-driven transition
+   scheduling for the moved fields (the change is detected at the style update,
+   not the write) and A7's group-diff dirty classification. The first pass
+   establishes the baseline without diffing, so initial style application never
+   schedules a transition — but the baseline still re-evaluates layer
+   membership (a freshly styled `position: fixed` node needs its layer
+   materialized now that the write path no longer queues it).
+6. Derive the child traversal state from the freshly resolved groups.
 7. Remeasure text-node intrinsic metrics from the carried effective text
    style in the same visit.
 8. Clear style dirtiness for each visited node.
+
+The base (unconditional) behavior sheet is applied at element creation (like
+the legacy `default_attrs` `display` it replaces) and is also folded as the
+lowest cascade tier, so it is the winner only when no author rule or inline
+declaration overrode it.
 
 Hard rule: the live recompute path must not call `RootDom::compute_style_map`;
 the one-off query API and the retained recompute path stay independent for
@@ -83,17 +104,33 @@ architecture and performance.
 
 ## The inheritance model
 
-`InheritedStyleContext` is a closed eight-property record: `color`,
-`font-size`, `line-height`, `text-align`, `direction`, `white-space`,
-`overflow-wrap`, `word-break`. The ancestor climb is first-set-wins per
-property with early exit once every property is known; `em` chains accumulate
-into a pending scale that resolves against the nearest absolute ancestor font
-size, and unitless `line-height` resolves after the font-size seed. Inherited
-values are materialized into descendant node attrs during recompute, keeping
-retained node attrs the single source of truth for layout and paint.
+Since spine step 3.3d, inheritance is group-copy (A5, CSS Cascade §7): the
+three inherited computed groups — font (`font-size`, `line-height`,
+`font-family`, `font-weight`, `font-style`), text (`text-align`, `direction`,
+`white-space`, `overflow-wrap`, `word-break`), and color (`color`) — seed from
+the parent element's groups, and the four non-inherited groups (box, flex,
+visual, transform) start from `initial()`. `InheritedStyleContext` is a thin,
+`Copy` wrapper over those three inherited groups, carried down the DFS.
 
-Adding a transmitting property is a cross-file change: the context record, the
-climber, the recompute visitor, and `tests/layout_proofs/` all move together.
+Two derivations feed it, both reading the overlay-merged computed groups (so a
+mid-flight transition on the parent is the inherited value — CSS Cascade §6.1):
+
+- `inherited_style_context_from_ancestors` seeds a layer-root subtree by
+  climbing to the nearest ancestor element and reading its three groups; with
+  no element ancestor (document root) the seed is `ComputedGroups::initial()`.
+- `inherited_context_from_node` derives a node's own carried context from its
+  freshly resolved groups; text nodes are never folded, so they inherit the
+  carried context unchanged.
+
+Inheritance is group-copy only: there is no attr materialization anymore — the
+legacy `seed_materialized_map` died with the attr-projection channel. The
+transmitting properties (color, font-size, line-height, white-space,
+overflow-wrap, word-break, and the rest) ride the inherited groups into text
+intrinsics and descendants, never through stored attrs.
+
+Adding a transmitting property is a cross-file change: the group record, the
+seed derivation, the projection resolver, the recompute visitor, and
+`tests/layout_proofs/` all move together.
 
 ## Invariants and rules
 
@@ -105,3 +142,8 @@ climber, the recompute visitor, and `tests/layout_proofs/` all move together.
   reaches into node internals directly.
 - Recompute decisions are recomputed from current retained state on every
   pass; no visitor caches per-node results for a later pass.
+- `StylePassNodeVisited` / `StylePassNodeChanged` price the style pass:
+  visited counts every element resolved (the winners fold + group resolution
+  cost); changed counts resolved elements whose computed groups changed
+  (consequence volume). Their ratio is the C1/C3 coarseness signal that gates
+  proposal J's matched-rule cache decision.

@@ -125,12 +125,42 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "hover-on update",
         WindowPin {
-            // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
-            // −1 allocation. The −128 bytes was a one-time macOS measurement
-            // recorded in commit 0f7a807; the durable pin is the −1
-            // allocation count.
-            allocations: 59,
-            deallocations: 59,
+            // declaration-store substrate: matched-rule attr_map clones
+            // eliminated; values format in place under one lock; the radius
+            // longhand read uses the non-allocating custom-attr lookup —
+            // PLAN.md spine step 2 (−10 allocations, −10 deallocations vs the
+            // pre-step pin of 59/59/0).
+            // spine step 3.3b (−1 allocation, −1 deallocation vs the pre-step
+            // pin of 49/49/0): `node_style` now reads the computed font group,
+            // so the block/inline child loops no longer compute the child's
+            // inherited context solely to feed `effective_font_size_px`; the
+            // removed `inherited_context_from_node` call dropped its one
+            // `inherited_color_attribute` "color" key String allocation.
+            // spine step 3.3c (−12 allocations, −12 deallocations vs the
+            // pre-step pin of 48/48/0): the element rect paint now reads the
+            // computed visual group (`background_rgba`, `border_rgba`, `radius`,
+            // `outline_*`) instead of the stringly `custom_color_attr_rgba`/
+            // `custom_length_attr_px` helpers, dropping one `DomAttribute::
+            // Custom` key String allocation per background/border-side/outline
+            // read (12 per painted element).
+            // spine step 3.3d (−5 allocations, −5 deallocations vs the pre-step
+            // pin of 36/36/0): `inherited_context_from_node` now reads the
+            // node's computed groups instead of `presented_attr`, dropping the
+            // `inherited_color_attribute` "color" key String it allocated on
+            // every remaining call site (paint walk + layout node entry).
+            // spine step 3.3g-1a typed winners fold (−9 allocations, −9
+            // deallocations vs the pre-step pin of 31/31/0): the fold resolves
+            // the stringly map from typed winners under one runtime lock, and
+            // the base display is applied at element creation rather than
+            // re-projected through the legacy map; the legacy map rebuild dies
+            // in 3.3g-2.
+            // declaration-store style system (PLAN.md spine 3.3g-2a, −6
+            // allocations, −6 deallocations vs the pre-step pin of 22/22/0):
+            // the style pass writes the seven computed groups directly on the
+            // node record; the per-attr write channel and its bookkeeping are
+            // deleted, and no matched-rule map rebuild remains.
+            allocations: 16,
+            deallocations: 16,
             reallocations: 0,
         },
         region.change(),
@@ -169,12 +199,38 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "append+update",
         WindowPin {
-            // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
-            // −1 allocation. The −128 bytes was a one-time macOS measurement
-            // recorded in commit 0f7a807; the durable pin is the −1
-            // allocation count.
-            allocations: 68,
-            deallocations: 66,
+            // declaration-store substrate: matched-rule attr_map clones
+            // eliminated; values format in place under one lock; the radius
+            // longhand read uses the non-allocating custom-attr lookup —
+            // PLAN.md spine step 2 (−6 allocations, −6 deallocations vs the
+            // pre-step pin of 68/66/2).
+            // spine step 3.3b (−3 allocations, −3 deallocations vs the pre-step
+            // pin of 62/60/2): three block/inline child-loop iterations
+            // (chip, warm, second) no longer compute the child inherited
+            // context solely for `effective_font_size_px`, dropping one
+            // `inherited_color_attribute` "color" key String allocation each.
+            // spine step 3.3c (−12 allocations, −12 deallocations vs the
+            // pre-step pin of 59/57/2): the element rect paint now reads the
+            // computed visual group, dropping the stringly
+            // `custom_color_attr_rgba`/`custom_length_attr_px` key Strings.
+            // spine step 3.3d (−11 allocations, −11 deallocations vs the
+            // pre-step pin of 47/45/2): `inherited_context_from_node` no longer
+            // allocates the `inherited_color_attribute` "color" key String on
+            // its remaining call sites (paint + layout node entries across the
+            // three styled chips' layout/paint visits).
+            // spine step 3.3g-1a typed winners fold (−20 allocations, −20
+            // deallocations vs the pre-step pin of 36/34/2): the fold resolves
+            // the stringly map from typed winners under one runtime lock, and
+            // the base display is applied at element creation rather than
+            // re-projected through the legacy map; the legacy map rebuild dies
+            // in 3.3g-2.
+            // declaration-store style system (PLAN.md spine 3.3g-2a, −8
+            // allocations, −8 deallocations vs the pre-step pin of 16/14/2):
+            // the style pass writes the seven computed groups directly on the
+            // node record; the per-attr write channel and its bookkeeping are
+            // deleted, and no matched-rule map rebuild remains.
+            allocations: 8,
+            deallocations: 8,
             reallocations: 2,
         },
         region.change(),
@@ -201,8 +257,25 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "class-toggle update",
         WindowPin {
-            allocations: 26,
-            deallocations: 27,
+            // declaration-store substrate: matched-rule attr_map clones
+            // eliminated; values format in place under one lock — PLAN.md
+            // spine step 2 (−5 allocations, −5 deallocations vs the pre-step
+            // pin of 26/27/0).
+            // spine step 3.3d (−1 allocation, −1 deallocation vs the pre-step
+            // pin of 21/22/0): the remaining `inherited_context_from_node`
+            // call sites no longer allocate the `inherited_color_attribute`
+            // "color" key String.
+            // spine step 3.3g-1a typed winners fold (−6 allocations, −6
+            // deallocations vs the pre-step pin of 20/21/0): the fold resolves
+            // the stringly map from typed winners under one runtime lock; the
+            // legacy map rebuild dies in 3.3g-2.
+            // declaration-store style system (PLAN.md spine 3.3g-2a, −6
+            // allocations, −6 deallocations vs the pre-step pin of 14/15/0):
+            // the style pass writes the seven computed groups directly on the
+            // node record; the per-attr write channel and its bookkeeping are
+            // deleted, and no matched-rule map rebuild remains.
+            allocations: 8,
+            deallocations: 9,
             reallocations: 0,
         },
         region.change(),
@@ -215,7 +288,7 @@ fn allocation_windows_match_baseline_after_warmup() {
     let (mut world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let block = support::assert_append_div_to(&mut root, document_root);
-    support::assert_set_attr_str(&mut root, block, "width", "80px");
+    support::assert_style_set(&mut root, block, "width", "80px");
     let text = support::assert_append_text_to(&mut root, block, "one two three four");
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     root.set_text_content(text, "five six seven eight")
@@ -228,15 +301,29 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "text-rewrap update",
         WindowPin {
-            // C1 move-only ops remove the paint plan clone (PLAN.md §4.4 C1):
-            // −2 allocations, −2 deallocations. The plan owns one rect Vec and
-            // one text-run Vec; the −1 reallocation is the allocator's
-            // second-order response to the removed allocations (a shaping
-            // buffer growth shifts from realloc-in-place to a fresh alloc), not
-            // a separate production change. (The −768 reallocated bytes was a
-            // one-time measurement and is not pinned.)
-            allocations: 163,
-            deallocations: 151,
+            // declaration-store substrate: the radius longhand read uses the
+            // non-allocating custom-attr lookup (removes the one per-element
+            // "border-radius" key String) — PLAN.md spine step 2 (−1
+            // allocation, −1 deallocation vs the pre-step pin of 163/151/26).
+            // spine step 3.3b (−2 allocations, −2 deallocations vs the pre-step
+            // pin of 162/150/26): the document→block and block→text child-loop
+            // iterations no longer compute the child inherited context solely
+            // for `effective_font_size_px`, dropping one `inherited_color_attribute`
+            // "color" key String allocation each.
+            // spine step 3.3c (−12 allocations, −12 deallocations vs the
+            // pre-step pin of 160/148/26): the block element's rect paint now
+            // reads the computed visual group, dropping the stringly
+            // `custom_color_attr_rgba`/`custom_length_attr_px` key Strings.
+            // spine step 3.3d (−8 allocations, −8 deallocations vs the pre-step
+            // pin of 148/136/26): `inherited_context_from_node` no longer
+            // allocates the `inherited_color_attribute` "color" key String on
+            // the rewrap's layout/paint node visits.
+            // spine step 3.3g-1a typed winners fold (−2 allocations, −2
+            // deallocations vs the pre-step pin of 140/128/26): the fold
+            // resolves the stringly map from typed winners under one runtime
+            // lock; the legacy map rebuild dies in 3.3g-2.
+            allocations: 138,
+            deallocations: 126,
             reallocations: 26,
         },
         region.change(),

@@ -1,9 +1,7 @@
 use std::borrow::Cow;
 
-use crate::types::{DomAttributeValue, DomError};
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum DomTextAlign {
+pub enum DomTextAlign {
     #[default]
     Start,
     Left,
@@ -14,14 +12,14 @@ pub(crate) enum DomTextAlign {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum DomTextDirection {
+pub enum DomTextDirection {
     #[default]
     Ltr,
     Rtl,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum DomOverflowWrap {
+pub enum DomOverflowWrap {
     #[default]
     Normal,
     BreakWord,
@@ -29,7 +27,7 @@ pub(crate) enum DomOverflowWrap {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum DomWordBreak {
+pub enum DomWordBreak {
     #[default]
     Normal,
     BreakAll,
@@ -38,7 +36,7 @@ pub(crate) enum DomWordBreak {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum DomWhiteSpace {
+pub enum DomWhiteSpace {
     #[default]
     Normal,
     Nowrap,
@@ -48,100 +46,12 @@ pub(crate) enum DomWhiteSpace {
     BreakSpaces,
 }
 
-pub(crate) fn parse_white_space_keyword(value: &str) -> Option<DomWhiteSpace> {
-    match value {
-        "normal" => Some(DomWhiteSpace::Normal),
-        "nowrap" => Some(DomWhiteSpace::Nowrap),
-        "pre" => Some(DomWhiteSpace::Pre),
-        "pre-wrap" => Some(DomWhiteSpace::PreWrap),
-        "pre-line" => Some(DomWhiteSpace::PreLine),
-        "break-spaces" => Some(DomWhiteSpace::BreakSpaces),
-        _ => None,
-    }
-}
-
-pub(crate) fn parse_text_align_keyword(value: &str) -> Option<DomTextAlign> {
-    match value {
-        "left" => Some(DomTextAlign::Left),
-        "start" => Some(DomTextAlign::Start),
-        "center" => Some(DomTextAlign::Center),
-        "right" => Some(DomTextAlign::Right),
-        "justify" => Some(DomTextAlign::Justified),
-        "end" => Some(DomTextAlign::End),
-        _ => None,
-    }
-}
-
-pub(crate) fn parse_overflow_wrap_keyword(value: &str) -> Option<DomOverflowWrap> {
-    match value {
-        "normal" => Some(DomOverflowWrap::Normal),
-        "break-word" => Some(DomOverflowWrap::BreakWord),
-        "anywhere" => Some(DomOverflowWrap::Anywhere),
-        _ => None,
-    }
-}
-
-pub(crate) fn parse_word_break_keyword(value: &str) -> Option<DomWordBreak> {
-    match value {
-        "normal" => Some(DomWordBreak::Normal),
-        "break-all" => Some(DomWordBreak::BreakAll),
-        "break-word" => Some(DomWordBreak::BreakWord),
-        "keep-all" => Some(DomWordBreak::KeepAll),
-        _ => None,
-    }
-}
-
 pub(crate) fn parse_text_direction_keyword(value: &str) -> Option<DomTextDirection> {
     match value {
         "ltr" => Some(DomTextDirection::Ltr),
         "rtl" => Some(DomTextDirection::Rtl),
         _ => None,
     }
-}
-
-pub(crate) fn text_align_from_attr_value(
-    value: &DomAttributeValue,
-) -> Result<DomTextAlign, DomError> {
-    let DomAttributeValue::String(value) = value else {
-        return Err(DomError::InvalidAttributeValue);
-    };
-    parse_text_align_keyword(value).ok_or(DomError::InvalidAttributeValue)
-}
-
-pub(crate) fn white_space_from_attr_value(
-    value: &DomAttributeValue,
-) -> Result<DomWhiteSpace, DomError> {
-    let DomAttributeValue::String(value) = value else {
-        return Err(DomError::InvalidAttributeValue);
-    };
-    parse_white_space_keyword(value).ok_or(DomError::InvalidAttributeValue)
-}
-
-pub(crate) fn text_direction_from_attr_value(
-    value: &DomAttributeValue,
-) -> Result<DomTextDirection, DomError> {
-    let DomAttributeValue::String(value) = value else {
-        return Err(DomError::InvalidAttributeValue);
-    };
-    parse_text_direction_keyword(value).ok_or(DomError::InvalidAttributeValue)
-}
-
-pub(crate) fn overflow_wrap_from_attr_value(
-    value: &DomAttributeValue,
-) -> Result<DomOverflowWrap, DomError> {
-    let DomAttributeValue::String(value) = value else {
-        return Err(DomError::InvalidAttributeValue);
-    };
-    parse_overflow_wrap_keyword(value).ok_or(DomError::InvalidAttributeValue)
-}
-
-pub(crate) fn word_break_from_attr_value(
-    value: &DomAttributeValue,
-) -> Result<DomWordBreak, DomError> {
-    let DomAttributeValue::String(value) = value else {
-        return Err(DomError::InvalidAttributeValue);
-    };
-    parse_word_break_keyword(value).ok_or(DomError::InvalidAttributeValue)
 }
 
 #[must_use]

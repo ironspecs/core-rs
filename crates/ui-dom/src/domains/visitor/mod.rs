@@ -14,3 +14,4 @@ pub(crate) mod inherited_style_context;
 pub(crate) mod pseudo_state;
 pub(crate) mod scroll;
 pub(crate) mod style_recompute;
+pub(crate) mod winners_fold;

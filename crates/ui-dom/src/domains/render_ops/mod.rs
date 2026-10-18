@@ -3,7 +3,7 @@
 //!
 //! This module owns the retained staging storage that holds one Bevy tick's
 //! outgoing paint ops until the render world's extract moves them once per
-//! tick. It is sealed by design (PLAN.md §4.1, C6): no validation, no `World`,
+//! tick. It is sealed by design: no validation, no `World`,
 //! no Bevy types in the handler API, no policy beyond queue policy, and no
 //! metrics.
 //!

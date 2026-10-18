@@ -95,8 +95,8 @@ fn checkbox_under_document_setup() -> (bevy::prelude::World, RootDom, DomNodeSlo
     let input = root.create_element(DomTag::Input).expect("input");
     root.append_child(document_root, input).expect("append");
     root.set_attr_str(input, "type", "checkbox").expect("type");
-    root.set_attr_str(input, "width", "24px").expect("width");
-    root.set_attr_str(input, "height", "24px").expect("height");
+    root.style_mut(input).set("width", "24px").expect("width");
+    root.style_mut(input).set("height", "24px").expect("height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     root.reset_metrics();
@@ -115,21 +115,27 @@ fn offset_number_input_setup() -> (bevy::prelude::World, RootDom, DomNodeSlotKey
     root.append_child(document_root, layer)
         .expect("append layer");
     root.append_child(layer, input).expect("append input");
-    root.set_attr_str(layer, "position", "fixed")
+    root.style_mut(layer)
+        .set("position", "fixed")
         .expect("layer position");
-    root.set_attr_str(layer, "left", "80px")
+    root.style_mut(layer)
+        .set("left", "80px")
         .expect("layer left");
-    root.set_attr_str(layer, "top", "10px").expect("layer top");
-    root.set_attr_str(layer, "width", "140px")
+    root.style_mut(layer).set("top", "10px").expect("layer top");
+    root.style_mut(layer)
+        .set("width", "140px")
         .expect("layer width");
-    root.set_attr_str(layer, "height", "36px")
+    root.style_mut(layer)
+        .set("height", "36px")
         .expect("layer height");
     root.set_attr_str(input, "type", "number")
         .expect("input type");
     root.set_attr_str(input, "value", "5").expect("input value");
-    root.set_attr_str(input, "width", "120px")
+    root.style_mut(input)
+        .set("width", "120px")
         .expect("input width");
-    root.set_attr_str(input, "height", "24px")
+    root.style_mut(input)
+        .set("height", "24px")
         .expect("input height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -149,21 +155,27 @@ fn offset_range_input_setup() -> (bevy::prelude::World, RootDom, DomNodeSlotKey)
     root.append_child(document_root, layer)
         .expect("append layer");
     root.append_child(layer, input).expect("append input");
-    root.set_attr_str(layer, "position", "fixed")
+    root.style_mut(layer)
+        .set("position", "fixed")
         .expect("layer position");
-    root.set_attr_str(layer, "left", "80px")
+    root.style_mut(layer)
+        .set("left", "80px")
         .expect("layer left");
-    root.set_attr_str(layer, "top", "10px").expect("layer top");
-    root.set_attr_str(layer, "width", "140px")
+    root.style_mut(layer).set("top", "10px").expect("layer top");
+    root.style_mut(layer)
+        .set("width", "140px")
         .expect("layer width");
-    root.set_attr_str(layer, "height", "36px")
+    root.style_mut(layer)
+        .set("height", "36px")
         .expect("layer height");
     root.set_attr_str(input, "type", "range")
         .expect("input type");
     root.set_attr_str(input, "value", "0").expect("input value");
-    root.set_attr_str(input, "width", "120px")
+    root.style_mut(input)
+        .set("width", "120px")
         .expect("input width");
-    root.set_attr_str(input, "height", "24px")
+    root.style_mut(input)
+        .set("height", "24px")
         .expect("input height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -257,8 +269,10 @@ fn pointer_click_emits_click_for_button() {
 
     let button = root.create_element(DomTag::Button).expect("button");
     root.append_child(document_root, button).expect("append");
-    root.set_attr_str(button, "width", "40px").expect("width");
-    root.set_attr_str(button, "height", "40px").expect("height");
+    root.style_mut(button).set("width", "40px").expect("width");
+    root.style_mut(button)
+        .set("height", "40px")
+        .expect("height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let (cx, cy) = element_center(&root, button);
@@ -291,8 +305,10 @@ fn pointer_click_on_disabled_button_does_not_focus_or_dispatch_click() {
         Some(DomAttributeValue::Bool(true)),
     )
     .expect("disable button");
-    root.set_attr_str(button, "width", "40px").expect("width");
-    root.set_attr_str(button, "height", "40px").expect("height");
+    root.style_mut(button).set("width", "40px").expect("width");
+    root.style_mut(button)
+        .set("height", "40px")
+        .expect("height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let (cx, cy) = element_center(&root, button);
@@ -320,8 +336,10 @@ fn pointer_click_on_pointer_events_none_button_does_not_focus_or_dispatch_click(
     root.append_child(document_root, button).expect("append");
     root.set_attr_str(button, "pointer-events", "none")
         .expect("button pointer-events");
-    root.set_attr_str(button, "width", "40px").expect("width");
-    root.set_attr_str(button, "height", "40px").expect("height");
+    root.style_mut(button).set("width", "40px").expect("width");
+    root.style_mut(button)
+        .set("height", "40px")
+        .expect("height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let (cx, cy) = element_center(&root, button);
@@ -347,8 +365,11 @@ fn pointer_click_emits_click_for_textarea_without_activation_lifecycle() {
 
     let textarea = root.create_element(DomTag::Textarea).expect("textarea");
     root.append_child(document_root, textarea).expect("append");
-    root.set_attr_str(textarea, "width", "40px").expect("width");
-    root.set_attr_str(textarea, "height", "40px")
+    root.style_mut(textarea)
+        .set("width", "40px")
+        .expect("width");
+    root.style_mut(textarea)
+        .set("height", "40px")
         .expect("height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -381,8 +402,8 @@ fn pointer_click_emits_click_for_text_input_without_activation_action() {
 
     let input = root.create_element(DomTag::Input).expect("input");
     root.append_child(document_root, input).expect("append");
-    root.set_attr_str(input, "width", "40px").expect("width");
-    root.set_attr_str(input, "height", "40px").expect("height");
+    root.style_mut(input).set("width", "40px").expect("width");
+    root.style_mut(input).set("height", "40px").expect("height");
 
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     root.reset_metrics();

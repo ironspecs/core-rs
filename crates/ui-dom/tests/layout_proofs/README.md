@@ -80,7 +80,7 @@ sections only; **crate-owned** = pins crate invariants by design.
 | CSS Forms 1 `field-sizing`, HTML rendering widgets, CSS Sizing 3 | `form_control_auto_size.rs` | full |
 | CSS Transitions 1 | `transitions.rs` | partial |
 | HTML Standard "update the rendering" (pipeline ordering) | `stylesheet_lifecycle.rs` | full (explicit no-single-WPT statement) |
-| CSS Cascading and Inheritance: cascade order, specificity, inheritance transmission | `cascade.rs` | full (module-header + per-family provenance; two divergences registered below) |
+| CSS Cascading and Inheritance: cascade order, specificity, inheritance transmission; CSS 2.1 §4.1.7 + css-style-attr §3 declaration error handling; CSS Fonts 4 §3.1–3.3 font-property inheritance | `cascade.rs` | full (module-header + per-family provenance; no divergences) |
 
 ## Known off-spec registry
 
@@ -105,8 +105,6 @@ relabels the proof on-spec.
 | Proof or gate | Class | Spec claim | Current (pinned) vs spec-correct | Root cause |
 |---|---|---|---|---|
 | `off_spec_adjacent_negative_block_margins_collapse_to_most_negative` (`normal_flow.rs`) | divergent | CSS 2.1 §8.3.1 final paragraph: adjoining negative margins collapse to the most negative | sums −10px and −5px to −15px; spec: −10px | `collapsed_sibling_margin_overlap_px` clamps the collapse overlap to ≥ 0 in `src/domains/layout/flow.rs` |
-| `off_spec_direct_attr_write_loses_to_stylesheet_on_next_recompute` (`cascade.rs`) | divergent | CSS Cascade §6.4.3: style-attribute declarations beat normal author rules deterministically | the winner is timing-dependent: a direct write stands only until the next unrelated style recompute, and stylesheet unload removes the attribute instead of restoring the direct value | `RootDom::apply_styles` does not distinguish direct-authored values; `style_pass_attrs_by_node` takes ownership of anything the pass applied |
-| `off_spec_shorthand_and_longhand_coexist_without_cascade_reset` (`cascade.rs`) | divergent | CSS shorthands reset their longhands at declaration time; shorthand/longhand precedence resolves by cascade order | shorthand and longhand attrs coexist post-cascade; precedence is defined per-consumer | the attribute model has no shorthand expansion; `parse_style_attr_map` stores declarations verbatim |
 | 16:9 placeholder intrinsic ratio (`replaced_elements.rs`, declared in module header) | deliberate | CSS Images 3 §5.3 default object size 300×150 applies to images with no intrinsic dimensions | unloaded `img` seeds a 16:9 placeholder ratio; the §10.3.2/10.6.2 transfer math stays on-spec | crate-owned placeholder policy for never-loaded images |
 | Flex subsets beyond batches 3–7 | unimplemented | CSS Flexbox 1 areas the active solver does not admit | admission gated by `active_flex_gate_*` unit tests in `src/domains/layout/flex.rs`; fallback is the placeholder solver | active solver subset; see flex coverage map |
 | Cascade model: no `!important`, no built-in UA stylesheet, no cascade layers | unimplemented | CSS Cascade 5 §6: important declarations, origin layers | precedence is exactly `(origin.priority, specificity, order)`, pinned by `cascade.rs` families 1–3 | `domains/style` precedence model; the present model is pinned, the absent features await a redesign decision |

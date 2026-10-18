@@ -19,12 +19,16 @@ use smallvec::{SmallVec, smallvec};
 
 pub use crate::types::dom_after_attr_write_intrinsic_update::DomAfterAttrWriteIntrinsicUpdate;
 
+use crate::domains::style::{DeclLength, DeclValue, Declaration, PresentationProperty};
 use crate::types::dom_element_descriptor_builder::DomElementDescriptorBuilder;
 use crate::types::element_behaviors::{
     DomElementAfterClick, DomElementAfterFocus, DomElementIntrinsicKind, DomElementOnActivation,
     DomElementOnBlur, DomElementOnKeyboard, DomElementOnPointer, DomElementPresentOptionsBehavior,
 };
 use crate::types::{DomAttribute, DomAttributeValue, DomAttrs};
+
+#[cfg(test)]
+use crate::domains::style::Keyword;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DomTag {
@@ -78,7 +82,13 @@ pub struct DomElementBehavior {
     pub present_options_behavior: DomElementPresentOptionsBehavior,
 }
 
-pub type DomStyleDeclarationList = SmallVec<[(DomAttribute, DomAttributeValue); 4]>;
+/// Typed per-tag pseudo-state style declarations (the widget behavior sheet).
+///
+/// Text-valued properties (font-family, transform, transition longhands) are
+/// not supported in behavior sheets — they carry interner-relative `TextKey`s
+/// with no owning store; the fold ignores them. Admission path for a real need
+/// is the D6 policy.
+pub type DomStyleDeclarationList = SmallVec<[Declaration; 4]>;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DomElementStateStyleDeclarations {
@@ -93,52 +103,57 @@ pub struct DomElementDescriptor {
     pub default_attrs: DomAttrs,
     pub behavior: DomElementBehavior,
     pub state_style_declarations: DomElementStateStyleDeclarations,
+    /// The unconditional behavior sheet (spine step 3.3g): typed
+    /// `Declaration`s folded FIRST, below matched rules and inline style.
+    /// `default_attrs` keeps content attrs only; presentation-valued defaults
+    /// (e.g. the built-in `display`) live here as typed declarations.
+    pub base_style_declarations: DomStyleDeclarationList,
 }
 
 fn with_default_field_state_styles(
     builder: DomElementDescriptorBuilder,
 ) -> DomElementDescriptorBuilder {
     builder
-        .hover_style(smallvec![(
-            DomAttribute::Custom("background-color".to_string()),
-            color_value("#191d26"),
-        )])
-        .active_style(smallvec![(
-            DomAttribute::Custom("background-color".to_string()),
-            color_value("#161a22"),
-        )])
+        .hover_style(smallvec![Declaration {
+            property: PresentationProperty::BackgroundColor,
+            value: color_value("#191d26"),
+        }])
+        .active_style(smallvec![Declaration {
+            property: PresentationProperty::BackgroundColor,
+            value: color_value("#161a22"),
+        }])
         .focus_style(smallvec![
-            (
-                DomAttribute::Custom("outline-color".to_string()),
-                color_value("#7aa2ff"),
-            ),
-            (
-                DomAttribute::Custom("outline-width".to_string()),
-                DomAttributeValue::String("2px".to_string()),
-            ),
-            (
-                DomAttribute::Custom("outline-offset".to_string()),
-                DomAttributeValue::String("0px".to_string()),
-            ),
+            Declaration {
+                property: PresentationProperty::OutlineColor,
+                value: color_value("#7aa2ff"),
+            },
+            Declaration {
+                property: PresentationProperty::OutlineWidth,
+                value: DeclValue::Length(DeclLength::Px(2.0)),
+            },
+            Declaration {
+                property: PresentationProperty::OutlineOffset,
+                value: DeclValue::Length(DeclLength::Px(0.0)),
+            },
         ])
         .focus_visible_style(smallvec![
-            (
-                DomAttribute::Custom("outline-color".to_string()),
-                color_value("#7aa2ff"),
-            ),
-            (
-                DomAttribute::Custom("outline-width".to_string()),
-                DomAttributeValue::String("2px".to_string()),
-            ),
-            (
-                DomAttribute::Custom("outline-offset".to_string()),
-                DomAttributeValue::String("0px".to_string()),
-            ),
+            Declaration {
+                property: PresentationProperty::OutlineColor,
+                value: color_value("#7aa2ff"),
+            },
+            Declaration {
+                property: PresentationProperty::OutlineWidth,
+                value: DeclValue::Length(DeclLength::Px(2.0)),
+            },
+            Declaration {
+                property: PresentationProperty::OutlineOffset,
+                value: DeclValue::Length(DeclLength::Px(0.0)),
+            },
         ])
 }
 
-fn color_value(value: &str) -> DomAttributeValue {
-    DomAttributeValue::Color(
+fn color_value(value: &str) -> DeclValue {
+    DeclValue::Color(
         crate::types::dom_attr_parse::parse_css_color_rgba(value)
             .expect("element descriptor color should parse"),
     )
@@ -182,8 +197,6 @@ impl DomTag {
                     after_attr_write_intrinsic_update:
                         DomAfterAttrWriteIntrinsicUpdate::AttributeList(smallvec![
                             DomAttribute::Src,
-                            DomAttribute::Width,
-                            DomAttribute::Height,
                         ]),
                     after_style_recompute_intrinsic_update_behavior:
                         DomElementLifecycleBehavior::None,
@@ -219,27 +232,27 @@ impl DomTag {
                     hit_test_behavior: DomElementLifecycleBehavior::None,
                     present_options_behavior: DomElementPresentOptionsBehavior::None,
                 })
-                .hover_style(smallvec![(
-                    DomAttribute::Custom("background-color".to_string()),
-                    color_value("#242833"),
-                ),])
-                .active_style(smallvec![(
-                    DomAttribute::Custom("background-color".to_string()),
-                    color_value("#161a22"),
-                ),])
+                .hover_style(smallvec![Declaration {
+                    property: PresentationProperty::BackgroundColor,
+                    value: color_value("#242833"),
+                },])
+                .active_style(smallvec![Declaration {
+                    property: PresentationProperty::BackgroundColor,
+                    value: color_value("#161a22"),
+                },])
                 .focus_visible_style(smallvec![
-                    (
-                        DomAttribute::Custom("outline-color".to_string()),
-                        color_value("#7aa2ff"),
-                    ),
-                    (
-                        DomAttribute::Custom("outline-width".to_string()),
-                        DomAttributeValue::String("2px".to_string()),
-                    ),
-                    (
-                        DomAttribute::Custom("outline-offset".to_string()),
-                        DomAttributeValue::String("2px".to_string()),
-                    ),
+                    Declaration {
+                        property: PresentationProperty::OutlineColor,
+                        value: color_value("#7aa2ff"),
+                    },
+                    Declaration {
+                        property: PresentationProperty::OutlineWidth,
+                        value: DeclValue::Length(DeclLength::Px(2.0)),
+                    },
+                    Declaration {
+                        property: PresentationProperty::OutlineOffset,
+                        value: DeclValue::Length(DeclLength::Px(2.0)),
+                    },
                 ])
                 .attr(
                     DomAttribute::Type,
@@ -258,7 +271,6 @@ impl DomTag {
                             DomAfterAttrWriteIntrinsicUpdate::AttributeList(smallvec![
                                 DomAttribute::Value,
                                 DomAttribute::Placeholder,
-                                DomAttribute::LineHeight,
                                 DomAttribute::Type,
                                 DomAttribute::Checked,
                                 DomAttribute::Min,
@@ -297,7 +309,6 @@ impl DomTag {
                         after_attr_write_intrinsic_update:
                             DomAfterAttrWriteIntrinsicUpdate::AttributeList(smallvec![
                                 DomAttribute::Value,
-                                DomAttribute::LineHeight,
                             ]),
                         after_style_recompute_intrinsic_update_behavior:
                             DomElementLifecycleBehavior::ElementControls,
@@ -349,7 +360,6 @@ impl DomTag {
                             DomAfterAttrWriteIntrinsicUpdate::AttributeList(smallvec![
                                 DomAttribute::Value,
                                 DomAttribute::Placeholder,
-                                DomAttribute::LineHeight,
                             ]),
                         after_style_recompute_intrinsic_update_behavior:
                             DomElementLifecycleBehavior::ElementControls,
@@ -377,16 +387,24 @@ mod tests {
     use super::*;
     use smallvec::smallvec;
 
+    /// Returns the typed base `Display` declaration value, if the descriptor
+    /// declares one (spine 3.3g: `display` is a base behavior declaration, not
+    /// a content attr).
+    fn base_display(descriptor: &DomElementDescriptor) -> Option<DeclValue> {
+        descriptor
+            .base_style_declarations
+            .iter()
+            .find(|declaration| declaration.property == PresentationProperty::Display)
+            .map(|declaration| declaration.value)
+    }
+
     #[test]
     fn button_descriptor_sets_button_defaults() {
         let descriptor = DomTag::Button.descriptor();
 
         assert_eq!(
-            descriptor
-                .default_attrs
-                .attributes
-                .get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("inline-block".to_string()))
+            base_display(&descriptor),
+            Some(DeclValue::Keyword(Keyword::InlineBlock))
         );
         assert_eq!(
             descriptor.default_attrs.attributes.get(&DomAttribute::Type),
@@ -411,18 +429,14 @@ mod tests {
                 present_options_behavior: DomElementPresentOptionsBehavior::None,
             }
         );
-        assert_eq!(
+        assert!(
             descriptor
                 .state_style_declarations
                 .focus_visible
-                .iter()
-                .find(|(attribute, _)| {
-                    *attribute == DomAttribute::Custom("outline-color".to_string())
-                }),
-            Some(&(
-                DomAttribute::Custom("outline-color".to_string()),
-                color_value("#7aa2ff"),
-            ))
+                .contains(&Declaration {
+                    property: PresentationProperty::OutlineColor,
+                    value: color_value("#7aa2ff"),
+                })
         );
     }
 
@@ -445,11 +459,7 @@ mod tests {
                 edit_kind: DomElementEditKind::MultiLine,
                 intrinsic_kind: DomElementIntrinsicKind::ElementDefaultPreferredSize,
                 after_attr_write_intrinsic_update: DomAfterAttrWriteIntrinsicUpdate::AttributeList(
-                    smallvec![
-                        DomAttribute::Value,
-                        DomAttribute::Placeholder,
-                        DomAttribute::LineHeight,
-                    ]
+                    smallvec![DomAttribute::Value, DomAttribute::Placeholder,]
                 ),
                 after_style_recompute_intrinsic_update_behavior:
                     DomElementLifecycleBehavior::ElementControls,
@@ -484,7 +494,6 @@ mod tests {
                     smallvec![
                         DomAttribute::Value,
                         DomAttribute::Placeholder,
-                        DomAttribute::LineHeight,
                         DomAttribute::Type,
                         DomAttribute::Checked,
                         DomAttribute::Min,
@@ -510,12 +519,6 @@ mod tests {
                 .after_attr_write_intrinsic_update
                 .matches(&DomAttribute::Value)
         );
-        assert!(
-            descriptor
-                .behavior
-                .after_attr_write_intrinsic_update
-                .matches(&DomAttribute::LineHeight)
-        );
         assert!(!descriptor.state_style_declarations.hover.is_empty());
         assert!(!descriptor.state_style_declarations.active.is_empty());
         assert!(!descriptor.state_style_declarations.focus.is_empty());
@@ -527,11 +530,8 @@ mod tests {
         let descriptor = DomTag::Ul.descriptor();
 
         assert_eq!(
-            descriptor
-                .default_attrs
-                .attributes
-                .get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("block".to_string()))
+            base_display(&descriptor),
+            Some(DeclValue::Keyword(Keyword::Block))
         );
         assert_eq!(descriptor.behavior, DomElementBehavior::default());
     }
@@ -541,11 +541,8 @@ mod tests {
         let descriptor = DomTag::Span.descriptor();
 
         assert_eq!(
-            descriptor
-                .default_attrs
-                .attributes
-                .get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("inline".to_string()))
+            base_display(&descriptor),
+            Some(DeclValue::Keyword(Keyword::Inline))
         );
         assert_eq!(descriptor.behavior, DomElementBehavior::default());
     }
@@ -565,22 +562,10 @@ mod tests {
                 .matches(&DomAttribute::Src)
         );
         assert!(
-            descriptor
-                .behavior
-                .after_attr_write_intrinsic_update
-                .matches(&DomAttribute::Width)
-        );
-        assert!(
-            descriptor
-                .behavior
-                .after_attr_write_intrinsic_update
-                .matches(&DomAttribute::Height)
-        );
-        assert!(
             !descriptor
                 .behavior
                 .after_attr_write_intrinsic_update
-                .matches(&DomAttribute::FontSize)
+                .matches(&DomAttribute::Value)
         );
     }
 
@@ -589,11 +574,8 @@ mod tests {
         let descriptor = DomTag::Li.descriptor();
 
         assert_eq!(
-            descriptor
-                .default_attrs
-                .attributes
-                .get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("block".to_string()))
+            base_display(&descriptor),
+            Some(DeclValue::Keyword(Keyword::Block))
         );
         assert_eq!(descriptor.behavior, DomElementBehavior::default());
     }
@@ -610,7 +592,7 @@ mod tests {
                 edit_kind: DomElementEditKind::None,
                 intrinsic_kind: DomElementIntrinsicKind::ElementDefaultPreferredSize,
                 after_attr_write_intrinsic_update: DomAfterAttrWriteIntrinsicUpdate::AttributeList(
-                    smallvec![DomAttribute::Value, DomAttribute::LineHeight,]
+                    smallvec![DomAttribute::Value,]
                 ),
                 after_style_recompute_intrinsic_update_behavior:
                     DomElementLifecycleBehavior::ElementControls,
@@ -625,11 +607,8 @@ mod tests {
             }
         );
         assert_eq!(
-            descriptor
-                .default_attrs
-                .attributes
-                .get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("inline-block".to_string()))
+            base_display(&descriptor),
+            Some(DeclValue::Keyword(Keyword::InlineBlock))
         );
         assert_eq!(
             descriptor
@@ -646,15 +625,12 @@ mod tests {
         let option = DomTag::Option.descriptor();
 
         assert_eq!(
-            datalist
-                .default_attrs
-                .attributes
-                .get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("none".to_string()))
+            base_display(&datalist),
+            Some(DeclValue::Keyword(Keyword::None))
         );
         assert_eq!(
-            option.default_attrs.attributes.get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("none".to_string()))
+            base_display(&option),
+            Some(DeclValue::Keyword(Keyword::None))
         );
         assert_eq!(option.behavior.after_click, DomElementAfterClick::None);
         assert_eq!(option.behavior.on_activation, DomElementOnActivation::None);

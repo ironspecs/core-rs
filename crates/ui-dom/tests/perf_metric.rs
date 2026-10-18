@@ -141,11 +141,14 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
             (HoverPseudoStateSet, 1),
             (EmittedEventAllocation, 1),
             (StyleUpdated, 1),
-            (StylesheetTrackedAttributeSetAllocation, 1),
             (LayoutUpdated, 1),
             (PaintUpdated, 1),
             (PaintPlanBuilt, 1),
             (LayerPainted, 1),
+            // spine step 4: style-pass work counters; visited vs changed is
+            // proposal J's evidence gate.
+            (StylePassNodeVisited, 1),
+            (StylePassNodeChanged, 1),
         ],
         "hover recompute",
     );
@@ -160,14 +163,8 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
         "hover recompute: EmittedEventAllocation before StyleUpdated"
     );
     assert!(
-        metric_index(&history, StyleUpdated)
-            < metric_index(&history, StylesheetTrackedAttributeSetAllocation),
-        "hover recompute: StyleUpdated before StylesheetTrackedAttributeSetAllocation"
-    );
-    assert!(
-        metric_index(&history, StylesheetTrackedAttributeSetAllocation)
-            < metric_index(&history, LayoutUpdated),
-        "hover recompute: StylesheetTrackedAttributeSetAllocation before LayoutUpdated"
+        metric_index(&history, StyleUpdated) < metric_index(&history, LayoutUpdated),
+        "hover recompute: StyleUpdated before LayoutUpdated"
     );
     assert!(
         metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
@@ -181,10 +178,31 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
         metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
         "hover recompute: PaintPlanBuilt before LayerPainted"
     );
-    // C3 terminal clear walk adds 7 node-store Gets on this paint frame (dirt
-    // clearing moved out of the build walk into one terminal traversal;
-    // PLAN.md §4.4 C3).
-    assert_node_counts(&root, 107, 15, 0, "hover recompute");
+    // The terminal clear walk adds 7 node-store Gets on this paint frame
+    // (dirt clearing moved out of the build walk into one terminal traversal).
+    // computed-projection dual-write (PLAN.md spine 3.3a): 1 node access per
+    // visited element for the parent font-seed ancestor walk; reclaimed when
+    // the legacy write path dies in 3.3g.
+    // synchronous dual-write re-projection on presentation writes (PLAN.md
+    // spine 3.3 fix): the `width` write this hover recompute applies refreshes
+    // the computed groups in place (+5 Get, +2 GetMut from 108/15/0);
+    // reclaimed when the legacy write path dies in 3.3g.
+    // spine step 3.3c (−1 Get from 113/17/0): the element rect paint reads
+    // `computed_visual().radius` directly instead of `border_radii_px(root_dom,
+    // key)`, removing one node-store Get per painted element.
+    // spine step 3.3d (−2 Get from 112/17/0): the projection now seeds from one
+    // `parent_inherited_groups` walk (replacing the two 3.3a walks
+    // `parent_font_seed` + `parent_font_size_px`); the hover recompute pays two
+    // re-projections (the style pass + the `width` write), one fewer Get each.
+    // spine step 3.3g-1b (+7 Get, +4 GetMut from 110/17/0): the pass now
+    // captures `previous_computed`, reads the resolved longhand slot, and
+    // records the new baseline per visited element, and A7's group-diff
+    // classification re-marks layout+paint dirty on the hover width change.
+    // declaration-store style system (PLAN.md spine 3.3g-2a, −11 Get, −5
+    // GetMut from 117/21/0): the legacy attr-projection channel is deleted —
+    // style_mut writes the inline block and marks dirty only, and the style
+    // pass writes the seven computed groups directly on the node record.
+    assert_node_counts(&root, 106, 16, 0, "hover recompute");
 }
 
 /// Post style-dirty propagation fix pin: one append now arms the layer
@@ -212,20 +230,46 @@ fn append_then_update_metric_deltas_match_baseline() {
         &[
             (NodeSlotAllocation, 1),
             (StyleUpdated, 1),
-            (StylesheetTrackedAttributeSetAllocation, 2),
             (LayoutUpdated, 1),
             (PaintUpdated, 1),
             (PaintPlanBuilt, 1),
             (LayerPainted, 1),
             (LayerPresented, 1),
+            // spine step 4: style-pass work counters; visited vs changed is
+            // proposal J's evidence gate. The appended chip resolves on its
+            // first (baseline) pass and the settled chip's groups do not move,
+            // so changed stays 0 while visited prices both elements.
+            (StylePassNodeVisited, 2),
+            (StylePassNodeChanged, 0),
         ],
         "append+update",
     );
     assert_second_append_then_update_history(&root);
-    // C3 terminal clear walk adds 11 node-store Gets on this paint frame (dirt
-    // clearing moved out of the build walk into one terminal traversal;
-    // PLAN.md §4.4 C3).
-    assert_node_counts(&root, 114, 23, 1, "append+update");
+    // The terminal clear walk adds 11 node-store Gets on this paint frame
+    // (dirt clearing moved out of the build walk into one terminal traversal).
+    // computed-projection dual-write (PLAN.md spine 3.3a): 1 node access per
+    // visited element for the parent font-seed ancestor walk (2 styled chips);
+    // reclaimed when the legacy write path dies in 3.3g.
+    // synchronous dual-write re-projection on presentation writes (PLAN.md
+    // spine 3.3 fix): the two `width`/`height` writes this recompute applies
+    // refresh the computed groups in place (+10 Get, +4 GetMut from 116/23/1);
+    // reclaimed when the legacy write path dies in 3.3g.
+    // spine step 3.3c (−2 Get from 126/27/1): the two painted chips' rect
+    // paint now reads `computed_visual().radius` directly, removing one
+    // node-store Get per painted element.
+    // spine step 3.3d (−4 Get from 124/27/1): the two chips each pay two
+    // re-projections (style pass + their `width`/`height` writes), and each
+    // projection now seeds from one `parent_inherited_groups` walk instead of
+    // two 3.3a ancestor walks, one fewer Get each.
+    // spine step 3.3g-1b (+4 Get, +2 GetMut from 120/27/1): the pass now
+    // captures `previous_computed`, reads the resolved longhand slot, and
+    // records the new baseline per visited element, and A7's group-diff
+    // classification re-marks layout+paint dirty on the width/height writes.
+    // declaration-store style system (PLAN.md spine 3.3g-2a, −21 Get, −8
+    // GetMut from 124/29/1): the legacy attr-projection channel is deleted —
+    // style_mut writes the inline block and marks dirty only, and the style
+    // pass writes the seven computed groups directly on the node record.
+    assert_node_counts(&root, 103, 21, 1, "append+update");
 }
 
 fn assert_second_append_then_update_history(root: &RootDom) {
@@ -235,14 +279,8 @@ fn assert_second_append_then_update_history(root: &RootDom) {
         "append+update: NodeSlotAllocation before StyleUpdated"
     );
     assert!(
-        metric_index(&history, StyleUpdated)
-            < metric_index(&history, StylesheetTrackedAttributeSetAllocation),
-        "append+update: StyleUpdated before StylesheetTrackedAttributeSetAllocation"
-    );
-    assert!(
-        metric_index(&history, StylesheetTrackedAttributeSetAllocation)
-            < metric_index(&history, LayoutUpdated),
-        "append+update: StylesheetTrackedAttributeSetAllocation before LayoutUpdated"
+        metric_index(&history, StyleUpdated) < metric_index(&history, LayoutUpdated),
+        "append+update: StyleUpdated before LayoutUpdated"
     );
     assert!(
         metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
@@ -291,11 +329,6 @@ fn insert_style_phase_deltas_match_attr_triggered_style_phase() {
         attr_snapshot.count(StyleUpdated),
         "insert and attr triggers must run the same number of style phases",
     );
-    assert_eq!(
-        insert_snapshot.count(StylesheetTrackedAttributeSetAllocation),
-        attr_snapshot.count(StylesheetTrackedAttributeSetAllocation),
-        "insert and attr triggers must pay the same stylesheet tracked-set cost for the same tree",
-    );
 }
 
 #[test]
@@ -315,25 +348,23 @@ fn stylesheet_apply_metric_deltas_stay_pinned() {
         &root,
         &[
             (StyleUpdated, 1),
-            (StylesheetTrackedAttributeSetAllocation, 1),
             (LayoutUpdated, 1),
             (PaintUpdated, 1),
             (PaintPlanBuilt, 1),
             (LayerPainted, 1),
             (LayerPresented, 1),
+            // spine step 4: style-pass work counters; visited vs changed is
+            // proposal J's evidence gate. The new `height` declaration moves
+            // the chip's box group, so changed == visited == 1.
+            (StylePassNodeVisited, 1),
+            (StylePassNodeChanged, 1),
         ],
         "stylesheet apply",
     );
     let history = history_names(&root);
     assert!(
-        metric_index(&history, StyleUpdated)
-            < metric_index(&history, StylesheetTrackedAttributeSetAllocation),
-        "stylesheet apply: StyleUpdated before StylesheetTrackedAttributeSetAllocation"
-    );
-    assert!(
-        metric_index(&history, StylesheetTrackedAttributeSetAllocation)
-            < metric_index(&history, LayoutUpdated),
-        "stylesheet apply: StylesheetTrackedAttributeSetAllocation before LayoutUpdated"
+        metric_index(&history, StyleUpdated) < metric_index(&history, LayoutUpdated),
+        "stylesheet apply: StyleUpdated before LayoutUpdated"
     );
     assert!(
         metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
@@ -351,10 +382,15 @@ fn stylesheet_apply_metric_deltas_stay_pinned() {
         metric_index(&history, LayerPainted) < metric_index(&history, LayerPresented),
         "stylesheet apply: LayerPainted before LayerPresented"
     );
-    // C3 terminal clear walk adds 7 node-store Gets on this paint frame (dirt
-    // clearing moved out of the build walk into one terminal traversal;
-    // PLAN.md §4.4 C3).
-    assert_node_counts(&root, 70, 13, 0, "stylesheet apply");
+    // The terminal clear walk adds 7 node-store Gets on this paint frame
+    // (dirt clearing moved out of the build walk into one terminal traversal).
+    // spine step 3.3g-2a (−11 Get, −5 GetMut from 80/19/0): the legacy
+    // attr-projection channel is gone — the write-path synchronous
+    // re-projection, the winners→legacy-map rebuild, and `apply_styles` are
+    // deleted; the typed winners fold resolves the seven groups + transition
+    // slot directly on the node record, and the baseline layer-membership
+    // re-evaluation replaces the write-path layer queueing.
+    assert_node_counts(&root, 69, 14, 0, "stylesheet apply");
 }
 
 #[test]
@@ -362,32 +398,44 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     let (mut world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let container = support::assert_append_div_to(&mut root, document_root);
-    support::assert_set_attr_str(&mut root, container, "display", "flex");
-    support::assert_set_attr_str(&mut root, container, "width", "200px");
-    support::assert_set_attr_str(&mut root, container, "height", "40px");
+    support::assert_style_set(&mut root, container, "display", "flex");
+    support::assert_style_set(&mut root, container, "width", "200px");
+    support::assert_style_set(&mut root, container, "height", "40px");
     for _ in 0..2 {
         let item = support::assert_append_div_to(&mut root, container);
-        support::assert_set_attr_str(&mut root, item, "flex", "0 0 50px");
-        support::assert_set_attr_str(&mut root, item, "height", "40px");
+        support::assert_style_set(&mut root, item, "flex", "0 0 50px");
+        support::assert_style_set(&mut root, item, "height", "40px");
     }
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     root.reset_metrics();
     root.reset_node_metrics();
 
-    support::assert_set_attr_str(&mut root, container, "width", "220px");
+    support::assert_style_set(&mut root, container, "width", "220px");
     support::assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
 
     assert_root_counts(
         &root,
         &[
+            (StyleUpdated, 1),
             (LayoutUpdated, 1),
             (PaintUpdated, 1),
             (PaintPlanBuilt, 1),
             (LayerPainted, 1),
+            (StyleDeclarationUpsert, 1),
+            // spine step 4: style-pass work counters; visited vs changed is
+            // proposal J's evidence gate. The `width` write re-resolves the
+            // container and its two items (visited == 3); only the container's
+            // box group moves (changed == 1).
+            (StylePassNodeVisited, 3),
+            (StylePassNodeChanged, 1),
         ],
         "flex relayout",
     );
     let history = history_names(&root);
+    assert!(
+        metric_index(&history, StyleUpdated) < metric_index(&history, LayoutUpdated),
+        "flex relayout: StyleUpdated before LayoutUpdated"
+    );
     assert!(
         metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
         "flex relayout: LayoutUpdated before PaintUpdated"
@@ -400,10 +448,29 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
         metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
         "flex relayout: PaintPlanBuilt before LayerPainted"
     );
-    // C3 terminal clear walk adds 15 node-store Gets on this paint frame (dirt
-    // clearing moved out of the build walk into one terminal traversal;
-    // PLAN.md §4.4 C3).
-    assert_node_counts(&root, 111, 13, 0, "flex relayout");
+    // The terminal clear walk adds 15 node-store Gets on this paint frame
+    // (dirt clearing moved out of the build walk into one terminal traversal).
+    // synchronous dual-write re-projection on presentation writes (PLAN.md
+    // spine 3.3 fix): the direct `width` write inside the measured window
+    // refreshes the computed groups in place (+3 Get, +1 GetMut from
+    // 111/13/0); reclaimed when the legacy write path dies in 3.3g.
+    // spine step 3.3c (−3 Get from 114/14/0): the container and two flex
+    // items' rect paint now reads `computed_visual().radius` directly,
+    // removing one node-store Get per painted element.
+    // spine step 3.3d (−1 Get from 111/14/0): the direct `width` write's
+    // re-projection now seeds from one `parent_inherited_groups` walk instead
+    // of two 3.3a ancestor walks.
+    // spine step 3.3g-1b (+39 Get, +18 GetMut from 110/14/0, +StyleUpdated):
+    // the direct `width` write now marks the node style-dirty, arming a full
+    // style phase over the container and two items (fold + re-projection +
+    // previous-computed capture per element) plus A7's group-diff
+    // classification re-marking layout+paint on the width change.
+    // declaration-store style system (PLAN.md spine 3.3g-2a, −10 Get, −5
+    // GetMut from 149/32/0, +StyleDeclarationUpsert): the `width` write now
+    // goes through style_mut (one declaration upsert, style-dirty only), and
+    // the style pass writes the seven computed groups directly on the node
+    // record — the legacy per-attr projection channel is deleted.
+    assert_node_counts(&root, 139, 27, 0, "flex relayout");
 }
 
 #[test]
@@ -411,7 +478,7 @@ fn text_rewrap_metric_deltas_stay_pinned() {
     let (mut world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let block = support::assert_append_div_to(&mut root, document_root);
-    support::assert_set_attr_str(&mut root, block, "width", "80px");
+    support::assert_style_set(&mut root, block, "width", "80px");
     let text = support::assert_append_text_to(&mut root, block, "one two three four");
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     root.reset_metrics();
@@ -455,10 +522,14 @@ fn text_rewrap_metric_deltas_stay_pinned() {
         metric_index(&history, PaintPlanBuilt) < metric_index(&history, LayerPainted),
         "text rewrap: PaintPlanBuilt before LayerPainted"
     );
-    // C3 terminal clear walk adds 11 node-store Gets on this paint frame (dirt
-    // clearing moved out of the build walk into one terminal traversal;
-    // PLAN.md §4.4 C3).
-    assert_node_counts(&root, 79, 14, 0, "text rewrap");
+    // The terminal clear walk adds 11 node-store Gets on this paint frame
+    // (dirt clearing moved out of the build walk into one terminal traversal).
+    // spine step 3.3c (−1 Get from 79/14/0): the block's rect paint now reads
+    // `computed_visual().radius` directly, removing one node-store Get.
+    // spine step 3.3d (−1 Get from 78/14/0): `set_text_content`'s ancestor
+    // seed stops at the nearest element instead of climbing the full chain
+    // (the legacy first-set-wins climb never completed for an attr-less block).
+    assert_node_counts(&root, 77, 14, 0, "text rewrap");
 }
 
 // The four `root_node_store_metrics_*` tests below were relocated from
@@ -585,9 +656,9 @@ fn root_node_store_metrics_reset_clears_previous_accesses() {
 fn fixed_layer_relayout_does_not_churn_node_store() {
     let (mut world, mut root, fixed_panel, _first_block, _second_block) =
         support::fixed_layer_with_two_blocks_setup();
-    support::assert_set_attr_str(&mut root, fixed_panel, "position", "fixed");
-    support::assert_set_attr_str(&mut root, fixed_panel, "top", "20px");
-    support::assert_set_attr_str(&mut root, fixed_panel, "right", "20px");
+    support::assert_style_set(&mut root, fixed_panel, "position", "fixed");
+    support::assert_style_set(&mut root, fixed_panel, "top", "20px");
+    support::assert_style_set(&mut root, fixed_panel, "right", "20px");
 
     root.reset_node_metrics();
     support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);

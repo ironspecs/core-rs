@@ -2,15 +2,13 @@
   "style": {
     "styles": [
       [
-        "Width",
+        "width",
         {
           "String": "14px"
         }
       ],
       [
-        {
-          "Custom": "color"
-        },
+        "color",
         {
           "Color": [
             1.0,

@@ -56,7 +56,7 @@ use ui_dom::{
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_input_to, assert_append_textarea_to, assert_close,
-    assert_node_layout, assert_root_dom_update, assert_set_attr_str,
+    assert_node_layout, assert_root_dom_update, assert_set_attr_str, assert_style_set,
     attached_gpu_root_dom_default_viewport_setup,
 };
 
@@ -73,7 +73,7 @@ fn input_auto_sizes_from_default_preferred_size_intrinsic() {
     let container = assert_append_div_to(&mut root, document_root);
     let input = assert_append_input_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "block");
+    assert_style_set(&mut root, container, "display", "block");
     assert_set_attr_str(
         &mut root,
         input,
@@ -114,7 +114,7 @@ fn textarea_auto_sizes_from_default_preferred_size_intrinsic() {
     let container = assert_append_div_to(&mut root, document_root);
     let textarea = assert_append_textarea_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "block");
+    assert_style_set(&mut root, container, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -174,11 +174,11 @@ fn select_auto_sizes_from_default_preferred_size_intrinsic() {
     )
     .expect("option selected");
 
-    assert_set_attr_str(&mut root, container, "display", "block");
-    assert_set_attr_str(&mut root, select, "display", "block");
-    assert_set_attr_str(&mut root, select, "line-height", "2");
-    assert_set_attr_str(&mut root, select, "padding-top", "6px");
-    assert_set_attr_str(&mut root, select, "padding-bottom", "6px");
+    assert_style_set(&mut root, container, "display", "block");
+    assert_style_set(&mut root, select, "display", "block");
+    assert_style_set(&mut root, select, "line-height", "2");
+    assert_style_set(&mut root, select, "padding-top", "6px");
+    assert_style_set(&mut root, select, "padding-bottom", "6px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -231,12 +231,12 @@ fn select_popup_does_not_replace_closed_face_intrinsic_height() {
     )
     .expect("option selected");
 
-    assert_set_attr_str(&mut root, container, "display", "block");
-    assert_set_attr_str(&mut root, select, "display", "block");
-    assert_set_attr_str(&mut root, select, "width", "140px");
-    assert_set_attr_str(&mut root, select, "line-height", "2");
-    assert_set_attr_str(&mut root, select, "padding-top", "6px");
-    assert_set_attr_str(&mut root, select, "padding-bottom", "6px");
+    assert_style_set(&mut root, container, "display", "block");
+    assert_style_set(&mut root, select, "display", "block");
+    assert_style_set(&mut root, select, "width", "140px");
+    assert_style_set(&mut root, select, "line-height", "2");
+    assert_style_set(&mut root, select, "padding-top", "6px");
+    assert_style_set(&mut root, select, "padding-bottom", "6px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let closed_height_px = assert_node_layout(&root, select).height_px;
@@ -262,11 +262,11 @@ fn input_auto_sizes_from_authored_line_height() {
     let container = assert_append_div_to(&mut root, document_root);
     let input = assert_append_input_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "block");
-    assert_set_attr_str(&mut root, input, "display", "block");
-    assert_set_attr_str(&mut root, input, "line-height", "2");
-    assert_set_attr_str(&mut root, input, "padding-top", "6px");
-    assert_set_attr_str(&mut root, input, "padding-bottom", "6px");
+    assert_style_set(&mut root, container, "display", "block");
+    assert_style_set(&mut root, input, "display", "block");
+    assert_style_set(&mut root, input, "line-height", "2");
+    assert_style_set(&mut root, input, "padding-top", "6px");
+    assert_style_set(&mut root, input, "padding-bottom", "6px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -305,10 +305,10 @@ fn input_keyboard_edit_keeps_default_preferred_size_height() {
     let container = assert_append_div_to(&mut root, document_root);
     let input = assert_append_input_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "block");
-    assert_set_attr_str(&mut root, input, "display", "block");
-    assert_set_attr_str(&mut root, input, "padding-top", "6px");
-    assert_set_attr_str(&mut root, input, "padding-bottom", "6px");
+    assert_style_set(&mut root, container, "display", "block");
+    assert_style_set(&mut root, input, "display", "block");
+    assert_style_set(&mut root, input, "padding-top", "6px");
+    assert_style_set(&mut root, input, "padding-bottom", "6px");
     assert_set_attr_str(&mut root, input, "placeholder", "Inspector value");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -368,8 +368,8 @@ fn input_default_preferred_width_ignores_value_and_placeholder_growth() {
     let container = assert_append_div_to(&mut root, document_root);
     let input = assert_append_input_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "block");
-    assert_set_attr_str(&mut root, input, "display", "block");
+    assert_style_set(&mut root, container, "display", "block");
+    assert_style_set(&mut root, input, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -417,7 +417,7 @@ fn textarea_default_preferred_size_ignores_value_and_placeholder_growth() {
     let container = assert_append_div_to(&mut root, document_root);
     let textarea = assert_append_textarea_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "block");
+    assert_style_set(&mut root, container, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 

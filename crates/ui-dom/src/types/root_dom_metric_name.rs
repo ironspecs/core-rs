@@ -83,19 +83,27 @@ pub enum RootDomMetricName {
     TransitionEventPathAllocation,
     /// Number of hover layer-chain collections accepted into root pointer state.
     HoverLayerChainAllocation,
-    /// Number of stylesheet-owned removed-attribute lists built.
-    StylesheetRemovedAttributeListAllocation,
-    /// Number of stylesheet tracked-attribute sets created or refreshed.
-    StylesheetTrackedAttributeSetAllocation,
     /// Number of fragment top-level key lists built during import.
     FragmentTopLevelKeyListAllocation,
     /// Number of fragment import validation stacks built.
     FragmentImportValidationStackAllocation,
     /// Number of removed subtree key lists built.
     RemovedSubtreeKeyListAllocation,
+    /// Number of `style_mut` write calls that changed an inline declaration block.
+    StyleDeclarationUpsert,
+    /// Number of declarations dropped by a drop-and-continue declaration-list
+    /// parse on the style-attribute route (CSS 2.1 §4.1.7; every drop is
+    /// counted, never a graceful silent fallback).
+    StyleDeclarationDropped,
+    /// Number of elements resolved by the style recompute pass (winners fold +
+    /// group resolution).
+    StylePassNodeVisited,
+    /// Number of resolved elements whose computed groups changed (group diff
+    /// was not NONE).
+    StylePassNodeChanged,
 }
 
-pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 36] = [
+pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 38] = [
     RootDomMetricName::HoverPseudoStateSet,
     RootDomMetricName::HoverPseudoStateCleared,
     RootDomMetricName::StyleUpdated,
@@ -127,11 +135,13 @@ pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 36] = [
     RootDomMetricName::TransitionScheduleAllocation,
     RootDomMetricName::TransitionEventPathAllocation,
     RootDomMetricName::HoverLayerChainAllocation,
-    RootDomMetricName::StylesheetRemovedAttributeListAllocation,
-    RootDomMetricName::StylesheetTrackedAttributeSetAllocation,
     RootDomMetricName::FragmentTopLevelKeyListAllocation,
     RootDomMetricName::FragmentImportValidationStackAllocation,
     RootDomMetricName::RemovedSubtreeKeyListAllocation,
+    RootDomMetricName::StyleDeclarationUpsert,
+    RootDomMetricName::StyleDeclarationDropped,
+    RootDomMetricName::StylePassNodeVisited,
+    RootDomMetricName::StylePassNodeChanged,
 ];
 
 impl RootDomMetricName {
@@ -173,11 +183,13 @@ impl RootDomMetricName {
             Self::TransitionScheduleAllocation => 28,
             Self::TransitionEventPathAllocation => 29,
             Self::HoverLayerChainAllocation => 30,
-            Self::StylesheetRemovedAttributeListAllocation => 31,
-            Self::StylesheetTrackedAttributeSetAllocation => 32,
-            Self::FragmentTopLevelKeyListAllocation => 33,
-            Self::FragmentImportValidationStackAllocation => 34,
-            Self::RemovedSubtreeKeyListAllocation => 35,
+            Self::FragmentTopLevelKeyListAllocation => 31,
+            Self::FragmentImportValidationStackAllocation => 32,
+            Self::RemovedSubtreeKeyListAllocation => 33,
+            Self::StyleDeclarationUpsert => 34,
+            Self::StyleDeclarationDropped => 35,
+            Self::StylePassNodeVisited => 36,
+            Self::StylePassNodeChanged => 37,
         }
     }
 }

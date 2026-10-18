@@ -83,6 +83,8 @@ use crate::domains::hit_test::{
     hit_test_from_dom_subtree_cluster_local,
 };
 #[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
 use crate::types::{DomPointerUpdate, DomTag, LayerOrder, RootDomContext};
 #[cfg(test)]
 use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
@@ -1043,15 +1045,18 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(underlay, "position", "absolute")
+        root.style_mut(underlay)
+            .set("position", "absolute")
             .expect("underlay absolute");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("overlay absolute");
         let root_key = root.root;
         set_box(&mut root, root_key, 0.0, 0.0, 80.0, 80.0);
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
 
+        resolve_styles(&mut root);
         let mut layer_hits = Vec::new();
         collect_layer_hits_from_root_point(&root, point(5.0, 5.0), &mut layer_hits)
             .expect("layer hits should collect");
@@ -1079,19 +1084,26 @@ mod tests {
             .expect("append first item");
         root.append_child(scroll_root, second_item)
             .expect("append second item");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(scroll_root, "overflow", "scroll")
+        root.style_mut(scroll_root)
+            .set("overflow", "scroll")
             .expect("scroll overflow");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "40px")
+        root.style_mut(second_item)
+            .set("height", "40px")
             .expect("second height");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1132,19 +1144,26 @@ mod tests {
             .expect("append first item");
         root.append_child(scroll_root, second_item)
             .expect("append second item");
-        root.set_attr_str(scroll_root, "width", "80px")
+        root.style_mut(scroll_root)
+            .set("width", "80px")
             .expect("scroll width");
-        root.set_attr_str(scroll_root, "height", "40px")
+        root.style_mut(scroll_root)
+            .set("height", "40px")
             .expect("scroll height");
-        root.set_attr_str(scroll_root, "overflow", "scroll")
+        root.style_mut(scroll_root)
+            .set("overflow", "scroll")
             .expect("scroll overflow");
-        root.set_attr_str(first_item, "width", "80px")
+        root.style_mut(first_item)
+            .set("width", "80px")
             .expect("first width");
-        root.set_attr_str(first_item, "height", "40px")
+        root.style_mut(first_item)
+            .set("height", "40px")
             .expect("first height");
-        root.set_attr_str(second_item, "width", "80px")
+        root.style_mut(second_item)
+            .set("width", "80px")
             .expect("second width");
-        root.set_attr_str(second_item, "height", "40px")
+        root.style_mut(second_item)
+            .set("height", "40px")
             .expect("second height");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1191,27 +1210,36 @@ mod tests {
             .expect("append parent layer");
         root.append_child(parent_layer, child_layer)
             .expect("append child layer");
-        root.set_attr_str(parent_layer, "position", "relative")
+        root.style_mut(parent_layer)
+            .set("position", "relative")
             .expect("parent position");
-        root.set_attr_str(parent_layer, "width", "20px")
+        root.style_mut(parent_layer)
+            .set("width", "20px")
             .expect("parent width");
-        root.set_attr_str(parent_layer, "height", "20px")
+        root.style_mut(parent_layer)
+            .set("height", "20px")
             .expect("parent height");
-        root.set_attr_str(child_layer, "position", "absolute")
+        root.style_mut(child_layer)
+            .set("position", "absolute")
             .expect("child absolute");
-        root.set_attr_str(child_layer, "left", "100px")
+        root.style_mut(child_layer)
+            .set("left", "100px")
             .expect("child left");
-        root.set_attr_str(child_layer, "top", "100px")
+        root.style_mut(child_layer)
+            .set("top", "100px")
             .expect("child top");
-        root.set_attr_str(child_layer, "width", "160px")
+        root.style_mut(child_layer)
+            .set("width", "160px")
             .expect("child width");
-        root.set_attr_str(child_layer, "height", "120px")
+        root.style_mut(child_layer)
+            .set("height", "120px")
             .expect("child height");
         let root_key = root.root;
         set_box(&mut root, root_key, 0.0, 0.0, 320.0, 320.0);
         set_box(&mut root, parent_layer, 0.0, 0.0, 20.0, 20.0);
         set_box(&mut root, child_layer, 100.0, 100.0, 160.0, 120.0);
 
+        resolve_styles(&mut root);
         let mut layer_hits = Vec::new();
         collect_layer_hits_from_root_point(&root, point(140.0, 160.0), &mut layer_hits)
             .expect("layer hits should collect");
@@ -1236,27 +1264,36 @@ mod tests {
             .expect("append clip root");
         root.append_child(clip_root, child_layer)
             .expect("append child layer");
-        root.set_attr_str(clip_root, "width", "80px")
+        root.style_mut(clip_root)
+            .set("width", "80px")
             .expect("clip width");
-        root.set_attr_str(clip_root, "height", "40px")
+        root.style_mut(clip_root)
+            .set("height", "40px")
             .expect("clip height");
-        root.set_attr_str(clip_root, "overflow", "hidden")
+        root.style_mut(clip_root)
+            .set("overflow", "hidden")
             .expect("clip overflow");
-        root.set_attr_str(child_layer, "position", "absolute")
+        root.style_mut(child_layer)
+            .set("position", "absolute")
             .expect("child absolute");
-        root.set_attr_str(child_layer, "left", "0px")
+        root.style_mut(child_layer)
+            .set("left", "0px")
             .expect("child left");
-        root.set_attr_str(child_layer, "top", "60px")
+        root.style_mut(child_layer)
+            .set("top", "60px")
             .expect("child top");
-        root.set_attr_str(child_layer, "width", "80px")
+        root.style_mut(child_layer)
+            .set("width", "80px")
             .expect("child width");
-        root.set_attr_str(child_layer, "height", "40px")
+        root.style_mut(child_layer)
+            .set("height", "40px")
             .expect("child height");
         let root_key = root.root;
         set_box(&mut root, root_key, 0.0, 0.0, 160.0, 160.0);
         set_box(&mut root, clip_root, 0.0, 0.0, 80.0, 40.0);
         set_box(&mut root, child_layer, 0.0, 60.0, 80.0, 40.0);
 
+        resolve_styles(&mut root);
         let mut layer_hits = Vec::new();
         collect_layer_hits_from_root_point(&root, point(10.0, 10.0), &mut layer_hits)
             .expect("layer hits should collect");
@@ -1281,27 +1318,37 @@ mod tests {
             .expect("append raised root");
         root.append_child(raised_root, child_layer)
             .expect("append child layer");
-        root.set_attr_str(raised_root, "position", "absolute")
+        root.style_mut(raised_root)
+            .set("position", "absolute")
             .expect("raised root position");
-        root.set_attr_str(raised_root, "left", "200px")
+        root.style_mut(raised_root)
+            .set("left", "200px")
             .expect("raised root left");
-        root.set_attr_str(raised_root, "top", "0px")
+        root.style_mut(raised_root)
+            .set("top", "0px")
             .expect("raised root top");
-        root.set_attr_str(raised_root, "width", "20px")
+        root.style_mut(raised_root)
+            .set("width", "20px")
             .expect("raised root width");
-        root.set_attr_str(raised_root, "height", "20px")
+        root.style_mut(raised_root)
+            .set("height", "20px")
             .expect("raised root height");
         root.set_layout_layer_order(raised_root, LayerOrder::Raised)
             .expect("raised root layer order");
-        root.set_attr_str(child_layer, "position", "absolute")
+        root.style_mut(child_layer)
+            .set("position", "absolute")
             .expect("child layer position");
-        root.set_attr_str(child_layer, "left", "-190px")
+        root.style_mut(child_layer)
+            .set("left", "-190px")
             .expect("child layer left");
-        root.set_attr_str(child_layer, "top", "0px")
+        root.style_mut(child_layer)
+            .set("top", "0px")
             .expect("child layer top");
-        root.set_attr_str(child_layer, "width", "80px")
+        root.style_mut(child_layer)
+            .set("width", "80px")
             .expect("child layer width");
-        root.set_attr_str(child_layer, "height", "40px")
+        root.style_mut(child_layer)
+            .set("height", "40px")
             .expect("child layer height");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1326,6 +1373,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // the fixture writes several presentation props
     fn raised_layer_hit_escapes_ordinary_ancestor_clip_and_specific_queries() {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let clip_root = root.create_element(DomTag::Div).expect("clip root");
@@ -1338,27 +1386,37 @@ mod tests {
             .expect("append raised popup");
         root.append_child(raised_popup, option_row)
             .expect("append option row");
-        root.set_attr_str(clip_root, "width", "80px")
+        root.style_mut(clip_root)
+            .set("width", "80px")
             .expect("clip width");
-        root.set_attr_str(clip_root, "height", "40px")
+        root.style_mut(clip_root)
+            .set("height", "40px")
             .expect("clip height");
-        root.set_attr_str(clip_root, "overflow", "hidden")
+        root.style_mut(clip_root)
+            .set("overflow", "hidden")
             .expect("clip overflow");
-        root.set_attr_str(raised_popup, "position", "absolute")
+        root.style_mut(raised_popup)
+            .set("position", "absolute")
             .expect("raised position");
-        root.set_attr_str(raised_popup, "top", "60px")
+        root.style_mut(raised_popup)
+            .set("top", "60px")
             .expect("raised top");
-        root.set_attr_str(raised_popup, "width", "80px")
+        root.style_mut(raised_popup)
+            .set("width", "80px")
             .expect("raised width");
-        root.set_attr_str(raised_popup, "height", "40px")
+        root.style_mut(raised_popup)
+            .set("height", "40px")
             .expect("raised height");
         root.set_layout_layer_order(raised_popup, LayerOrder::Raised)
             .expect("raised layer order");
-        root.set_attr_str(option_row, "position", "absolute")
+        root.style_mut(option_row)
+            .set("position", "absolute")
             .expect("row position");
-        root.set_attr_str(option_row, "width", "80px")
+        root.style_mut(option_row)
+            .set("width", "80px")
             .expect("row width");
-        root.set_attr_str(option_row, "height", "40px")
+        root.style_mut(option_row)
+            .set("height", "40px")
             .expect("row height");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1434,25 +1492,35 @@ mod tests {
             .expect("append parent layer");
         root.append_child(parent_layer, raised_popup)
             .expect("append raised popup");
-        root.set_attr_str(parent_layer, "position", "fixed")
+        root.style_mut(parent_layer)
+            .set("position", "fixed")
             .expect("parent position");
-        root.set_attr_str(parent_layer, "left", "100px")
+        root.style_mut(parent_layer)
+            .set("left", "100px")
             .expect("parent left");
-        root.set_attr_str(parent_layer, "top", "50px")
+        root.style_mut(parent_layer)
+            .set("top", "50px")
             .expect("parent top");
-        root.set_attr_str(parent_layer, "width", "200px")
+        root.style_mut(parent_layer)
+            .set("width", "200px")
             .expect("parent width");
-        root.set_attr_str(parent_layer, "height", "150px")
+        root.style_mut(parent_layer)
+            .set("height", "150px")
             .expect("parent height");
-        root.set_attr_str(raised_popup, "position", "absolute")
+        root.style_mut(raised_popup)
+            .set("position", "absolute")
             .expect("popup position");
-        root.set_attr_str(raised_popup, "left", "20px")
+        root.style_mut(raised_popup)
+            .set("left", "20px")
             .expect("popup left");
-        root.set_attr_str(raised_popup, "top", "30px")
+        root.style_mut(raised_popup)
+            .set("top", "30px")
             .expect("popup top");
-        root.set_attr_str(raised_popup, "width", "60px")
+        root.style_mut(raised_popup)
+            .set("width", "60px")
             .expect("popup width");
-        root.set_attr_str(raised_popup, "height", "40px")
+        root.style_mut(raised_popup)
+            .set("height", "40px")
             .expect("popup height");
         root.set_layout_layer_order(raised_popup, LayerOrder::Raised)
             .expect("popup raised order");
@@ -1490,25 +1558,35 @@ mod tests {
             .expect("append parent layer");
         root.append_child(parent_layer, raised_popup)
             .expect("append raised popup");
-        root.set_attr_str(parent_layer, "position", "fixed")
+        root.style_mut(parent_layer)
+            .set("position", "fixed")
             .expect("parent position");
-        root.set_attr_str(parent_layer, "left", "100px")
+        root.style_mut(parent_layer)
+            .set("left", "100px")
             .expect("parent left");
-        root.set_attr_str(parent_layer, "top", "50px")
+        root.style_mut(parent_layer)
+            .set("top", "50px")
             .expect("parent top");
-        root.set_attr_str(parent_layer, "width", "200px")
+        root.style_mut(parent_layer)
+            .set("width", "200px")
             .expect("parent width");
-        root.set_attr_str(parent_layer, "height", "150px")
+        root.style_mut(parent_layer)
+            .set("height", "150px")
             .expect("parent height");
-        root.set_attr_str(raised_popup, "position", "absolute")
+        root.style_mut(raised_popup)
+            .set("position", "absolute")
             .expect("popup position");
-        root.set_attr_str(raised_popup, "left", "20px")
+        root.style_mut(raised_popup)
+            .set("left", "20px")
             .expect("popup left");
-        root.set_attr_str(raised_popup, "top", "30px")
+        root.style_mut(raised_popup)
+            .set("top", "30px")
             .expect("popup top");
-        root.set_attr_str(raised_popup, "width", "60px")
+        root.style_mut(raised_popup)
+            .set("width", "60px")
             .expect("popup width");
-        root.set_attr_str(raised_popup, "height", "40px")
+        root.style_mut(raised_popup)
+            .set("height", "40px")
             .expect("popup height");
         root.set_layout_layer_order(raised_popup, LayerOrder::Raised)
             .expect("popup raised order");
@@ -1539,11 +1617,14 @@ mod tests {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let layer = root.create_element(DomTag::Div).expect("layer");
         root.append_child(root.root, layer).expect("append layer");
-        root.set_attr_str(layer, "position", "absolute")
+        root.style_mut(layer)
+            .set("position", "absolute")
             .expect("layer position");
-        root.set_attr_str(layer, "width", "80px")
+        root.style_mut(layer)
+            .set("width", "80px")
             .expect("layer width");
-        root.set_attr_str(layer, "height", "40px")
+        root.style_mut(layer)
+            .set("height", "40px")
             .expect("layer height");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1579,9 +1660,11 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(underlay, "position", "absolute")
+        root.style_mut(underlay)
+            .set("position", "absolute")
             .expect("underlay absolute");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("overlay absolute");
         let root_key = root.root;
         set_box(&mut root, root_key, 0.0, 0.0, 80.0, 80.0);
@@ -1635,31 +1718,42 @@ mod tests {
             .expect("append raised child");
         root.append_child(root.root, ordinary_overlay)
             .expect("append ordinary overlay");
-        root.set_attr_str(raised_parent, "position", "absolute")
+        root.style_mut(raised_parent)
+            .set("position", "absolute")
             .expect("raised parent position");
-        root.set_attr_str(raised_parent, "width", "80px")
+        root.style_mut(raised_parent)
+            .set("width", "80px")
             .expect("raised parent width");
-        root.set_attr_str(raised_parent, "height", "80px")
+        root.style_mut(raised_parent)
+            .set("height", "80px")
             .expect("raised parent height");
         root.set_layout_layer_order(raised_parent, LayerOrder::Raised)
             .expect("raised parent layer order");
-        root.set_attr_str(raised_child, "position", "absolute")
+        root.style_mut(raised_child)
+            .set("position", "absolute")
             .expect("raised child position");
-        root.set_attr_str(raised_child, "left", "10px")
+        root.style_mut(raised_child)
+            .set("left", "10px")
             .expect("raised child left");
-        root.set_attr_str(raised_child, "top", "10px")
+        root.style_mut(raised_child)
+            .set("top", "10px")
             .expect("raised child top");
-        root.set_attr_str(raised_child, "width", "40px")
+        root.style_mut(raised_child)
+            .set("width", "40px")
             .expect("raised child width");
-        root.set_attr_str(raised_child, "height", "40px")
+        root.style_mut(raised_child)
+            .set("height", "40px")
             .expect("raised child height");
         root.set_layout_layer_order(raised_child, LayerOrder::Raised)
             .expect("raised child layer order");
-        root.set_attr_str(ordinary_overlay, "position", "absolute")
+        root.style_mut(ordinary_overlay)
+            .set("position", "absolute")
             .expect("ordinary overlay position");
-        root.set_attr_str(ordinary_overlay, "width", "80px")
+        root.style_mut(ordinary_overlay)
+            .set("width", "80px")
             .expect("ordinary overlay width");
-        root.set_attr_str(ordinary_overlay, "height", "80px")
+        root.style_mut(ordinary_overlay)
+            .set("height", "80px")
             .expect("ordinary overlay height");
 
         let mut world = attach_root_to_world(&mut root);
@@ -1800,21 +1894,29 @@ mod tests {
             .expect("append parent layer");
         root.append_child(parent_layer, child_layer)
             .expect("append child layer");
-        root.set_attr_str(parent_layer, "position", "relative")
+        root.style_mut(parent_layer)
+            .set("position", "relative")
             .expect("parent position");
-        root.set_attr_str(parent_layer, "width", "20px")
+        root.style_mut(parent_layer)
+            .set("width", "20px")
             .expect("parent width");
-        root.set_attr_str(parent_layer, "height", "20px")
+        root.style_mut(parent_layer)
+            .set("height", "20px")
             .expect("parent height");
-        root.set_attr_str(child_layer, "position", "absolute")
+        root.style_mut(child_layer)
+            .set("position", "absolute")
             .expect("child absolute");
-        root.set_attr_str(child_layer, "left", "100px")
+        root.style_mut(child_layer)
+            .set("left", "100px")
             .expect("child left");
-        root.set_attr_str(child_layer, "top", "100px")
+        root.style_mut(child_layer)
+            .set("top", "100px")
             .expect("child top");
-        root.set_attr_str(child_layer, "width", "160px")
+        root.style_mut(child_layer)
+            .set("width", "160px")
             .expect("child width");
-        root.set_attr_str(child_layer, "height", "120px")
+        root.style_mut(child_layer)
+            .set("height", "120px")
             .expect("child height");
         let root_key = root.root;
         set_box(&mut root, root_key, 0.0, 0.0, 320.0, 320.0);
@@ -2051,47 +2153,67 @@ mod tests {
                 .expect("append ordinary child");
             root.append_child(raised_parent, raised_child)
                 .expect("append raised child");
-            root.set_attr_str(parent_layer, "position", "fixed")
+            root.style_mut(parent_layer)
+                .set("position", "fixed")
                 .expect("parent position");
-            root.set_attr_str(parent_layer, "left", "100px")
+            root.style_mut(parent_layer)
+                .set("left", "100px")
                 .expect("parent left");
-            root.set_attr_str(parent_layer, "top", "50px")
+            root.style_mut(parent_layer)
+                .set("top", "50px")
                 .expect("parent top");
-            root.set_attr_str(parent_layer, "width", "200px")
+            root.style_mut(parent_layer)
+                .set("width", "200px")
                 .expect("parent width");
-            root.set_attr_str(parent_layer, "height", "150px")
+            root.style_mut(parent_layer)
+                .set("height", "150px")
                 .expect("parent height");
-            root.set_attr_str(raised_parent, "position", "absolute")
+            root.style_mut(raised_parent)
+                .set("position", "absolute")
                 .expect("raised parent position");
-            root.set_attr_str(raised_parent, "left", "20px")
+            root.style_mut(raised_parent)
+                .set("left", "20px")
                 .expect("raised parent left");
-            root.set_attr_str(raised_parent, "top", "30px")
+            root.style_mut(raised_parent)
+                .set("top", "30px")
                 .expect("raised parent top");
-            root.set_attr_str(raised_parent, "width", "120px")
+            root.style_mut(raised_parent)
+                .set("width", "120px")
                 .expect("raised parent width");
-            root.set_attr_str(raised_parent, "height", "80px")
+            root.style_mut(raised_parent)
+                .set("height", "80px")
                 .expect("raised parent height");
             root.set_layout_layer_order(raised_parent, LayerOrder::Raised)
                 .expect("raised parent layer order");
-            root.set_attr_str(ordinary_child, "position", "absolute")
+            root.style_mut(ordinary_child)
+                .set("position", "absolute")
                 .expect("ordinary child position");
-            root.set_attr_str(ordinary_child, "left", "10px")
+            root.style_mut(ordinary_child)
+                .set("left", "10px")
                 .expect("ordinary child left");
-            root.set_attr_str(ordinary_child, "top", "10px")
+            root.style_mut(ordinary_child)
+                .set("top", "10px")
                 .expect("ordinary child top");
-            root.set_attr_str(ordinary_child, "width", "80px")
+            root.style_mut(ordinary_child)
+                .set("width", "80px")
                 .expect("ordinary child width");
-            root.set_attr_str(ordinary_child, "height", "40px")
+            root.style_mut(ordinary_child)
+                .set("height", "40px")
                 .expect("ordinary child height");
-            root.set_attr_str(raised_child, "position", "absolute")
+            root.style_mut(raised_child)
+                .set("position", "absolute")
                 .expect("raised child position");
-            root.set_attr_str(raised_child, "left", "15px")
+            root.style_mut(raised_child)
+                .set("left", "15px")
                 .expect("raised child left");
-            root.set_attr_str(raised_child, "top", "15px")
+            root.style_mut(raised_child)
+                .set("top", "15px")
                 .expect("raised child top");
-            root.set_attr_str(raised_child, "width", "50px")
+            root.style_mut(raised_child)
+                .set("width", "50px")
                 .expect("raised child width");
-            root.set_attr_str(raised_child, "height", "30px")
+            root.style_mut(raised_child)
+                .set("height", "30px")
                 .expect("raised child height");
             root.set_layout_layer_order(raised_child, LayerOrder::Raised)
                 .expect("raised child layer order");
@@ -2165,11 +2287,14 @@ mod tests {
             for layer in [
                 layer_a, layer_b, layer_c, layer_d, layer_e, layer_f, layer_g,
             ] {
-                root.set_attr_str(layer, "position", "absolute")
+                root.style_mut(layer)
+                    .set("position", "absolute")
                     .expect("layer position");
-                root.set_attr_str(layer, "width", "80px")
+                root.style_mut(layer)
+                    .set("width", "80px")
                     .expect("layer width");
-                root.set_attr_str(layer, "height", "80px")
+                root.style_mut(layer)
+                    .set("height", "80px")
                     .expect("layer height");
                 set_box(&mut root, layer, 0.0, 0.0, 80.0, 80.0);
             }
@@ -2280,6 +2405,11 @@ mod tests {
                 "layer hit order should not duplicate ownership for {key:?}",
             );
         }
+    }
+
+    fn resolve_styles(root: &mut RootDom) {
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
     }
 
     fn set_box(

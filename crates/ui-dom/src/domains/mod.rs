@@ -58,5 +58,13 @@ pub use render_ops::{
     RenderOpsBatch, RenderOpsHandler, RenderOpsHandlers, StageOutcome, StagedExternalRgbaUpload,
     StagedLayerApply, register_render_ops_handler,
 };
-pub use style::{ComputedStyleMap, StyleRule, StyleRuleKey, StyleRuleOrigin};
+pub use style::{
+    AlignContentKw, AlignItemsKw, ComputedBoxGroup, ComputedColorGroup, ComputedFlexGroup,
+    ComputedFontGroup, ComputedGroups, ComputedStyleMap, ComputedStyleRef, ComputedTextGroup,
+    ComputedTransformGroup, ComputedVisualGroup, DeclBlockKey, DeclDropReport, DeclLength,
+    DeclStore, DeclValue, Declaration, DisplayKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw,
+    JustifyContentKw, Keyword, NodePresentation, OverflowKw, PositionKw, PresentationProperty,
+    ResolvedTransitionLonghands, StyleMut, StyleRuleKey, StyleRuleOrigin, StylesheetLoadReport,
+    TRANSITION_LONGHAND_CAPACITY, TextKey, TransitionLonghandProperty,
+};
 pub use text_layout::{TextAlign, TextWrapMode};

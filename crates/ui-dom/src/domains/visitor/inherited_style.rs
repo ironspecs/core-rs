@@ -1,280 +1,82 @@
-//! Shared inherited-style ancestor climber for retained visitors.
+//! Shared inherited-style ancestor seed for retained visitors.
 //!
-//! This module owns one upward seed walk that retained visitors can reuse at
-//! their root boundary. The climber is intentionally small and strict:
+//! This module owns the two group-derived inheritance derivations that style,
+//! layout, paint, and composite visitors reuse:
 //!
-//! - it walks upward from one subtree root
-//! - it gathers only the inherited values currently shared by style/layout
-//! - it stops as soon as all tracked inherited values are known
-//! - it does not recompute per-node maps or allocate traversal history
+//! - `inherited_style_context_from_ancestors` seeds a subtree root by climbing
+//!   to the nearest ancestor element and reading its three inherited computed
+//!   groups (crossing layer-root boundaries exactly like the legacy ancestor
+//!   climb it replaces).
+//! - `inherited_context_from_node` derives a node's own carried context from
+//!   its projected groups during a DFS; text nodes (never projected) inherit
+//!   the carried context unchanged.
+//!
+//! Since spine step 3.3d the climb no longer does per-property first-set-wins
+//! capture, pending `em`-scale accumulation, or an early-exit completeness
+//! check: group-copy inheritance (A5) already carries every inherited value in
+//! the element's groups, so the seed is a single group read.
 //!
 //! The resolved value set (`InheritedStyleContext`) lives in its own file and
 //! is re-exported here.
 
-use crate::domains::text_layout::DEFAULT_TEXT_FONT_SIZE_PX;
-use crate::types::dom_node::{DomNode, DomNodeSlotKey};
-use crate::types::{
-    AuthoredLength, DomAttribute, DomAttributeValue, DomError, RootDom,
-    overflow_wrap_from_attr_value, parse_authored_length, resolve_line_height_px,
-    text_align_from_attr_value, text_direction_from_attr_value, white_space_from_attr_value,
-    word_break_from_attr_value,
-};
+use crate::types::dom_node::DomNode;
+use crate::types::{DomError, DomNodeSlotKey, RootDom};
 
 pub(crate) use super::inherited_style_context::InheritedStyleContext;
 
 #[cfg(test)]
-use crate::types::{
-    DomTag, DomTextAlign, DomTextDirection, RootDomContext, RootDomContextConfig,
-    parse_css_color_rgba,
-};
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
+#[cfg(test)]
+use crate::types::{DomTag, RootDomContext, RootDomContextConfig};
 
+/// Seeds the inherited context for a subtree rooted at `start_key` by climbing
+/// to the nearest ancestor ELEMENT and reading its OVERLAY-MERGED inherited
+/// groups (`computed_*`) — CSS Cascade §6.1: the transition tier wins the
+/// cascade, so a mid-flight interpolated value on the ancestor is the cascaded
+/// value and inherits (spine 3.3e). When no ancestor element exists, the seed
+/// is the no-parent `ComputedGroups::initial()`.
 pub(crate) fn inherited_style_context_from_ancestors(
     root_dom: &RootDom,
     start_key: DomNodeSlotKey,
 ) -> Result<InheritedStyleContext, DomError> {
-    let mut context = InheritedStyleContext::default();
-    let mut pending_font_size_scale = 1.0;
-    let mut pending_line_height_value = None;
-    let mut current_parent = root_dom
-        .node(start_key)
-        .ok_or(DomError::InvalidNodeKey)?
-        .parent_key();
-    while let Some(parent_key) = current_parent {
-        let parent = root_dom.node(parent_key).ok_or(DomError::InvalidNodeKey)?;
-        capture_color_from_node(parent, &mut context);
-        capture_inherited_font_size_from_node(parent, &mut context, &mut pending_font_size_scale)?;
-        capture_line_height_value_from_node(parent, &mut pending_line_height_value);
-        capture_text_align_from_node(parent, &mut context)?;
-        capture_text_direction_from_node(parent, &mut context)?;
-        capture_white_space_from_node(parent, &mut context)?;
-        capture_overflow_wrap_from_node(parent, &mut context)?;
-        capture_word_break_from_node(parent, &mut context)?;
-        if inherited_context_is_complete(&context, pending_line_height_value.is_some()) {
-            break;
+    let start = root_dom.node(start_key).ok_or(DomError::InvalidNodeKey)?;
+    let mut cursor = start.parent_key();
+    while let Some(key) = cursor {
+        let ancestor = root_dom.node(key).ok_or(DomError::InvalidNodeKey)?;
+        if matches!(ancestor, DomNode::Element(_)) {
+            return Ok(inherited_context_from_merged_groups(ancestor));
         }
-        current_parent = parent.parent_key();
+        cursor = ancestor.parent_key();
     }
-    if context.font_size_px.is_none() && pending_font_size_scale.to_bits() != 1.0f32.to_bits() {
-        context.font_size_px = Some(DEFAULT_TEXT_FONT_SIZE_PX * pending_font_size_scale);
-    }
-    if let Some(value) = pending_line_height_value {
-        context.line_height_px = resolve_line_height_px(&value, context.effective_font_size_px());
-    }
-    Ok(context)
+    Ok(InheritedStyleContext::default())
 }
 
+/// Derives one node's own carried context from its OVERLAY-MERGED groups.
+///
+/// Elements and document-like nodes read their own merged groups (projected
+/// earlier in the pass, transition-overlay merged). Text nodes are never
+/// projected — their groups stay `initial()` — so they inherit the carried
+/// context unchanged, exactly as the legacy derivation returned the prior
+/// context when a text node had no attrs.
+#[must_use]
 pub(crate) fn inherited_context_from_node(
     node: &DomNode,
-    inherited_context: &InheritedStyleContext,
-) -> Result<InheritedStyleContext, DomError> {
-    let font_size_px = match node.presented_attr(&DomAttribute::FontSize) {
-        Some(value) => Some(
-            resolve_font_size_px_from_value(value, inherited_context.effective_font_size_px())
-                .ok_or(DomError::InvalidAttributeValue)?,
-        ),
-        None => inherited_context.font_size_px,
-    };
-    let effective_font_size_px = font_size_px.unwrap_or(DEFAULT_TEXT_FONT_SIZE_PX);
-    Ok(InheritedStyleContext {
-        color: node
-            .presented_attr(&inherited_color_attribute())
-            .cloned()
-            .or_else(|| inherited_context.color.clone()),
-        font_size_px,
-        line_height_px: match node.presented_attr(&DomAttribute::LineHeight) {
-            Some(value) => resolve_line_height_px(value, effective_font_size_px),
-            None => inherited_context.line_height_px,
-        },
-        text_align: match node.presented_attr(&DomAttribute::TextAlign) {
-            Some(value) => Some(text_align_from_attr_value(value)?),
-            None => inherited_context.text_align,
-        },
-        text_direction: match presented_text_direction_value(node) {
-            Some(value) => Some(text_direction_from_attr_value(value)?),
-            None => inherited_context.text_direction,
-        },
-        white_space: match node.presented_attr(&DomAttribute::WhiteSpace) {
-            Some(value) => Some(white_space_from_attr_value(value)?),
-            None => inherited_context.white_space,
-        },
-        overflow_wrap: match node.presented_attr(&DomAttribute::OverflowWrap) {
-            Some(value) => Some(overflow_wrap_from_attr_value(value)?),
-            None => inherited_context.overflow_wrap,
-        },
-        word_break: match node.presented_attr(&DomAttribute::WordBreak) {
-            Some(value) => Some(word_break_from_attr_value(value)?),
-            None => inherited_context.word_break,
-        },
-    })
-}
-
-pub(crate) fn inherited_color_attribute() -> DomAttribute {
-    DomAttribute::Custom("color".to_string())
-}
-
-fn inherited_context_is_complete(
-    context: &InheritedStyleContext,
-    line_height_value_is_known: bool,
-) -> bool {
-    context.color.is_some()
-        && context.font_size_px.is_some()
-        && line_height_value_is_known
-        && context.text_align.is_some()
-        && context.text_direction.is_some()
-        && context.white_space.is_some()
-        && context.overflow_wrap.is_some()
-        && context.word_break.is_some()
-}
-
-fn capture_color_from_node(node: &DomNode, context: &mut InheritedStyleContext) {
-    if context.color.is_some() {
-        return;
+    prior: &InheritedStyleContext,
+) -> InheritedStyleContext {
+    if matches!(node, DomNode::Text(_)) {
+        return *prior;
     }
-    let Some(value) = node.presented_attr(&inherited_color_attribute()) else {
-        return;
-    };
-    context.color = Some(value.clone());
+    inherited_context_from_merged_groups(node)
 }
 
-fn capture_white_space_from_node(
-    node: &DomNode,
-    context: &mut InheritedStyleContext,
-) -> Result<(), DomError> {
-    if context.white_space.is_some() {
-        return Ok(());
-    }
-    let Some(value) = node.presented_attr(&DomAttribute::WhiteSpace) else {
-        return Ok(());
-    };
-    context.white_space = Some(white_space_from_attr_value(value)?);
-    Ok(())
-}
-
-fn capture_text_align_from_node(
-    node: &DomNode,
-    context: &mut InheritedStyleContext,
-) -> Result<(), DomError> {
-    if context.text_align.is_some() {
-        return Ok(());
-    }
-    let Some(value) = node.presented_attr(&DomAttribute::TextAlign) else {
-        return Ok(());
-    };
-    context.text_align = Some(text_align_from_attr_value(value)?);
-    Ok(())
-}
-
-fn capture_text_direction_from_node(
-    node: &DomNode,
-    context: &mut InheritedStyleContext,
-) -> Result<(), DomError> {
-    if context.text_direction.is_some() {
-        return Ok(());
-    }
-    let Some(value) = presented_text_direction_value(node) else {
-        return Ok(());
-    };
-    context.text_direction = Some(text_direction_from_attr_value(value)?);
-    Ok(())
-}
-
-fn capture_overflow_wrap_from_node(
-    node: &DomNode,
-    context: &mut InheritedStyleContext,
-) -> Result<(), DomError> {
-    if context.overflow_wrap.is_some() {
-        return Ok(());
-    }
-    let Some(value) = node.presented_attr(&DomAttribute::OverflowWrap) else {
-        return Ok(());
-    };
-    context.overflow_wrap = Some(overflow_wrap_from_attr_value(value)?);
-    Ok(())
-}
-
-fn capture_word_break_from_node(
-    node: &DomNode,
-    context: &mut InheritedStyleContext,
-) -> Result<(), DomError> {
-    if context.word_break.is_some() {
-        return Ok(());
-    }
-    let Some(value) = node.presented_attr(&DomAttribute::WordBreak) else {
-        return Ok(());
-    };
-    context.word_break = Some(word_break_from_attr_value(value)?);
-    Ok(())
-}
-
-fn presented_text_direction_value(node: &DomNode) -> Option<&DomAttributeValue> {
-    node.presented_attr(&DomAttribute::Direction)
-        .or_else(|| node.presented_attr(&DomAttribute::Dir))
-}
-
-fn capture_line_height_value_from_node(
-    node: &DomNode,
-    pending_line_height_value: &mut Option<DomAttributeValue>,
-) {
-    if pending_line_height_value.is_some() {
-        return;
-    }
-    let Some(value) = node.presented_attr(&DomAttribute::LineHeight) else {
-        return;
-    };
-    *pending_line_height_value = Some(value.clone());
-}
-
-fn capture_inherited_font_size_from_node(
-    node: &DomNode,
-    context: &mut InheritedStyleContext,
-    pending_font_size_scale: &mut f32,
-) -> Result<(), DomError> {
-    if context.font_size_px.is_some() {
-        return Ok(());
-    }
-    let Some(value) = node.presented_attr(&DomAttribute::FontSize) else {
-        return Ok(());
-    };
-    match parse_font_size_step(value) {
-        Some(FontSizeStep::Absolute(px)) => {
-            context.font_size_px = Some(px * *pending_font_size_scale);
-        }
-        Some(FontSizeStep::Scale(em_scale)) => {
-            *pending_font_size_scale *= em_scale;
-        }
-        None => return Err(DomError::InvalidAttributeValue),
-    }
-    Ok(())
-}
-
-enum FontSizeStep {
-    Absolute(f32),
-    Scale(f32),
-}
-
-fn parse_font_size_step(value: &DomAttributeValue) -> Option<FontSizeStep> {
-    match value {
-        DomAttributeValue::Float(value) if value.is_finite() => {
-            Some(FontSizeStep::Absolute(*value))
-        }
-        DomAttributeValue::Float(_) | DomAttributeValue::Bool(_) | DomAttributeValue::Color(_) => {
-            None
-        }
-        DomAttributeValue::Integer(value) => {
-            Some(FontSizeStep::Absolute(crate::numeric::i64_to_f32(*value)))
-        }
-        DomAttributeValue::String(value) => match parse_authored_length(value)? {
-            AuthoredLength::Px(px) => Some(FontSizeStep::Absolute(px)),
-            AuthoredLength::Em(scale) => Some(FontSizeStep::Scale(scale)),
-            AuthoredLength::Unset => None,
-        },
-    }
-}
-
-fn resolve_font_size_px_from_value(value: &DomAttributeValue, font_size_px: f32) -> Option<f32> {
-    match parse_font_size_step(value)? {
-        FontSizeStep::Absolute(px) => Some(px),
-        FontSizeStep::Scale(scale) => Some(font_size_px * scale),
+/// The three inherited groups read through the `computed_*` accessors (stored
+/// group copy merged with the active-transition overlay).
+#[must_use]
+fn inherited_context_from_merged_groups(node: &DomNode) -> InheritedStyleContext {
+    InheritedStyleContext {
+        font: node.computed_font(),
+        text: node.computed_text(),
+        color: node.computed_color(),
     }
 }
 
@@ -285,12 +87,8 @@ mod tests {
 
     use super::*;
 
-    fn color(value: &str) -> DomAttributeValue {
-        DomAttributeValue::Color(parse_css_color_rgba(value).expect("test color should parse"))
-    }
-
     #[test]
-    fn climber_prefers_nearest_ancestor_values() {
+    fn ancestor_seed_reads_the_nearest_element_groups() {
         let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
         let mut root = RootDom::new(context);
         let far = root.create_element(DomTag::Div).expect("far");
@@ -299,207 +97,76 @@ mod tests {
         root.append_child(root.root, far).expect("append far");
         root.append_child(far, near).expect("append near");
         root.append_child(near, start).expect("append start");
-        root.set_attr(
-            far,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("12px".to_string())),
-        )
-        .expect("far font-size");
-        root.set_attr(
-            far,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#111111".to_string())),
-        )
-        .expect("far color");
-        root.set_attr(
-            near,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("18px".to_string())),
-        )
-        .expect("near font-size");
-        root.set_attr(
-            near,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#222222".to_string())),
-        )
-        .expect("near color");
+        root.style_mut(far)
+            .set("font-size", "12px")
+            .expect("far font-size");
+        root.style_mut(near)
+            .set("font-size", "18px")
+            .expect("near font-size");
 
+        // Resolve the ancestors' groups before the climb reads them.
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("recompute");
         let inherited = inherited_style_context_from_ancestors(&root, start).expect("climb");
-
-        assert_eq!(inherited.font_size_px, Some(18.0));
-        assert_eq!(inherited.color, Some(color("#222222")));
+        // The nearest ancestor element (near, 18px) wins over far (12px).
+        assert_eq!(inherited.effective_font_size_px(), 18.0);
     }
 
     #[test]
-    fn climber_uses_default_font_size_when_none_is_found() {
+    fn ancestor_seed_defaults_when_no_element_ancestor_exists() {
+        let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
+        let mut root = RootDom::new(context);
+        let start = root.create_element(DomTag::Div).expect("start");
+        root.append_child(root.root, start).expect("append start");
+
+        let inherited = inherited_style_context_from_ancestors(&root, start).expect("climb");
+        assert_eq!(inherited.effective_font_size_px(), 14.0);
+    }
+
+    #[test]
+    fn ancestor_seed_reads_the_inherited_color_group() {
         let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
         let mut root = RootDom::new(context);
         let parent = root.create_element(DomTag::Div).expect("parent");
         let start = root.create_element(DomTag::Div).expect("start");
         root.append_child(root.root, parent).expect("append parent");
         root.append_child(parent, start).expect("append start");
-        root.set_attr(
-            parent,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#abcdef".to_string())),
-        )
-        .expect("color");
+        root.style_mut(parent)
+            .set("color", "#abcdef")
+            .expect("color");
 
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("recompute");
         let inherited = inherited_style_context_from_ancestors(&root, start).expect("climb");
-
-        assert_eq!(inherited.font_size_px, None);
-        assert_eq!(inherited.effective_font_size_px(), 14.0);
-        assert_eq!(inherited.color, Some(color("#abcdef")));
+        assert_eq!(
+            inherited.effective_color(),
+            crate::types::parse_css_color_rgba("#abcdef").expect("proof color should parse")
+        );
     }
 
     #[test]
-    fn climber_resolves_nearest_font_size_em_chain_against_found_px_base() {
-        let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
-        let mut root = RootDom::new(context);
-        let far = root.create_element(DomTag::Div).expect("far");
-        let near = root.create_element(DomTag::Div).expect("near");
-        let start = root.create_element(DomTag::Div).expect("start");
-        root.append_child(root.root, far).expect("append far");
-        root.append_child(far, near).expect("append near");
-        root.append_child(near, start).expect("append start");
-        root.set_attr(
-            far,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("10px".to_string())),
-        )
-        .expect("far font-size");
-        root.set_attr(
-            near,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("1.5em".to_string())),
-        )
-        .expect("near font-size");
-
-        let inherited = inherited_style_context_from_ancestors(&root, start).expect("climb");
-
-        assert_eq!(inherited.font_size_px, Some(15.0));
-    }
-
-    #[test]
-    fn climber_resolves_nearest_line_height_after_font_size_seed() {
-        let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
-        let mut root = RootDom::new(context);
-        let far = root.create_element(DomTag::Div).expect("far");
-        let near = root.create_element(DomTag::Div).expect("near");
-        let start = root.create_element(DomTag::Div).expect("start");
-        root.append_child(root.root, far).expect("append far");
-        root.append_child(far, near).expect("append near");
-        root.append_child(near, start).expect("append start");
-        root.set_attr(
-            far,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("10px".to_string())),
-        )
-        .expect("far font-size");
-        root.set_attr(
-            near,
-            DomAttribute::LineHeight,
-            Some(DomAttributeValue::String("2".to_string())),
-        )
-        .expect("near line-height");
-
-        let inherited = inherited_style_context_from_ancestors(&root, start).expect("climb");
-
-        assert_eq!(inherited.font_size_px, Some(10.0));
-        assert_eq!(inherited.line_height_px, Some(20.0));
-    }
-
-    #[test]
-    fn climber_prefers_nearest_text_align() {
-        let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
-        let mut root = RootDom::new(context);
-        let far = root.create_element(DomTag::Div).expect("far");
-        let near = root.create_element(DomTag::Div).expect("near");
-        let start = root.create_element(DomTag::Div).expect("start");
-        root.append_child(root.root, far).expect("append far");
-        root.append_child(far, near).expect("append near");
-        root.append_child(near, start).expect("append start");
-        root.set_attr(
-            far,
-            DomAttribute::TextAlign,
-            Some(DomAttributeValue::String("center".to_string())),
-        )
-        .expect("far text-align");
-        root.set_attr(
-            near,
-            DomAttribute::TextAlign,
-            Some(DomAttributeValue::String("right".to_string())),
-        )
-        .expect("near text-align");
-
-        let inherited = inherited_style_context_from_ancestors(&root, start).expect("climb");
-
-        assert_eq!(inherited.effective_text_align(), DomTextAlign::Right);
-    }
-
-    #[test]
-    fn climber_supports_end_text_align_keyword() {
+    fn node_derivation_reads_element_groups_and_passes_text_through() {
         let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
         let mut root = RootDom::new(context);
         let parent = root.create_element(DomTag::Div).expect("parent");
-        let child = root.create_element(DomTag::Div).expect("child");
+        let text = root.create_text_node("inherit me").expect("text");
         root.append_child(root.root, parent).expect("append parent");
-        root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            parent,
-            DomAttribute::TextAlign,
-            Some(DomAttributeValue::String("end".to_string())),
-        )
-        .expect("parent text-align");
+        root.append_child(parent, text).expect("append text");
+        root.style_mut(parent)
+            .set("font-size", "22px")
+            .expect("parent font-size");
 
-        let inherited = inherited_style_context_from_ancestors(&root, child).expect("climb");
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("recompute");
+        let seed = inherited_style_context_from_ancestors(&root, parent).expect("climb");
+        let parent_node = root.node(parent).expect("parent node");
+        let parent_context = inherited_context_from_node(parent_node, &seed);
+        assert_eq!(parent_context.effective_font_size_px(), 22.0);
 
-        assert_eq!(inherited.effective_text_align(), DomTextAlign::End);
-    }
-
-    #[test]
-    fn climber_supports_direction_property_keyword() {
-        let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
-        let mut root = RootDom::new(context);
-        let parent = root.create_element(DomTag::Div).expect("parent");
-        let child = root.create_element(DomTag::Div).expect("child");
-        root.append_child(root.root, parent).expect("append parent");
-        root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            parent,
-            DomAttribute::Direction,
-            Some(DomAttributeValue::String("rtl".to_string())),
-        )
-        .expect("parent direction");
-
-        let inherited = inherited_style_context_from_ancestors(&root, child).expect("climb");
-
-        assert_eq!(inherited.effective_text_direction(), DomTextDirection::Rtl);
-    }
-
-    #[test]
-    fn climber_prefers_direction_property_over_dir_attribute() {
-        let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
-        let mut root = RootDom::new(context);
-        let parent = root.create_element(DomTag::Div).expect("parent");
-        let child = root.create_element(DomTag::Div).expect("child");
-        root.append_child(root.root, parent).expect("append parent");
-        root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            parent,
-            DomAttribute::Dir,
-            Some(DomAttributeValue::String("ltr".to_string())),
-        )
-        .expect("parent dir");
-        root.set_attr(
-            parent,
-            DomAttribute::Direction,
-            Some(DomAttributeValue::String("rtl".to_string())),
-        )
-        .expect("parent direction");
-
-        let inherited = inherited_style_context_from_ancestors(&root, child).expect("climb");
-
-        assert_eq!(inherited.effective_text_direction(), DomTextDirection::Rtl);
+        // A text node is never projected: its derivation returns the prior
+        // (inherited) context unchanged.
+        let text_node = root.node(text).expect("text node");
+        let text_context = inherited_context_from_node(text_node, &parent_context);
+        assert_eq!(text_context.effective_font_size_px(), 22.0);
     }
 }

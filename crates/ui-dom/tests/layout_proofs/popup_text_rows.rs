@@ -16,14 +16,11 @@
 //!   <https://www.w3.org/Style/CSS/Test/CSS2.1/20100127/html4/max-height-108.htm>
 //!   <https://www.w3.org/Style/CSS/Test/CSS2.1/20100127/html4/max-height-109.htm>
 
-use ui_dom::{
-    DomAttribute, DomAttributeNode, DomAttributeValue, DomIntrinsic, DomNode, DomNodeSlotKey,
-    DomPointerUpdate, RootDom, node_box,
-};
+use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, node_box};
 
 use crate::layout_proofs::support::{
     assert_append_button_to, assert_append_div_to, assert_append_text_to, assert_close,
-    assert_node_layout, assert_root_dom_update, assert_set_attr_str,
+    assert_node_layout, assert_root_dom_update, assert_style_set,
     attached_gpu_root_dom_default_viewport_setup,
 };
 
@@ -67,10 +64,6 @@ fn fixed_popup_text_rows_keep_auto_height_below_max_height() {
     let popup_layout = assert_node_layout(&scenario.root, scenario.popup);
     let expected_content_height =
         popup_content_height_from_boxes(&scenario.root, scenario.content, &scenario.row_keys);
-    let popup_node = scenario
-        .root
-        .node(scenario.popup)
-        .expect("popup root should remain in the dom");
 
     assert!(
         expected_content_height < 160.0,
@@ -86,18 +79,19 @@ fn fixed_popup_text_rows_keep_auto_height_below_max_height() {
         expected_content_height,
         "below-max text-row popup content height",
     );
-    let popup_element = popup_node
-        .as_element()
-        .expect("popup root should stay as an element");
-    assert!(
-        popup_element.attr(&DomAttribute::Height).is_none(),
+    let popup_box = scenario
+        .root
+        .computed_style(scenario.popup)
+        .expect("popup root should remain readable")
+        .as_box();
+    assert_eq!(
+        popup_box.height, None,
         "text-row popup should rely on auto height rather than authored height",
     );
     assert_eq!(
-        popup_element.attr(&DomAttribute::MaxHeight),
-        Some(&DomAttributeValue::String(
-            MENU_POPUP_MAX_HEIGHT_PX.to_owned()
-        )),
+        popup_box.max_height,
+        Some(160.0),
+        "text-row popup should present the authored max-height",
     );
 }
 
@@ -423,11 +417,11 @@ fn absolute_popup_text_rows_scenario(labels: &[&str]) -> PopupTextRowsScenario {
         .root
         .append_child(fixed_layer, scenario.popup)
         .expect("absolute popup should move under a fixed containing layer");
-    assert_set_attr_str(&mut scenario.root, fixed_layer, "position", "fixed");
-    assert_set_attr_str(&mut scenario.root, fixed_layer, "top", "0px");
-    assert_set_attr_str(&mut scenario.root, fixed_layer, "left", "0px");
-    assert_set_attr_str(&mut scenario.root, fixed_layer, "right", "0px");
-    assert_set_attr_str(&mut scenario.root, fixed_layer, "bottom", "0px");
+    assert_style_set(&mut scenario.root, fixed_layer, "position", "fixed");
+    assert_style_set(&mut scenario.root, fixed_layer, "top", "0px");
+    assert_style_set(&mut scenario.root, fixed_layer, "left", "0px");
+    assert_style_set(&mut scenario.root, fixed_layer, "right", "0px");
+    assert_style_set(&mut scenario.root, fixed_layer, "bottom", "0px");
     scenario
 }
 
@@ -484,29 +478,29 @@ fn assert_menu_like_popup_style(
     popup_position: &str,
     content_width_px: &str,
 ) {
-    assert_set_attr_str(root, popup, "position", popup_position);
-    assert_set_attr_str(root, popup, "left", MENU_POPUP_LEFT_PX);
-    assert_set_attr_str(root, popup, "top", MENU_POPUP_TOP_PX);
-    assert_set_attr_str(root, popup, "width", MENU_POPUP_WIDTH_PX);
-    assert_set_attr_str(root, popup, "max-height", MENU_POPUP_MAX_HEIGHT_PX);
-    assert_set_attr_str(root, popup, "overflow", "scroll");
-    assert_set_attr_str(root, content, "width", content_width_px);
-    assert_set_attr_str(root, content, "padding-left", MENU_CONTENT_PADDING_PX);
-    assert_set_attr_str(root, content, "padding-right", MENU_CONTENT_PADDING_PX);
-    assert_set_attr_str(root, content, "padding-top", MENU_CONTENT_PADDING_PX);
-    assert_set_attr_str(root, content, "padding-bottom", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, popup, "position", popup_position);
+    assert_style_set(root, popup, "left", MENU_POPUP_LEFT_PX);
+    assert_style_set(root, popup, "top", MENU_POPUP_TOP_PX);
+    assert_style_set(root, popup, "width", MENU_POPUP_WIDTH_PX);
+    assert_style_set(root, popup, "max-height", MENU_POPUP_MAX_HEIGHT_PX);
+    assert_style_set(root, popup, "overflow", "scroll");
+    assert_style_set(root, content, "width", content_width_px);
+    assert_style_set(root, content, "padding-left", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, content, "padding-right", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, content, "padding-top", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, content, "padding-bottom", MENU_CONTENT_PADDING_PX);
 }
 
 fn assert_menu_like_row_style(root: &mut RootDom, row: DomNodeSlotKey) {
-    assert_set_attr_str(root, row, "display", "block");
-    assert_set_attr_str(root, row, "margin-left", ROW_MARGIN_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "margin-right", ROW_MARGIN_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "margin-top", ROW_MARGIN_TOP_BOTTOM_PX);
-    assert_set_attr_str(root, row, "margin-bottom", ROW_MARGIN_TOP_BOTTOM_PX);
-    assert_set_attr_str(root, row, "padding-left", ROW_PADDING_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "padding-right", ROW_PADDING_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "padding-top", ROW_PADDING_TOP_BOTTOM_PX);
-    assert_set_attr_str(root, row, "padding-bottom", ROW_PADDING_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "display", "block");
+    assert_style_set(root, row, "margin-left", ROW_MARGIN_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "margin-right", ROW_MARGIN_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "margin-top", ROW_MARGIN_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "margin-bottom", ROW_MARGIN_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "padding-left", ROW_PADDING_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "padding-right", ROW_PADDING_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "padding-top", ROW_PADDING_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "padding-bottom", ROW_PADDING_TOP_BOTTOM_PX);
 }
 
 fn popup_content_height_from_boxes(

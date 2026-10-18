@@ -3,6 +3,13 @@
 //! Paint ownership lives here: dirty detection, retained target reuse, GPU
 //! paint preparation, revision bumps, and paint-state clearing after a
 //! successful retained commit.
+//!
+//! Presentation reads (background/border/outline/caret colors, radius,
+//! opacity) come from the node's typed computed groups
+//! (`computed_visual()`/`computed_color()`/`computed_box()`, spine step 3.3c),
+//! not from stringly presented attrs. Text-node paint color is the one
+//! exception: text nodes are never projected, so their color comes from the
+//! carried inherited context (`inherited_text_color_rgba`).
 
 mod mark_dirty;
 
@@ -22,10 +29,14 @@ use crate::domains::visitor::inherited_style::{
 use crate::types::element_behaviors::{ElementPaintContext, append_specialized_element_paint_ops};
 use crate::types::primitives::PointPx;
 use crate::types::{
-    AuthoredLength, DomAttribute, DomAttributeValue, DomBoxModel, DomElementNode, DomError,
-    DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomTag, PaintBackend, RootDom,
-    RootDomMetricName, TextIntrinsic, parse_authored_length,
+    DomBoxModel, DomElementNode, DomError, DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey,
+    DomTag, PaintBackend, RootDom, RootDomMetricName, TextIntrinsic,
 };
+
+#[cfg(test)]
+use crate::types::DomAttribute;
+#[cfg(test)]
+use crate::types::DomAttributeValue;
 
 #[cfg(test)]
 use crate::StyleRuleOrigin;
@@ -35,6 +46,8 @@ use crate::domains::layer_ops::{ImagePaintId, TextAlign, TextWrapMode};
 use crate::domains::layer_pool::LayerConfig;
 #[cfg(test)]
 use crate::domains::layout::{IdentityDomLayoutResolver, relayout_tree};
+#[cfg(test)]
+use crate::domains::style::name_is_presentation;
 #[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
@@ -155,84 +168,13 @@ fn node_paint_dirty(root_dom: &RootDom, node_key: DomNodeSlotKey) -> Result<bool
         .is_dirty())
 }
 
-pub(crate) fn border_radii_px(
-    root_dom: &RootDom,
-    node_key: DomNodeSlotKey,
-) -> Result<[f32; 4], DomError> {
-    let node = root_dom.node(node_key).ok_or(DomError::InvalidNodeKey)?;
-    Ok(
-        match node.presented_attr(&DomAttribute::Custom("border-radius".to_string())) {
-            Some(DomAttributeValue::Float(value)) => [value.max(0.0); 4],
-            Some(DomAttributeValue::String(value)) => parse_border_radius_px(value),
-            _ => [0.0; 4],
-        },
-    )
-}
-
-fn parse_px(value: &str) -> f32 {
-    if value == "0" {
-        return 0.0;
-    }
-    value
-        .trim_end_matches("px")
-        .parse::<f32>()
-        .unwrap_or(0.0)
-        .max(0.0)
-}
-
-fn parse_border_radius_px(value: &str) -> [f32; 4] {
-    let values: Vec<f32> = value.split_whitespace().map(parse_px).collect();
-    match values.as_slice() {
-        [] => [0.0; 4],
-        [all] => [*all; 4],
-        [top_left, top_right] => [*top_left, *top_right, *top_left, *top_right],
-        [top_left, top_right, bottom_right] => [*top_left, *top_right, *bottom_right, *top_right],
-        [top_left, top_right, bottom_right, bottom_left, ..] => {
-            [*top_left, *top_right, *bottom_right, *bottom_left]
-        }
-    }
-}
-
-fn background_color_rgba(node: &DomNode) -> [f32; 4] {
-    custom_color_attr_rgba(node, "background-color").unwrap_or([0.0; 4])
-}
-
-fn border_side_color_rgba(node: &DomNode, side_name: &str) -> [f32; 4] {
-    custom_color_attr_rgba(node, side_name)
-        .or_else(|| custom_color_attr_rgba(node, "border-color"))
-        .unwrap_or([0.0; 4])
-}
-
-fn custom_length_attr_px(node: &DomNode, attribute_name: &str) -> Option<f32> {
-    let font_size_px = effective_font_size_px(node, DEFAULT_TEXT_FONT_SIZE_PX);
-    match node.presented_attr(&DomAttribute::Custom(attribute_name.to_string()))? {
-        DomAttributeValue::Float(value) => Some((*value).max(0.0)),
-        DomAttributeValue::String(value) => match parse_authored_length(value)? {
-            AuthoredLength::Px(value_px) => Some(value_px.max(0.0)),
-            AuthoredLength::Em(scale) => Some((font_size_px * scale).max(0.0)),
-            AuthoredLength::Unset => None,
-        },
-        _ => None,
-    }
-}
-
-fn custom_color_attr_rgba(node: &DomNode, attribute_name: &str) -> Option<[f32; 4]> {
-    match node.presented_attr(&DomAttribute::Custom(attribute_name.to_string()))? {
-        DomAttributeValue::Color(rgba) => Some(*rgba),
-        _ => None,
-    }
-}
-
-fn effective_font_size_px(node: &DomNode, font_size_px: f32) -> f32 {
-    match node.presented_attr(&DomAttribute::FontSize) {
-        Some(DomAttributeValue::Float(value)) => *value,
-        Some(DomAttributeValue::String(value)) => match parse_authored_length(value) {
-            Some(AuthoredLength::Px(value_px)) => value_px,
-            Some(AuthoredLength::Em(scale)) => font_size_px * scale,
-            Some(AuthoredLength::Unset) | None => DEFAULT_TEXT_FONT_SIZE_PX,
-        },
-        _ => font_size_px,
-    }
+/// Computes one node's four corner radii (`[TL, TR, BR, BL]` px) from the
+/// computed visual group. The projection already expands the `border-radius`
+/// shorthand and per-corner longhands into the group's `radius` field
+/// (spine step 3.3), so paint reads the typed group instead of re-parsing
+/// stringly presented attrs.
+pub(crate) fn border_radii_px_for_node(node: &DomNode) -> [f32; 4] {
+    node.computed_visual().radius
 }
 
 fn derive_paint_ops_into_plan(
@@ -250,7 +192,7 @@ fn derive_paint_ops_into_plan(
             return Ok(());
         }
         let box_model = paint_box_from_node(node_box_from_ref(node), absolute_offset);
-        let child_style = inherited_context_from_node(node, inherited_style)?;
+        let child_style = inherited_context_from_node(node, inherited_style);
         let paint_result = add_node_paint_ops(
             current_key,
             root_dom,
@@ -432,9 +374,6 @@ fn add_node_paint_ops(
                 node,
                 element,
                 layer_pool,
-                color_rgba: inherited_text_color_rgba(inherited_style),
-                text_align: inherited_style.effective_text_align(),
-                text_direction: inherited_style.effective_text_direction(),
                 plan,
             },
             box_model,
@@ -499,9 +438,6 @@ struct ElementPaintInputs<'a> {
     node: &'a DomNode,
     element: &'a DomElementNode,
     layer_pool: &'a mut LayerPool,
-    color_rgba: [f32; 4],
-    text_align: crate::types::DomTextAlign,
-    text_direction: crate::types::DomTextDirection,
     plan: &'a mut LayerPaintPlan,
 }
 
@@ -515,32 +451,30 @@ fn add_element_paint_ops(
         node,
         element,
         layer_pool,
-        color_rgba,
-        text_align,
-        text_direction,
         plan,
     } = inputs;
     let rect = box_model.border_box;
     let position_px = [rect.left_px, rect.top_px];
     let (width_px, height_px) = paintable_node_size(rect.width_px, rect.height_px);
+    let visual = node.computed_visual();
     if width_px > 0.0 && height_px > 0.0 {
         plan.rects.push(RectPaintOp {
             position_px,
             size_px: [width_px, height_px],
-            fill_rgba: background_color_rgba(node),
-            corner_radii_px: border_radii_px(root_dom, current_key)?,
+            fill_rgba: visual.background_rgba,
+            corner_radii_px: visual.radius,
             border_widths_px: [
                 box_model.border.top_px,
                 box_model.border.right_px,
                 box_model.border.bottom_px,
                 box_model.border.left_px,
             ],
-            border_top_rgba: border_side_color_rgba(node, "border-top-color"),
-            border_right_rgba: border_side_color_rgba(node, "border-right-color"),
-            border_bottom_rgba: border_side_color_rgba(node, "border-bottom-color"),
-            border_left_rgba: border_side_color_rgba(node, "border-left-color"),
+            border_top_rgba: visual.border_rgba[0],
+            border_right_rgba: visual.border_rgba[1],
+            border_bottom_rgba: visual.border_rgba[2],
+            border_left_rgba: visual.border_rgba[3],
         });
-        if let Some(outline_rect) = outline_rect_paint_op(root_dom, current_key, node, box_model)? {
+        if let Some(outline_rect) = outline_rect_paint_op(node, box_model) {
             plan.rects.push(outline_rect);
         }
         append_specialized_element_paint_ops(&mut ElementPaintContext {
@@ -549,9 +483,6 @@ fn add_element_paint_ops(
             node,
             element,
             box_model,
-            inherited_color_rgba: color_rgba,
-            inherited_text_align: text_align,
-            inherited_text_direction: text_direction,
             layer_pool,
             plan,
         })?;
@@ -559,22 +490,18 @@ fn add_element_paint_ops(
     Ok(width_px > 0.0 && height_px > 0.0)
 }
 
-fn outline_rect_paint_op(
-    root_dom: &RootDom,
-    current_key: DomNodeSlotKey,
-    node: &DomNode,
-    box_model: DomBoxModel,
-) -> Result<Option<RectPaintOp>, DomError> {
-    let outline_width_px = custom_length_attr_px(node, "outline-width").unwrap_or(0.0);
-    let outline_offset_px = custom_length_attr_px(node, "outline-offset").unwrap_or(0.0);
-    let outline_color_rgba = custom_color_attr_rgba(node, "outline-color").unwrap_or([0.0; 4]);
+fn outline_rect_paint_op(node: &DomNode, box_model: DomBoxModel) -> Option<RectPaintOp> {
+    let visual = node.computed_visual();
+    let outline_width_px = visual.outline_width;
+    let outline_offset_px = visual.outline_offset;
+    let outline_color_rgba = visual.outline_rgba;
     if outline_width_px <= 0.0 || outline_color_rgba[3] <= 0.0 {
-        return Ok(None);
+        return None;
     }
     let expansion_px = outline_width_px + outline_offset_px;
     let rect = box_model.border_box;
-    let border_radii_px = border_radii_px(root_dom, current_key)?;
-    Ok(Some(RectPaintOp {
+    let border_radii_px = visual.radius;
+    Some(RectPaintOp {
         position_px: [rect.left_px - expansion_px, rect.top_px - expansion_px],
         size_px: [
             (rect.width_px + expansion_px * 2.0).max(0.0),
@@ -592,7 +519,7 @@ fn outline_rect_paint_op(
         border_right_rgba: outline_color_rgba,
         border_bottom_rgba: outline_color_rgba,
         border_left_rgba: outline_color_rgba,
-    }))
+    })
 }
 
 fn paint_box_from_node(mut box_model: DomBoxModel, absolute_offset: PointPx) -> DomBoxModel {
@@ -601,15 +528,13 @@ fn paint_box_from_node(mut box_model: DomBoxModel, absolute_offset: PointPx) -> 
     box_model
 }
 
-fn default_text_color_rgba() -> [f32; 4] {
-    [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0, 1.0]
-}
-
+/// The inherited text color for a text node. Text nodes are never projected,
+/// so their color group stays at the initial near-white; the painted text
+/// color keeps coming from the carried inherited context, whose color group
+/// equals the nearest ancestor element's computed color (spine 3.3d, sourced
+/// from groups instead of the legacy stringly `color` attr).
 fn inherited_text_color_rgba(inherited_style: &InheritedStyleContext) -> [f32; 4] {
-    match inherited_style.color.as_ref() {
-        Some(DomAttributeValue::Color(rgba)) => *rgba,
-        _ => default_text_color_rgba(),
-    }
+    inherited_style.effective_color()
 }
 
 fn paintable_node_size(node_width_px: f32, node_height_px: f32) -> (f32, f32) {
@@ -693,20 +618,24 @@ mod tests {
         }
     }
 
+    /// Routes a fixture `(name, value)` pair: presentation names go through
+    /// `style_mut`, content names through `set_attr_str` (spine 3.4: the
+    /// vocabulary split removed presentation attrs from `DomAttribute`).
     fn append_node_with_attrs(
         root: &mut RootDom,
         parent_key: DomNodeSlotKey,
         tag: DomTag,
-        attrs: &[(DomAttribute, &str)],
+        attrs: &[(&str, &str)],
     ) -> DomNodeSlotKey {
         let node_key = root.create_element(tag).expect("node");
-        for (attribute, value) in attrs {
-            root.set_attr(
-                node_key,
-                attribute.clone(),
-                Some(DomAttributeValue::String((*value).to_owned())),
-            )
-            .expect("set attr");
+        for (name, value) in attrs {
+            if name_is_presentation(name) {
+                root.style_mut(node_key)
+                    .set(name, value)
+                    .expect("set presentation style");
+            } else {
+                root.set_attr_str(node_key, name, value).expect("set attr");
+            }
         }
         root.append_child(parent_key, node_key)
             .expect("append child");
@@ -783,21 +712,13 @@ mod tests {
             &mut root,
             document_key,
             DomTag::Div,
-            &[
-                (DomAttribute::Width, "80px"),
-                (DomAttribute::Height, "40px"),
-                (DomAttribute::Custom("color".to_owned()), "#112233"),
-            ],
+            &[("width", "80px"), ("height", "40px"), ("color", "#112233")],
         );
         append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Img,
-            &[
-                (DomAttribute::Src, "icon:scene"),
-                (DomAttribute::Width, "18px"),
-                (DomAttribute::Height, "18px"),
-            ],
+            &[("src", "icon:scene"), ("width", "18px"), ("height", "18px")],
         );
 
         layout_layer_tree(&mut root, layer_root, (80.0, 40.0));
@@ -823,11 +744,11 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Left, "40px"),
-                (DomAttribute::Top, "20px"),
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "80px"),
+                ("position", "fixed"),
+                ("left", "40px"),
+                ("top", "20px"),
+                ("width", "120px"),
+                ("height", "80px"),
             ],
         );
         append_node_with_attrs(
@@ -835,10 +756,10 @@ mod tests {
             layer_root,
             DomTag::Div,
             &[
-                (DomAttribute::MarginLeft, "12px"),
-                (DomAttribute::MarginTop, "9px"),
-                (DomAttribute::Width, "30px"),
-                (DomAttribute::Height, "18px"),
+                ("margin-left", "12px"),
+                ("margin-top", "9px"),
+                ("width", "30px"),
+                ("height", "18px"),
             ],
         );
 
@@ -867,11 +788,11 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Left, "0px"),
-                (DomAttribute::Top, "0px"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "120px"),
+                ("position", "fixed"),
+                ("left", "0px"),
+                ("top", "0px"),
+                ("width", "160px"),
+                ("height", "120px"),
             ],
         );
         let wrapper = append_node_with_attrs(
@@ -879,19 +800,19 @@ mod tests {
             layer_root,
             DomTag::Div,
             &[
-                (DomAttribute::MarginLeft, "14px"),
-                (DomAttribute::MarginTop, "11px"),
-                (DomAttribute::PaddingLeft, "7px"),
-                (DomAttribute::PaddingTop, "5px"),
-                (DomAttribute::Width, "50px"),
-                (DomAttribute::Height, "40px"),
+                ("margin-left", "14px"),
+                ("margin-top", "11px"),
+                ("padding-left", "7px"),
+                ("padding-top", "5px"),
+                ("width", "50px"),
+                ("height", "40px"),
             ],
         );
         append_node_with_attrs(
             &mut root,
             wrapper,
             DomTag::Div,
-            &[(DomAttribute::Width, "13px"), (DomAttribute::Height, "9px")],
+            &[("width", "13px"), ("height", "9px")],
         );
 
         layout_layer_tree(&mut root, layer_root, (160.0, 120.0));
@@ -917,11 +838,11 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Left, "0px"),
-                (DomAttribute::Top, "0px"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "120px"),
+                ("position", "fixed"),
+                ("left", "0px"),
+                ("top", "0px"),
+                ("width", "160px"),
+                ("height", "120px"),
             ],
         );
         append_node_with_attrs(
@@ -929,10 +850,10 @@ mod tests {
             layer_root,
             DomTag::Div,
             &[
-                (DomAttribute::MarginLeft, "4px"),
-                (DomAttribute::MarginTop, "6px"),
-                (DomAttribute::Width, "18px"),
-                (DomAttribute::Height, "10px"),
+                ("margin-left", "4px"),
+                ("margin-top", "6px"),
+                ("width", "18px"),
+                ("height", "10px"),
             ],
         );
         let nested_layer = append_node_with_attrs(
@@ -940,11 +861,11 @@ mod tests {
             layer_root,
             DomTag::Div,
             &[
-                (DomAttribute::Transform, "translateX(1px)"),
-                (DomAttribute::Left, "40px"),
-                (DomAttribute::Top, "30px"),
-                (DomAttribute::Width, "60px"),
-                (DomAttribute::Height, "50px"),
+                ("transform", "translateX(1px)"),
+                ("left", "40px"),
+                ("top", "30px"),
+                ("width", "60px"),
+                ("height", "50px"),
             ],
         );
         append_node_with_attrs(
@@ -952,11 +873,11 @@ mod tests {
             nested_layer,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "absolute"),
-                (DomAttribute::Left, "8px"),
-                (DomAttribute::Top, "9px"),
-                (DomAttribute::Width, "12px"),
-                (DomAttribute::Height, "14px"),
+                ("position", "absolute"),
+                ("left", "8px"),
+                ("top", "9px"),
+                ("width", "12px"),
+                ("height", "14px"),
             ],
         );
 
@@ -980,12 +901,12 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Left, "0px"),
-                (DomAttribute::Top, "0px"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "120px"),
-                (DomAttribute::Overflow, "scroll"),
+                ("position", "fixed"),
+                ("left", "0px"),
+                ("top", "0px"),
+                ("width", "160px"),
+                ("height", "120px"),
+                ("overflow", "scroll"),
             ],
         );
         let nested_layer = append_node_with_attrs(
@@ -993,9 +914,9 @@ mod tests {
             layer_root,
             DomTag::Div,
             &[
-                (DomAttribute::Transform, "translateX(1px)"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "120px"),
+                ("transform", "translateX(1px)"),
+                ("width", "160px"),
+                ("height", "120px"),
             ],
         );
         append_text_node(
@@ -1030,21 +951,18 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Left, "0px"),
-                (DomAttribute::Top, "0px"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("left", "0px"),
+                ("top", "0px"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let row = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "212px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "212px"), ("height", "24px")],
         );
         let text_key = append_text_node(&mut root, row, "Stage A Label");
 
@@ -1075,21 +993,18 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Left, "0px"),
-                (DomAttribute::Top, "0px"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("left", "0px"),
+                ("top", "0px"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let row = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "212px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "212px"), ("height", "24px")],
         );
         append_text_node(&mut root, row, "Stage A Label");
 
@@ -1132,9 +1047,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         append_node_with_attrs(
@@ -1142,13 +1057,13 @@ mod tests {
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::PaddingLeft, "8px"),
-                (DomAttribute::PaddingRight, "8px"),
-                (DomAttribute::PaddingTop, "6px"),
-                (DomAttribute::PaddingBottom, "6px"),
-                (DomAttribute::Value, "hello"),
+                ("width", "120px"),
+                ("height", "24px"),
+                ("padding-left", "8px"),
+                ("padding-right", "8px"),
+                ("padding-top", "6px"),
+                ("padding-bottom", "6px"),
+                ("value", "hello"),
             ],
         );
 
@@ -1180,9 +1095,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let select = append_node_with_attrs(
@@ -1190,13 +1105,13 @@ mod tests {
             layer_root,
             DomTag::Select,
             &[
-                (DomAttribute::Width, "140px"),
-                (DomAttribute::Height, "28px"),
-                (DomAttribute::PaddingLeft, "8px"),
-                (DomAttribute::PaddingRight, "8px"),
-                (DomAttribute::PaddingTop, "5px"),
-                (DomAttribute::PaddingBottom, "5px"),
-                (DomAttribute::Value, "cam-1"),
+                ("width", "140px"),
+                ("height", "28px"),
+                ("padding-left", "8px"),
+                ("padding-right", "8px"),
+                ("padding-top", "5px"),
+                ("padding-bottom", "5px"),
+                ("value", "cam-1"),
             ],
         );
         let first_option = append_node_with_attrs(
@@ -1204,9 +1119,9 @@ mod tests {
             select,
             DomTag::Option,
             &[
-                (DomAttribute::Value, "cam-1"),
-                (DomAttribute::Label, "Face Camera"),
-                (DomAttribute::Selected, "true"),
+                ("value", "cam-1"),
+                ("label", "Face Camera"),
+                ("selected", "true"),
             ],
         );
         append_text_node(&mut root, first_option, "source text should not paint");
@@ -1214,10 +1129,7 @@ mod tests {
             &mut root,
             select,
             DomTag::Option,
-            &[
-                (DomAttribute::Value, "cam-2"),
-                (DomAttribute::Label, "Desk Camera"),
-            ],
+            &[("value", "cam-2"), ("label", "Desk Camera")],
         );
         append_text_node(
             &mut root,
@@ -1245,20 +1157,17 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "80px"),
-                (DomAttribute::TextAlign, "center"),
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "80px"),
+                ("text-align", "center"),
             ],
         );
         let text_parent = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Div,
-            &[
-                (DomAttribute::Display, "block"),
-                (DomAttribute::Width, "160px"),
-            ],
+            &[("display", "block"), ("width", "160px")],
         );
         append_text_node(&mut root, text_parent, "Aligned Text");
 
@@ -1286,25 +1195,23 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "80px"),
-                (DomAttribute::Class, "aligned"),
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "80px"),
+                ("class", "aligned"),
             ],
         );
         let text_parent = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Div,
-            &[
-                (DomAttribute::Display, "block"),
-                (DomAttribute::Width, "160px"),
-            ],
+            &[("display", "block"), ("width", "160px")],
         );
         append_text_node(&mut root, text_parent, "Aligned Text");
 
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
-        root.set_attr_str(text_parent, "color", "#ffffff")
+        root.style_mut(text_parent)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
         let mut layer_pool = x1_layer_pool();
@@ -1330,25 +1237,23 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "80px"),
-                (DomAttribute::Class, "justified"),
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "80px"),
+                ("class", "justified"),
             ],
         );
         let text_parent = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Div,
-            &[
-                (DomAttribute::Display, "block"),
-                (DomAttribute::Width, "160px"),
-            ],
+            &[("display", "block"), ("width", "160px")],
         );
         append_text_node(&mut root, text_parent, "Aligned Text");
 
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
-        root.set_attr_str(text_parent, "color", "#ffffff")
+        root.style_mut(text_parent)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
         let mut layer_pool = x1_layer_pool();
@@ -1374,25 +1279,23 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "80px"),
-                (DomAttribute::Class, "aligned-end"),
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "80px"),
+                ("class", "aligned-end"),
             ],
         );
         let text_parent = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Div,
-            &[
-                (DomAttribute::Display, "block"),
-                (DomAttribute::Width, "160px"),
-            ],
+            &[("display", "block"), ("width", "160px")],
         );
         append_text_node(&mut root, text_parent, "Aligned Text");
 
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
-        root.set_attr_str(text_parent, "color", "#ffffff")
+        root.style_mut(text_parent)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
         let mut layer_pool = x1_layer_pool();
@@ -1413,21 +1316,18 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "80px"),
-                (DomAttribute::Dir, "rtl"),
-                (DomAttribute::TextAlign, "start"),
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "80px"),
+                ("dir", "rtl"),
+                ("text-align", "start"),
             ],
         );
         let text_parent = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Div,
-            &[
-                (DomAttribute::Display, "block"),
-                (DomAttribute::Width, "160px"),
-            ],
+            &[("display", "block"), ("width", "160px")],
         );
         append_text_node(&mut root, text_parent, "Aligned Text");
 
@@ -1457,25 +1357,23 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "80px"),
-                (DomAttribute::Class, "rtl-end"),
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "80px"),
+                ("class", "rtl-end"),
             ],
         );
         let text_parent = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Div,
-            &[
-                (DomAttribute::Display, "block"),
-                (DomAttribute::Width, "160px"),
-            ],
+            &[("display", "block"), ("width", "160px")],
         );
         append_text_node(&mut root, text_parent, "Aligned Text");
 
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
-        root.set_attr_str(text_parent, "color", "#ffffff")
+        root.style_mut(text_parent)
+            .set("color", "#ffffff")
             .expect("style recompute attr");
         layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
         let mut layer_pool = x1_layer_pool();
@@ -1495,10 +1393,10 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
-                (DomAttribute::TextAlign, "right"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
+                ("text-align", "right"),
             ],
         );
         let select = append_node_with_attrs(
@@ -1506,13 +1404,13 @@ mod tests {
             layer_root,
             DomTag::Select,
             &[
-                (DomAttribute::Width, "140px"),
-                (DomAttribute::Height, "28px"),
-                (DomAttribute::PaddingLeft, "8px"),
-                (DomAttribute::PaddingRight, "8px"),
-                (DomAttribute::PaddingTop, "5px"),
-                (DomAttribute::PaddingBottom, "5px"),
-                (DomAttribute::Value, "cam-1"),
+                ("width", "140px"),
+                ("height", "28px"),
+                ("padding-left", "8px"),
+                ("padding-right", "8px"),
+                ("padding-top", "5px"),
+                ("padding-bottom", "5px"),
+                ("value", "cam-1"),
             ],
         );
         append_node_with_attrs(
@@ -1520,9 +1418,9 @@ mod tests {
             select,
             DomTag::Option,
             &[
-                (DomAttribute::Value, "cam-1"),
-                (DomAttribute::Label, "Face Camera"),
-                (DomAttribute::Selected, "true"),
+                ("value", "cam-1"),
+                ("label", "Face Camera"),
+                ("selected", "true"),
             ],
         );
 
@@ -1546,11 +1444,11 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
-                (DomAttribute::Direction, "rtl"),
-                (DomAttribute::TextAlign, "start"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
+                ("direction", "rtl"),
+                ("text-align", "start"),
             ],
         );
         let select = append_node_with_attrs(
@@ -1558,13 +1456,13 @@ mod tests {
             layer_root,
             DomTag::Select,
             &[
-                (DomAttribute::Width, "140px"),
-                (DomAttribute::Height, "28px"),
-                (DomAttribute::PaddingLeft, "8px"),
-                (DomAttribute::PaddingRight, "8px"),
-                (DomAttribute::PaddingTop, "5px"),
-                (DomAttribute::PaddingBottom, "5px"),
-                (DomAttribute::Value, "cam-1"),
+                ("width", "140px"),
+                ("height", "28px"),
+                ("padding-left", "8px"),
+                ("padding-right", "8px"),
+                ("padding-top", "5px"),
+                ("padding-bottom", "5px"),
+                ("value", "cam-1"),
             ],
         );
         append_node_with_attrs(
@@ -1572,9 +1470,9 @@ mod tests {
             select,
             DomTag::Option,
             &[
-                (DomAttribute::Value, "cam-1"),
-                (DomAttribute::Label, "Face Camera"),
-                (DomAttribute::Selected, "true"),
+                ("value", "cam-1"),
+                ("label", "Face Camera"),
+                ("selected", "true"),
             ],
         );
 
@@ -1596,18 +1494,14 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
-                (DomAttribute::TextAlign, "justify"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
+                ("text-align", "justify"),
             ],
         );
-        let text_parent = append_node_with_attrs(
-            &mut root,
-            layer_root,
-            DomTag::Div,
-            &[(DomAttribute::Width, "140px")],
-        );
+        let text_parent =
+            append_node_with_attrs(&mut root, layer_root, DomTag::Div, &[("width", "140px")]);
         append_text_node(&mut root, text_parent, "camera one");
 
         layout_layer_tree(&mut root, layer_root, (220.0, 84.0));
@@ -1628,9 +1522,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let select = append_node_with_attrs(
@@ -1638,23 +1532,20 @@ mod tests {
             layer_root,
             DomTag::Select,
             &[
-                (DomAttribute::Width, "140px"),
-                (DomAttribute::PaddingLeft, "8px"),
-                (DomAttribute::PaddingRight, "8px"),
-                (DomAttribute::PaddingTop, "6px"),
-                (DomAttribute::PaddingBottom, "6px"),
-                (DomAttribute::LineHeight, "2"),
-                (DomAttribute::Value, "cam-2"),
+                ("width", "140px"),
+                ("padding-left", "8px"),
+                ("padding-right", "8px"),
+                ("padding-top", "6px"),
+                ("padding-bottom", "6px"),
+                ("line-height", "2"),
+                ("value", "cam-2"),
             ],
         );
         let first_option = append_node_with_attrs(
             &mut root,
             select,
             DomTag::Option,
-            &[
-                (DomAttribute::Value, "cam-1"),
-                (DomAttribute::Label, "Face Camera"),
-            ],
+            &[("value", "cam-1"), ("label", "Face Camera")],
         );
         append_text_node(&mut root, first_option, "source text should not paint");
         let second_option = append_node_with_attrs(
@@ -1662,9 +1553,9 @@ mod tests {
             select,
             DomTag::Option,
             &[
-                (DomAttribute::Value, "cam-2"),
-                (DomAttribute::Label, "Desk Camera"),
-                (DomAttribute::Selected, "true"),
+                ("value", "cam-2"),
+                ("label", "Desk Camera"),
+                ("selected", "true"),
             ],
         );
         append_text_node(&mut root, second_option, "selected source should not paint");
@@ -1690,29 +1581,25 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let select = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Select,
-            &[
-                (DomAttribute::Width, "140px"),
-                (DomAttribute::Height, "28px"),
-                (DomAttribute::Value, "cam-1"),
-            ],
+            &[("width", "140px"), ("height", "28px"), ("value", "cam-1")],
         );
         let option = append_node_with_attrs(
             &mut root,
             select,
             DomTag::Option,
             &[
-                (DomAttribute::Value, "cam-1"),
-                (DomAttribute::Label, "Face Camera"),
-                (DomAttribute::Selected, "true"),
+                ("value", "cam-1"),
+                ("label", "Face Camera"),
+                ("selected", "true"),
             ],
         );
         append_text_node(&mut root, option, "source text should not paint");
@@ -1751,20 +1638,16 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Input,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-            ],
+            &[("width", "120px"), ("height", "24px"), ("value", "hello")],
         );
 
         layout_layer_tree(&mut root, layer_root, (220.0, 84.0));
@@ -1797,20 +1680,16 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Input,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-            ],
+            &[("width", "120px"), ("height", "24px"), ("value", "hello")],
         );
         root.focus(input).expect("focus input");
 
@@ -1835,19 +1714,16 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let button = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "120px"), ("height", "24px")],
         );
         root.focus(button).expect("focus button");
 
@@ -1872,29 +1748,22 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Input,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "120px"), ("height", "24px")],
         );
         let button = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Class, "primary"),
-            ],
+            &[("width", "120px"), ("height", "24px"), ("class", "primary")],
         );
         context
             .load_stylesheet(
@@ -1925,20 +1794,16 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Input,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-            ],
+            &[("width", "120px"), ("height", "24px"), ("value", "hello")],
         );
         root.focus(input).expect("focus input");
 
@@ -1963,9 +1828,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
@@ -1973,10 +1838,10 @@ mod tests {
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-                (DomAttribute::Class, "accent"),
+                ("width", "120px"),
+                ("height", "24px"),
+                ("value", "hello"),
+                ("class", "accent"),
             ],
         );
         context
@@ -2007,20 +1872,16 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Input,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-            ],
+            &[("width", "120px"), ("height", "24px"), ("value", "hello")],
         );
         root.focus(input).expect("focus input");
         let arrow_left = bevy::input::keyboard::KeyboardInput {
@@ -2060,21 +1921,18 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Left, "0px"),
-                (DomAttribute::Top, "0px"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("left", "0px"),
+                ("top", "0px"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let row = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "212px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "212px"), ("height", "24px")],
         );
         let text_key = append_text_node(&mut root, row, "Stage A Label");
         layout_layer_tree(&mut root, layer_root, (220.0, 84.0));
@@ -2119,19 +1977,16 @@ mod tests {
             first_document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let first_row = append_node_with_attrs(
             &mut first_root,
             first_layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "212px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "212px"), ("height", "24px")],
         );
         append_text_node(&mut first_root, first_row, "Window Control");
         layout_layer_tree(&mut first_root, first_layer_root, (220.0, 84.0));
@@ -2149,19 +2004,16 @@ mod tests {
             second_document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let second_row = append_node_with_attrs(
             &mut second_root,
             second_layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "212px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "212px"), ("height", "24px")],
         );
         append_text_node(&mut second_root, second_row, "Window Control");
         layout_layer_tree(&mut second_root, second_layer_root, (220.0, 84.0));
@@ -2197,19 +2049,16 @@ mod tests {
             first_document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let first_row = append_node_with_attrs(
             &mut first_root,
             first_layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "212px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "212px"), ("height", "24px")],
         );
         append_text_node(&mut first_root, first_row, "Window Control");
         layout_layer_tree(&mut first_root, first_layer_root, (220.0, 84.0));
@@ -2227,19 +2076,16 @@ mod tests {
             second_document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let second_row = append_node_with_attrs(
             &mut second_root,
             second_layer_root,
             DomTag::Button,
-            &[
-                (DomAttribute::Width, "212px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("width", "212px"), ("height", "24px")],
         );
         append_text_node(&mut second_root, second_row, "Window Texture Plane");
         layout_layer_tree(&mut second_root, second_layer_root, (220.0, 84.0));
@@ -2273,9 +2119,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "160px"),
-                (DomAttribute::Height, "120px"),
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "120px"),
             ],
         );
         let image_key = append_node_with_attrs(
@@ -2283,11 +2129,11 @@ mod tests {
             layer_root,
             DomTag::Img,
             &[
-                (DomAttribute::MarginLeft, "9px"),
-                (DomAttribute::MarginTop, "7px"),
-                (DomAttribute::Width, "24px"),
-                (DomAttribute::Height, "16px"),
-                (DomAttribute::Src, "avatar.png"),
+                ("margin-left", "9px"),
+                ("margin-top", "7px"),
+                ("width", "24px"),
+                ("height", "16px"),
+                ("src", "avatar.png"),
             ],
         );
 
@@ -2316,13 +2162,13 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "48px"),
-                (DomAttribute::Height, "32px"),
-                (DomAttribute::BorderTop, "3px"),
-                (DomAttribute::BorderRight, "2px"),
-                (DomAttribute::BorderBottom, "1px"),
-                (DomAttribute::BorderLeft, "4px"),
+                ("position", "fixed"),
+                ("width", "48px"),
+                ("height", "32px"),
+                ("border-top", "3px"),
+                ("border-right", "2px"),
+                ("border-bottom", "1px"),
+                ("border-left", "4px"),
             ],
         );
 
@@ -2349,51 +2195,33 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "48px"),
-                (DomAttribute::Height, "32px"),
-                (DomAttribute::BorderTop, "3px"),
-                (DomAttribute::BorderRight, "2px"),
-                (DomAttribute::BorderBottom, "1px"),
-                (DomAttribute::BorderLeft, "4px"),
+                ("position", "fixed"),
+                ("width", "48px"),
+                ("height", "32px"),
+                ("border-top", "3px"),
+                ("border-right", "2px"),
+                ("border-bottom", "1px"),
+                ("border-left", "4px"),
             ],
         );
-        root.set_attr(
-            layer_root,
-            DomAttribute::Custom("background-color".to_owned()),
-            Some(DomAttributeValue::String("#11223344".to_owned())),
-        )
-        .expect("background-color");
-        root.set_attr(
-            layer_root,
-            DomAttribute::Custom("border-top-color".to_owned()),
-            Some(DomAttributeValue::String("#ff0000".to_owned())),
-        )
-        .expect("border-top-color");
-        root.set_attr(
-            layer_root,
-            DomAttribute::Custom("border-right-color".to_owned()),
-            Some(DomAttributeValue::String("#00ff00".to_owned())),
-        )
-        .expect("border-right-color");
-        root.set_attr(
-            layer_root,
-            DomAttribute::Custom("border-bottom-color".to_owned()),
-            Some(DomAttributeValue::String("#0000ff".to_owned())),
-        )
-        .expect("border-bottom-color");
-        root.set_attr(
-            layer_root,
-            DomAttribute::Custom("border-left-color".to_owned()),
-            Some(DomAttributeValue::String("#ffff00".to_owned())),
-        )
-        .expect("border-left-color");
-        root.set_attr(
-            layer_root,
-            DomAttribute::Custom("border-radius".to_owned()),
-            Some(DomAttributeValue::String("3px 4px 5px 6px".to_owned())),
-        )
-        .expect("border-radius");
+        root.style_mut(layer_root)
+            .set("background-color", "#11223344")
+            .expect("background-color");
+        root.style_mut(layer_root)
+            .set("border-top-color", "#ff0000")
+            .expect("border-top-color");
+        root.style_mut(layer_root)
+            .set("border-right-color", "#00ff00")
+            .expect("border-right-color");
+        root.style_mut(layer_root)
+            .set("border-bottom-color", "#0000ff")
+            .expect("border-bottom-color");
+        root.style_mut(layer_root)
+            .set("border-left-color", "#ffff00")
+            .expect("border-left-color");
+        root.style_mut(layer_root)
+            .set("border-radius", "3px 4px 5px 6px")
+            .expect("border-radius");
 
         layout_layer_tree(&mut root, layer_root, (48.0, 32.0));
         let mut layer_pool = x1_layer_pool();
@@ -2421,21 +2249,18 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "48px"),
-                (DomAttribute::Height, "32px"),
-                (DomAttribute::BorderTop, "3px"),
-                (DomAttribute::BorderRight, "2px"),
-                (DomAttribute::BorderBottom, "1px"),
-                (DomAttribute::BorderLeft, "4px"),
+                ("position", "fixed"),
+                ("width", "48px"),
+                ("height", "32px"),
+                ("border-top", "3px"),
+                ("border-right", "2px"),
+                ("border-bottom", "1px"),
+                ("border-left", "4px"),
             ],
         );
-        root.set_attr(
-            layer_root,
-            DomAttribute::Custom("border-color".to_owned()),
-            Some(DomAttributeValue::String("#abcdef".to_owned())),
-        )
-        .expect("border-color");
+        root.style_mut(layer_root)
+            .set("border-color", "#abcdef")
+            .expect("border-color");
 
         layout_layer_tree(&mut root, layer_root, (48.0, 32.0));
         let mut layer_pool = x1_layer_pool();

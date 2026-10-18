@@ -325,6 +325,14 @@ pub fn assert_set_attr_str(root: &mut RootDom, key: DomNodeSlotKey, name: &str, 
         .expect("attribute should parse and apply");
 }
 
+/// Migrated presentation-write helper (spine 3.3g-2a): presentation properties
+/// are written through `style_mut`, never `set_attr_str`.
+pub fn assert_style_set(root: &mut RootDom, key: DomNodeSlotKey, property: &str, value: &str) {
+    root.style_mut(key)
+        .set(property, value)
+        .expect("style declaration should parse and apply");
+}
+
 pub fn assert_load_root_stylesheet(root: &RootDom, origin: StyleRuleOrigin, css_text: &str) {
     root.context()
         .load_stylesheet(origin, css_text)

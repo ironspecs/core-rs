@@ -19,6 +19,9 @@
 //!   recursion or wrapper-specific subtree traversal
 //! - public helpers here expose stored node state; they must not re-solve DOM
 //!   semantics beyond what the layout/composite seam already expects
+//! - layer/overflow/position gates and the relative-offset bridge read the
+//!   computed groups visit-locally (`DomNode::computed_box` /
+//!   `computed_transform`), never the stringly presented attrs
 //!
 //! Advice and code philosophy:
 //!
@@ -28,6 +31,7 @@
 //! - prefer one honest seam per concept: tree walk here, property derivation in
 //!   `style.rs`, flow solving in `flow.rs`
 //!
+use crate::domains::style::computed::PositionKw;
 use crate::domains::visitor::inherited_style::{
     InheritedStyleContext, inherited_style_context_from_ancestors,
 };
@@ -46,6 +50,8 @@ use super::style::{
 
 #[cfg(test)]
 use crate::domains::layout::IdentityDomLayoutResolver;
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
 use crate::types::{
     DomAttribute, DomAttributeValue, DomTag, RootDomContext, RootDomNodesMetricName,
@@ -149,7 +155,7 @@ where
         })
     };
     let root_context = LayoutContext {
-        inherited_style: inherited_style.clone(),
+        inherited_style: *inherited_style,
         flow_left_px: 0.0,
         flow_top_px: 0.0,
         root_local_left_px: root_position.map(|offset| offset.x_px),
@@ -207,10 +213,7 @@ fn available_size_for_tree_root(
 }
 
 fn tree_root_uses_viewport_sized_available_size(node: &DomNode) -> bool {
-    matches!(
-        node.presented_attr(&crate::types::DomAttribute::Position),
-        Some(crate::types::DomAttributeValue::String(value)) if value == "fixed"
-    )
+    node.computed_box().position == PositionKw::Fixed
 }
 
 /// Returns the root node key owned by this `RootDom`.
@@ -367,15 +370,10 @@ fn propagate_parent_size_change_after_layout(
 ) -> LayoutPassResult {
     let has_parent_layer = node.parent_key().is_some();
     let is_layer = layer_kind_for_node(node) != crate::types::DomLayerKind::None;
-    let blocks_parent_propagation_from_position = matches!(
-        node.presented_attr(&crate::types::DomAttribute::Position),
-        Some(crate::types::DomAttributeValue::String(value))
-            if value == "absolute" || value == "fixed"
-    );
-    let blocks_parent_propagation_from_overflow = matches!(
-        node.presented_attr(&crate::types::DomAttribute::Overflow),
-        Some(crate::types::DomAttributeValue::String(value)) if value != "visible"
-    );
+    let box_ = node.computed_box();
+    let blocks_parent_propagation_from_position =
+        matches!(box_.position, PositionKw::Absolute | PositionKw::Fixed);
+    let blocks_parent_propagation_from_overflow = box_.overflow.creates_clip();
     let parent_layer_propagation_allowed = has_parent_layer
         && is_layer
         && !blocks_parent_propagation_from_position
@@ -409,6 +407,16 @@ mod tests {
             (actual - expected).abs() <= 0.001,
             "expected {expected}, got {actual}"
         );
+    }
+
+    /// Runs the style recompute pass for one layer-root subtree so freshly
+    /// written inline declarations resolve into computed groups before layout
+    /// reads them. The layer root must match the subtree the following layout
+    /// call walks — a node that is itself a layer root (positioned/transformed/
+    /// clipped) does not propagate style dirtiness up to the document, so the
+    /// recompute must be keyed to that node's own layer root.
+    fn apply_style_pass(root: &mut RootDom, layer_root: DomNodeSlotKey) {
+        recompute_dirty_style_subtree_for_layer_root(root, layer_root).expect("style pass");
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -455,24 +463,19 @@ mod tests {
         let document = root_key(&root);
         let parent = root.create_element(DomTag::Div).expect("parent");
         root.append_child(document, parent).expect("append parent");
-        root.set_attr(
-            parent,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("100px".to_string())),
-        )
-        .expect("parent width");
+        root.style_mut(parent)
+            .set("width", "100px")
+            .expect("parent width");
 
         for _ in 0..child_count {
             let child = root.create_element(DomTag::Div).expect("child");
             root.append_child(parent, child).expect("append child");
-            root.set_attr(
-                child,
-                DomAttribute::Height,
-                Some(DomAttributeValue::String("10px".to_string())),
-            )
-            .expect("child height");
+            root.style_mut(child)
+                .set("height", "10px")
+                .expect("child height");
         }
 
+        apply_style_pass(&mut root, document);
         root.reset_node_metrics();
 
         let mut resolver = IdentityDomLayoutResolver;
@@ -493,21 +496,16 @@ mod tests {
         for _ in 0..depth {
             let child = root.create_element(DomTag::Div).expect("child");
             root.append_child(parent, child).expect("append child");
-            root.set_attr(
-                child,
-                DomAttribute::Width,
-                Some(DomAttributeValue::String("100px".to_string())),
-            )
-            .expect("child width");
+            root.style_mut(child)
+                .set("width", "100px")
+                .expect("child width");
             parent = child;
         }
-        root.set_attr(
-            parent,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("10px".to_string())),
-        )
-        .expect("leaf height");
+        root.style_mut(parent)
+            .set("height", "10px")
+            .expect("leaf height");
 
+        apply_style_pass(&mut root, document);
         root.reset_node_metrics();
 
         let mut resolver = IdentityDomLayoutResolver;
@@ -529,19 +527,14 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            parent,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("100px".to_string())),
-        )
-        .expect("parent width");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("child height");
+        root.style_mut(parent)
+            .set("width", "100px")
+            .expect("parent width");
+        root.style_mut(child)
+            .set("height", "20px")
+            .expect("child height");
 
+        apply_style_pass(&mut root, document);
         root.reset_node_metrics();
 
         let mut resolver = IdentityDomLayoutResolver;
@@ -598,20 +591,15 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            parent,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("100px".to_string())),
-        )
-        .expect("parent width");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("child height");
+        root.style_mut(parent)
+            .set("width", "100px")
+            .expect("parent width");
+        root.style_mut(child)
+            .set("height", "20px")
+            .expect("child height");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
         let parent_box = node_box(&root, parent).expect("parent box");
@@ -631,25 +619,18 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(root.root, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            parent,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("12px".to_string())),
-        )
-        .expect("parent font-size");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("2em".to_string())),
-        )
-        .expect("child width");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("1em".to_string())),
-        )
-        .expect("child height");
+        root.style_mut(parent)
+            .set("font-size", "12px")
+            .expect("parent font-size");
+        root.style_mut(child)
+            .set("width", "2em")
+            .expect("child width");
+        root.style_mut(child)
+            .set("height", "1em")
+            .expect("child height");
 
+        let document = root.root;
+        apply_style_pass(&mut root, document);
         let inherited = inherited_style_context_from_ancestors(&root, child).expect("seed");
         let mut resolver = IdentityDomLayoutResolver;
         let _ = relayout_tree_with_inherited(
@@ -676,26 +657,12 @@ mod tests {
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, a).expect("append a");
         root.append_child(parent, b).expect("append b");
-        root.set_attr(
-            parent,
-            DomAttribute::Display,
-            Some(DomAttributeValue::String("flex".to_string())),
-        )
-        .expect("flex");
-        root.set_attr(
-            a,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("10px".to_string())),
-        )
-        .expect("width a");
-        root.set_attr(
-            b,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("12px".to_string())),
-        )
-        .expect("width b");
+        root.style_mut(parent).set("display", "flex").expect("flex");
+        root.style_mut(a).set("width", "10px").expect("width a");
+        root.style_mut(b).set("width", "12px").expect("width b");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
         let b_box = node_box(&root, b).expect("b box");
@@ -710,20 +677,13 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("relative".to_string())),
-        )
-        .expect("relative");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("12px".to_string())),
-        )
-        .expect("height");
+        root.style_mut(child)
+            .set("position", "relative")
+            .expect("relative");
+        root.style_mut(child).set("height", "12px").expect("height");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
         let parent_box = node_box(&root, parent).expect("parent box");
@@ -738,20 +698,13 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(6px)".to_string())),
-        )
-        .expect("transform");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("14px".to_string())),
-        )
-        .expect("height");
+        root.style_mut(child)
+            .set("transform", "translateX(6px)")
+            .expect("transform");
+        root.style_mut(child).set("height", "14px").expect("height");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
         let parent_box = node_box(&root, parent).expect("parent box");
@@ -766,20 +719,13 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Overflow,
-            Some(DomAttributeValue::String("hidden".to_string())),
-        )
-        .expect("overflow");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("16px".to_string())),
-        )
-        .expect("height");
+        root.style_mut(child)
+            .set("overflow", "hidden")
+            .expect("overflow");
+        root.style_mut(child).set("height", "16px").expect("height");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
 
         let parent_box = node_box(&root, parent).expect("parent box");
@@ -794,36 +740,26 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(6px)".to_string())),
-        )
-        .expect("transform");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child)
+            .set("transform", "translateX(6px)")
+            .expect("transform");
+        root.style_mut(child).set("width", "20px").expect("width");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("warm layout");
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver)
             .expect("warm child layout");
 
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("30px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child).set("width", "30px").expect("width");
 
+        apply_style_pass(&mut root, child);
         let result =
             relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver).expect("child layout");
 
-        assert!(result.propagate_width_to_parent_layer);
+        assert!(result.propagate_width_to_parent_layer, "result={result:?}");
         assert!(!result.propagate_height_to_parent_layer);
         assert_eq!(node_layout_dirty(&root, parent), Some(false));
         assert_eq!(node_layout_dirty(&root, document), Some(false));
@@ -837,31 +773,23 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(6px)".to_string())),
-        )
-        .expect("transform");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child)
+            .set("transform", "translateX(6px)")
+            .expect("transform");
+        root.style_mut(child).set("width", "20px").expect("width");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("warm layout");
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver)
             .expect("warm child layout");
 
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("20.005px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child)
+            .set("width", "20.005px")
+            .expect("width");
+        apply_style_pass(&mut root, child);
         let result =
             relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver).expect("child layout");
 
@@ -876,31 +804,21 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("absolute".to_string())),
-        )
-        .expect("absolute");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child)
+            .set("position", "absolute")
+            .expect("absolute");
+        root.style_mut(child).set("width", "20px").expect("width");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("warm layout");
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver)
             .expect("warm child layout");
 
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("30px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child).set("width", "30px").expect("width");
+        apply_style_pass(&mut root, child);
         let result =
             relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver).expect("child layout");
 
@@ -915,31 +833,21 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("fixed".to_string())),
-        )
-        .expect("fixed");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child)
+            .set("position", "fixed")
+            .expect("fixed");
+        root.style_mut(child).set("width", "20px").expect("width");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("warm layout");
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, child, (200.0, 120.0), &mut resolver)
             .expect("warm child layout");
 
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("30px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child).set("width", "30px").expect("width");
+        apply_style_pass(&mut root, child);
         let result =
             relayout_tree(&mut root, child, (200.0, 120.0), &mut resolver).expect("child layout");
 
@@ -955,46 +863,24 @@ mod tests {
         root.append_child(document, wrapper)
             .expect("append wrapper");
         root.append_child(wrapper, child).expect("append child");
-        root.set_attr(
-            wrapper,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("140px".to_string())),
-        )
-        .expect("wrapper width");
-        root.set_attr(
-            wrapper,
-            DomAttribute::MarginLeft,
-            Some(DomAttributeValue::String("80px".to_string())),
-        )
-        .expect("wrapper margin-left");
-        root.set_attr(
-            child,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("fixed".to_string())),
-        )
-        .expect("fixed");
-        root.set_attr(
-            child,
-            DomAttribute::Top,
-            Some(DomAttributeValue::String("132px".to_string())),
-        )
-        .expect("top");
-        root.set_attr(
-            child,
-            DomAttribute::Right,
-            Some(DomAttributeValue::String("25px".to_string())),
-        )
-        .expect("right");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("196px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(wrapper)
+            .set("width", "140px")
+            .expect("wrapper width");
+        root.style_mut(wrapper)
+            .set("margin-left", "80px")
+            .expect("wrapper margin-left");
+        root.style_mut(child)
+            .set("position", "fixed")
+            .expect("fixed");
+        root.style_mut(child).set("top", "132px").expect("top");
+        root.style_mut(child).set("right", "25px").expect("right");
+        root.style_mut(child).set("width", "196px").expect("width");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, document, (320.0, 320.0), &mut resolver).expect("warm layout");
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, child, (320.0, 320.0), &mut resolver).expect("child layout");
 
@@ -1010,34 +896,18 @@ mod tests {
         let document = root_key(&root);
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("fixed".to_string())),
-        )
-        .expect("fixed");
-        root.set_attr(
-            child,
-            DomAttribute::Top,
-            Some(DomAttributeValue::String("132px".to_string())),
-        )
-        .expect("top");
-        root.set_attr(
-            child,
-            DomAttribute::Right,
-            Some(DomAttributeValue::String("25px".to_string())),
-        )
-        .expect("right");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("196px".to_string())),
-        )
-        .expect("width");
+        root.style_mut(child)
+            .set("position", "fixed")
+            .expect("fixed");
+        root.style_mut(child).set("top", "132px").expect("top");
+        root.style_mut(child).set("right", "25px").expect("right");
+        root.style_mut(child).set("width", "196px").expect("width");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, document, (1280.0, 720.0), &mut resolver)
             .expect("warm layout");
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, child, (1280.0, 720.0), &mut resolver).expect("child layout");
 
@@ -1047,6 +917,7 @@ mod tests {
             Some(DomAttributeValue::String("second-pass".to_string())),
         )
         .expect("mark second update");
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, child, (900.0, 700.0), &mut resolver)
             .expect("resized child layout");
 
@@ -1067,43 +938,23 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child");
         root.append_child(document, parent).expect("append parent");
         root.append_child(parent, child).expect("append child");
-        root.set_attr(
-            child,
-            DomAttribute::Overflow,
-            Some(DomAttributeValue::String("scroll".to_string())),
-        )
-        .expect("scroll overflow");
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("20px".to_string())),
-        )
-        .expect("width");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("10px".to_string())),
-        )
-        .expect("height");
+        root.style_mut(child)
+            .set("overflow", "scroll")
+            .expect("scroll overflow");
+        root.style_mut(child).set("width", "20px").expect("width");
+        root.style_mut(child).set("height", "10px").expect("height");
 
         let mut resolver = IdentityDomLayoutResolver;
+        apply_style_pass(&mut root, document);
         let _ =
             relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("warm layout");
+        apply_style_pass(&mut root, document);
         let _ = relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver)
             .expect("warm child layout");
 
-        root.set_attr(
-            child,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("30px".to_string())),
-        )
-        .expect("width");
-        root.set_attr(
-            child,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String("22px".to_string())),
-        )
-        .expect("height");
+        root.style_mut(child).set("width", "30px").expect("width");
+        root.style_mut(child).set("height", "22px").expect("height");
+        apply_style_pass(&mut root, child);
         let result =
             relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver).expect("child layout");
 

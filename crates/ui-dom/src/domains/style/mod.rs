@@ -2,14 +2,13 @@
 //!
 //! This file owns the stylesheet block parser (`parse_css_blocks`), the
 //! selector subset parser (`parse_selector`), the selector AST types
-//! (`SimpleSelector`, `RightMostSelector`), `SelectorSpecificity`,
-//! `precedence_tuple`, the `ComputedStyleMap` and `StyleRule` types,
-//! right-to-left selector matching (`selector_matches_node`), the rule
-//! identity hash, and the public query functions consumed by the
-//! style-recompute visitor and `RootDom::compute_style_map`
-//! (`matched_style_rules_for_element`, `apply_pseudo_state_style_declarations`).
-//! Rule storage and every index live in `style_runtime.rs`; this file never
-//! stores rules.
+//! (`SimpleSelector`, `RightMostSelector`), `SelectorSpecificity`, the
+//! `ComputedStyleMap` type, right-to-left selector matching
+//! (`selector_matches_node`), and the rule identity hash over typed
+//! declarations. The typed winners fold lives in
+//! `domains/visitor/winners_fold.rs`; rule and declaration storage plus every
+//! index live in `style_runtime.rs`; this file never stores rules or
+//! declaration blocks.
 //!
 //! Invariants and rules:
 //!
@@ -23,30 +22,71 @@
 //!   field order; pseudo-classes count into `class`
 //! - cascade precedence is exactly `(origin.priority, specificity, order)`;
 //!   no `!important`, no cascade layers
-//! - declarations stay stringly-typed (`DomAttributeValue`); unit and keyword
-//!   resolution is deferred to consumers and must not appear here
+//! - declarations are typed (`DeclValue`) and arena-resident; `decl_value.rs`
+//!   owns `decl_value_to_dom_value`, the formatter the debug-priced
+//!   `compute_style_map` uses to project winners to the public wire shape
+//! - the widget behavior sheet holds typed `Declaration`s folded before
+//!   matched rules (the winners fold reads it); text-valued properties are
+//!   unsupported there (interner-relative `TextKey`s with no owning store) and
+//!   are skipped
 //! - stylesheet text is boundary data: parse and match failures are typed
 //!   errors, never panics
 
+mod decl_block;
+mod decl_drop_report;
+mod decl_parse;
+mod decl_store;
+mod decl_value;
+mod declaration;
+mod keyword;
+mod presentation_property;
+mod property_set;
+mod style_mut;
 mod style_rule_origin;
 mod style_runtime;
+mod text_interner;
+
+pub(crate) mod computed;
 
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use slotmap::{SlotMap, new_key_type};
 
-use crate::types::dom_node::{DomElementNode, DomNode, DomNodeSlotKey};
+use crate::types::dom_node::{DomNode, DomNodeSlotKey};
 use crate::types::dom_tag::DomTag;
-use crate::types::{DomAttribute, DomAttributeValue, DomError, DomPseudoState, RootDom};
+use crate::types::{DomAttributeValue, DomError, DomPseudoState};
 
 #[cfg(test)]
-use crate::types::RootDomContext;
+use crate::types::{RootDom, RootDomContext};
 
+pub use decl_block::DeclBlock;
+pub use decl_drop_report::{DeclDropReport, StylesheetLoadReport};
+pub use decl_store::{DeclBlockKey, DeclStore};
+pub use decl_value::{DeclLength, DeclValue, Precedence, TextKey};
+pub use declaration::Declaration;
+pub use keyword::Keyword;
+pub use presentation_property::{DeclGrammar, PresentationGroup, PresentationProperty};
+pub use style_mut::StyleMut;
 pub use style_rule_origin::StyleRuleOrigin;
 pub use style_runtime::StyleRuntime;
+pub(crate) use text_interner::TextInterner;
 
-pub type ComputedStyleMap = BTreeMap<DomAttribute, DomAttributeValue>;
+pub use computed::{
+    AlignContentKw, AlignItemsKw, ComputedBoxGroup, ComputedColorGroup, ComputedFlexGroup,
+    ComputedFontGroup, ComputedGroups, ComputedStyleRef, ComputedTextGroup, ComputedTransformGroup,
+    ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw, JustifyContentKw,
+    NodePresentation, OverflowKw, PositionKw, ResolvedTransitionLonghands,
+    TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
+};
+pub(crate) use decl_parse::{name_is_presentation, parse_declaration_block};
+pub(crate) use decl_value::decl_value_to_dom_value;
+
+/// The public computed-style map: one winner per presentation property,
+/// projected to its wire `DomAttributeValue` (spine 3.4: keyed by
+/// `PresentationProperty` — the `DomAttribute`-keyed legacy map died with the
+/// presentation variants).
+pub type ComputedStyleMap = BTreeMap<PresentationProperty, DomAttributeValue>;
 
 new_key_type! {
     pub struct StyleRuleKey;
@@ -59,22 +99,26 @@ pub struct SelectorSpecificity {
     pub tag: u16,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct StyleRule {
-    pub selector: String,
-    pub attr_map: ComputedStyleMap,
-    pub specificity: SelectorSpecificity,
-    pub origin: StyleRuleOrigin,
-    pub order: u64,
-}
+/// The cascade precedence key for one matched rule, in sort order:
+/// `(origin.priority, specificity, order)`.
+pub(crate) type PrecedenceTuple = (i32, SelectorSpecificity, u64);
 
-#[derive(Clone, Debug, PartialEq)]
+/// One retained compiled rule. Declarations are no longer embedded: the rule
+/// holds a `DeclBlockKey` into the arena's `DeclStore` (spine step 2). The
+/// `selector` string is retained for diagnostics/debug output and has no
+/// matching or hashing role (selector identity comes from `selector_parts`).
+#[derive(Debug, PartialEq)]
 pub(crate) struct CompiledRule {
-    pub(crate) rule: StyleRule,
+    #[allow(dead_code)] // diagnostics/debug only until the step-3 winner fold
+    pub(crate) selector: String,
     selector_parts: Vec<SimpleSelector>,
     right_most: RightMostSelector,
+    pub(crate) decl: DeclBlockKey,
+    pub(crate) specificity: SelectorSpecificity,
+    pub(crate) origin: StyleRuleOrigin,
+    pub(crate) order: u64,
     identity_hash: u64,
-    active: bool,
+    pub(crate) active: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,51 +182,6 @@ pub(crate) fn style_index_for_node(node: &DomNode) -> Option<NodeStyleIndex<'_>>
     })
 }
 
-pub(crate) fn matched_style_rules_for_element(
-    root_dom: &RootDom,
-    node_key: DomNodeSlotKey,
-) -> Result<Vec<StyleRule>, DomError> {
-    let node = root_dom.node(node_key).ok_or(DomError::InvalidNodeKey)?;
-    let node_index = style_index_for_node(node).ok_or(DomError::InvalidAttributeTarget)?;
-    let runtime = root_dom
-        .context()
-        .style_runtime
-        .lock()
-        .expect("style runtime mutex should not poison");
-    let candidate_keys = runtime.candidate_keys_for_node(node_index);
-    let mut matched_rules: Vec<StyleRule> = Vec::new();
-    let lookup = NodeLookup {
-        nodes: &root_dom.nodes,
-    };
-    for key in candidate_keys {
-        let Some(rule) = runtime.active_rule_for_node(key, lookup, node_key)? else {
-            continue;
-        };
-        matched_rules.push(rule.clone());
-    }
-    matched_rules.sort_by_key(precedence_tuple);
-    Ok(matched_rules)
-}
-
-pub(crate) fn apply_pseudo_state_style_declarations(
-    element: &DomElementNode,
-    map: &mut ComputedStyleMap,
-) {
-    for pseudo_state in [
-        DomPseudoState::Hover,
-        DomPseudoState::Active,
-        DomPseudoState::Focus,
-        DomPseudoState::FocusVisible,
-    ] {
-        if !element.has_pseudo_state(pseudo_state) {
-            continue;
-        }
-        for (attribute, value) in element.style().pseudo_state_declarations(pseudo_state) {
-            map.insert(attribute.clone(), value.clone());
-        }
-    }
-}
-
 fn selector_matches_node(
     lookup: NodeLookup<'_>,
     node_key: DomNodeSlotKey,
@@ -221,10 +220,6 @@ fn selector_matches_node(
         }
     }
     Ok(true)
-}
-
-pub(crate) fn precedence_tuple(rule: &StyleRule) -> (i32, SelectorSpecificity, u64) {
-    (rule.origin.priority, rule.specificity, rule.order)
 }
 
 fn append_rule_keys(
@@ -562,13 +557,18 @@ fn tag_selector_name(tag: &DomTag) -> &str {
     tag.selector_name()
 }
 
-fn compute_rule_identity_hash(rule: &StyleRule, selector_parts: &[SimpleSelector]) -> u64 {
+fn compute_rule_identity_hash(
+    origin: &StyleRuleOrigin,
+    specificity: SelectorSpecificity,
+    selector_parts: &[SimpleSelector],
+    declarations: &[Declaration],
+) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    rule.origin.key.hash(&mut hasher);
-    rule.origin.priority.hash(&mut hasher);
-    rule.specificity.id.hash(&mut hasher);
-    rule.specificity.class.hash(&mut hasher);
-    rule.specificity.tag.hash(&mut hasher);
+    origin.key.hash(&mut hasher);
+    origin.priority.hash(&mut hasher);
+    specificity.id.hash(&mut hasher);
+    specificity.class.hash(&mut hasher);
+    specificity.tag.hash(&mut hasher);
     selector_parts.len().hash(&mut hasher);
     for selector in selector_parts {
         selector.id.hash(&mut hasher);
@@ -577,133 +577,54 @@ fn compute_rule_identity_hash(rule: &StyleRule, selector_parts: &[SimpleSelector
         selector.universal.hash(&mut hasher);
         selector.pseudo_state.hash(&mut hasher);
     }
-    for (attribute, value) in &rule.attr_map {
-        hash_dom_attribute(&mut hasher, attribute);
-        hash_dom_attribute_value(&mut hasher, value);
+    for declaration in declarations {
+        declaration.property.index().hash(&mut hasher);
+        hash_decl_value(&mut hasher, &declaration.value);
     }
     hasher.finish()
 }
 
-fn hash_dom_attribute(hasher: &mut impl Hasher, attribute: &DomAttribute) {
-    match attribute {
-        DomAttribute::Id => 0u8.hash(hasher),
-        DomAttribute::Style => 1u8.hash(hasher),
-        DomAttribute::Class => 2u8.hash(hasher),
-        DomAttribute::Transition => 3u8.hash(hasher),
-        DomAttribute::TabIndex => 4u8.hash(hasher),
-        DomAttribute::Display => 5u8.hash(hasher),
-        DomAttribute::Overflow => 6u8.hash(hasher),
-        DomAttribute::Transform => 7u8.hash(hasher),
-        DomAttribute::Isolate => 8u8.hash(hasher),
-        DomAttribute::Position => 9u8.hash(hasher),
-        DomAttribute::FlexDirection => 10u8.hash(hasher),
-        DomAttribute::FlexWrap => 11u8.hash(hasher),
-        DomAttribute::FlexFlow => 12u8.hash(hasher),
-        DomAttribute::FlexGrow => 13u8.hash(hasher),
-        DomAttribute::FlexShrink => 14u8.hash(hasher),
-        DomAttribute::FlexBasis => 15u8.hash(hasher),
-        DomAttribute::Flex => 16u8.hash(hasher),
-        DomAttribute::Order => 17u8.hash(hasher),
-        DomAttribute::JustifyContent => 18u8.hash(hasher),
-        DomAttribute::AlignItems => 19u8.hash(hasher),
-        DomAttribute::AlignSelf => 20u8.hash(hasher),
-        DomAttribute::AlignContent => 21u8.hash(hasher),
-        DomAttribute::Gap => 22u8.hash(hasher),
-        DomAttribute::RowGap => 23u8.hash(hasher),
-        DomAttribute::ColumnGap => 24u8.hash(hasher),
-        DomAttribute::PlaceContent => 25u8.hash(hasher),
-        DomAttribute::PlaceItems => 26u8.hash(hasher),
-        DomAttribute::PlaceSelf => 27u8.hash(hasher),
-        DomAttribute::Width => 28u8.hash(hasher),
-        DomAttribute::Height => 29u8.hash(hasher),
-        DomAttribute::MinWidth => 30u8.hash(hasher),
-        DomAttribute::MinHeight => 31u8.hash(hasher),
-        DomAttribute::MaxWidth => 32u8.hash(hasher),
-        DomAttribute::MaxHeight => 33u8.hash(hasher),
-        DomAttribute::Top => 34u8.hash(hasher),
-        DomAttribute::Left => 35u8.hash(hasher),
-        DomAttribute::Right => 36u8.hash(hasher),
-        DomAttribute::Bottom => 37u8.hash(hasher),
-        DomAttribute::MarginTop => 38u8.hash(hasher),
-        DomAttribute::MarginLeft => 39u8.hash(hasher),
-        DomAttribute::MarginRight => 40u8.hash(hasher),
-        DomAttribute::MarginBottom => 41u8.hash(hasher),
-        DomAttribute::PaddingTop => 42u8.hash(hasher),
-        DomAttribute::PaddingLeft => 43u8.hash(hasher),
-        DomAttribute::PaddingRight => 44u8.hash(hasher),
-        DomAttribute::PaddingBottom => 45u8.hash(hasher),
-        DomAttribute::BorderTop => 46u8.hash(hasher),
-        DomAttribute::BorderLeft => 47u8.hash(hasher),
-        DomAttribute::BorderRight => 48u8.hash(hasher),
-        DomAttribute::BorderBottom => 49u8.hash(hasher),
-        DomAttribute::Src => 50u8.hash(hasher),
-        DomAttribute::Type => 51u8.hash(hasher),
-        DomAttribute::Value => 52u8.hash(hasher),
-        DomAttribute::Custom(name) => {
-            53u8.hash(hasher);
-            name.hash(hasher);
+fn hash_decl_value(hasher: &mut std::collections::hash_map::DefaultHasher, value: &DeclValue) {
+    match value {
+        DeclValue::Length(length) => {
+            0u8.hash(hasher);
+            hash_decl_length(hasher, *length);
         }
-        DomAttribute::ReadOnly => 54u8.hash(hasher),
-        DomAttribute::Disabled => 55u8.hash(hasher),
-        DomAttribute::Required => 56u8.hash(hasher),
-        DomAttribute::Checked => 57u8.hash(hasher),
-        DomAttribute::Selected => 58u8.hash(hasher),
-        DomAttribute::Multiple => 59u8.hash(hasher),
-        DomAttribute::Max => 60u8.hash(hasher),
-        DomAttribute::MaxLength => 61u8.hash(hasher),
-        DomAttribute::Min => 62u8.hash(hasher),
-        DomAttribute::MinLength => 63u8.hash(hasher),
-        DomAttribute::Placeholder => 64u8.hash(hasher),
-        DomAttribute::Step => 65u8.hash(hasher),
-        DomAttribute::FontFamily => 66u8.hash(hasher),
-        DomAttribute::FontWeight => 67u8.hash(hasher),
-        DomAttribute::FontStyle => 68u8.hash(hasher),
-        DomAttribute::LineHeight => 69u8.hash(hasher),
-        DomAttribute::TextAlign => 70u8.hash(hasher),
-        DomAttribute::WhiteSpace => 71u8.hash(hasher),
-        DomAttribute::OverflowWrap => 72u8.hash(hasher),
-        DomAttribute::WordBreak => 73u8.hash(hasher),
-        DomAttribute::Lang => 74u8.hash(hasher),
-        DomAttribute::Dir => 75u8.hash(hasher),
-        DomAttribute::List => 76u8.hash(hasher),
-        DomAttribute::Label => 77u8.hash(hasher),
-        DomAttribute::Size => 78u8.hash(hasher),
-        DomAttribute::PresentedOptionsRole => 79u8.hash(hasher),
-        DomAttribute::PresentedOptionsState => 80u8.hash(hasher),
-        DomAttribute::PresentedOptionsHighlighted => 81u8.hash(hasher),
-        DomAttribute::PresentedOptionsSourceIndex => 82u8.hash(hasher),
-        DomAttribute::TransitionProperty => 83u8.hash(hasher),
-        DomAttribute::TransitionDuration => 84u8.hash(hasher),
-        DomAttribute::TransitionTimingFunction => 85u8.hash(hasher),
-        DomAttribute::TransitionDelay => 86u8.hash(hasher),
-        DomAttribute::Direction => 87u8.hash(hasher),
-        DomAttribute::FontSize => 255u8.hash(hasher),
+        DeclValue::Color(channels) => {
+            1u8.hash(hasher);
+            for channel in channels {
+                channel.to_bits().hash(hasher);
+            }
+        }
+        DeclValue::Keyword(keyword) => {
+            2u8.hash(hasher);
+            keyword.hash(hasher);
+        }
+        DeclValue::Number(number) => {
+            3u8.hash(hasher);
+            number.to_bits().hash(hasher);
+        }
+        DeclValue::Integer(integer) => {
+            4u8.hash(hasher);
+            integer.hash(hasher);
+        }
+        DeclValue::Text(key) => {
+            5u8.hash(hasher);
+            key.0.hash(hasher);
+        }
     }
 }
 
-fn hash_dom_attribute_value(hasher: &mut impl Hasher, value: &DomAttributeValue) {
-    match value {
-        DomAttributeValue::String(v) => {
-            0u8.hash(hasher);
-            v.hash(hasher);
-        }
-        DomAttributeValue::Bool(v) => {
+fn hash_decl_length(hasher: &mut std::collections::hash_map::DefaultHasher, length: DeclLength) {
+    match length {
+        DeclLength::Unset => 0u8.hash(hasher),
+        DeclLength::Px(value) => {
             1u8.hash(hasher);
-            v.hash(hasher);
+            value.to_bits().hash(hasher);
         }
-        DomAttributeValue::Integer(v) => {
+        DeclLength::Em(value) => {
             2u8.hash(hasher);
-            v.hash(hasher);
-        }
-        DomAttributeValue::Float(v) => {
-            3u8.hash(hasher);
-            v.to_bits().hash(hasher);
-        }
-        DomAttributeValue::Color(v) => {
-            4u8.hash(hasher);
-            for channel in v {
-                channel.to_bits().hash(hasher);
-            }
+            value.to_bits().hash(hasher);
         }
     }
 }

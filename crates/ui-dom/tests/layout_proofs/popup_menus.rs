@@ -13,7 +13,7 @@
 use ui_dom::DomPointerUpdate;
 
 use crate::layout_proofs::support::{
-    assert_close, assert_node_layout, assert_root_dom_update, assert_set_attr_str,
+    assert_close, assert_node_layout, assert_root_dom_update, assert_style_set,
     fixed_layer_with_absolute_popup_menu_setup, fixed_popup_menu_with_items_setup,
 };
 
@@ -73,11 +73,11 @@ fn absolute_popup_menu_clamps_to_max_height_and_retains_item_height() {
     let (mut world, mut root, fixed_layer, popup, items) =
         fixed_layer_with_absolute_popup_menu_setup(3);
 
-    assert_set_attr_str(&mut root, fixed_layer, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_layer, "top", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "left", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "right", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "bottom", "0px");
+    assert_style_set(&mut root, fixed_layer, "position", "fixed");
+    assert_style_set(&mut root, fixed_layer, "top", "0px");
+    assert_style_set(&mut root, fixed_layer, "left", "0px");
+    assert_style_set(&mut root, fixed_layer, "right", "0px");
+    assert_style_set(&mut root, fixed_layer, "bottom", "0px");
     assert_absolute_popup_menu_style(&mut root, popup);
     assert_popup_menu_item_sizes(&mut root, &items);
 
@@ -94,26 +94,26 @@ fn absolute_popup_menu_clamps_to_max_height_and_retains_item_height() {
 }
 
 fn assert_fixed_popup_menu_style(root: &mut ui_dom::RootDom, popup: ui_dom::DomNodeSlotKey) {
-    assert_set_attr_str(root, popup, "position", "fixed");
+    assert_style_set(root, popup, "position", "fixed");
     assert_positioned_popup_menu_style(root, popup);
 }
 
 fn assert_absolute_popup_menu_style(root: &mut ui_dom::RootDom, popup: ui_dom::DomNodeSlotKey) {
-    assert_set_attr_str(root, popup, "position", "absolute");
+    assert_style_set(root, popup, "position", "absolute");
     assert_positioned_popup_menu_style(root, popup);
 }
 
 fn assert_positioned_popup_menu_style(root: &mut ui_dom::RootDom, popup: ui_dom::DomNodeSlotKey) {
-    assert_set_attr_str(root, popup, "top", POPUP_TOP_PX);
-    assert_set_attr_str(root, popup, "left", POPUP_LEFT_PX);
-    assert_set_attr_str(root, popup, "width", POPUP_WIDTH_PX);
-    assert_set_attr_str(root, popup, "overflow", "scroll");
-    assert_set_attr_str(root, popup, "max-height", POPUP_MAX_HEIGHT_PX);
+    assert_style_set(root, popup, "top", POPUP_TOP_PX);
+    assert_style_set(root, popup, "left", POPUP_LEFT_PX);
+    assert_style_set(root, popup, "width", POPUP_WIDTH_PX);
+    assert_style_set(root, popup, "overflow", "scroll");
+    assert_style_set(root, popup, "max-height", POPUP_MAX_HEIGHT_PX);
 }
 
 fn assert_popup_menu_item_sizes(root: &mut ui_dom::RootDom, items: &[ui_dom::DomNodeSlotKey]) {
     for &item in items {
-        assert_set_attr_str(root, item, "width", POPUP_WIDTH_PX);
-        assert_set_attr_str(root, item, "height", POPUP_ITEM_HEIGHT_PX);
+        assert_style_set(root, item, "width", POPUP_WIDTH_PX);
+        assert_style_set(root, item, "height", POPUP_ITEM_HEIGHT_PX);
     }
 }

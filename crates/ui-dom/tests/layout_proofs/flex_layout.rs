@@ -43,8 +43,9 @@ use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, n
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
     assert_load_root_stylesheet, assert_node_layout, assert_rect_op_geometry,
-    assert_root_dom_update, assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
-    take_staged_layer_paint_plans, theme_stylesheet_origin,
+    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    theme_stylesheet_origin,
 };
 
 const TITLEBAR_ICON_WIDTH_PX: f32 = 16.0;
@@ -65,16 +66,16 @@ fn flex_row_distributes_positive_free_space_by_grow_factor() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "90px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "height", "10px");
     assert_set_flex_basis_and_cross_size(&mut root, first, "10px", "10px");
-    assert_set_attr_str(&mut root, first, "flex-grow", "0");
-    assert_set_attr_str(&mut root, first, "flex-shrink", "1");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "flex-shrink", "1");
     assert_set_flex_basis_and_cross_size(&mut root, second, "10px", "10px");
-    assert_set_attr_str(&mut root, second, "flex-grow", "1");
-    assert_set_attr_str(&mut root, second, "flex-shrink", "1");
+    assert_style_set(&mut root, second, "flex-grow", "1");
+    assert_style_set(&mut root, second, "flex-shrink", "1");
     assert_set_flex_basis_and_cross_size(&mut root, third, "10px", "10px");
-    assert_set_attr_str(&mut root, third, "flex-grow", "2");
-    assert_set_attr_str(&mut root, third, "flex-shrink", "1");
+    assert_style_set(&mut root, third, "flex-grow", "2");
+    assert_style_set(&mut root, third, "flex-shrink", "1");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -123,8 +124,8 @@ fn row_reverse_positions_items_from_the_opposite_main_start() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "90px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -160,8 +161,8 @@ fn rtl_row_direction_uses_inline_start_for_main_axis_progression() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "90px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "direction", "rtl");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "direction", "rtl");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -187,9 +188,9 @@ fn rtl_row_reverse_cancels_back_to_left_to_right_progression() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "90px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "direction", "rtl");
-    assert_set_attr_str(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "direction", "rtl");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -236,9 +237,9 @@ fn justify_content_start_tracks_inline_start_in_row_reverse() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "flex-direction", "row-reverse");
-    assert_set_attr_str(&mut root, container, "justify-content", "start");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, container, "justify-content", "start");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -276,9 +277,9 @@ fn justify_content_end_tracks_inline_end_in_row_reverse() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "flex-direction", "row-reverse");
-    assert_set_attr_str(&mut root, container, "justify-content", "end");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, container, "justify-content", "end");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -364,8 +365,8 @@ fn wrap_reverse_stacks_wrapped_rows_from_the_opposite_cross_start() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "25px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap-reverse");
+    assert_style_set(&mut root, container, "height", "25px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap-reverse");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -420,9 +421,9 @@ fn align_items_start_ignores_wrap_reverse_cross_flip() {
     let short = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "30px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap-reverse");
-    assert_set_attr_str(&mut root, container, "align-items", "start");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap-reverse");
+    assert_style_set(&mut root, container, "align-items", "start");
     assert_set_inflexible_row_item(&mut root, tall, "10px", "20px");
     assert_set_inflexible_row_item(&mut root, short, "10px", "10px");
 
@@ -459,9 +460,9 @@ fn align_items_end_ignores_wrap_reverse_cross_flip() {
     let short = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "30px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap-reverse");
-    assert_set_attr_str(&mut root, container, "align-items", "end");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap-reverse");
+    assert_style_set(&mut root, container, "align-items", "end");
     assert_set_inflexible_row_item(&mut root, tall, "10px", "20px");
     assert_set_inflexible_row_item(&mut root, short, "10px", "10px");
 
@@ -498,12 +499,12 @@ fn align_self_end_overrides_wrap_reverse_logical_start() {
     let short = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "30px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap-reverse");
-    assert_set_attr_str(&mut root, container, "align-items", "start");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap-reverse");
+    assert_style_set(&mut root, container, "align-items", "start");
     assert_set_inflexible_row_item(&mut root, tall, "10px", "20px");
     assert_set_inflexible_row_item(&mut root, short, "10px", "10px");
-    assert_set_attr_str(&mut root, short, "align-self", "end");
+    assert_style_set(&mut root, short, "align-self", "end");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -532,9 +533,9 @@ fn align_content_start_ignores_wrap_reverse_cross_flip() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap-reverse");
-    assert_set_attr_str(&mut root, container, "align-content", "start");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap-reverse");
+    assert_style_set(&mut root, container, "align-content", "start");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -590,7 +591,7 @@ fn column_reverse_positions_items_from_the_opposite_vertical_main_start() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_column_container_size(&mut root, container, "20px", "90px");
-    assert_set_attr_str(&mut root, container, "flex-direction", "column-reverse");
+    assert_style_set(&mut root, container, "flex-direction", "column-reverse");
     assert_set_inflexible_column_item(&mut root, first, "10px", "20px");
     assert_set_inflexible_column_item(&mut root, second, "10px", "20px");
     assert_set_inflexible_column_item(&mut root, third, "10px", "20px");
@@ -645,8 +646,8 @@ fn rtl_column_align_items_flex_start_uses_inline_start_cross_axis() {
     let child = assert_append_div_to(&mut root, container);
 
     assert_set_flex_column_container_size(&mut root, container, "50px", "60px");
-    assert_set_attr_str(&mut root, container, "direction", "rtl");
-    assert_set_attr_str(&mut root, container, "align-items", "flex-start");
+    assert_style_set(&mut root, container, "direction", "rtl");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
     assert_set_inflexible_column_item(&mut root, child, "10px", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -676,13 +677,13 @@ fn flex_row_distributes_negative_free_space_by_scaled_shrink_factor() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "50px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "height", "10px");
     assert_set_flex_basis_and_cross_size(&mut root, first, "40px", "10px");
-    assert_set_attr_str(&mut root, first, "flex-grow", "0");
-    assert_set_attr_str(&mut root, first, "flex-shrink", "2");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "flex-shrink", "2");
     assert_set_flex_basis_and_cross_size(&mut root, second, "40px", "10px");
-    assert_set_attr_str(&mut root, second, "flex-grow", "0");
-    assert_set_attr_str(&mut root, second, "flex-shrink", "3");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "flex-shrink", "3");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -724,11 +725,11 @@ fn flex_shorthand_distributes_positive_free_space_without_longhands() {
     let fixed = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, growing, "flex", "1 1 10px");
-    assert_set_attr_str(&mut root, growing, "height", "10px");
-    assert_set_attr_str(&mut root, fixed, "flex", "0 0 20px");
-    assert_set_attr_str(&mut root, fixed, "height", "10px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, growing, "flex", "1 1 10px");
+    assert_style_set(&mut root, growing, "height", "10px");
+    assert_style_set(&mut root, fixed, "flex", "0 0 20px");
+    assert_style_set(&mut root, fixed, "height", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -765,14 +766,14 @@ fn flex_item_max_width_clamps_growth_before_remaining_space_distribution() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "height", "10px");
     for child in [first, second] {
-        assert_set_attr_str(&mut root, child, "flex-basis", "10px");
-        assert_set_attr_str(&mut root, child, "flex-grow", "1");
-        assert_set_attr_str(&mut root, child, "flex-shrink", "1");
-        assert_set_attr_str(&mut root, child, "height", "10px");
+        assert_style_set(&mut root, child, "flex-basis", "10px");
+        assert_style_set(&mut root, child, "flex-grow", "1");
+        assert_style_set(&mut root, child, "flex-shrink", "1");
+        assert_style_set(&mut root, child, "height", "10px");
     }
-    assert_set_attr_str(&mut root, first, "max-width", "20px");
+    assert_style_set(&mut root, first, "max-width", "20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -809,14 +810,14 @@ fn flex_item_min_width_clamps_shrink_before_remaining_space_distribution() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "20px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "height", "10px");
     for child in [first, second] {
-        assert_set_attr_str(&mut root, child, "flex-basis", "20px");
-        assert_set_attr_str(&mut root, child, "flex-grow", "0");
-        assert_set_attr_str(&mut root, child, "flex-shrink", "1");
-        assert_set_attr_str(&mut root, child, "height", "10px");
+        assert_style_set(&mut root, child, "flex-basis", "20px");
+        assert_style_set(&mut root, child, "flex-grow", "0");
+        assert_style_set(&mut root, child, "flex-shrink", "1");
+        assert_style_set(&mut root, child, "height", "10px");
     }
-    assert_set_attr_str(&mut root, first, "min-width", "15px");
+    assert_style_set(&mut root, first, "min-width", "15px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -856,7 +857,7 @@ fn flex_row_wraps_items_when_the_next_outer_hypothetical_main_size_no_longer_fit
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "50px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
     assert_set_inflexible_row_item(&mut root, first, "30px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "30px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "20px", "10px");
@@ -900,10 +901,10 @@ fn flex_flow_column_wrap_moves_overflowing_items_into_the_next_column() {
     let second = assert_append_div_to(&mut root, container);
     let third = assert_append_div_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "flex");
-    assert_set_attr_str(&mut root, container, "flex-flow", "column wrap");
-    assert_set_attr_str(&mut root, container, "width", "40px");
-    assert_set_attr_str(&mut root, container, "height", "25px");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-flow", "column wrap");
+    assert_style_set(&mut root, container, "width", "40px");
+    assert_style_set(&mut root, container, "height", "25px");
     assert_set_inflexible_column_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_column_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_column_item(&mut root, third, "10px", "10px");
@@ -968,13 +969,13 @@ fn order_changes_visual_order_without_mutating_dom_sibling_order() {
     let dom_third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "90px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "height", "10px");
     assert_set_inflexible_row_item(&mut root, dom_first, "10px", "10px");
-    assert_set_attr_str(&mut root, dom_first, "order", "3");
+    assert_style_set(&mut root, dom_first, "order", "3");
     assert_set_inflexible_row_item(&mut root, dom_second, "10px", "10px");
-    assert_set_attr_str(&mut root, dom_second, "order", "1");
+    assert_style_set(&mut root, dom_second, "order", "1");
     assert_set_inflexible_row_item(&mut root, dom_third, "10px", "10px");
-    assert_set_attr_str(&mut root, dom_third, "order", "2");
+    assert_style_set(&mut root, dom_third, "order", "2");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1009,8 +1010,8 @@ fn justify_content_center_offsets_items_after_main_axis_sizing() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "justify-content", "center");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "justify-content", "center");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -1045,8 +1046,8 @@ fn justify_content_flex_end_packs_items_to_main_end() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "justify-content", "flex-end");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "justify-content", "flex-end");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -1079,8 +1080,8 @@ fn justify_content_space_between_distributes_remaining_main_space_between_items(
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "justify-content", "space-between");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "justify-content", "space-between");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1122,8 +1123,8 @@ fn justify_content_space_around_distributes_half_gaps_at_the_edges() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "justify-content", "space-around");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "justify-content", "space-around");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1169,8 +1170,8 @@ fn justify_content_space_evenly_distributes_equal_gaps_including_edges() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "justify-content", "space-evenly");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "justify-content", "space-evenly");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1196,11 +1197,11 @@ fn justify_content_center_with_gap_uses_remaining_space_inside_padded_content_bo
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "80px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "padding-left", "4px");
-    assert_set_attr_str(&mut root, container, "padding-right", "4px");
-    assert_set_attr_str(&mut root, container, "column-gap", "5px");
-    assert_set_attr_str(&mut root, container, "justify-content", "center");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "padding-left", "4px");
+    assert_style_set(&mut root, container, "padding-right", "4px");
+    assert_style_set(&mut root, container, "column-gap", "5px");
+    assert_style_set(&mut root, container, "justify-content", "center");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -1237,8 +1238,8 @@ fn align_items_center_offsets_items_in_the_cross_axis() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "align-items", "center");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "align-items", "center");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -1295,8 +1296,8 @@ fn align_items_flex_end_packs_items_to_the_cross_end() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "align-items", "flex-end");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "align-items", "flex-end");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -1342,14 +1343,14 @@ fn align_items_stretch_expands_auto_cross_size_items_to_line_cross_size() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "align-items", "stretch");
-    assert_set_attr_str(&mut root, first, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, first, "flex-grow", "0");
-    assert_set_attr_str(&mut root, first, "flex-shrink", "0");
-    assert_set_attr_str(&mut root, second, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, second, "flex-grow", "0");
-    assert_set_attr_str(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "align-items", "stretch");
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1394,11 +1395,11 @@ fn align_self_center_overrides_container_align_items() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "align-items", "flex-start");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
-    assert_set_attr_str(&mut root, second, "align-self", "center");
+    assert_style_set(&mut root, second, "align-self", "center");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1424,11 +1425,11 @@ fn align_self_flex_end_overrides_container_align_items() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "align-items", "flex-start");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
-    assert_set_attr_str(&mut root, second, "align-self", "flex-end");
+    assert_style_set(&mut root, second, "align-self", "flex-end");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1456,16 +1457,16 @@ fn align_self_stretch_overrides_container_align_items_for_auto_cross_size() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "align-items", "flex-start");
-    assert_set_attr_str(&mut root, first, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, first, "flex-grow", "0");
-    assert_set_attr_str(&mut root, first, "flex-shrink", "0");
-    assert_set_attr_str(&mut root, first, "height", "10px");
-    assert_set_attr_str(&mut root, second, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, second, "flex-grow", "0");
-    assert_set_attr_str(&mut root, second, "flex-shrink", "0");
-    assert_set_attr_str(&mut root, second, "align-self", "stretch");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "height", "10px");
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "align-self", "stretch");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1497,11 +1498,11 @@ fn place_items_and_place_self_aliases_apply_cross_axis_alignment() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "50px");
-    assert_set_attr_str(&mut root, container, "place-items", "end center");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "place-items", "end center");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
-    assert_set_attr_str(&mut root, second, "place-self", "center auto");
+    assert_style_set(&mut root, second, "place-self", "center auto");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1531,9 +1532,9 @@ fn place_content_center_space_between_aliases_apply_to_wrapped_flex_container() 
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "30px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(
+    assert_style_set(&mut root, container, "height", "30px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(
         &mut root,
         container,
         "place-content",
@@ -1580,9 +1581,9 @@ fn align_content_center_offsets_wrapped_lines_within_container_cross_size() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "align-content", "center");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "center");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1635,9 +1636,9 @@ fn align_content_flex_end_packs_wrapped_lines_to_container_cross_end() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "align-content", "flex-end");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "flex-end");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1692,9 +1693,9 @@ fn align_content_space_between_distributes_remaining_cross_space_between_lines()
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "align-content", "space-between");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "space-between");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1741,9 +1742,9 @@ fn align_content_space_around_distributes_half_gaps_at_cross_edges() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "align-content", "space-around");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "space-around");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1789,9 +1790,9 @@ fn align_content_space_evenly_distributes_equal_cross_axis_gaps() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "align-content", "space-evenly");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "space-evenly");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1847,9 +1848,9 @@ fn align_content_stretch_expands_wrapped_line_cross_sizes_to_fill_container() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "align-content", "stretch");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "stretch");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -1908,14 +1909,14 @@ fn auto_width_block_level_row_flex_uses_containing_block_width_for_main_size() {
     let container = assert_append_div_to(&mut root, parent);
     let item = assert_append_div_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, parent, "width", "90px");
-    assert_set_attr_str(&mut root, parent, "height", "10px");
-    assert_set_attr_str(&mut root, container, "display", "flex");
-    assert_set_attr_str(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, parent, "width", "90px");
+    assert_style_set(&mut root, parent, "height", "10px");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "height", "10px");
     assert_set_flex_basis_and_cross_size(&mut root, item, "10px", "10px");
-    assert_set_attr_str(&mut root, item, "flex-grow", "1");
-    assert_set_attr_str(&mut root, item, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, item, "overflow", "scroll");
+    assert_style_set(&mut root, item, "flex-grow", "1");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "overflow", "scroll");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -2061,18 +2062,18 @@ fn nested_flex_item_uses_outer_grown_width_for_inner_justify_content() {
     let nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "100px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "justify-content", "center");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "1");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, nested, "overflow", "scroll");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "justify-content", "center");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "20px");
+    assert_style_set(&mut root, nested, "flex-grow", "1");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, nested, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, sibling, "20px", "20px");
-    assert_set_attr_str(&mut root, sibling, "overflow", "scroll");
+    assert_style_set(&mut root, sibling, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, nested_child, "10px", "10px");
-    assert_set_attr_str(&mut root, nested_child, "overflow", "scroll");
+    assert_style_set(&mut root, nested_child, "overflow", "scroll");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -2108,13 +2109,13 @@ fn nested_flex_item_with_default_visible_overflow_uses_outer_grown_width() {
     let nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "100px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "justify-content", "center");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "1");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "justify-content", "center");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "20px");
+    assert_style_set(&mut root, nested, "flex-grow", "1");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
     assert_set_inflexible_row_item(&mut root, sibling, "20px", "20px");
     assert_set_inflexible_row_item(&mut root, nested_child, "10px", "10px");
 
@@ -2159,14 +2160,14 @@ fn nested_flex_item_default_visible_overflow_uses_inflexible_child_basis_as_auto
     let nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "5px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "0");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "20px");
+    assert_style_set(&mut root, nested, "flex-grow", "0");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
     assert_set_inflexible_row_item(&mut root, sibling, "0px", "20px");
-    assert_set_attr_str(&mut root, sibling, "overflow", "scroll");
+    assert_style_set(&mut root, sibling, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, nested_child, "10px", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -2190,13 +2191,13 @@ fn nested_flex_item_auto_basis_uses_width_as_base_before_final_flexed_layout() {
     let nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "100px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "justify-content", "center");
-    assert_set_attr_str(&mut root, nested, "width", "20px");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "1");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "justify-content", "center");
+    assert_style_set(&mut root, nested, "width", "20px");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-grow", "1");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
     assert_set_inflexible_row_item(&mut root, sibling, "20px", "20px");
     assert_set_inflexible_row_item(&mut root, nested_child, "10px", "10px");
 
@@ -2231,13 +2232,13 @@ fn nested_flex_item_fractional_grow_consumes_only_that_fraction_of_free_space() 
     let nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "100px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "justify-content", "center");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "0.5");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "justify-content", "center");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "20px");
+    assert_style_set(&mut root, nested, "flex-grow", "0.5");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
     assert_set_inflexible_row_item(&mut root, sibling, "20px", "20px");
     assert_set_inflexible_row_item(&mut root, nested_child, "10px", "10px");
 
@@ -2278,17 +2279,17 @@ fn nested_flex_item_with_visible_overflow_uses_content_based_auto_min_before_shr
     );
 
     assert_set_flex_row_container_width(&mut root, outer, "50px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "80px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "0");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "80px");
+    assert_style_set(&mut root, nested, "flex-grow", "0");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
     assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
-    assert_set_attr_str(&mut root, nested_child, "height", "10px");
-    assert_set_attr_str(&mut root, nested_child, "flex-basis", "0px");
-    assert_set_attr_str(&mut root, nested_child, "flex-grow", "0");
-    assert_set_attr_str(&mut root, nested_child, "flex-shrink", "1");
+    assert_style_set(&mut root, nested_child, "height", "10px");
+    assert_style_set(&mut root, nested_child, "flex-basis", "0px");
+    assert_style_set(&mut root, nested_child, "flex-grow", "0");
+    assert_style_set(&mut root, nested_child, "flex-shrink", "1");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -2318,18 +2319,18 @@ fn nested_flex_item_uses_outer_shrunk_width_for_inner_justify_content() {
     let nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "50px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "justify-content", "center");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "80px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "0");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, nested, "overflow", "scroll");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "justify-content", "center");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "80px");
+    assert_style_set(&mut root, nested, "flex-grow", "0");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, nested, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
-    assert_set_attr_str(&mut root, sibling, "overflow", "scroll");
+    assert_style_set(&mut root, sibling, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, nested_child, "10px", "10px");
-    assert_set_attr_str(&mut root, nested_child, "overflow", "scroll");
+    assert_style_set(&mut root, nested_child, "overflow", "scroll");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -2375,23 +2376,23 @@ fn padded_nested_flex_item_uses_resolved_outer_width_before_inner_layout() {
     let nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "120px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, outer, "height", "20px");
     assert_set_inflexible_row_item(&mut root, start, "16px", "20px");
     assert_set_inflexible_row_item(&mut root, end, "16px", "20px");
-    assert_set_attr_str(&mut root, start, "overflow", "scroll");
-    assert_set_attr_str(&mut root, end, "overflow", "scroll");
+    assert_style_set(&mut root, start, "overflow", "scroll");
+    assert_style_set(&mut root, end, "overflow", "scroll");
 
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "justify-content", "center");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "0px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "1");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, nested, "padding-left", "4px");
-    assert_set_attr_str(&mut root, nested, "padding-right", "4px");
-    assert_set_attr_str(&mut root, nested, "overflow", "scroll");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "justify-content", "center");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "0px");
+    assert_style_set(&mut root, nested, "flex-grow", "1");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, nested, "padding-left", "4px");
+    assert_style_set(&mut root, nested, "padding-right", "4px");
+    assert_style_set(&mut root, nested, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, nested_child, "20px", "10px");
-    assert_set_attr_str(&mut root, nested_child, "overflow", "scroll");
+    assert_style_set(&mut root, nested_child, "overflow", "scroll");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -2432,14 +2433,14 @@ fn padded_flex_item_floors_content_box_at_zero_after_shrink() {
     let item = assert_append_div_to(&mut root, outer);
 
     assert_set_flex_row_container_width(&mut root, outer, "4px");
-    assert_set_attr_str(&mut root, outer, "height", "10px");
-    assert_set_attr_str(&mut root, item, "height", "10px");
-    assert_set_attr_str(&mut root, item, "flex-basis", "0px");
-    assert_set_attr_str(&mut root, item, "flex-grow", "0");
-    assert_set_attr_str(&mut root, item, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, item, "padding-left", "4px");
-    assert_set_attr_str(&mut root, item, "padding-right", "4px");
-    assert_set_attr_str(&mut root, item, "overflow", "scroll");
+    assert_style_set(&mut root, outer, "height", "10px");
+    assert_style_set(&mut root, item, "height", "10px");
+    assert_style_set(&mut root, item, "flex-basis", "0px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "padding-left", "4px");
+    assert_style_set(&mut root, item, "padding-right", "4px");
+    assert_style_set(&mut root, item, "overflow", "scroll");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -2472,25 +2473,25 @@ fn nested_flex_inside_nested_flex_uses_each_resolved_width_for_final_layout() {
     let leaf = assert_append_div_to(&mut root, inner);
 
     assert_set_flex_row_container_width(&mut root, outer, "120px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, middle, "display", "flex");
-    assert_set_attr_str(&mut root, middle, "height", "20px");
-    assert_set_attr_str(&mut root, middle, "flex-basis", "20px");
-    assert_set_attr_str(&mut root, middle, "flex-grow", "1");
-    assert_set_attr_str(&mut root, middle, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, middle, "overflow", "scroll");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, middle, "display", "flex");
+    assert_style_set(&mut root, middle, "height", "20px");
+    assert_style_set(&mut root, middle, "flex-basis", "20px");
+    assert_style_set(&mut root, middle, "flex-grow", "1");
+    assert_style_set(&mut root, middle, "flex-shrink", "1");
+    assert_style_set(&mut root, middle, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, sibling, "20px", "20px");
-    assert_set_attr_str(&mut root, sibling, "overflow", "scroll");
+    assert_style_set(&mut root, sibling, "overflow", "scroll");
 
-    assert_set_attr_str(&mut root, inner, "display", "flex");
-    assert_set_attr_str(&mut root, inner, "justify-content", "center");
-    assert_set_attr_str(&mut root, inner, "height", "20px");
-    assert_set_attr_str(&mut root, inner, "flex-basis", "20px");
-    assert_set_attr_str(&mut root, inner, "flex-grow", "1");
-    assert_set_attr_str(&mut root, inner, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, inner, "overflow", "scroll");
+    assert_style_set(&mut root, inner, "display", "flex");
+    assert_style_set(&mut root, inner, "justify-content", "center");
+    assert_style_set(&mut root, inner, "height", "20px");
+    assert_style_set(&mut root, inner, "flex-basis", "20px");
+    assert_style_set(&mut root, inner, "flex-grow", "1");
+    assert_style_set(&mut root, inner, "flex-shrink", "1");
+    assert_style_set(&mut root, inner, "overflow", "scroll");
     assert_set_inflexible_row_item(&mut root, leaf, "10px", "10px");
-    assert_set_attr_str(&mut root, leaf, "overflow", "scroll");
+    assert_style_set(&mut root, leaf, "overflow", "scroll");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -2527,13 +2528,13 @@ fn nested_flex_item_append_and_remove_uses_current_child_list_without_delayed_sh
     let first_nested_child = assert_append_div_to(&mut root, nested);
 
     assert_set_flex_row_container_width(&mut root, outer, "100px");
-    assert_set_attr_str(&mut root, outer, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "display", "flex");
-    assert_set_attr_str(&mut root, nested, "justify-content", "center");
-    assert_set_attr_str(&mut root, nested, "height", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-basis", "20px");
-    assert_set_attr_str(&mut root, nested, "flex-grow", "1");
-    assert_set_attr_str(&mut root, nested, "flex-shrink", "1");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, nested, "display", "flex");
+    assert_style_set(&mut root, nested, "justify-content", "center");
+    assert_style_set(&mut root, nested, "height", "20px");
+    assert_style_set(&mut root, nested, "flex-basis", "20px");
+    assert_style_set(&mut root, nested, "flex-grow", "1");
+    assert_style_set(&mut root, nested, "flex-shrink", "1");
     assert_set_inflexible_row_item(&mut root, sibling, "20px", "20px");
     assert_set_inflexible_row_item(&mut root, first_nested_child, "10px", "10px");
 
@@ -2645,8 +2646,8 @@ fn column_gap_separates_items_on_the_same_flex_line() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "column-gap", "5px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "column-gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
 
@@ -2687,9 +2688,9 @@ fn row_gap_separates_wrapped_flex_lines() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "row-gap", "5px");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "row-gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -2728,9 +2729,9 @@ fn gap_shorthand_applies_row_and_column_spacing_to_wrapped_flex_lines() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "gap", "5px");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -2776,9 +2777,9 @@ fn column_gap_does_not_insert_a_phantom_leading_gap_on_wrapped_lines() {
     let fourth = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "25px");
-    assert_set_attr_str(&mut root, container, "height", "25px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "gap", "5px");
+    assert_style_set(&mut root, container, "height", "25px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -2808,13 +2809,13 @@ fn wrap_reverse_gap_shorthand_uses_padded_content_box_edges() {
     let fourth = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "28px");
-    assert_set_attr_str(&mut root, container, "height", "31px");
-    assert_set_attr_str(&mut root, container, "padding-left", "4px");
-    assert_set_attr_str(&mut root, container, "padding-right", "4px");
-    assert_set_attr_str(&mut root, container, "padding-top", "3px");
-    assert_set_attr_str(&mut root, container, "padding-bottom", "3px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap-reverse");
-    assert_set_attr_str(&mut root, container, "gap", "5px");
+    assert_style_set(&mut root, container, "height", "31px");
+    assert_style_set(&mut root, container, "padding-left", "4px");
+    assert_style_set(&mut root, container, "padding-right", "4px");
+    assert_style_set(&mut root, container, "padding-top", "3px");
+    assert_style_set(&mut root, container, "padding-bottom", "3px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap-reverse");
+    assert_style_set(&mut root, container, "gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -2875,13 +2876,13 @@ fn gap_shorthand_uses_the_padded_content_box_as_its_origin() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "28px");
-    assert_set_attr_str(&mut root, container, "height", "31px");
-    assert_set_attr_str(&mut root, container, "padding-left", "4px");
-    assert_set_attr_str(&mut root, container, "padding-right", "4px");
-    assert_set_attr_str(&mut root, container, "padding-top", "3px");
-    assert_set_attr_str(&mut root, container, "padding-bottom", "3px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "gap", "5px");
+    assert_style_set(&mut root, container, "height", "31px");
+    assert_style_set(&mut root, container, "padding-left", "4px");
+    assert_style_set(&mut root, container, "padding-right", "4px");
+    assert_style_set(&mut root, container, "padding-top", "3px");
+    assert_style_set(&mut root, container, "padding-bottom", "3px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -2919,13 +2920,13 @@ fn row_gap_uses_the_padded_content_box_for_wrapped_line_offsets() {
     let third = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "28px");
-    assert_set_attr_str(&mut root, container, "height", "31px");
-    assert_set_attr_str(&mut root, container, "padding-left", "4px");
-    assert_set_attr_str(&mut root, container, "padding-right", "4px");
-    assert_set_attr_str(&mut root, container, "padding-top", "3px");
-    assert_set_attr_str(&mut root, container, "padding-bottom", "3px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
-    assert_set_attr_str(&mut root, container, "row-gap", "5px");
+    assert_style_set(&mut root, container, "height", "31px");
+    assert_style_set(&mut root, container, "padding-left", "4px");
+    assert_style_set(&mut root, container, "padding-right", "4px");
+    assert_style_set(&mut root, container, "padding-top", "3px");
+    assert_style_set(&mut root, container, "padding-bottom", "3px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "row-gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
     assert_set_inflexible_row_item(&mut root, third, "10px", "10px");
@@ -2964,14 +2965,14 @@ fn column_gap_preserves_spacing_between_padded_item_border_boxes() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "column-gap", "5px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "column-gap", "5px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
-    assert_set_attr_str(&mut root, first, "padding-left", "4px");
-    assert_set_attr_str(&mut root, first, "padding-right", "4px");
+    assert_style_set(&mut root, first, "padding-left", "4px");
+    assert_style_set(&mut root, first, "padding-right", "4px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
-    assert_set_attr_str(&mut root, second, "padding-left", "4px");
-    assert_set_attr_str(&mut root, second, "padding-right", "4px");
+    assert_style_set(&mut root, second, "padding-left", "4px");
+    assert_style_set(&mut root, second, "padding-right", "4px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -3003,12 +3004,12 @@ fn flex_item_margins_and_gap_participate_in_main_axis_offsets() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "10px");
-    assert_set_attr_str(&mut root, container, "column-gap", "7px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "column-gap", "7px");
     assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
-    assert_set_attr_str(&mut root, first, "margin-right", "5px");
+    assert_style_set(&mut root, first, "margin-right", "5px");
     assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
-    assert_set_attr_str(&mut root, second, "margin-left", "3px");
+    assert_style_set(&mut root, second, "margin-left", "3px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -3030,14 +3031,14 @@ fn wrapped_row_auto_basis_uses_width_property_for_line_breaking() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "60px");
-    assert_set_attr_str(&mut root, container, "height", "20px");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
     for child in [first, second] {
-        assert_set_attr_str(&mut root, child, "flex-basis", "auto");
-        assert_set_attr_str(&mut root, child, "flex-grow", "0");
-        assert_set_attr_str(&mut root, child, "flex-shrink", "1");
-        assert_set_attr_str(&mut root, child, "width", "40px");
-        assert_set_attr_str(&mut root, child, "height", "10px");
+        assert_style_set(&mut root, child, "flex-basis", "auto");
+        assert_style_set(&mut root, child, "flex-grow", "0");
+        assert_style_set(&mut root, child, "flex-shrink", "1");
+        assert_style_set(&mut root, child, "width", "40px");
+        assert_style_set(&mut root, child, "height", "10px");
     }
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -3075,11 +3076,11 @@ fn column_auto_basis_uses_height_property_for_main_axis_layout() {
 
     assert_set_flex_column_container_size(&mut root, container, "20px", "40px");
     for (child, height) in [(first, "20px"), (second, "10px")] {
-        assert_set_attr_str(&mut root, child, "flex-basis", "auto");
-        assert_set_attr_str(&mut root, child, "flex-grow", "0");
-        assert_set_attr_str(&mut root, child, "flex-shrink", "1");
-        assert_set_attr_str(&mut root, child, "width", "20px");
-        assert_set_attr_str(&mut root, child, "height", height);
+        assert_style_set(&mut root, child, "flex-basis", "auto");
+        assert_style_set(&mut root, child, "flex-grow", "0");
+        assert_style_set(&mut root, child, "flex-shrink", "1");
+        assert_style_set(&mut root, child, "width", "20px");
+        assert_style_set(&mut root, child, "height", height);
     }
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -3116,11 +3117,11 @@ fn scroll_flex_item_resolves_automatic_min_main_size_to_zero_before_shrink() {
     let text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
 
     assert_set_flex_row_container_width(&mut root, container, "20px");
-    assert_set_attr_str(&mut root, item, "overflow", "scroll");
-    assert_set_attr_str(&mut root, item, "height", "10px");
-    assert_set_attr_str(&mut root, item, "flex-grow", "0");
-    assert_set_attr_str(&mut root, item, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, item, "flex-basis", "auto");
+    assert_style_set(&mut root, item, "overflow", "scroll");
+    assert_style_set(&mut root, item, "height", "10px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "flex-basis", "auto");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -3164,11 +3165,11 @@ fn visible_overflow_flex_item_uses_content_based_automatic_min_main_size_before_
     let text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
 
     assert_set_flex_row_container_width(&mut root, container, "20px");
-    assert_set_attr_str(&mut root, item, "overflow", "visible");
-    assert_set_attr_str(&mut root, item, "height", "10px");
-    assert_set_attr_str(&mut root, item, "flex-grow", "0");
-    assert_set_attr_str(&mut root, item, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, item, "flex-basis", "auto");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_style_set(&mut root, item, "height", "10px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "flex-basis", "auto");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -3221,12 +3222,12 @@ fn visible_overflow_column_flex_item_uses_intrinsic_block_size_before_shrink() {
     let nested = assert_append_div_to(&mut root, item);
 
     assert_set_flex_column_container_size(&mut root, container, "20px", "20px");
-    assert_set_attr_str(&mut root, item, "overflow", "visible");
+    assert_style_set(&mut root, item, "overflow", "visible");
     assert_set_flex_column_basis_and_cross_size(&mut root, item, "30px", "20px");
-    assert_set_attr_str(&mut root, item, "flex-grow", "0");
-    assert_set_attr_str(&mut root, item, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, nested, "width", "20px");
-    assert_set_attr_str(&mut root, nested, "height", "30px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, nested, "width", "20px");
+    assert_style_set(&mut root, nested, "height", "30px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -3381,18 +3382,18 @@ fn titlebar_like_flex_item_count_changes_do_not_disappear_or_shift_on_second_pas
     let end = assert_append_div_to(&mut root, container);
 
     assert_set_flex_row_container_width(&mut root, container, "120px");
-    assert_set_attr_str(&mut root, container, "height", TITLEBAR_HOST_HEIGHT_PX);
+    assert_style_set(&mut root, container, "height", TITLEBAR_HOST_HEIGHT_PX);
     assert_set_inflexible_row_item(
         &mut root,
         start,
         TITLEBAR_ICON_BASIS_PX,
         TITLEBAR_ICON_HEIGHT_PX,
     );
-    assert_set_attr_str(&mut root, title_host, "height", TITLEBAR_HOST_HEIGHT_PX);
-    assert_set_attr_str(&mut root, title_host, "flex-basis", "0px");
-    assert_set_attr_str(&mut root, title_host, "flex-grow", "1");
-    assert_set_attr_str(&mut root, title_host, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, title_host, "overflow", "hidden");
+    assert_style_set(&mut root, title_host, "height", TITLEBAR_HOST_HEIGHT_PX);
+    assert_style_set(&mut root, title_host, "flex-basis", "0px");
+    assert_style_set(&mut root, title_host, "flex-grow", "1");
+    assert_style_set(&mut root, title_host, "flex-shrink", "1");
+    assert_style_set(&mut root, title_host, "overflow", "hidden");
     let _title_text = assert_append_text_to(&mut root, title_host, "Camera");
     assert_set_inflexible_row_item(
         &mut root,
@@ -3518,7 +3519,7 @@ fn stylesheet_justify_content_space_between_and_column_gap_persist_after_recompu
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, first, "color", "#ffffff");
+    assert_style_set(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -3923,18 +3924,18 @@ fn direct_attr_flat_two_column_row_applies_gap_between_flex_basis_sized_items() 
     let left_column = assert_append_div_to(&mut root, columns);
     let right_column = assert_append_div_to(&mut root, columns);
 
-    assert_set_attr_str(&mut root, columns, "display", "flex");
-    assert_set_attr_str(&mut root, columns, "width", "320px");
-    assert_set_attr_str(&mut root, columns, "height", "200px");
-    assert_set_attr_str(&mut root, columns, "gap", "12px");
-    assert_set_attr_str(&mut root, left_column, "display", "block");
-    assert_set_attr_str(&mut root, right_column, "display", "block");
-    assert_set_attr_str(&mut root, left_column, "flex-basis", "96px");
-    assert_set_attr_str(&mut root, right_column, "flex-basis", "104px");
-    assert_set_attr_str(&mut root, left_column, "flex-grow", "0");
-    assert_set_attr_str(&mut root, left_column, "flex-shrink", "0");
-    assert_set_attr_str(&mut root, right_column, "flex-grow", "0");
-    assert_set_attr_str(&mut root, right_column, "flex-shrink", "0");
+    assert_style_set(&mut root, columns, "display", "flex");
+    assert_style_set(&mut root, columns, "width", "320px");
+    assert_style_set(&mut root, columns, "height", "200px");
+    assert_style_set(&mut root, columns, "gap", "12px");
+    assert_style_set(&mut root, left_column, "display", "block");
+    assert_style_set(&mut root, right_column, "display", "block");
+    assert_style_set(&mut root, left_column, "flex-basis", "96px");
+    assert_style_set(&mut root, right_column, "flex-basis", "104px");
+    assert_style_set(&mut root, left_column, "flex-grow", "0");
+    assert_style_set(&mut root, left_column, "flex-shrink", "0");
+    assert_style_set(&mut root, right_column, "flex-grow", "0");
+    assert_style_set(&mut root, right_column, "flex-shrink", "0");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -4148,19 +4149,19 @@ fn build_flat_two_column_row_scenario(
     let right_column = assert_append_div_to(&mut root, columns);
     let gap_px = gap_attr_mode_value(gap_attr_mode);
 
-    assert_set_attr_str(&mut root, columns, "display", "flex");
-    assert_set_attr_str(&mut root, columns, "width", "320px");
-    assert_set_attr_str(&mut root, columns, "height", "200px");
+    assert_style_set(&mut root, columns, "display", "flex");
+    assert_style_set(&mut root, columns, "width", "320px");
+    assert_style_set(&mut root, columns, "height", "200px");
     match gap_attr_mode {
         GapAttrMode::Gap(value) => {
-            assert_set_attr_str(&mut root, columns, "gap", &format!("{value}px"));
+            assert_style_set(&mut root, columns, "gap", &format!("{value}px"));
         }
         GapAttrMode::ColumnGap(value) => {
-            assert_set_attr_str(&mut root, columns, "column-gap", &format!("{value}px"));
+            assert_style_set(&mut root, columns, "column-gap", &format!("{value}px"));
         }
     }
-    assert_set_attr_str(&mut root, left_column, "display", "block");
-    assert_set_attr_str(&mut root, right_column, "display", "block");
+    assert_style_set(&mut root, left_column, "display", "block");
+    assert_style_set(&mut root, right_column, "display", "block");
     apply_two_column_row_width_mode(&mut root, left_column, right_column, width_mode);
     append_two_column_row_content(&mut root, left_column, right_column, content_mode);
 
@@ -4232,18 +4233,18 @@ fn apply_two_column_row_style_mode(
             assert_set_attr_str(root, keys.right_column, "class", "two-column-item");
         }
         TwoColumnRowStyleMode::DirectAttrs { gap_px } => {
-            assert_set_attr_str(root, keys.right, "display", "block");
-            assert_set_attr_str(root, keys.right, "width", "320px");
-            assert_set_attr_str(root, keys.right, "height", "200px");
-            assert_set_attr_str(root, keys.right, "overflow", "scroll");
-            assert_set_attr_str(root, keys.detail, "display", "block");
-            assert_set_attr_str(root, keys.points, "display", "block");
-            assert_set_attr_str(root, keys.columns, "display", "flex");
+            assert_style_set(root, keys.right, "display", "block");
+            assert_style_set(root, keys.right, "width", "320px");
+            assert_style_set(root, keys.right, "height", "200px");
+            assert_style_set(root, keys.right, "overflow", "scroll");
+            assert_style_set(root, keys.detail, "display", "block");
+            assert_style_set(root, keys.points, "display", "block");
+            assert_style_set(root, keys.columns, "display", "flex");
             if let Some(gap_px) = gap_px {
-                assert_set_attr_str(root, keys.columns, "gap", &format!("{gap_px}px"));
+                assert_style_set(root, keys.columns, "gap", &format!("{gap_px}px"));
             }
-            assert_set_attr_str(root, keys.left_column, "display", "block");
-            assert_set_attr_str(root, keys.right_column, "display", "block");
+            assert_style_set(root, keys.left_column, "display", "block");
+            assert_style_set(root, keys.right_column, "display", "block");
         }
     }
 }
@@ -4311,10 +4312,10 @@ fn apply_gap_attr_mode(
     );
     match gap_attr_mode {
         GapAttrMode::Gap(value) => {
-            assert_set_attr_str(root, columns, "gap", &format!("{value}px"));
+            assert_style_set(root, columns, "gap", &format!("{value}px"));
         }
         GapAttrMode::ColumnGap(value) => {
-            assert_set_attr_str(root, columns, "column-gap", &format!("{value}px"));
+            assert_style_set(root, columns, "column-gap", &format!("{value}px"));
         }
     }
 }
@@ -4336,8 +4337,8 @@ fn apply_two_column_row_width_mode(
         right_width,
     } = width_mode
     {
-        assert_set_attr_str(root, left_column, "width", left_width);
-        assert_set_attr_str(root, right_column, "width", right_width);
+        assert_style_set(root, left_column, "width", left_width);
+        assert_style_set(root, right_column, "width", right_width);
     }
 }
 
@@ -4457,7 +4458,7 @@ fn stylesheet_direction_rtl_row_reverse_and_justify_content_start_persist_after_
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -4511,7 +4512,7 @@ fn stylesheet_column_reverse_and_align_items_flex_end_persist_after_recompute() 
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -4568,7 +4569,7 @@ fn stylesheet_wrap_reverse_row_gap_and_align_content_persist_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, first, "color", "#ffffff");
+    assert_style_set(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -4632,7 +4633,7 @@ fn stylesheet_wrap_reverse_align_content_start_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, third, "color", "#ffffff");
+    assert_style_set(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -4692,18 +4693,18 @@ fn stylesheet_align_self_stretch_persists_after_recompute() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_attr_str(&mut root, container, "class", "row-start");
-    assert_set_attr_str(&mut root, first, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, first, "flex-grow", "0");
-    assert_set_attr_str(&mut root, first, "flex-shrink", "0");
-    assert_set_attr_str(&mut root, first, "height", "10px");
-    assert_set_attr_str(&mut root, second, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, second, "flex-grow", "0");
-    assert_set_attr_str(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "height", "10px");
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
     assert_set_attr_str(&mut root, second, "class", "self-stretch");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     assert_close(
@@ -4763,7 +4764,7 @@ fn stylesheet_align_self_center_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -4812,16 +4813,16 @@ fn stylesheet_align_items_stretch_persists_after_recompute() {
     let second = assert_append_div_to(&mut root, container);
 
     assert_set_attr_str(&mut root, container, "class", "row-stretch");
-    assert_set_attr_str(&mut root, first, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, first, "flex-grow", "0");
-    assert_set_attr_str(&mut root, first, "flex-shrink", "0");
-    assert_set_attr_str(&mut root, second, "flex-basis", "10px");
-    assert_set_attr_str(&mut root, second, "flex-grow", "0");
-    assert_set_attr_str(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     assert_close(
@@ -4870,7 +4871,7 @@ fn stylesheet_align_self_flex_end_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -4927,7 +4928,7 @@ fn stylesheet_wrap_reverse_align_self_end_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, tall, "color", "#ffffff");
+    assert_style_set(&mut root, tall, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -4982,7 +4983,7 @@ fn stylesheet_gap_shorthand_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, first, "color", "#ffffff");
+    assert_style_set(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5038,7 +5039,7 @@ fn stylesheet_justify_content_space_evenly_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, third, "color", "#ffffff");
+    assert_style_set(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5102,7 +5103,7 @@ fn stylesheet_justify_content_flex_end_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, first, "color", "#ffffff");
+    assert_style_set(&mut root, first, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5165,7 +5166,7 @@ fn stylesheet_justify_content_space_around_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5229,7 +5230,7 @@ fn stylesheet_align_content_space_around_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5293,7 +5294,7 @@ fn stylesheet_align_content_space_between_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, second, "color", "#ffffff");
+    assert_style_set(&mut root, second, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5356,7 +5357,7 @@ fn stylesheet_align_content_space_evenly_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, third, "color", "#ffffff");
+    assert_style_set(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5420,7 +5421,7 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    assert_set_attr_str(&mut root, third, "color", "#ffffff");
+    assert_style_set(&mut root, third, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -5465,8 +5466,8 @@ fn text_children_in_flex_row_honor_gap_and_normal_flow_placement() {
     let _value = assert_append_text_to(&mut root, container, "Right");
 
     assert_set_flex_row_container_width(&mut root, container, "200px");
-    assert_set_attr_str(&mut root, container, "height", "20px");
-    assert_set_attr_str(&mut root, container, "column-gap", "10px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -5497,8 +5498,8 @@ fn div_children_with_text_content_use_auto_width_and_honor_gap() {
     let _value_text = assert_append_text_to(&mut root, value_div, "Some value");
 
     assert_set_flex_row_container_width(&mut root, container, "300px");
-    assert_set_attr_str(&mut root, container, "height", "30px");
-    assert_set_attr_str(&mut root, container, "column-gap", "8px");
+    assert_style_set(&mut root, container, "height", "30px");
+    assert_style_set(&mut root, container, "column-gap", "8px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -5529,10 +5530,10 @@ fn auto_width_flex_container_stretches_to_containing_block_and_respects_gap() {
     let first = assert_append_div_to(&mut root, container);
     let second = assert_append_div_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, container, "display", "flex");
-    assert_set_attr_str(&mut root, container, "flex-direction", "row");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "nowrap");
-    assert_set_attr_str(&mut root, container, "column-gap", "10px");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "row");
+    assert_style_set(&mut root, container, "flex-wrap", "nowrap");
+    assert_style_set(&mut root, container, "column-gap", "10px");
     assert_set_inflexible_row_item(&mut root, first, "30px", "20px");
     assert_set_inflexible_row_item(&mut root, second, "40px", "20px");
 
@@ -5572,8 +5573,8 @@ fn span_children_in_flex_row_participate_as_flex_items() {
     let _second_text = assert_append_text_to(&mut root, second_span, "Second");
 
     assert_set_flex_row_container_width(&mut root, container, "200px");
-    assert_set_attr_str(&mut root, container, "height", "20px");
-    assert_set_attr_str(&mut root, container, "column-gap", "6px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "column-gap", "6px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -5606,9 +5607,9 @@ fn text_children_with_justify_content_space_between_and_gap() {
     let third = assert_append_text_to(&mut root, container, "C");
 
     assert_set_flex_row_container_width(&mut root, container, "200px");
-    assert_set_attr_str(&mut root, container, "height", "20px");
-    assert_set_attr_str(&mut root, container, "justify-content", "space-between");
-    assert_set_attr_str(&mut root, container, "column-gap", "5px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "justify-content", "space-between");
+    assert_style_set(&mut root, container, "column-gap", "5px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -5645,11 +5646,11 @@ fn text_children_in_flex_column_stack_with_row_gap() {
     let first = assert_append_text_to(&mut root, container, "Top");
     let _second = assert_append_text_to(&mut root, container, "Bottom");
 
-    assert_set_attr_str(&mut root, container, "display", "flex");
-    assert_set_attr_str(&mut root, container, "flex-direction", "column");
-    assert_set_attr_str(&mut root, container, "width", "100px");
-    assert_set_attr_str(&mut root, container, "height", "60px");
-    assert_set_attr_str(&mut root, container, "row-gap", "8px");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column");
+    assert_style_set(&mut root, container, "width", "100px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "row-gap", "8px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -5674,20 +5675,20 @@ fn nested_flex_auto_basis_block_children_participate_in_flex_layout() {
     let container = assert_append_div_to(&mut root, document_root);
 
     assert_set_flex_row_container_width(&mut root, container, "200px");
-    assert_set_attr_str(&mut root, container, "height", "40px");
-    assert_set_attr_str(&mut root, container, "column-gap", "10px");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
 
     let first = assert_append_div_to(&mut root, container);
     let _first_text = assert_append_text_to(&mut root, first, "Left");
     let second = assert_append_div_to(&mut root, container);
     let _second_text = assert_append_text_to(&mut root, second, "Right");
 
-    assert_set_attr_str(&mut root, first, "flex-grow", "1");
-    assert_set_attr_str(&mut root, first, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, first, "flex-basis", "0px");
-    assert_set_attr_str(&mut root, second, "flex-grow", "1");
-    assert_set_attr_str(&mut root, second, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, second, "flex-basis", "0px");
+    assert_style_set(&mut root, first, "flex-grow", "1");
+    assert_style_set(&mut root, first, "flex-shrink", "1");
+    assert_style_set(&mut root, first, "flex-basis", "0px");
+    assert_style_set(&mut root, second, "flex-grow", "1");
+    assert_style_set(&mut root, second, "flex-shrink", "1");
+    assert_style_set(&mut root, second, "flex-basis", "0px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -5723,10 +5724,10 @@ fn flex_row_container_setup() -> (bevy::prelude::World, RootDom, DomNodeSlotKey)
 }
 
 fn assert_set_flex_row_container_width(root: &mut RootDom, container: DomNodeSlotKey, width: &str) {
-    assert_set_attr_str(root, container, "display", "flex");
-    assert_set_attr_str(root, container, "flex-direction", "row");
-    assert_set_attr_str(root, container, "flex-wrap", "nowrap");
-    assert_set_attr_str(root, container, "width", width);
+    assert_style_set(root, container, "display", "flex");
+    assert_style_set(root, container, "flex-direction", "row");
+    assert_style_set(root, container, "flex-wrap", "nowrap");
+    assert_style_set(root, container, "width", width);
 }
 
 fn assert_set_flex_column_container_size(
@@ -5735,11 +5736,11 @@ fn assert_set_flex_column_container_size(
     width: &str,
     height: &str,
 ) {
-    assert_set_attr_str(root, container, "display", "flex");
-    assert_set_attr_str(root, container, "flex-direction", "column");
-    assert_set_attr_str(root, container, "flex-wrap", "nowrap");
-    assert_set_attr_str(root, container, "width", width);
-    assert_set_attr_str(root, container, "height", height);
+    assert_style_set(root, container, "display", "flex");
+    assert_style_set(root, container, "flex-direction", "column");
+    assert_style_set(root, container, "flex-wrap", "nowrap");
+    assert_style_set(root, container, "width", width);
+    assert_style_set(root, container, "height", height);
 }
 
 fn assert_set_flex_basis_and_cross_size(
@@ -5748,8 +5749,8 @@ fn assert_set_flex_basis_and_cross_size(
     basis: &str,
     height: &str,
 ) {
-    assert_set_attr_str(root, item, "height", height);
-    assert_set_attr_str(root, item, "flex-basis", basis);
+    assert_style_set(root, item, "height", height);
+    assert_style_set(root, item, "flex-basis", basis);
 }
 
 fn assert_set_inflexible_row_item(
@@ -5759,8 +5760,8 @@ fn assert_set_inflexible_row_item(
     height: &str,
 ) {
     assert_set_flex_basis_and_cross_size(root, item, basis, height);
-    assert_set_attr_str(root, item, "flex-grow", "0");
-    assert_set_attr_str(root, item, "flex-shrink", "0");
+    assert_style_set(root, item, "flex-grow", "0");
+    assert_style_set(root, item, "flex-shrink", "0");
 }
 
 fn auto_width_titlebar_flex_mutation_setup() -> AutoWidthTitlebarFlexMutationScenario {
@@ -5772,17 +5773,17 @@ fn auto_width_titlebar_flex_mutation_setup() -> AutoWidthTitlebarFlexMutationSce
     let title_host = assert_append_div_to(&mut root, container);
     let _end = assert_append_inflexible_titlebar_item_to(&mut root, container);
 
-    assert_set_attr_str(&mut root, parent, "width", "120px");
-    assert_set_attr_str(&mut root, parent, "height", TITLEBAR_HOST_HEIGHT_PX);
-    assert_set_attr_str(&mut root, container, "display", "flex");
-    assert_set_attr_str(&mut root, container, "flex-direction", "row");
-    assert_set_attr_str(&mut root, container, "flex-wrap", "nowrap");
-    assert_set_attr_str(&mut root, container, "height", TITLEBAR_HOST_HEIGHT_PX);
-    assert_set_attr_str(&mut root, title_host, "height", TITLEBAR_HOST_HEIGHT_PX);
-    assert_set_attr_str(&mut root, title_host, "flex-basis", "0px");
-    assert_set_attr_str(&mut root, title_host, "flex-grow", "1");
-    assert_set_attr_str(&mut root, title_host, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, title_host, "overflow", "hidden");
+    assert_style_set(&mut root, parent, "width", "120px");
+    assert_style_set(&mut root, parent, "height", TITLEBAR_HOST_HEIGHT_PX);
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "row");
+    assert_style_set(&mut root, container, "flex-wrap", "nowrap");
+    assert_style_set(&mut root, container, "height", TITLEBAR_HOST_HEIGHT_PX);
+    assert_style_set(&mut root, title_host, "height", TITLEBAR_HOST_HEIGHT_PX);
+    assert_style_set(&mut root, title_host, "flex-basis", "0px");
+    assert_style_set(&mut root, title_host, "flex-grow", "1");
+    assert_style_set(&mut root, title_host, "flex-shrink", "1");
+    assert_style_set(&mut root, title_host, "overflow", "hidden");
     let _title_text = assert_append_text_to(&mut root, title_host, "Camera");
 
     AutoWidthTitlebarFlexMutationScenario {
@@ -5808,8 +5809,8 @@ fn assert_set_flex_column_basis_and_cross_size(
     basis: &str,
     width: &str,
 ) {
-    assert_set_attr_str(root, item, "width", width);
-    assert_set_attr_str(root, item, "flex-basis", basis);
+    assert_style_set(root, item, "width", width);
+    assert_style_set(root, item, "flex-basis", basis);
 }
 
 fn assert_set_inflexible_column_item(
@@ -5819,8 +5820,8 @@ fn assert_set_inflexible_column_item(
     width: &str,
 ) {
     assert_set_flex_column_basis_and_cross_size(root, item, basis, width);
-    assert_set_attr_str(root, item, "flex-grow", "0");
-    assert_set_attr_str(root, item, "flex-shrink", "0");
+    assert_style_set(root, item, "flex-grow", "0");
+    assert_style_set(root, item, "flex-shrink", "0");
 }
 
 fn assert_text_intrinsic(root: &RootDom, text: DomNodeSlotKey) -> ui_dom::TextIntrinsic {
@@ -5936,7 +5937,7 @@ fn measured_titlebar_flex_case(case: TitlebarFlexCase) -> TitlebarFlexReport {
         container,
         &format!("{}px", case.container_width_px),
     );
-    assert_set_attr_str(&mut root, container, "height", TITLEBAR_HOST_HEIGHT_PX);
+    assert_style_set(&mut root, container, "height", TITLEBAR_HOST_HEIGHT_PX);
 
     for _ in 0..case.start_icon_count {
         let icon = assert_append_div_to(&mut root, container);
@@ -5950,11 +5951,11 @@ fn measured_titlebar_flex_case(case: TitlebarFlexCase) -> TitlebarFlexReport {
     }
 
     let title_host = assert_append_div_to(&mut root, container);
-    assert_set_attr_str(&mut root, title_host, "height", TITLEBAR_HOST_HEIGHT_PX);
-    assert_set_attr_str(&mut root, title_host, "flex-basis", "0px");
-    assert_set_attr_str(&mut root, title_host, "flex-grow", "1");
-    assert_set_attr_str(&mut root, title_host, "flex-shrink", "1");
-    assert_set_attr_str(&mut root, title_host, "overflow", "hidden");
+    assert_style_set(&mut root, title_host, "height", TITLEBAR_HOST_HEIGHT_PX);
+    assert_style_set(&mut root, title_host, "flex-basis", "0px");
+    assert_style_set(&mut root, title_host, "flex-grow", "1");
+    assert_style_set(&mut root, title_host, "flex-shrink", "1");
+    assert_style_set(&mut root, title_host, "overflow", "hidden");
     let _title_text = assert_append_text_to(&mut root, title_host, "Camera");
 
     for _ in 0..case.end_icon_count {

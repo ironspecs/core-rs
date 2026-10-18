@@ -16,7 +16,7 @@ pub use crate::types::paint_config::PaintConfig;
 pub use crate::types::pixel_density::PixelDensity;
 pub use crate::types::root_dom_context_config::RootDomContextConfig;
 
-use crate::domains::style::{StyleRuleOrigin, StyleRuntime};
+use crate::domains::style::{StyleRuleOrigin, StyleRuntime, StylesheetLoadReport};
 use crate::types::{DomError, DomPseudoState};
 
 /// Selects which paint executor owns layer rendering for one shared context.
@@ -105,16 +105,43 @@ impl RootDomContext {
     /// selectors like `.class_a.class_b` or `tag.class_a.class_b`, descendant
     /// whitespace between those selector steps, and the pseudo states
     /// `:hover`, `:active`, `:focus`, and `:focus-visible`.
+    ///
+    /// Dropped declarations are counted and reported, never silent (CSS 2.1
+    /// §4.1.7): the returned `StylesheetLoadReport` carries applied/dropped
+    /// declaration counts per load, and the context's
+    /// [`RootDomContext::declaration_drop_count`] accumulates across loads.
     pub fn load_stylesheet(
         &self,
         origin: StyleRuleOrigin,
         css_text: &str,
-    ) -> Result<usize, DomError> {
+    ) -> Result<StylesheetLoadReport, DomError> {
         let mut runtime = self
             .style_runtime
             .lock()
             .expect("style runtime mutex should not poison");
         runtime.load_stylesheet(origin, css_text)
+    }
+
+    /// Monotonic count of declarations dropped by drop-and-continue parsing
+    /// across all loads on this context.
+    #[must_use]
+    pub fn declaration_drop_count(&self) -> u64 {
+        let runtime = self
+            .style_runtime
+            .lock()
+            .expect("style runtime mutex should not poison");
+        runtime.declarations_dropped_count()
+    }
+
+    /// Live declaration blocks in the stylesheet arena (a level accessor over
+    /// retained state, per the crate's observability doctrine).
+    #[must_use]
+    pub fn declaration_block_count(&self) -> usize {
+        let runtime = self
+            .style_runtime
+            .lock()
+            .expect("style runtime mutex should not poison");
+        runtime.decl_block_count()
     }
 
     /// Unloads every active rule loaded under one stylesheet origin key.

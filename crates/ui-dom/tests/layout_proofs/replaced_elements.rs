@@ -26,7 +26,7 @@ use ui_dom::DomPointerUpdate;
 
 use crate::layout_proofs::support::{
     assert_close, assert_node_layout, assert_root_dom_update, assert_set_attr_str,
-    img_under_document_setup,
+    assert_style_set, img_under_document_setup,
 };
 
 #[test]
@@ -38,7 +38,7 @@ fn img_with_only_width_uses_intrinsic_aspect_ratio_for_height() {
     let (mut world, mut root, img) = img_under_document_setup();
 
     assert_set_attr_str(&mut root, img, "src", "memory://a.png");
-    assert_set_attr_str(&mut root, img, "width", "320px");
+    assert_style_set(&mut root, img, "width", "320px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -56,7 +56,7 @@ fn img_with_only_height_uses_intrinsic_aspect_ratio_for_width() {
     let (mut world, mut root, img) = img_under_document_setup();
 
     assert_set_attr_str(&mut root, img, "src", "memory://a.png");
-    assert_set_attr_str(&mut root, img, "height", "45px");
+    assert_style_set(&mut root, img, "height", "45px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 

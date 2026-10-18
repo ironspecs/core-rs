@@ -40,8 +40,7 @@ use ui_dom::{DomIntrinsic, DomPointerUpdate};
 use crate::layout_proofs::support::{
     assert_append_button_to, assert_append_div_to, assert_append_span_to, assert_append_text_to,
     assert_close, assert_node_layout, assert_rect_op_geometry, assert_root_dom_update,
-    assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
-    take_staged_layer_paint_plans,
+    assert_style_set, attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
 };
 
 #[test]
@@ -55,11 +54,11 @@ fn block_children_stack_vertically_from_the_top_of_the_parent() {
     let first_child = assert_append_div_to(&mut root, parent);
     let second_child = assert_append_div_to(&mut root, parent);
 
-    assert_set_attr_str(&mut root, parent, "width", "180px");
-    assert_set_attr_str(&mut root, first_child, "width", "180px");
-    assert_set_attr_str(&mut root, first_child, "height", "20px");
-    assert_set_attr_str(&mut root, second_child, "width", "180px");
-    assert_set_attr_str(&mut root, second_child, "height", "30px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, first_child, "width", "180px");
+    assert_style_set(&mut root, first_child, "height", "20px");
+    assert_style_set(&mut root, second_child, "width", "180px");
+    assert_style_set(&mut root, second_child, "height", "30px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -88,7 +87,7 @@ fn inline_block_siblings_share_a_line_and_use_the_tallest_line_height() {
     let first_chip = assert_append_div_to(&mut root, parent);
     let second_chip = assert_append_div_to(&mut root, parent);
 
-    assert_set_attr_str(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "width", "180px");
     assert_set_inline_block_size(&mut root, first_chip, "40px", "12px");
     assert_set_inline_block_size(&mut root, second_chip, "50px", "30px");
 
@@ -119,11 +118,11 @@ fn block_child_after_an_inline_line_starts_below_the_line_box() {
     let second_chip = assert_append_div_to(&mut root, parent);
     let block_child = assert_append_div_to(&mut root, parent);
 
-    assert_set_attr_str(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "width", "180px");
     assert_set_inline_block_size(&mut root, first_chip, "40px", "12px");
     assert_set_inline_block_size(&mut root, second_chip, "50px", "30px");
-    assert_set_attr_str(&mut root, block_child, "width", "180px");
-    assert_set_attr_str(&mut root, block_child, "height", "20px");
+    assert_style_set(&mut root, block_child, "width", "180px");
+    assert_style_set(&mut root, block_child, "height", "20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -159,11 +158,11 @@ fn normal_flow_children_start_inside_the_parent_padding_box() {
     let block_child = assert_append_div_to(&mut root, parent);
     let inline_child = assert_append_div_to(&mut root, parent);
 
-    assert_set_attr_str(&mut root, parent, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "padding-left", "7px");
-    assert_set_attr_str(&mut root, parent, "padding-top", "5px");
-    assert_set_attr_str(&mut root, block_child, "width", "173px");
-    assert_set_attr_str(&mut root, block_child, "height", "20px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "padding-left", "7px");
+    assert_style_set(&mut root, parent, "padding-top", "5px");
+    assert_style_set(&mut root, block_child, "width", "173px");
+    assert_style_set(&mut root, block_child, "height", "20px");
     assert_set_inline_block_size(&mut root, inline_child, "40px", "12px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -188,8 +187,8 @@ fn inline_container_shrink_wraps_inline_block_children() {
     let first_chip = assert_append_div_to(&mut root, inline_container);
     let second_chip = assert_append_div_to(&mut root, inline_container);
 
-    assert_set_attr_str(&mut root, wrapper, "width", "180px");
-    assert_set_attr_str(&mut root, inline_container, "display", "inline");
+    assert_style_set(&mut root, wrapper, "width", "180px");
+    assert_style_set(&mut root, inline_container, "display", "inline");
     assert_set_inline_block_size(&mut root, first_chip, "40px", "12px");
     assert_set_inline_block_size(&mut root, second_chip, "50px", "30px");
 
@@ -229,9 +228,9 @@ fn inline_container_stays_on_the_same_line_as_a_preceding_inline_sibling() {
     let first_chip = assert_append_div_to(&mut root, inline_container);
     let second_chip = assert_append_div_to(&mut root, inline_container);
 
-    assert_set_attr_str(&mut root, wrapper, "width", "180px");
+    assert_style_set(&mut root, wrapper, "width", "180px");
     assert_set_inline_block_size(&mut root, leading_chip, "20px", "10px");
-    assert_set_attr_str(&mut root, inline_container, "display", "inline");
+    assert_style_set(&mut root, inline_container, "display", "inline");
     assert_set_inline_block_size(&mut root, first_chip, "40px", "12px");
     assert_set_inline_block_size(&mut root, second_chip, "50px", "30px");
 
@@ -266,7 +265,7 @@ fn span_text_child_without_authored_size_uses_text_intrinsic_dimensions() {
     let span = assert_append_span_to(&mut root, wrapper);
     let text = assert_append_text_to(&mut root, span, "Status Ready");
 
-    assert_set_attr_str(&mut root, wrapper, "width", "220px");
+    assert_style_set(&mut root, wrapper, "width", "220px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -339,9 +338,9 @@ fn span_text_child_ignores_authored_inline_width_and_height() {
     let span = assert_append_span_to(&mut root, wrapper);
     let text = assert_append_text_to(&mut root, span, "Status Ready");
 
-    assert_set_attr_str(&mut root, wrapper, "width", "220px");
-    assert_set_attr_str(&mut root, span, "width", "20px");
-    assert_set_attr_str(&mut root, span, "height", "40px");
+    assert_style_set(&mut root, wrapper, "width", "220px");
+    assert_style_set(&mut root, span, "width", "20px");
+    assert_style_set(&mut root, span, "height", "40px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -392,10 +391,10 @@ fn inline_block_text_chip_shrink_wraps_text_width_plus_padding() {
     let chip = assert_append_div_to(&mut root, wrapper);
     let text = assert_append_text_to(&mut root, chip, "Add Scene");
 
-    assert_set_attr_str(&mut root, wrapper, "width", "180px");
-    assert_set_attr_str(&mut root, chip, "display", "inline-block");
-    assert_set_attr_str(&mut root, chip, "padding-left", "16px");
-    assert_set_attr_str(&mut root, chip, "padding-right", "16px");
+    assert_style_set(&mut root, wrapper, "width", "180px");
+    assert_style_set(&mut root, chip, "display", "inline-block");
+    assert_style_set(&mut root, chip, "padding-left", "16px");
+    assert_style_set(&mut root, chip, "padding-right", "16px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -431,12 +430,12 @@ fn inline_block_button_auto_width_uses_text_max_content_before_child_layout() {
     let button = assert_append_button_to(&mut root, wrapper);
     let text = assert_append_text_to(&mut root, button, "Save Camera Shot");
 
-    assert_set_attr_str(&mut root, wrapper, "width", "220px");
-    assert_set_attr_str(&mut root, button, "display", "inline-block");
-    assert_set_attr_str(&mut root, button, "padding-left", "12px");
-    assert_set_attr_str(&mut root, button, "padding-right", "12px");
-    assert_set_attr_str(&mut root, button, "border-left", "1px");
-    assert_set_attr_str(&mut root, button, "border-right", "1px");
+    assert_style_set(&mut root, wrapper, "width", "220px");
+    assert_style_set(&mut root, button, "display", "inline-block");
+    assert_style_set(&mut root, button, "padding-left", "12px");
+    assert_style_set(&mut root, button, "padding-right", "12px");
+    assert_style_set(&mut root, button, "border-left", "1px");
+    assert_style_set(&mut root, button, "border-right", "1px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -477,7 +476,7 @@ fn assert_set_inline_block_size(
     width: &str,
     height: &str,
 ) {
-    assert_set_attr_str(root, key, "display", "inline-block");
-    assert_set_attr_str(root, key, "width", width);
-    assert_set_attr_str(root, key, "height", height);
+    assert_style_set(root, key, "display", "inline-block");
+    assert_style_set(root, key, "width", width);
+    assert_style_set(root, key, "height", height);
 }

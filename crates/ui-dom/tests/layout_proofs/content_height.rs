@@ -12,8 +12,9 @@ use ui_dom::DomPointerUpdate;
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_close, assert_load_root_stylesheet, assert_node_layout,
-    assert_root_dom_update, assert_set_attr_str, container_with_two_parents_setup,
-    nested_parent_child_setup, parent_with_two_children_setup, theme_stylesheet_origin,
+    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    container_with_two_parents_setup, nested_parent_child_setup, parent_with_two_children_setup,
+    theme_stylesheet_origin,
 };
 
 const RELATIVE_OFFSET_STYLESHEET: &str = "
@@ -32,9 +33,9 @@ const RELATIVE_OFFSET_STYLESHEET: &str = "
 fn auto_height_sums_in_flow_block_children_during_root_update() {
     let (mut world, mut root, parent, first_child, second_child) = parent_with_two_children_setup();
 
-    assert_set_attr_str(&mut root, parent, "width", "80px");
-    assert_set_attr_str(&mut root, first_child, "height", "30px");
-    assert_set_attr_str(&mut root, second_child, "height", "40px");
+    assert_style_set(&mut root, parent, "width", "80px");
+    assert_style_set(&mut root, first_child, "height", "30px");
+    assert_style_set(&mut root, second_child, "height", "40px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -56,9 +57,9 @@ fn display_none_child_does_not_change_parent_retained_height() {
         container_with_two_parents_setup();
     let hidden_child = assert_append_div_to(&mut root, hidden_parent);
 
-    assert_set_attr_str(&mut root, container, "width", "80px");
-    assert_set_attr_str(&mut root, hidden_child, "display", "none");
-    assert_set_attr_str(&mut root, hidden_child, "height", "40px");
+    assert_style_set(&mut root, container, "width", "80px");
+    assert_style_set(&mut root, hidden_child, "display", "none");
+    assert_style_set(&mut root, hidden_child, "height", "40px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -82,10 +83,10 @@ fn display_none_child_does_not_change_parent_retained_height() {
 fn overflow_hidden_child_still_contributes_to_parent_height() {
     let (mut world, mut root, _container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, parent, "width", "80px");
-    assert_set_attr_str(&mut root, child, "overflow", "hidden");
-    assert_set_attr_str(&mut root, child, "width", "24px");
-    assert_set_attr_str(&mut root, child, "height", "12px");
+    assert_style_set(&mut root, parent, "width", "80px");
+    assert_style_set(&mut root, child, "overflow", "hidden");
+    assert_style_set(&mut root, child, "width", "24px");
+    assert_style_set(&mut root, child, "height", "12px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -110,13 +111,13 @@ fn relative_offsets_do_not_change_parent_content_height() {
     let baseline_child = assert_append_div_to(&mut root, baseline_parent);
     let offset_child = assert_append_div_to(&mut root, offset_parent);
 
-    assert_set_attr_str(&mut root, container, "width", "80px");
-    assert_set_attr_str(&mut root, baseline_child, "position", "relative");
-    assert_set_attr_str(&mut root, baseline_child, "height", "12px");
-    assert_set_attr_str(&mut root, offset_child, "position", "relative");
-    assert_set_attr_str(&mut root, offset_child, "height", "12px");
-    assert_set_attr_str(&mut root, offset_child, "top", "40px");
-    assert_set_attr_str(&mut root, offset_child, "left", "15px");
+    assert_style_set(&mut root, container, "width", "80px");
+    assert_style_set(&mut root, baseline_child, "position", "relative");
+    assert_style_set(&mut root, baseline_child, "height", "12px");
+    assert_style_set(&mut root, offset_child, "position", "relative");
+    assert_style_set(&mut root, offset_child, "height", "12px");
+    assert_style_set(&mut root, offset_child, "top", "40px");
+    assert_style_set(&mut root, offset_child, "left", "15px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -173,7 +174,7 @@ fn empty_nested_auto_height_block_collapses_to_zero_height() {
     let (mut world, mut root, container, empty_parent, _other_parent) =
         container_with_two_parents_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "80px");
+    assert_style_set(&mut root, container, "width", "80px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -193,8 +194,8 @@ fn empty_nested_auto_height_block_collapses_to_zero_height() {
 fn removing_last_in_flow_child_collapses_parent_back_to_zero_height() {
     let (mut world, mut root, _container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, parent, "width", "80px");
-    assert_set_attr_str(&mut root, child, "height", "40px");
+    assert_style_set(&mut root, parent, "width", "80px");
+    assert_style_set(&mut root, child, "height", "40px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 

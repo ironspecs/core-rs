@@ -6,16 +6,12 @@
 //! (`DomAttribute`) and the raw attribute storage (`DomAttrs`) live in their
 //! own files.
 
-use std::collections::BTreeMap;
-
 #[cfg(test)]
 use crate::types::dom_node::{
     DomDocumentFragmentNode, DomDocumentNode, DomElementNode, DomNodeSlotKey,
 };
 #[cfg(test)]
 use crate::types::dom_tag::DomTag;
-#[cfg(test)]
-use crate::types::parse_css_color_rgba;
 use crate::types::{
     DomAttribute, DomAttributeValue, DomAttrs, DomError, parse_authored_value_input,
 };
@@ -30,9 +26,6 @@ pub trait DomAttributeNode {
 
     /// Returns the raw attribute storage for this node.
     fn attrs(&self) -> &DomAttrs;
-
-    /// Returns the parsed `style` attribute declarations for this node.
-    fn attribute_style_map(&self) -> &BTreeMap<DomAttribute, DomAttributeValue>;
 
     /// Returns the parsed class token list for this node.
     fn class_list(&self) -> &[String];
@@ -66,40 +59,13 @@ mod tests {
         keys.insert(())
     }
 
-    fn color(value: &str) -> DomAttributeValue {
-        DomAttributeValue::Color(parse_css_color_rgba(value).expect("test color should parse"))
-    }
-
     #[test]
     fn trait_set_attr_str_updates_raw_attrs_and_parsed_views() {
         let mut node = DomDocumentNode::new(test_owner_document_key());
 
-        DomAttributeNode::set_attr_str(
-            &mut node,
-            "style",
-            "width: 12px; color: #ffffff; width: 14px",
-        )
-        .expect("style should parse");
         DomAttributeNode::set_attr_str(&mut node, "class", "hero primary hero")
             .expect("class should parse");
 
-        assert_eq!(
-            DomAttributeNode::attrs(&node)
-                .attributes
-                .get(&DomAttribute::Style),
-            Some(&DomAttributeValue::String(
-                "width: 12px; color: #ffffff; width: 14px".to_string()
-            ))
-        );
-        assert_eq!(
-            DomAttributeNode::attribute_style_map(&node).get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("14px".to_string()))
-        );
-        assert_eq!(
-            DomAttributeNode::attribute_style_map(&node)
-                .get(&DomAttribute::Custom("color".to_string())),
-            Some(&color("#ffffff"))
-        );
         assert_eq!(
             DomAttributeNode::class_list(&node),
             &[
@@ -138,19 +104,19 @@ mod tests {
 
         DomAttributeNode::set_attr(
             &mut node,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("12px".to_string())),
+            DomAttribute::Class,
+            Some(DomAttributeValue::String("hero".to_string())),
         )
-        .expect("width should set");
+        .expect("class should set");
 
         assert_eq!(
-            DomAttributeNode::attr(&node, &DomAttribute::Width),
-            Some(&DomAttributeValue::String("12px".to_string()))
+            DomAttributeNode::attr(&node, &DomAttribute::Class),
+            Some(&DomAttributeValue::String("hero".to_string()))
         );
     }
 
     #[test]
-    fn trait_attr_reads_id_and_style_on_element_nodes() {
+    fn trait_attr_reads_id_on_element_nodes() {
         let mut node = DomElementNode::new(test_owner_document_key(), DomTag::Div);
 
         DomAttributeNode::set_attr(
@@ -159,18 +125,12 @@ mod tests {
             Some(DomAttributeValue::String("hero".to_string())),
         )
         .expect("id should set");
-        DomAttributeNode::set_attr_str(&mut node, "style", "width: 12px")
-            .expect("style should set");
 
         assert_eq!(
             DomAttributeNode::attr(&node, &DomAttribute::Id),
             Some(&DomAttributeValue::String("hero".to_string()))
         );
         assert_eq!(DomAttributeNode::attrs(&node).id.as_deref(), Some("hero"));
-        assert_eq!(
-            DomAttributeNode::attribute_style_map(&node).get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("12px".to_string()))
-        );
     }
 
     #[test]
@@ -182,17 +142,13 @@ mod tests {
             &img,
             &DomAttribute::Src,
         ));
-        assert!(DomAttributeNode::after_attr_write_updates_intrinsic(
-            &img,
-            &DomAttribute::Width,
-        ));
         assert!(!DomAttributeNode::after_attr_write_updates_intrinsic(
             &img,
-            &DomAttribute::FontSize,
+            &DomAttribute::Value,
         ));
         assert!(!DomAttributeNode::after_attr_write_updates_intrinsic(
             &div,
-            &DomAttribute::Width,
+            &DomAttribute::Src,
         ));
     }
 }

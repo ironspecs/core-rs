@@ -25,7 +25,7 @@ use ui_dom::{DomPointerUpdate, node_box};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_close, assert_node_layout, assert_rect_op_geometry,
-    assert_root_dom_update, assert_set_attr_str, container_with_two_parents_setup,
+    assert_root_dom_update, assert_style_set, container_with_two_parents_setup,
     nested_parent_child_setup, parent_with_two_children_setup, take_staged_layer_paint_plans,
 };
 
@@ -35,14 +35,14 @@ use crate::layout_proofs::support::{
 fn relative_child_stays_in_normal_flow_during_root_update() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "80px");
-    assert_set_attr_str(&mut root, child, "position", "relative");
-    assert_set_attr_str(&mut root, child, "width", "10px");
-    assert_set_attr_str(&mut root, child, "height", "12px");
-    assert_set_attr_str(&mut root, child, "margin-left", "2px");
-    assert_set_attr_str(&mut root, child, "margin-right", "3px");
-    assert_set_attr_str(&mut root, child, "margin-top", "4px");
-    assert_set_attr_str(&mut root, child, "margin-bottom", "5px");
+    assert_style_set(&mut root, container, "width", "80px");
+    assert_style_set(&mut root, child, "position", "relative");
+    assert_style_set(&mut root, child, "width", "10px");
+    assert_style_set(&mut root, child, "height", "12px");
+    assert_style_set(&mut root, child, "margin-left", "2px");
+    assert_style_set(&mut root, child, "margin-right", "3px");
+    assert_style_set(&mut root, child, "margin-top", "4px");
+    assert_style_set(&mut root, child, "margin-bottom", "5px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -69,10 +69,10 @@ fn absolute_child_does_not_extend_parent_auto_height_during_root_update() {
         container_with_two_parents_setup();
     let child = assert_append_div_to(&mut root, parent_with_absolute_child);
 
-    assert_set_attr_str(&mut root, container, "width", "80px");
-    assert_set_attr_str(&mut root, child, "position", "absolute");
-    assert_set_attr_str(&mut root, child, "width", "40px");
-    assert_set_attr_str(&mut root, child, "height", "12px");
+    assert_style_set(&mut root, container, "width", "80px");
+    assert_style_set(&mut root, child, "position", "absolute");
+    assert_style_set(&mut root, child, "width", "40px");
+    assert_style_set(&mut root, child, "height", "12px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -100,12 +100,12 @@ fn explicit_height_keeps_larger_child_content_extent_for_scroll_bounds() {
     let (mut world, mut root, scroll_root, first_item, second_item) =
         parent_with_two_children_setup();
 
-    assert_set_attr_str(&mut root, scroll_root, "width", "80px");
-    assert_set_attr_str(&mut root, scroll_root, "height", "40px");
-    assert_set_attr_str(&mut root, first_item, "width", "80px");
-    assert_set_attr_str(&mut root, first_item, "height", "40px");
-    assert_set_attr_str(&mut root, second_item, "width", "80px");
-    assert_set_attr_str(&mut root, second_item, "height", "40px");
+    assert_style_set(&mut root, scroll_root, "width", "80px");
+    assert_style_set(&mut root, scroll_root, "height", "40px");
+    assert_style_set(&mut root, first_item, "width", "80px");
+    assert_style_set(&mut root, first_item, "height", "40px");
+    assert_style_set(&mut root, second_item, "width", "80px");
+    assert_style_set(&mut root, second_item, "height", "40px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -126,25 +126,23 @@ fn explicit_height_keeps_larger_child_content_extent_for_scroll_bounds() {
 fn block_auto_width_uses_containing_block_width_minus_horizontal_edges() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "200px");
-    assert_set_attr_str(&mut root, parent, "margin-left", "6px");
-    assert_set_attr_str(&mut root, parent, "margin-right", "8px");
-    assert_set_attr_str(&mut root, parent, "border-left", "2px");
-    assert_set_attr_str(&mut root, parent, "border-right", "3px");
-    assert_set_attr_str(&mut root, parent, "padding-left", "4px");
-    assert_set_attr_str(&mut root, parent, "padding-right", "5px");
-    assert_set_attr_str(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, container, "width", "200px");
+    assert_style_set(&mut root, parent, "margin-left", "6px");
+    assert_style_set(&mut root, parent, "margin-right", "8px");
+    assert_style_set(&mut root, parent, "border-left", "2px");
+    assert_style_set(&mut root, parent, "border-right", "3px");
+    assert_style_set(&mut root, parent, "padding-left", "4px");
+    assert_style_set(&mut root, parent, "padding-right", "5px");
+    assert_style_set(&mut root, child, "height", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
     let child_snapshot = root
-        .node(child)
-        .expect("child should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(child)
+        .expect("child should remain readable after layout");
 
     assert_close(
         parent_snapshot.layout.available_width_px,
@@ -175,21 +173,19 @@ fn block_auto_width_uses_containing_block_width_minus_horizontal_edges() {
 fn block_auto_width_respects_min_and_max_width_clamps() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "200px");
-    assert_set_attr_str(&mut root, parent, "min-width", "150px");
-    assert_set_attr_str(&mut root, parent, "max-width", "160px");
-    assert_set_attr_str(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, container, "width", "200px");
+    assert_style_set(&mut root, parent, "min-width", "150px");
+    assert_style_set(&mut root, parent, "max-width", "160px");
+    assert_style_set(&mut root, child, "height", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
     let child_snapshot = root
-        .node(child)
-        .expect("child should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(child)
+        .expect("child should remain readable after layout");
 
     assert_close(
         parent_snapshot.layout.available_width_px,
@@ -220,26 +216,24 @@ fn block_auto_width_respects_min_and_max_width_clamps() {
 fn explicit_width_clamps_content_box_before_border_and_padding() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "200px");
-    assert_set_attr_str(&mut root, parent, "width", "10px");
-    assert_set_attr_str(&mut root, parent, "min-width", "20px");
-    assert_set_attr_str(&mut root, parent, "max-width", "30px");
-    assert_set_attr_str(&mut root, parent, "border-left", "2px");
-    assert_set_attr_str(&mut root, parent, "border-right", "3px");
-    assert_set_attr_str(&mut root, parent, "padding-left", "4px");
-    assert_set_attr_str(&mut root, parent, "padding-right", "5px");
-    assert_set_attr_str(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, container, "width", "200px");
+    assert_style_set(&mut root, parent, "width", "10px");
+    assert_style_set(&mut root, parent, "min-width", "20px");
+    assert_style_set(&mut root, parent, "max-width", "30px");
+    assert_style_set(&mut root, parent, "border-left", "2px");
+    assert_style_set(&mut root, parent, "border-right", "3px");
+    assert_style_set(&mut root, parent, "padding-left", "4px");
+    assert_style_set(&mut root, parent, "padding-right", "5px");
+    assert_style_set(&mut root, child, "height", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
     let child_snapshot = root
-        .node(child)
-        .expect("child should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(child)
+        .expect("child should remain readable after layout");
 
     assert_close(
         parent_snapshot.layout.used_width_px,
@@ -266,24 +260,22 @@ fn explicit_width_clamps_content_box_before_border_and_padding() {
 fn child_available_height_uses_parent_content_box_height() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "200px");
-    assert_set_attr_str(&mut root, parent, "height", "40px");
-    assert_set_attr_str(&mut root, parent, "border-top", "2px");
-    assert_set_attr_str(&mut root, parent, "border-bottom", "3px");
-    assert_set_attr_str(&mut root, parent, "padding-top", "4px");
-    assert_set_attr_str(&mut root, parent, "padding-bottom", "5px");
-    assert_set_attr_str(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, container, "width", "200px");
+    assert_style_set(&mut root, parent, "height", "40px");
+    assert_style_set(&mut root, parent, "border-top", "2px");
+    assert_style_set(&mut root, parent, "border-bottom", "3px");
+    assert_style_set(&mut root, parent, "padding-top", "4px");
+    assert_style_set(&mut root, parent, "padding-bottom", "5px");
+    assert_style_set(&mut root, child, "height", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
     let child_snapshot = root
-        .node(child)
-        .expect("child should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(child)
+        .expect("child should remain readable after layout");
 
     assert_close(
         parent_snapshot.layout.used_height_px,
@@ -314,21 +306,20 @@ fn adjacent_block_margins_collapse_between_normal_flow_siblings() {
     let first_child = assert_append_div_to(&mut root, parent);
     let second_child = assert_append_div_to(&mut root, parent);
 
-    assert_set_attr_str(&mut root, parent, "width", "180px");
-    assert_set_attr_str(&mut root, first_child, "width", "180px");
-    assert_set_attr_str(&mut root, first_child, "height", "10px");
-    assert_set_attr_str(&mut root, first_child, "margin-bottom", "12px");
-    assert_set_attr_str(&mut root, second_child, "width", "180px");
-    assert_set_attr_str(&mut root, second_child, "height", "10px");
-    assert_set_attr_str(&mut root, second_child, "margin-top", "20px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, first_child, "width", "180px");
+    assert_style_set(&mut root, first_child, "height", "10px");
+    assert_style_set(&mut root, first_child, "margin-bottom", "12px");
+    assert_style_set(&mut root, second_child, "width", "180px");
+    assert_style_set(&mut root, second_child, "height", "10px");
+    assert_style_set(&mut root, second_child, "margin-top", "20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
 
@@ -362,21 +353,20 @@ fn adjacent_block_margins_collapse_between_normal_flow_siblings() {
 fn first_block_child_top_margin_collapses_with_parent_top_boundary() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "border-bottom", "1px");
-    assert_set_attr_str(&mut root, child, "width", "180px");
-    assert_set_attr_str(&mut root, child, "height", "10px");
-    assert_set_attr_str(&mut root, child, "margin-top", "20px");
-    assert_set_attr_str(&mut root, child, "margin-bottom", "5px");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-bottom", "1px");
+    assert_style_set(&mut root, child, "width", "180px");
+    assert_style_set(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, child, "margin-top", "20px");
+    assert_style_set(&mut root, child, "margin-bottom", "5px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
 
@@ -411,21 +401,20 @@ fn first_block_child_top_margin_collapses_with_parent_top_boundary() {
 fn last_block_child_bottom_margin_collapses_with_parent_bottom_boundary() {
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "border-top", "1px");
-    assert_set_attr_str(&mut root, child, "width", "180px");
-    assert_set_attr_str(&mut root, child, "height", "10px");
-    assert_set_attr_str(&mut root, child, "margin-top", "5px");
-    assert_set_attr_str(&mut root, child, "margin-bottom", "20px");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-top", "1px");
+    assert_style_set(&mut root, child, "width", "180px");
+    assert_style_set(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, child, "margin-top", "5px");
+    assert_style_set(&mut root, child, "margin-bottom", "20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
 
@@ -458,25 +447,23 @@ fn last_block_child_bottom_margin_collapses_with_parent_bottom_boundary() {
 fn empty_block_self_collapses_top_and_bottom_margins() {
     let (mut world, mut root, container, parent, empty_child) = nested_parent_child_setup();
 
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "border-top", "1px");
-    assert_set_attr_str(&mut root, parent, "border-bottom", "1px");
-    assert_set_attr_str(&mut root, empty_child, "width", "180px");
-    assert_set_attr_str(&mut root, empty_child, "margin-top", "10px");
-    assert_set_attr_str(&mut root, empty_child, "margin-bottom", "20px");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-top", "1px");
+    assert_style_set(&mut root, parent, "border-bottom", "1px");
+    assert_style_set(&mut root, empty_child, "width", "180px");
+    assert_style_set(&mut root, empty_child, "margin-top", "10px");
+    assert_style_set(&mut root, empty_child, "margin-bottom", "20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let parent_layout = assert_node_layout(&root, parent);
     let empty_child_snapshot = root
-        .node(empty_child)
-        .expect("empty child should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(empty_child)
+        .expect("empty child should remain readable after layout");
     let parent_snapshot = root
-        .node(parent)
-        .expect("parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(parent)
+        .expect("parent should remain readable after layout");
 
     assert_close(
         node_box(&root, empty_child)
@@ -512,26 +499,24 @@ fn empty_intermediate_block_propagates_collapsed_margins_without_double_counting
     let (mut world, mut root, container, outer_parent, empty_middle) = nested_parent_child_setup();
     let grandchild = assert_append_div_to(&mut root, empty_middle);
 
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, outer_parent, "width", "180px");
-    assert_set_attr_str(&mut root, outer_parent, "border-top", "1px");
-    assert_set_attr_str(&mut root, outer_parent, "border-bottom", "1px");
-    assert_set_attr_str(&mut root, empty_middle, "width", "180px");
-    assert_set_attr_str(&mut root, grandchild, "width", "180px");
-    assert_set_attr_str(&mut root, grandchild, "height", "10px");
-    assert_set_attr_str(&mut root, grandchild, "margin-top", "10px");
-    assert_set_attr_str(&mut root, grandchild, "margin-bottom", "20px");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, outer_parent, "width", "180px");
+    assert_style_set(&mut root, outer_parent, "border-top", "1px");
+    assert_style_set(&mut root, outer_parent, "border-bottom", "1px");
+    assert_style_set(&mut root, empty_middle, "width", "180px");
+    assert_style_set(&mut root, grandchild, "width", "180px");
+    assert_style_set(&mut root, grandchild, "height", "10px");
+    assert_style_set(&mut root, grandchild, "margin-top", "10px");
+    assert_style_set(&mut root, grandchild, "margin-bottom", "20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let outer_snapshot = root
-        .node(outer_parent)
-        .expect("outer parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(outer_parent)
+        .expect("outer parent should remain readable after layout");
     let middle_snapshot = root
-        .node(empty_middle)
-        .expect("empty middle should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(empty_middle)
+        .expect("empty middle should remain readable after layout");
     assert_close(
         middle_snapshot.layout.used_height_px,
         10.0,
@@ -552,28 +537,26 @@ fn empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_
     let (mut world, mut root, container, outer_parent, empty_middle) = nested_parent_child_setup();
     let grandchild = assert_append_div_to(&mut root, empty_middle);
 
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, outer_parent, "width", "180px");
-    assert_set_attr_str(&mut root, outer_parent, "border-top", "1px");
-    assert_set_attr_str(&mut root, outer_parent, "border-bottom", "1px");
-    assert_set_attr_str(&mut root, empty_middle, "width", "180px");
-    assert_set_attr_str(&mut root, empty_middle, "margin-top", "14px");
-    assert_set_attr_str(&mut root, empty_middle, "margin-bottom", "7px");
-    assert_set_attr_str(&mut root, grandchild, "width", "180px");
-    assert_set_attr_str(&mut root, grandchild, "height", "10px");
-    assert_set_attr_str(&mut root, grandchild, "margin-top", "10px");
-    assert_set_attr_str(&mut root, grandchild, "margin-bottom", "20px");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, outer_parent, "width", "180px");
+    assert_style_set(&mut root, outer_parent, "border-top", "1px");
+    assert_style_set(&mut root, outer_parent, "border-bottom", "1px");
+    assert_style_set(&mut root, empty_middle, "width", "180px");
+    assert_style_set(&mut root, empty_middle, "margin-top", "14px");
+    assert_style_set(&mut root, empty_middle, "margin-bottom", "7px");
+    assert_style_set(&mut root, grandchild, "width", "180px");
+    assert_style_set(&mut root, grandchild, "height", "10px");
+    assert_style_set(&mut root, grandchild, "margin-top", "10px");
+    assert_style_set(&mut root, grandchild, "margin-bottom", "20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let middle_snapshot = root
-        .node(empty_middle)
-        .expect("empty middle should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(empty_middle)
+        .expect("empty middle should remain readable after layout");
     let outer_snapshot = root
-        .node(outer_parent)
-        .expect("outer parent should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(outer_parent)
+        .expect("outer parent should remain readable after layout");
 
     assert_close(
         middle_snapshot.layout.used_height_px,
@@ -614,15 +597,15 @@ fn off_spec_adjacent_negative_block_margins_collapse_to_most_negative() {
     let upper = assert_append_div_to(&mut root, parent);
     let lower = assert_append_div_to(&mut root, parent);
 
-    assert_set_attr_str(&mut root, parent, "width", "180px");
-    assert_set_attr_str(&mut root, parent, "border-top", "1px");
-    assert_set_attr_str(&mut root, parent, "border-bottom", "1px");
-    assert_set_attr_str(&mut root, upper, "width", "180px");
-    assert_set_attr_str(&mut root, upper, "height", "10px");
-    assert_set_attr_str(&mut root, upper, "margin-bottom", "-10px");
-    assert_set_attr_str(&mut root, lower, "width", "180px");
-    assert_set_attr_str(&mut root, lower, "height", "10px");
-    assert_set_attr_str(&mut root, lower, "margin-top", "-5px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-top", "1px");
+    assert_style_set(&mut root, parent, "border-bottom", "1px");
+    assert_style_set(&mut root, upper, "width", "180px");
+    assert_style_set(&mut root, upper, "height", "10px");
+    assert_style_set(&mut root, upper, "margin-bottom", "-10px");
+    assert_style_set(&mut root, lower, "width", "180px");
+    assert_style_set(&mut root, lower, "height", "10px");
+    assert_style_set(&mut root, lower, "margin-top", "-5px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 

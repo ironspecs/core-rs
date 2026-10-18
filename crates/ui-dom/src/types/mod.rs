@@ -3,9 +3,11 @@
 //! This file represents the shared type boundary used across the rest of the
 //! crate and by external callers. Its purpose is to define stable authored DOM
 //! values, errors, supporting structs, and root-owned metric vocabulary
-//! without mixing in runtime-domain implementation details. The attribute
-//! vocabulary (`DomAttribute`) and the combined canonical snapshot
-//! (`DomCanonicalSnapshot`) live in their own files and are re-exported here.
+//! without mixing in runtime-domain implementation details. The CONTENT
+//! attribute vocabulary (`DomAttribute` — presentation properties live in
+//! `PresentationProperty`, PLAN.md approach C) and the combined canonical
+//! snapshot (`DomCanonicalSnapshot`) live in their own files and are
+//! re-exported here.
 //!
 //! Invariants and rules:
 //!
@@ -72,9 +74,7 @@ pub use box_model::*;
 pub use dom_after_attr_write_intrinsic_update::*;
 pub use dom_attr_node::*;
 pub use dom_attr_parse::parse_css_color_rgba;
-pub(crate) use dom_attr_parse::{
-    AuthoredLength, parse_authored_length, parse_style_attr_map, resolve_line_height_px,
-};
+pub(crate) use dom_attr_parse::{AuthoredLength, parse_authored_length};
 pub use dom_attribute::*;
 pub use dom_box_model::*;
 pub use dom_canonical_snapshot::*;
@@ -107,12 +107,12 @@ pub use root_dom_metrics::*;
 pub use root_dom_nodes::*;
 pub use root_dom_nodes_metric_history_iter::*;
 pub use root_dom_nodes_metric_name::*;
-pub(crate) use white_space::{
+pub use white_space::{
     DomOverflowWrap, DomTextAlign, DomTextDirection, DomWhiteSpace, DomWordBreak,
-    overflow_wrap_from_attr_value, parse_text_align_keyword, parse_text_direction_keyword,
-    parse_white_space_keyword, text_align_from_attr_value, text_direction_from_attr_value,
-    text_layout_input_and_byte_map_for_white_space, text_layout_input_for_white_space,
-    white_space_from_attr_value, word_break_from_attr_value,
+};
+pub(crate) use white_space::{
+    parse_text_direction_keyword, text_layout_input_and_byte_map_for_white_space,
+    text_layout_input_for_white_space,
 };
 
 use std::collections::BTreeMap;
@@ -138,11 +138,14 @@ pub struct DomAttrs {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 /// Public canonical style list for replaying authored style inputs.
 ///
-/// The list is serialized as ordered `(attribute, value)` pairs so callers can
+/// The list is serialized as ordered `(property-name, value)` pairs — the
+/// public wire shape for replaying authored declarations — so callers can
 /// persist a stable browser-style declaration list without depending on
-/// internal node-owned maps.
+/// internal node-owned maps or arena-resident declaration keys. Property names
+/// are the canonical kebab-case `PresentationProperty::name()` strings; values
+/// use `String`/`Color` only.
 pub struct DomCanonicalStyleSnapshot {
-    pub styles: Vec<(DomAttribute, DomAttributeValue)>,
+    pub styles: Vec<(String, DomAttributeValue)>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -174,6 +177,11 @@ pub enum DomError {
     InvalidAttributeTarget,
     InvalidPseudoStateTarget,
     InvalidAttributeValue,
+    /// a presentation property was written through the attribute API;
+    /// presentation is written through `style_mut` (the declaration store) —
+    /// the style attribute (`style`) itself remains accepted and routes into
+    /// the inline declaration store.
+    PresentationRequiresStyleMut,
     UnmeasuredIntrinsic,
     CannotRemoveRoot,
     CycleCreationAttempt,
@@ -190,9 +198,6 @@ pub(crate) fn parse_authored_value_str(
 ) -> Result<DomAttributeValue, DomError> {
     if let Some(parsed_value) = parse_presented_options_attr_value(attribute, value)? {
         return Ok(parsed_value);
-    }
-    if dom_attr_parse::is_known_color_attribute(attribute) {
-        return parse_css_color_rgba(value).map(DomAttributeValue::Color);
     }
     if matches_boolean_attribute(attribute) && value == "true" {
         return Ok(DomAttributeValue::Bool(true));
@@ -223,103 +228,19 @@ fn authored_value_kind(attribute: &DomAttribute) -> AuthoredValueKind {
         | DomAttribute::PresentedOptionsState
         | DomAttribute::PresentedOptionsHighlighted
         | DomAttribute::PresentedOptionsSourceIndex => AuthoredValueKind::PresentedOptionsParsed,
-        DomAttribute::Custom(_)
-        | DomAttribute::Id
-        | DomAttribute::Style
-        | DomAttribute::Class
-        | DomAttribute::Transition
-        | DomAttribute::TransitionProperty
-        | DomAttribute::TransitionDuration
-        | DomAttribute::TransitionTimingFunction
-        | DomAttribute::TransitionDelay
-        | DomAttribute::ReadOnly
-        | DomAttribute::Disabled
-        | DomAttribute::Required
-        | DomAttribute::Checked
-        | DomAttribute::Selected
-        | DomAttribute::Multiple
-        | DomAttribute::Display
-        | DomAttribute::Overflow
-        | DomAttribute::Transform
-        | DomAttribute::Position
-        | DomAttribute::FlexDirection
-        | DomAttribute::FlexWrap
-        | DomAttribute::FlexFlow
-        | DomAttribute::FlexGrow
-        | DomAttribute::FlexShrink
-        | DomAttribute::FlexBasis
-        | DomAttribute::Flex
-        | DomAttribute::Order
-        | DomAttribute::JustifyContent
-        | DomAttribute::AlignItems
-        | DomAttribute::AlignSelf
-        | DomAttribute::AlignContent
-        | DomAttribute::Gap
-        | DomAttribute::RowGap
-        | DomAttribute::ColumnGap
-        | DomAttribute::PlaceContent
-        | DomAttribute::PlaceItems
-        | DomAttribute::PlaceSelf
-        | DomAttribute::Width
-        | DomAttribute::Height
-        | DomAttribute::MinWidth
-        | DomAttribute::MinHeight
-        | DomAttribute::MaxWidth
-        | DomAttribute::MaxHeight
-        | DomAttribute::Top
-        | DomAttribute::Left
-        | DomAttribute::Right
-        | DomAttribute::Bottom
-        | DomAttribute::MarginTop
-        | DomAttribute::MarginLeft
-        | DomAttribute::MarginRight
-        | DomAttribute::MarginBottom
-        | DomAttribute::PaddingTop
-        | DomAttribute::PaddingLeft
-        | DomAttribute::PaddingRight
-        | DomAttribute::PaddingBottom
-        | DomAttribute::BorderTop
-        | DomAttribute::BorderLeft
-        | DomAttribute::BorderRight
-        | DomAttribute::BorderBottom
-        | DomAttribute::FontFamily
-        | DomAttribute::FontWeight
-        | DomAttribute::FontStyle
-        | DomAttribute::FontSize
-        | DomAttribute::LineHeight
-        | DomAttribute::TextAlign
-        | DomAttribute::WhiteSpace
-        | DomAttribute::OverflowWrap
-        | DomAttribute::WordBreak
-        | DomAttribute::Lang
-        | DomAttribute::Dir
-        | DomAttribute::Direction
-        | DomAttribute::Src
-        | DomAttribute::List
-        | DomAttribute::Label
-        | DomAttribute::Max
-        | DomAttribute::MaxLength
-        | DomAttribute::Min
-        | DomAttribute::MinLength
-        | DomAttribute::Placeholder
-        | DomAttribute::Step
-        | DomAttribute::Type
-        | DomAttribute::Value
-        | DomAttribute::Isolate => AuthoredValueKind::String,
         DomAttribute::Size | DomAttribute::TabIndex => AuthoredValueKind::Integer,
+        _ => AuthoredValueKind::String,
     }
 }
 
 fn matches_boolean_attribute(attribute: &DomAttribute) -> bool {
     matches!(
         attribute,
-        DomAttribute::Isolate
-            | DomAttribute::ReadOnly
+        DomAttribute::ReadOnly
             | DomAttribute::Disabled
             | DomAttribute::Required
             | DomAttribute::Checked
             | DomAttribute::Selected
-            | DomAttribute::PresentedOptionsHighlighted
             | DomAttribute::Multiple
     )
 }
@@ -381,32 +302,18 @@ mod tests {
     }
 
     #[test]
-    fn authored_value_input_preserves_flex_surface_values_as_strings() {
+    fn authored_value_input_preserves_content_values_as_strings() {
         let expected = [
-            (DomAttribute::FlexDirection, "row"),
-            (DomAttribute::FlexWrap, "wrap"),
-            (DomAttribute::FlexFlow, "column wrap"),
-            (DomAttribute::FlexGrow, "2"),
-            (DomAttribute::FlexShrink, "3"),
-            (DomAttribute::FlexBasis, "20px"),
-            (DomAttribute::Flex, "1 0 auto"),
-            (DomAttribute::Order, "4"),
-            (DomAttribute::JustifyContent, "space-between"),
-            (DomAttribute::AlignItems, "stretch"),
-            (DomAttribute::AlignSelf, "center"),
-            (DomAttribute::AlignContent, "space-around"),
-            (DomAttribute::Gap, "12px"),
-            (DomAttribute::RowGap, "8px"),
-            (DomAttribute::ColumnGap, "10px"),
-            (DomAttribute::PlaceContent, "center start"),
-            (DomAttribute::PlaceItems, "stretch center"),
-            (DomAttribute::PlaceSelf, "end auto"),
+            (DomAttribute::Class, "panel hero"),
+            (DomAttribute::Id, "subject"),
+            (DomAttribute::Placeholder, "Type here"),
+            (DomAttribute::Src, "icon:arrow"),
+            (DomAttribute::Custom("data-role".to_string()), "row"),
         ];
 
         for (attribute, value) in expected {
             assert_eq!(
-                parse_authored_value_input(&attribute, value)
-                    .expect("flex surface value should parse"),
+                parse_authored_value_input(&attribute, value).expect("content value should parse"),
                 Some(DomAttributeValue::String(value.to_string()))
             );
         }
@@ -418,16 +325,16 @@ mod tests {
             id: Some("subject".to_string()),
             attributes: BTreeMap::from([
                 (
-                    DomAttribute::Width,
-                    DomAttributeValue::String("120px".to_string()),
+                    DomAttribute::Class,
+                    DomAttributeValue::String("panel".to_string()),
                 ),
                 (
-                    DomAttribute::Height,
-                    DomAttributeValue::String("40px".to_string()),
+                    DomAttribute::Value,
+                    DomAttributeValue::String("hello".to_string()),
                 ),
                 (
-                    DomAttribute::FontSize,
-                    DomAttributeValue::String("16px".to_string()),
+                    DomAttribute::Type,
+                    DomAttributeValue::String("text".to_string()),
                 ),
             ]),
         };

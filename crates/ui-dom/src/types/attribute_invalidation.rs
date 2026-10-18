@@ -68,7 +68,11 @@ impl AttributeInvalidation {
         self.bits & Self::LAYER_MEMBERSHIP != 0
     }
 
+    /// The union of two invalidation bundles. Retained for its contract test;
+    /// spine 3.3e classifies transitions via `GroupDirtyClassification::union`
+    /// and projects it back through `attribute_invalidation_from_classification`.
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) const fn merge(self, other: Self) -> Self {
         Self {
             bits: self.bits | other.bits,

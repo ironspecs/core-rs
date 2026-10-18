@@ -1,4 +1,12 @@
 //! Specialized paint behavior for DOM elements.
+//!
+//! Control-paint presentation reads (background/border/outline/caret colors,
+//! radius, the element's `color`) come from the node's typed computed groups
+//! (`computed_visual()`/`computed_color()`, spine step 3.3c); control text
+//! style (font size, line height, text align, direction) reads the computed
+//! font/text groups (`computed_font()`/`computed_text()`, spine step 3.3f).
+//! Non-presentation reads (src/label/value/checked/widget state) stay on
+//! content attrs.
 
 use std::sync::Arc;
 
@@ -13,18 +21,15 @@ use crate::domains::layer_ops::{
 };
 use crate::domains::layer_pool::LayerPool;
 use crate::domains::text_layout::{
-    DEFAULT_TEXT_FONT_SIZE_PX, TextLayoutRequest, text_align_for_css_value, text_caret_layout,
-    with_repo_text_layout_context,
+    TextLayoutRequest, text_align_for_css_value, text_caret_layout, with_repo_text_layout_context,
 };
 use crate::element_controls::{
     ResolvedElementControl, ResolvedRangeControl, checkbox_indicator_rect, number_editor_box_model,
     number_stepper_rects, range_thumb_rect, range_track_rect, resolved_element_control,
 };
 use crate::types::{
-    AuthoredLength, DomAttribute, DomAttributeValue, DomBoxModel, DomElementEditKind,
-    DomElementNode, DomError, DomNode, DomNodeSlotKey, DomSelection, DomTag, DomTextAlign,
-    DomTextDirection, RootDom, TextSelectionDirection, parse_authored_length,
-    resolve_line_height_px, text_align_from_attr_value, text_direction_from_attr_value,
+    DomAttribute, DomAttributeValue, DomBoxModel, DomElementEditKind, DomElementNode, DomError,
+    DomNode, DomNodeSlotKey, DomSelection, DomTag, RootDom, TextSelectionDirection,
 };
 
 use super::present_options::select_face_label_for_owner_safe;
@@ -35,9 +40,6 @@ pub(crate) struct ElementPaintContext<'a> {
     pub node: &'a DomNode,
     pub element: &'a DomElementNode,
     pub box_model: DomBoxModel,
-    pub inherited_color_rgba: [f32; 4],
-    pub inherited_text_align: DomTextAlign,
-    pub inherited_text_direction: DomTextDirection,
     pub layer_pool: &'a mut LayerPool,
     pub plan: &'a mut LayerPaintPlan,
 }
@@ -47,7 +49,10 @@ pub(crate) fn append_specialized_element_paint_ops(
 ) -> Result<(), DomError> {
     match context.element.tag {
         DomTag::Img => append_img_paint_ops(context),
-        DomTag::Input => append_input_paint_ops(context),
+        DomTag::Input => {
+            append_input_paint_ops(context);
+            Ok(())
+        }
         DomTag::Textarea => {
             append_textarea_paint_ops(context);
             Ok(())
@@ -64,61 +69,21 @@ pub(crate) fn append_specialized_element_paint_ops(
     }
 }
 
-fn effective_font_size_px(node: &DomNode, inherited_font_size_px: f32) -> f32 {
-    match node.presented_attr(&DomAttribute::FontSize) {
-        Some(DomAttributeValue::Float(value)) => *value,
-        Some(DomAttributeValue::String(value)) => match parse_authored_length(value) {
-            Some(AuthoredLength::Px(value_px)) => value_px,
-            Some(AuthoredLength::Em(scale)) => inherited_font_size_px * scale,
-            Some(AuthoredLength::Unset) | None => DEFAULT_TEXT_FONT_SIZE_PX,
-        },
-        _ => inherited_font_size_px,
-    }
+fn effective_font_size_px(node: &DomNode) -> f32 {
+    node.computed_font().size_px
 }
 
-fn effective_line_height_px(node: &DomNode, font_size_px: f32) -> Option<f32> {
-    node.presented_attr(&DomAttribute::LineHeight)
-        .and_then(|value| resolve_line_height_px(value, font_size_px))
-}
-
-fn effective_text_direction(context: &ElementPaintContext<'_>) -> DomTextDirection {
-    let Some(value) = context
-        .node
-        .presented_attr(&DomAttribute::Direction)
-        .or_else(|| context.node.presented_attr(&DomAttribute::Dir))
-    else {
-        return context.inherited_text_direction;
-    };
-    text_direction_from_attr_value(value)
-        .unwrap_or_else(|_| panic!("paint text direction should stay valid after staging"))
+fn effective_line_height_px(node: &DomNode) -> Option<f32> {
+    node.computed_font().line_height_px
 }
 
 fn effective_text_align(context: &ElementPaintContext<'_>) -> crate::domains::layer_ops::TextAlign {
-    let text_direction = effective_text_direction(context);
-    let Some(value) = context.node.presented_attr(&DomAttribute::TextAlign) else {
-        return text_align_for_css_value(context.inherited_text_align, text_direction);
-    };
-    let text_align = text_align_from_attr_value(value)
-        .unwrap_or_else(|_| panic!("paint text alignment should stay valid after staging"));
-    text_align_for_css_value(text_align, text_direction)
+    let text = context.node.computed_text();
+    text_align_for_css_value(text.align, text.direction)
 }
 
-fn select_text_line_height_px(node: &DomNode, font_size_px: f32, content_height_px: f32) -> f32 {
-    effective_line_height_px(node, font_size_px).unwrap_or(content_height_px)
-}
-
-fn custom_color_attr_rgba(node: &DomNode, attribute_name: &str) -> Option<[f32; 4]> {
-    match node.presented_attr(&DomAttribute::Custom(attribute_name.to_string()))? {
-        DomAttributeValue::Color(rgba) => Some(*rgba),
-        _ => None,
-    }
-}
-
-fn resolved_node_color_rgba(node: &DomNode, inherited_color_rgba: [f32; 4]) -> [f32; 4] {
-    match node.presented_attr(&DomAttribute::Custom("color".to_string())) {
-        Some(DomAttributeValue::Color(rgba)) => *rgba,
-        _ => inherited_color_rgba,
-    }
+fn select_text_line_height_px(node: &DomNode, content_height_px: f32) -> f32 {
+    effective_line_height_px(node).unwrap_or(content_height_px)
 }
 
 fn append_img_paint_ops(context: &mut ElementPaintContext<'_>) -> Result<(), DomError> {
@@ -134,7 +99,7 @@ fn append_img_paint_ops(context: &mut ElementPaintContext<'_>) -> Result<(), Dom
                 position_px,
                 size_px,
                 icon_id,
-                color_rgba: resolved_node_color_rgba(context.node, context.inherited_color_rgba),
+                color_rgba: context.node.computed_color().color_rgba,
             });
             Ok(())
         }
@@ -153,27 +118,26 @@ fn append_img_paint_ops(context: &mut ElementPaintContext<'_>) -> Result<(), Dom
     }
 }
 
-fn append_input_paint_ops(context: &mut ElementPaintContext<'_>) -> Result<(), DomError> {
+fn append_input_paint_ops(context: &mut ElementPaintContext<'_>) {
     let Some(control) = resolved_element_control(context.element) else {
-        return Ok(());
+        return;
     };
     match control {
         ResolvedElementControl::Checkbox(control) => {
-            append_checkbox_input_paint_ops(context, control.checked)?;
+            append_checkbox_input_paint_ops(context, control.checked);
         }
         ResolvedElementControl::Number(_) => {
             append_number_input_chrome(context);
             append_text_entry_caret_rect(context, DomElementEditKind::SingleLine);
             append_text_entry_value_text_run(context, DomElementEditKind::SingleLine);
         }
-        ResolvedElementControl::Range(control) => append_range_input_chrome(context, control)?,
+        ResolvedElementControl::Range(control) => append_range_input_chrome(context, control),
         ResolvedElementControl::TextInput => {
             append_text_entry_caret_rect(context, DomElementEditKind::SingleLine);
             append_text_entry_value_text_run(context, DomElementEditKind::SingleLine);
         }
         ResolvedElementControl::Textarea => panic!("input paint should not resolve textarea"),
     }
-    Ok(())
 }
 
 fn append_textarea_paint_ops(context: &mut ElementPaintContext<'_>) {
@@ -195,9 +159,8 @@ fn append_select_text_run(context: &mut ElementPaintContext<'_>, value: &str) {
     if paint_box.content_width <= 0.0 || paint_box.content_height <= 0.0 {
         return;
     }
-    let font_size_px = effective_font_size_px(context.node, DEFAULT_TEXT_FONT_SIZE_PX);
-    let line_height_px =
-        select_text_line_height_px(context.node, font_size_px, paint_box.content_height);
+    let font_size_px = effective_font_size_px(context.node);
+    let line_height_px = select_text_line_height_px(context.node, paint_box.content_height);
     let text_height_px = line_height_px.max(0.0);
     if text_height_px <= 0.0 {
         return;
@@ -220,7 +183,7 @@ fn append_select_text_run(context: &mut ElementPaintContext<'_>, value: &str) {
         line_height_px,
         wrap_mode: request.wrap_mode,
         alignment: request.alignment,
-        color_rgba: resolved_node_color_rgba(context.node, context.inherited_color_rgba),
+        color_rgba: context.node.computed_color().color_rgba,
     });
 }
 
@@ -247,10 +210,10 @@ fn append_control_text_run(
     if paint_box.content_width <= 0.0 || paint_box.content_height <= 0.0 {
         return;
     }
-    let font_size_px = effective_font_size_px(context.node, DEFAULT_TEXT_FONT_SIZE_PX);
+    let font_size_px = effective_font_size_px(context.node);
     let mut request = TextLayoutRequest::for_text(value, font_size_px);
     request.width_px = Some(paint_box.content_width);
-    request.line_height_px = effective_line_height_px(context.node, font_size_px);
+    request.line_height_px = effective_line_height_px(context.node);
     if matches!(edit_kind, DomElementEditKind::SingleLine) {
         request.wrap_mode = TextWrapMode::None;
     }
@@ -270,7 +233,7 @@ fn append_control_text_run(
         line_height_px: request.line_height_px.unwrap_or(font_size_px),
         wrap_mode: request.wrap_mode,
         alignment: request.alignment,
-        color_rgba: resolved_node_color_rgba(context.node, context.inherited_color_rgba),
+        color_rgba: context.node.computed_color().color_rgba,
     });
 }
 
@@ -303,21 +266,24 @@ fn append_text_entry_caret_rect(
     let value = string_attr_for_attribute(context.element, &DomAttribute::Value).unwrap_or("");
     let box_model = text_entry_paint_box_model(context.element, context.box_model);
     let paint_box = text_entry_paint_box(box_model);
-    let font_size_px = effective_font_size_px(context.node, DEFAULT_TEXT_FONT_SIZE_PX);
+    let font_size_px = effective_font_size_px(context.node);
     let mut request = TextLayoutRequest::for_text(value, font_size_px);
     request.width_px = if matches!(edit_kind, DomElementEditKind::MultiLine) {
         Some(paint_box.content_width)
     } else {
         None
     };
-    request.line_height_px = effective_line_height_px(context.node, font_size_px);
+    request.line_height_px = effective_line_height_px(context.node);
     if matches!(edit_kind, DomElementEditKind::SingleLine) {
         request.wrap_mode = TextWrapMode::None;
     }
     request.alignment = effective_text_align(context);
     let caret = text_caret_layout(&request, selection.selection_start);
-    let caret_color_rgba = custom_color_attr_rgba(context.node, "caret-color")
-        .unwrap_or_else(|| resolved_node_color_rgba(context.node, context.inherited_color_rgba));
+    let caret_color_rgba = context
+        .node
+        .computed_visual()
+        .caret_rgba
+        .unwrap_or(context.node.computed_color().color_rgba);
     let caret_top_px = if matches!(edit_kind, DomElementEditKind::SingleLine) {
         paint_box.origin_top + ((paint_box.content_height - caret.height_px).max(0.0) / 2.0)
     } else {
@@ -336,10 +302,7 @@ fn append_text_entry_caret_rect(
     });
 }
 
-fn append_checkbox_input_paint_ops(
-    context: &mut ElementPaintContext<'_>,
-    checked: bool,
-) -> Result<(), DomError> {
+fn append_checkbox_input_paint_ops(context: &mut ElementPaintContext<'_>, checked: bool) {
     let indicator_rect = checkbox_indicator_rect(context.box_model);
     let inset_px = (indicator_rect.width_px * 0.25).max(2.0);
     let mark_rect = checked.then_some(crate::types::DomRect {
@@ -348,11 +311,16 @@ fn append_checkbox_input_paint_ops(
         width_px: (indicator_rect.width_px - inset_px * 2.0).max(0.0),
         height_px: (indicator_rect.height_px - inset_px * 2.0).max(0.0),
     });
-    let color_rgba = resolved_node_color_rgba(context.node, context.inherited_color_rgba);
-    let background_rgba =
-        custom_color_attr_rgba(context.node, "background-color").unwrap_or([0.0; 4]);
+    let color_rgba = context.node.computed_color().color_rgba;
+    let visual = context.node.computed_visual();
+    let background_rgba = visual.background_rgba;
     let border_widths_px = nonzero_border_widths_or_default(context.box_model, [1.5; 4]);
-    let border_colors = input_border_colors_or_default(context.node, color_rgba);
+    let border_colors = [
+        border_rgba_or_default(visual.border_rgba[0], color_rgba),
+        border_rgba_or_default(visual.border_rgba[1], color_rgba),
+        border_rgba_or_default(visual.border_rgba[2], color_rgba),
+        border_rgba_or_default(visual.border_rgba[3], color_rgba),
+    ];
     checkbox_mark_ops(CheckboxMarkSpec {
         outer_rect: indicator_rect,
         mark_rect,
@@ -363,14 +331,10 @@ fn append_checkbox_input_paint_ops(
         border_right_rgba: border_colors[1],
         border_bottom_rgba: border_colors[2],
         border_left_rgba: border_colors[3],
-        corner_radii_px: crate::domains::paint::border_radii_px(
-            context.root_dom,
-            context.current_key,
-        )?,
+        corner_radii_px: crate::domains::paint::border_radii_px_for_node(context.node),
         mark_corner_radii_px: [2.0; 4],
     })
     .append_to_plan(context.plan);
-    Ok(())
 }
 
 fn append_number_input_chrome(context: &mut ElementPaintContext<'_>) {
@@ -388,28 +352,30 @@ fn append_number_input_chrome(context: &mut ElementPaintContext<'_>) {
             border_left_rgba: [0.16, 0.19, 0.24, 1.0],
         });
     }
-    let icon_color_rgba = resolved_node_color_rgba(context.node, context.inherited_color_rgba);
+    let icon_color_rgba = context.node.computed_color().color_rgba;
     append_control_icon(context, decrement_rect, UiIconId::Minus, icon_color_rgba);
     append_control_icon(context, increment_rect, UiIconId::Plus, icon_color_rgba);
 }
 
-fn append_range_input_chrome(
-    context: &mut ElementPaintContext<'_>,
-    control: ResolvedRangeControl,
-) -> Result<(), DomError> {
+fn append_range_input_chrome(context: &mut ElementPaintContext<'_>, control: ResolvedRangeControl) {
     let track_rect = range_track_rect(context.box_model);
     let thumb_rect = range_thumb_rect(context.box_model, control);
     let filled_track_rect = range_filled_track_rect(track_rect, control);
-    let color_rgba = resolved_node_color_rgba(context.node, context.inherited_color_rgba);
-    let base_track_rgba = custom_color_attr_rgba(context.node, "background-color").unwrap_or([
-        color_rgba[0],
-        color_rgba[1],
-        color_rgba[2],
-        0.25,
-    ]);
-    let authored_corner_radii_px =
-        crate::domains::paint::border_radii_px(context.root_dom, context.current_key)?;
-    let has_authored_border_radius = authored_border_radius_is_present(context.node);
+    let color_rgba = context.node.computed_color().color_rgba;
+    let visual = context.node.computed_visual();
+    let base_track_rgba = if visual.background_rgba[3] > 0.0 {
+        visual.background_rgba
+    } else {
+        [color_rgba[0], color_rgba[1], color_rgba[2], 0.25]
+    };
+    let authored_corner_radii_px = crate::domains::paint::border_radii_px_for_node(context.node);
+    // The old `authored_border_radius_is_present` checked attr presence; the
+    // group flattens presence to values, so "authored" maps to "any corner
+    // radius is non-zero". This differs only for an authored `0px` radius,
+    // which now falls back to the range's pill default instead of a square —
+    // an authored zero radius and an absent radius were already visually
+    // indistinguishable for non-range elements.
+    let has_authored_border_radius = authored_corner_radii_px.iter().any(|&radius| radius > 0.0);
     range_bar_ops(RangeBarSpec {
         base_track_rect: track_rect,
         filled_track_rect,
@@ -429,7 +395,6 @@ fn append_range_input_chrome(
         ),
     })
     .append_to_plan(context.plan);
-    Ok(())
 }
 
 fn text_entry_paint_box_model(element: &DomElementNode, box_model: DomBoxModel) -> DomBoxModel {
@@ -455,23 +420,12 @@ fn nonzero_border_widths_or_default(
     default_widths_px
 }
 
-fn input_border_colors_or_default(node: &DomNode, default_rgba: [f32; 4]) -> [[f32; 4]; 4] {
-    [
-        input_border_side_color_or_default(node, "border-top-color", default_rgba),
-        input_border_side_color_or_default(node, "border-right-color", default_rgba),
-        input_border_side_color_or_default(node, "border-bottom-color", default_rgba),
-        input_border_side_color_or_default(node, "border-left-color", default_rgba),
-    ]
-}
-
-fn input_border_side_color_or_default(
-    node: &DomNode,
-    side_name: &str,
-    default_rgba: [f32; 4],
-) -> [f32; 4] {
-    custom_color_attr_rgba(node, side_name)
-        .or_else(|| custom_color_attr_rgba(node, "border-color"))
-        .unwrap_or(default_rgba)
+/// Control border-color default: a transparent (absent) group border color
+/// falls back to the control's default border color (the element's `color`).
+/// The group flattens presence to values, so an authored fully-transparent
+/// border color also falls back — visually indistinguishable from absent.
+fn border_rgba_or_default(rgba: [f32; 4], default_rgba: [f32; 4]) -> [f32; 4] {
+    if rgba[3] > 0.0 { rgba } else { default_rgba }
 }
 
 fn range_filled_track_rect(
@@ -482,11 +436,6 @@ fn range_filled_track_rect(
         width_px: track_rect.width_px * control.numeric.value_fraction(),
         ..track_rect
     }
-}
-
-fn authored_border_radius_is_present(node: &DomNode) -> bool {
-    node.presented_attr(&DomAttribute::Custom("border-radius".to_string()))
-        .is_some()
 }
 
 fn range_track_corner_radii_px(
@@ -592,6 +541,8 @@ use crate::domains::paint::build_layer_paint_plan;
 #[cfg(test)]
 use crate::domains::style::StyleRuleOrigin;
 #[cfg(test)]
+use crate::domains::style::name_is_presentation;
+#[cfg(test)]
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
 #[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
@@ -602,20 +553,24 @@ use crate::types::{PixelDensity, RootDomContext};
 mod tests {
     use super::*;
 
+    /// Routes a fixture `(name, value)` pair: presentation names go through
+    /// `style_mut`, content names through `set_attr_str` (spine 3.4: the
+    /// vocabulary split removed presentation attrs from `DomAttribute`).
     fn append_node_with_attrs(
         root: &mut RootDom,
         parent_key: DomNodeSlotKey,
         tag: DomTag,
-        attrs: &[(DomAttribute, &str)],
+        attrs: &[(&str, &str)],
     ) -> DomNodeSlotKey {
         let node_key = root.create_element(tag).expect("node");
-        for (attribute, value) in attrs {
-            root.set_attr(
-                node_key,
-                attribute.clone(),
-                Some(DomAttributeValue::String((*value).to_owned())),
-            )
-            .expect("set attr");
+        for (name, value) in attrs {
+            if name_is_presentation(name) {
+                root.style_mut(node_key)
+                    .set(name, value)
+                    .expect("set presentation style");
+            } else {
+                root.set_attr_str(node_key, name, value).expect("set attr");
+            }
         }
         root.append_child(parent_key, node_key)
             .expect("append child");
@@ -694,9 +649,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         append_node_with_attrs(
@@ -704,13 +659,13 @@ mod tests {
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::PaddingLeft, "8px"),
-                (DomAttribute::PaddingRight, "8px"),
-                (DomAttribute::PaddingTop, "6px"),
-                (DomAttribute::PaddingBottom, "6px"),
-                (DomAttribute::Value, "hello"),
+                ("width", "120px"),
+                ("height", "24px"),
+                ("padding-left", "8px"),
+                ("padding-right", "8px"),
+                ("padding-top", "6px"),
+                ("padding-bottom", "6px"),
+                ("value", "hello"),
             ],
         );
 
@@ -742,20 +697,16 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Input,
-            &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-            ],
+            &[("width", "120px"), ("height", "24px"), ("value", "hello")],
         );
         root.focus(input).expect("focus input");
 
@@ -780,9 +731,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
@@ -790,10 +741,10 @@ mod tests {
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-                (DomAttribute::Class, "accent"),
+                ("width", "120px"),
+                ("height", "24px"),
+                ("value", "hello"),
+                ("class", "accent"),
             ],
         );
         context
@@ -825,9 +776,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         let input = append_node_with_attrs(
@@ -835,10 +786,10 @@ mod tests {
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "hello"),
-                (DomAttribute::Class, "accent"),
+                ("width", "120px"),
+                ("height", "24px"),
+                ("value", "hello"),
+                ("class", "accent"),
             ],
         );
         context
@@ -868,11 +819,7 @@ mod tests {
             &mut root,
             document_key,
             DomTag::Div,
-            &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "84px"),
-                (DomAttribute::Height, "84px"),
-            ],
+            &[("position", "fixed"), ("width", "84px"), ("height", "84px")],
         );
         let checkbox = root.create_element(DomTag::Input).expect("checkbox");
         root.set_attr_str(checkbox, "type", "checkbox")
@@ -883,8 +830,11 @@ mod tests {
             Some(DomAttributeValue::Bool(true)),
         )
         .expect("checked");
-        root.set_attr_str(checkbox, "width", "24px").expect("width");
-        root.set_attr_str(checkbox, "height", "24px")
+        root.style_mut(checkbox)
+            .set("width", "24px")
+            .expect("width");
+        root.style_mut(checkbox)
+            .set("height", "24px")
             .expect("height");
         root.append_child(layer_root, checkbox)
             .expect("append checkbox");
@@ -912,21 +862,17 @@ mod tests {
             &mut root,
             document_key,
             DomTag::Div,
-            &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "84px"),
-                (DomAttribute::Height, "84px"),
-            ],
+            &[("position", "fixed"), ("width", "84px"), ("height", "84px")],
         );
         let checkbox = append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Type, "checkbox"),
-                (DomAttribute::Width, "24px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Class, "accent"),
+                ("type", "checkbox"),
+                ("width", "24px"),
+                ("height", "24px"),
+                ("class", "accent"),
             ],
         );
         root.set_attr(
@@ -974,9 +920,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "180px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "180px"),
+                ("height", "84px"),
             ],
         );
         let range = append_node_with_attrs(
@@ -984,11 +930,11 @@ mod tests {
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Type, "range"),
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "50"),
-                (DomAttribute::Class, "accent"),
+                ("type", "range"),
+                ("width", "120px"),
+                ("height", "24px"),
+                ("value", "50"),
+                ("class", "accent"),
             ],
         );
         context
@@ -1046,9 +992,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "84px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "84px"),
             ],
         );
         append_node_with_attrs(
@@ -1056,11 +1002,11 @@ mod tests {
             layer_root,
             DomTag::Input,
             &[
-                (DomAttribute::Type, "number"),
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "24px"),
-                (DomAttribute::Value, "4"),
-                (DomAttribute::Class, "accent"),
+                ("type", "number"),
+                ("width", "120px"),
+                ("height", "24px"),
+                ("value", "4"),
+                ("class", "accent"),
             ],
         );
         context
@@ -1089,9 +1035,9 @@ mod tests {
             document_key,
             DomTag::Div,
             &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "220px"),
-                (DomAttribute::Height, "120px"),
+                ("position", "fixed"),
+                ("width", "220px"),
+                ("height", "120px"),
             ],
         );
         append_node_with_attrs(
@@ -1099,9 +1045,9 @@ mod tests {
             layer_root,
             DomTag::Textarea,
             &[
-                (DomAttribute::Width, "120px"),
-                (DomAttribute::Height, "60px"),
-                (DomAttribute::Value, "first line\nsecond line"),
+                ("width", "120px"),
+                ("height", "60px"),
+                ("value", "first line\nsecond line"),
             ],
         );
 
@@ -1125,21 +1071,13 @@ mod tests {
             &mut root,
             document_key,
             DomTag::Div,
-            &[
-                (DomAttribute::Position, "fixed"),
-                (DomAttribute::Width, "84px"),
-                (DomAttribute::Height, "84px"),
-            ],
+            &[("position", "fixed"), ("width", "84px"), ("height", "84px")],
         );
         append_node_with_attrs(
             &mut root,
             layer_root,
             DomTag::Img,
-            &[
-                (DomAttribute::Src, "icon:plus"),
-                (DomAttribute::Width, "24px"),
-                (DomAttribute::Height, "24px"),
-            ],
+            &[("src", "icon:plus"), ("width", "24px"), ("height", "24px")],
         );
 
         layout_layer_tree(&mut root, layer_root, (84.0, 84.0));

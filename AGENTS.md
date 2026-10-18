@@ -136,6 +136,15 @@ Do not use panic-backed validation on boundary data such as:
 
 Prefer typed errors or explicit boundary rejection.
 
+Scoped exception (adjudicated 2026-10-17, PLAN.md proposal G): CSS
+declaration parsing is drop-and-continue, because CSS 2.1 §4.1.7 and
+css-style-attr §3 mandate it — a malformed declaration is dropped and parsing
+continues. The exception is rule-shaped, never a graceful silent fallback:
+every drop is counted by metric AND returned in an explicit report type
+(`StylesheetLoadReport`, `DeclDropReport`). It applies only to
+declaration-list inputs (stylesheets, `set_all`); single-declaration APIs
+stay strict.
+
 ## Structural rules
 
 This repo enforces the structural rules owned by `structural-lint`

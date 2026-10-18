@@ -5,6 +5,7 @@
 //! attrs, built-in behavior, and state style declarations without re-deriving
 //! those defaults in each app.
 
+use crate::domains::style::{DeclValue, Declaration, Keyword, PresentationProperty};
 use crate::types::dom_attribute::DomAttribute;
 use crate::types::dom_tag::{
     DomElementBehavior, DomElementDescriptor, DomElementStateStyleDeclarations,
@@ -25,16 +26,39 @@ impl DomElementDescriptorBuilder {
                 default_attrs: DomAttrs::default(),
                 behavior: DomElementBehavior::default(),
                 state_style_declarations: DomElementStateStyleDeclarations::default(),
+                base_style_declarations: DomStyleDeclarationList::new(),
             },
         }
     }
 
+    /// Appends one typed base (unconditional behavior-sheet) declaration.
+    /// The spine-3.3g base sheet folds FIRST — below matched rules and inline
+    /// style — so a stylesheet or inline declaration overrides it and a
+    /// stylesheet unload restores it.
+    #[must_use]
+    pub(crate) fn base_style(mut self, declaration: Declaration) -> Self {
+        self.descriptor.base_style_declarations.push(declaration);
+        self
+    }
+
+    /// The built-in `display` base declaration. The keyword string is a
+    /// crate-owned literal (never boundary data), so the parse is a closed
+    /// match over the admitted `Display` keyword set.
     #[must_use]
     pub(crate) fn display(self, value: &str) -> Self {
-        self.attr(
-            DomAttribute::Display,
-            DomAttributeValue::String(value.to_string()),
-        )
+        let keyword = match value {
+            "block" => Keyword::Block,
+            "inline" => Keyword::Inline,
+            "inline-block" => Keyword::InlineBlock,
+            "none" => Keyword::None,
+            "flex" => Keyword::Flex,
+            "inline-flex" => Keyword::InlineFlex,
+            other => panic!("built-in display value {other:?} is not an admitted display keyword"),
+        };
+        self.base_style(Declaration {
+            property: PresentationProperty::Display,
+            value: DeclValue::Keyword(keyword),
+        })
     }
 
     #[must_use]
@@ -95,22 +119,22 @@ mod tests {
             ..DomElementBehavior::default()
         };
 
-        let hover = smallvec![(
-            DomAttribute::Custom("background-color".to_string()),
-            DomAttributeValue::Color([0.1, 0.2, 0.3, 1.0]),
-        )];
-        let active = smallvec![(
-            DomAttribute::Custom("background-color".to_string()),
-            DomAttributeValue::Color([0.4, 0.5, 0.6, 1.0]),
-        )];
-        let focus = smallvec![(
-            DomAttribute::Custom("outline-color".to_string()),
-            DomAttributeValue::Color([0.7, 0.8, 0.9, 1.0]),
-        )];
-        let focus_visible = smallvec![(
-            DomAttribute::Custom("outline-color".to_string()),
-            DomAttributeValue::Color([1.0, 1.0, 1.0, 1.0]),
-        )];
+        let hover = smallvec![Declaration {
+            property: PresentationProperty::BackgroundColor,
+            value: DeclValue::Color([0.1, 0.2, 0.3, 1.0]),
+        }];
+        let active = smallvec![Declaration {
+            property: PresentationProperty::BackgroundColor,
+            value: DeclValue::Color([0.4, 0.5, 0.6, 1.0]),
+        }];
+        let focus = smallvec![Declaration {
+            property: PresentationProperty::OutlineColor,
+            value: DeclValue::Color([0.7, 0.8, 0.9, 1.0]),
+        }];
+        let focus_visible = smallvec![Declaration {
+            property: PresentationProperty::OutlineColor,
+            value: DeclValue::Color([1.0, 1.0, 1.0, 1.0]),
+        }];
 
         let descriptor = DomElementDescriptorBuilder::new()
             .display("block")
@@ -126,11 +150,11 @@ mod tests {
             .build();
 
         assert_eq!(
-            descriptor
-                .default_attrs
-                .attributes
-                .get(&DomAttribute::Display),
-            Some(&DomAttributeValue::String("block".to_string()))
+            descriptor.base_style_declarations.as_slice(),
+            &[Declaration {
+                property: PresentationProperty::Display,
+                value: DeclValue::Keyword(Keyword::Block),
+            }]
         );
         assert_eq!(
             descriptor.default_attrs.attributes.get(&DomAttribute::Type),

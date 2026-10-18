@@ -13,8 +13,8 @@ use ui_dom::{DomIntrinsic, DomNode, DomPointerUpdate, node_box};
 use crate::layout_proofs::support::{
     assert_append_button_to, assert_append_div_to, assert_append_text_to, assert_close,
     assert_load_root_stylesheet, assert_node_layout, assert_root_dom_update, assert_set_attr_str,
-    attached_gpu_root_dom_default_viewport_setup, fixed_popup_with_text_rows_setup,
-    theme_stylesheet_origin,
+    assert_style_set, attached_gpu_root_dom_default_viewport_setup,
+    fixed_popup_with_text_rows_setup, theme_stylesheet_origin,
 };
 
 const MENU_POPUP_LEFT_PX: &str = "16px";
@@ -39,8 +39,8 @@ fn text_only_block_auto_sizes_from_available_width_and_text_height() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "Open Right Drawer");
 
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -143,8 +143,8 @@ fn japanese_text_block_grows_in_height_when_width_is_constrained() {
         "長い日本語の段落テキストです。さらに長い説明文です。",
     );
 
-    assert_set_attr_str(&mut root, container, "width", "36px");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "36px");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -176,23 +176,22 @@ fn word_break_keep_all_suppresses_japanese_intra_word_wrap_in_normal_flow() {
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.max_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
-    assert_set_attr_str(&mut root, row, "word-break", "keep-all");
+    assert_style_set(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "word-break", "keep-all");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let row_layout = assert_node_layout(&root, row);
     let text_layout = assert_node_layout(&root, text);
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after keep-all update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after keep-all update");
 
     assert_close(
         row_layout.height_px,
@@ -224,25 +223,24 @@ fn word_break_keep_all_live_attr_restores_single_line_japanese_heading() {
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.max_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, row, "word-break", "keep-all");
+    assert_style_set(&mut root, row, "word-break", "keep-all");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let keep_all_layout = assert_node_layout(&root, text);
     let keep_all_snapshot = root
-        .node(text)
-        .expect("text node should exist after live keep-all update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after live keep-all update");
 
     assert!(
         baseline_layout.height_px > baseline_intrinsic.line_height_px,
@@ -273,14 +271,14 @@ fn word_break_keep_all_preserves_explicit_zero_width_space_breaks() {
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.max_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
-    assert_set_attr_str(&mut root, row, "word-break", "keep-all");
+    assert_style_set(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "word-break", "keep-all");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -306,22 +304,21 @@ fn inherited_word_break_keep_all_suppresses_descendant_japanese_wrap() {
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.max_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, container, "word-break", "keep-all");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "word-break", "keep-all");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let text_layout = assert_node_layout(&root, text);
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after inherited keep-all update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after inherited keep-all update");
 
     assert_close(
         text_layout.height_px,
@@ -348,25 +345,24 @@ fn live_inherited_word_break_keep_all_restores_single_line_descendant() {
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.max_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, container, "word-break", "keep-all");
+    assert_style_set(&mut root, container, "word-break", "keep-all");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let keep_all_layout = assert_node_layout(&root, text);
     let keep_all_snapshot = root
-        .node(text)
-        .expect("text node should exist after live inherited keep-all update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after live inherited keep-all update");
 
     assert!(
         baseline_layout.height_px > baseline_intrinsic.line_height_px,
@@ -394,8 +390,8 @@ fn thai_text_block_grows_in_height_when_width_is_constrained() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "สถานะเซสชันกำลังทำงานและมีรายละเอียดเพิ่มเติม");
 
-    assert_set_attr_str(&mut root, container, "width", "36px");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "36px");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -425,10 +421,10 @@ fn padded_text_block_wraps_from_content_box_available_width() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "Alpha Beta Gamma Delta");
 
-    assert_set_attr_str(&mut root, container, "width", "72px");
-    assert_set_attr_str(&mut root, row, "display", "block");
-    assert_set_attr_str(&mut root, row, "padding-left", "10px");
-    assert_set_attr_str(&mut root, row, "padding-right", "10px");
+    assert_style_set(&mut root, container, "width", "72px");
+    assert_style_set(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "padding-left", "10px");
+    assert_style_set(&mut root, row, "padding-right", "10px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -466,20 +462,19 @@ fn default_text_wrap_keeps_ascii_words_intact_in_normal_flow() {
     let text_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (text_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after update");
     let text_layout = assert_node_layout(&root, text);
 
     assert_close(
@@ -526,8 +521,8 @@ fn stylesheet_overflow_wrap_anywhere_rewraps_after_recompute() {
     let block = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, block, "Supercalifragilisticexpialidocious");
 
-    assert_set_attr_str(&mut root, container, "width", "36px");
-    assert_set_attr_str(&mut root, baseline_block, "display", "block");
+    assert_style_set(&mut root, container, "width", "36px");
+    assert_style_set(&mut root, baseline_block, "display", "block");
     assert_set_attr_str(&mut root, block, "class", "wrap-anywhere");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -536,7 +531,7 @@ fn stylesheet_overflow_wrap_anywhere_rewraps_after_recompute() {
     let intrinsic = assert_text_intrinsic(&root, text);
     let first_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_layout = assert_node_layout(&root, text);
@@ -580,7 +575,7 @@ fn stylesheet_word_break_break_all_rewraps_after_recompute() {
     let block = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, block, "UnbreakableASCIIWord");
 
-    assert_set_attr_str(&mut root, container, "width", "36px");
+    assert_style_set(&mut root, container, "width", "36px");
     assert_set_attr_str(&mut root, block, "class", "break-all");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -588,7 +583,7 @@ fn stylesheet_word_break_break_all_rewraps_after_recompute() {
     let intrinsic = assert_text_intrinsic(&root, text);
     let first_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_layout = assert_node_layout(&root, text);
@@ -628,7 +623,7 @@ fn stylesheet_word_break_keep_all_suppresses_japanese_wrap_after_recompute() {
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.max_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
@@ -640,7 +635,7 @@ fn stylesheet_word_break_keep_all_suppresses_japanese_wrap_after_recompute() {
 
     let first_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_layout = assert_node_layout(&root, text);
@@ -684,13 +679,13 @@ fn stylesheet_overflow_wrap_break_word_rewraps_after_recompute() {
     let baseline_intrinsic = assert_text_intrinsic(&root, baseline_text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, baseline_block, "display", "block");
+    assert_style_set(&mut root, baseline_block, "display", "block");
     assert_set_attr_str(&mut root, block, "class", "break-word");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -698,11 +693,10 @@ fn stylesheet_overflow_wrap_break_word_rewraps_after_recompute() {
     let first_intrinsic = assert_text_intrinsic(&root, text);
     let first_layout = assert_node_layout(&root, text);
     let first_snapshot = root
-        .node(text)
-        .expect("text node should exist after stylesheet break-word update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after stylesheet break-word update");
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_intrinsic = assert_text_intrinsic(&root, text);
@@ -756,7 +750,7 @@ fn stylesheet_line_height_scales_wrapped_text_after_recompute() {
     let block = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, block, "Alpha Beta Gamma Delta");
 
-    assert_set_attr_str(&mut root, container, "width", "54px");
+    assert_style_set(&mut root, container, "width", "54px");
     assert_set_attr_str(&mut root, block, "class", "tall-lines");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -764,7 +758,7 @@ fn stylesheet_line_height_scales_wrapped_text_after_recompute() {
     let first_intrinsic = assert_text_intrinsic(&root, text);
     let first_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, block, "color", "#ffffff");
+    assert_style_set(&mut root, block, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_intrinsic = assert_text_intrinsic(&root, text);
@@ -813,15 +807,15 @@ fn stylesheet_inherited_line_height_updates_descendant_after_recompute() {
     let text = assert_append_text_to(&mut root, row, "Open Right Drawer");
 
     assert_set_attr_str(&mut root, container, "class", "tall-line-container");
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let first_intrinsic = assert_text_intrinsic(&root, text);
     let first_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, container, "color", "#ffffff");
+    assert_style_set(&mut root, container, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_intrinsic = assert_text_intrinsic(&root, text);
@@ -862,14 +856,14 @@ fn nowrap_text_stays_single_line_when_width_is_constrained() {
     let text_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (text_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
-    assert_set_attr_str(&mut root, row, "white-space", "nowrap");
+    assert_style_set(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "white-space", "nowrap");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -895,14 +889,14 @@ fn word_break_break_all_wraps_unbreakable_ascii_word_in_normal_flow() {
     let text_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (text_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
-    assert_set_attr_str(&mut root, row, "word-break", "break-all");
+    assert_style_set(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "word-break", "break-all");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -927,25 +921,24 @@ fn word_break_break_all_live_attr_rewraps_used_height_under_constraint() {
     let text_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (text_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, row, "word-break", "break-all");
+    assert_style_set(&mut root, row, "word-break", "break-all");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let break_all_layout = assert_node_layout(&root, text);
     let break_all_snapshot = root
-        .node(text)
-        .expect("text node should exist after break-all update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after break-all update");
 
     assert_close(
         baseline_layout.height_px,
@@ -975,13 +968,13 @@ fn overflow_wrap_anywhere_reduces_retained_text_min_content_width() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "AlphaBeta");
 
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
 
-    assert_set_attr_str(&mut root, row, "overflow-wrap", "anywhere");
+    assert_style_set(&mut root, row, "overflow-wrap", "anywhere");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let anywhere_intrinsic = assert_text_intrinsic(&root, text);
@@ -1011,25 +1004,24 @@ fn overflow_wrap_anywhere_live_attr_rewraps_used_height_under_constraint() {
     let text_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (text_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, row, "overflow-wrap", "anywhere");
+    assert_style_set(&mut root, row, "overflow-wrap", "anywhere");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let anywhere_layout = assert_node_layout(&root, text);
     let anywhere_snapshot = root
-        .node(text)
-        .expect("text node should exist after anywhere update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after anywhere update");
 
     assert_close(
         baseline_layout.height_px,
@@ -1059,13 +1051,13 @@ fn overflow_wrap_break_word_preserves_retained_text_min_content_width() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "AlphaBeta");
 
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
 
-    assert_set_attr_str(&mut root, row, "overflow-wrap", "break-word");
+    assert_style_set(&mut root, row, "overflow-wrap", "break-word");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let break_word_intrinsic = assert_text_intrinsic(&root, text);
@@ -1096,27 +1088,26 @@ fn overflow_wrap_break_word_live_attr_rewraps_used_height_under_constraint() {
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, row, "overflow-wrap", "break-word");
+    assert_style_set(&mut root, row, "overflow-wrap", "break-word");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let break_word_layout = assert_node_layout(&root, text);
     let break_word_intrinsic = assert_text_intrinsic(&root, text);
     let break_word_snapshot = root
-        .node(text)
-        .expect("text node should exist after break-word update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after break-word update");
 
     assert_close(
         break_word_intrinsic.min_content_width_px,
@@ -1146,16 +1137,15 @@ fn text_content_update_rewraps_height_without_changing_width_contract() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "Alpha");
 
-    assert_set_attr_str(&mut root, container, "width", "60px");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "60px");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text);
     let baseline_snapshot = root
-        .node(text)
-        .expect("text node should exist before text mutation")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist before text mutation");
 
     root.set_text_content(text, "Alpha Beta Gamma Delta")
         .expect("text content update should succeed");
@@ -1163,9 +1153,8 @@ fn text_content_update_rewraps_height_without_changing_width_contract() {
 
     let grown_layout = assert_node_layout(&root, text);
     let grown_snapshot = root
-        .node(text)
-        .expect("text node should exist after text mutation")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after text mutation");
 
     assert!(
         grown_layout.height_px > baseline_layout.height_px,
@@ -1199,8 +1188,8 @@ fn text_content_update_can_shrink_height_back_to_one_line() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "Alpha Beta Gamma Delta");
 
-    assert_set_attr_str(&mut root, container, "width", "60px");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "60px");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1213,9 +1202,8 @@ fn text_content_update_can_shrink_height_back_to_one_line() {
 
     let shrunk_layout = assert_node_layout(&root, text);
     let shrunk_snapshot = root
-        .node(text)
-        .expect("text node should exist after shrinking text")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after shrinking text");
 
     assert!(
         baseline_layout.height_px > baseline_intrinsic.line_height_px,
@@ -1249,9 +1237,9 @@ fn inherited_line_height_updates_descendant_text_intrinsic_and_used_height() {
     let row = assert_append_button_to(&mut root, container);
     let text = assert_append_text_to(&mut root, row, "Alpha Beta");
 
-    assert_set_attr_str(&mut root, container, "width", "180px");
-    assert_set_attr_str(&mut root, container, "line-height", "2");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, container, "line-height", "2");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1259,9 +1247,8 @@ fn inherited_line_height_updates_descendant_text_intrinsic_and_used_height() {
     let text_layout = assert_node_layout(&root, text);
     let text_intrinsic = assert_text_intrinsic(&root, text);
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after inherited line-height update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after inherited line-height update");
 
     assert_close(
         text_intrinsic.line_height_px,
@@ -1299,22 +1286,21 @@ fn inherited_white_space_nowrap_keeps_descendant_single_line_under_constraint() 
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, container, "white-space", "nowrap");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "white-space", "nowrap");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let text_layout = assert_node_layout(&root, text);
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after inherited nowrap update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after inherited nowrap update");
 
     assert_close(
         text_layout.height_px,
@@ -1342,26 +1328,25 @@ fn live_inherited_white_space_nowrap_reduces_descendant_used_height_to_one_line(
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, container, "white-space", "nowrap");
+    assert_style_set(&mut root, container, "white-space", "nowrap");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let nowrap_layout = assert_node_layout(&root, text);
     let nowrap_snapshot = root
-        .node(text)
-        .expect("text node should exist after live inherited nowrap update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after live inherited nowrap update");
 
     assert!(
         baseline_layout.height_px > baseline_intrinsic.line_height_px,
@@ -1393,22 +1378,21 @@ fn inherited_overflow_wrap_anywhere_rewraps_descendant_used_height_under_constra
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, container, "overflow-wrap", "anywhere");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "overflow-wrap", "anywhere");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let text_layout = assert_node_layout(&root, text);
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after inherited anywhere update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after inherited anywhere update");
 
     assert!(
         text_layout.height_px > baseline_intrinsic.line_height_px,
@@ -1445,23 +1429,22 @@ fn stylesheet_inherited_overflow_wrap_anywhere_rewraps_descendant_after_recomput
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
     assert_set_attr_str(&mut root, container, "class", "anywhere-container");
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let first_layout = assert_node_layout(&root, text);
     let first_snapshot = root
-        .node(text)
-        .expect("text node should exist after stylesheet inherited anywhere update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after stylesheet inherited anywhere update");
 
-    assert_set_attr_str(&mut root, container, "color", "#ffffff");
+    assert_style_set(&mut root, container, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_layout = assert_node_layout(&root, text);
@@ -1506,13 +1489,13 @@ fn removing_stylesheet_inherited_overflow_wrap_anywhere_restores_baseline_wrap_p
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
     assert_set_attr_str(&mut root, container, "class", "anywhere-container");
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1548,26 +1531,25 @@ fn live_inherited_overflow_wrap_anywhere_rewraps_descendant_used_height_under_co
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, container, "overflow-wrap", "anywhere");
+    assert_style_set(&mut root, container, "overflow-wrap", "anywhere");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let anywhere_layout = assert_node_layout(&root, text);
     let anywhere_snapshot = root
-        .node(text)
-        .expect("text node should exist after live inherited anywhere update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after live inherited anywhere update");
 
     assert_close(
         baseline_layout.height_px,
@@ -1600,23 +1582,22 @@ fn inherited_overflow_wrap_break_word_rewraps_descendant_used_height_under_const
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, container, "overflow-wrap", "break-word");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "overflow-wrap", "break-word");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let text_layout = assert_node_layout(&root, text);
     let text_intrinsic = assert_text_intrinsic(&root, text);
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after inherited break-word update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after inherited break-word update");
 
     assert_close(
         text_intrinsic.min_content_width_px,
@@ -1658,20 +1639,20 @@ fn stylesheet_inherited_overflow_wrap_break_word_rewraps_descendant_after_recomp
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
     assert_set_attr_str(&mut root, container, "class", "break-word-container");
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let first_intrinsic = assert_text_intrinsic(&root, text);
     let first_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, container, "color", "#ffffff");
+    assert_style_set(&mut root, container, "color", "#ffffff");
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let second_intrinsic = assert_text_intrinsic(&root, text);
@@ -1711,22 +1692,21 @@ fn inherited_word_break_break_all_rewraps_descendant_used_height_under_constrain
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, container, "word-break", "break-all");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "word-break", "break-all");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let text_layout = assert_node_layout(&root, text);
     let text_snapshot = root
-        .node(text)
-        .expect("text node should exist after inherited break-all update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after inherited break-all update");
 
     assert!(
         text_layout.height_px > baseline_intrinsic.line_height_px,
@@ -1753,26 +1733,25 @@ fn live_inherited_word_break_break_all_rewraps_descendant_used_height_under_cons
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, container, "word-break", "break-all");
+    assert_style_set(&mut root, container, "word-break", "break-all");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let break_all_layout = assert_node_layout(&root, text);
     let break_all_snapshot = root
-        .node(text)
-        .expect("text node should exist after live inherited break-all update")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after live inherited break-all update");
 
     assert_close(
         baseline_layout.height_px,
@@ -1804,27 +1783,26 @@ fn live_inherited_line_height_change_scales_descendant_wrapped_height_without_ch
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, container, "line-height", "2");
+    assert_style_set(&mut root, container, "line-height", "2");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let tall_layout = assert_node_layout(&root, text);
     let tall_intrinsic = assert_text_intrinsic(&root, text);
     let tall_snapshot = root
-        .node(text)
-        .expect("text node should exist after live inherited line-height change")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after live inherited line-height change");
 
     assert_close(
         baseline_layout.height_px,
@@ -1861,9 +1839,9 @@ fn inherited_white_space_pre_preserves_spaces_and_disables_soft_wrap() {
     let text = assert_append_text_to(&mut root, row, "Alpha    Beta");
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
 
-    assert_set_attr_str(&mut root, container, "width", "54px");
-    assert_set_attr_str(&mut root, container, "white-space", "pre");
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, container, "width", "54px");
+    assert_style_set(&mut root, container, "white-space", "pre");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -1894,27 +1872,26 @@ fn live_line_height_change_scales_wrapped_text_height_without_changing_available
     let baseline_intrinsic = assert_text_intrinsic(&root, text);
     let constrained_width_px = (baseline_intrinsic.min_content_width_px - 1.0).max(1.0);
 
-    assert_set_attr_str(
+    assert_style_set(
         &mut root,
         container,
         "width",
         &format!("{constrained_width_px}px"),
     );
-    assert_set_attr_str(&mut root, row, "display", "block");
+    assert_style_set(&mut root, row, "display", "block");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let baseline_layout = assert_node_layout(&root, text);
 
-    assert_set_attr_str(&mut root, row, "line-height", "2");
+    assert_style_set(&mut root, row, "line-height", "2");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let tall_layout = assert_node_layout(&root, text);
     let tall_intrinsic = assert_text_intrinsic(&root, text);
     let tall_snapshot = root
-        .node(text)
-        .expect("text node should exist after live line-height change")
-        .snapshot();
+        .canonical_snapshot(text)
+        .expect("text node should exist after live line-height change");
 
     assert_close(
         baseline_layout.height_px,
@@ -1943,29 +1920,29 @@ fn assert_menu_like_popup_style(
     popup: ui_dom::DomNodeSlotKey,
     content: ui_dom::DomNodeSlotKey,
 ) {
-    assert_set_attr_str(root, popup, "position", "fixed");
-    assert_set_attr_str(root, popup, "left", MENU_POPUP_LEFT_PX);
-    assert_set_attr_str(root, popup, "top", MENU_POPUP_TOP_PX);
-    assert_set_attr_str(root, popup, "width", MENU_POPUP_WIDTH_PX);
-    assert_set_attr_str(root, popup, "max-height", MENU_POPUP_MAX_HEIGHT_PX);
-    assert_set_attr_str(root, popup, "overflow", "scroll");
-    assert_set_attr_str(root, content, "width", MENU_CONTENT_WIDTH_PX);
-    assert_set_attr_str(root, content, "padding-left", MENU_CONTENT_PADDING_PX);
-    assert_set_attr_str(root, content, "padding-right", MENU_CONTENT_PADDING_PX);
-    assert_set_attr_str(root, content, "padding-top", MENU_CONTENT_PADDING_PX);
-    assert_set_attr_str(root, content, "padding-bottom", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, popup, "position", "fixed");
+    assert_style_set(root, popup, "left", MENU_POPUP_LEFT_PX);
+    assert_style_set(root, popup, "top", MENU_POPUP_TOP_PX);
+    assert_style_set(root, popup, "width", MENU_POPUP_WIDTH_PX);
+    assert_style_set(root, popup, "max-height", MENU_POPUP_MAX_HEIGHT_PX);
+    assert_style_set(root, popup, "overflow", "scroll");
+    assert_style_set(root, content, "width", MENU_CONTENT_WIDTH_PX);
+    assert_style_set(root, content, "padding-left", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, content, "padding-right", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, content, "padding-top", MENU_CONTENT_PADDING_PX);
+    assert_style_set(root, content, "padding-bottom", MENU_CONTENT_PADDING_PX);
 }
 
 fn assert_menu_like_row_style(root: &mut ui_dom::RootDom, row: ui_dom::DomNodeSlotKey) {
-    assert_set_attr_str(root, row, "display", "block");
-    assert_set_attr_str(root, row, "margin-left", ROW_MARGIN_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "margin-right", ROW_MARGIN_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "margin-top", ROW_MARGIN_TOP_BOTTOM_PX);
-    assert_set_attr_str(root, row, "margin-bottom", ROW_MARGIN_TOP_BOTTOM_PX);
-    assert_set_attr_str(root, row, "padding-left", ROW_PADDING_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "padding-right", ROW_PADDING_LEFT_RIGHT_PX);
-    assert_set_attr_str(root, row, "padding-top", ROW_PADDING_TOP_BOTTOM_PX);
-    assert_set_attr_str(root, row, "padding-bottom", ROW_PADDING_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "display", "block");
+    assert_style_set(root, row, "margin-left", ROW_MARGIN_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "margin-right", ROW_MARGIN_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "margin-top", ROW_MARGIN_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "margin-bottom", ROW_MARGIN_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "padding-left", ROW_PADDING_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "padding-right", ROW_PADDING_LEFT_RIGHT_PX);
+    assert_style_set(root, row, "padding-top", ROW_PADDING_TOP_BOTTOM_PX);
+    assert_style_set(root, row, "padding-bottom", ROW_PADDING_TOP_BOTTOM_PX);
 }
 
 fn assert_text_intrinsic(

@@ -13,15 +13,26 @@
 //! - temporary state here must be algorithmic necessity, not caching for its
 //!   own sake
 //! - staged measurement helpers return records only
+//! - flex container/item style is read visit-locally from the computed
+//!   groups (`DomNode::computed_flex`; the container's text direction reads
+//!   `DomNode::computed_text`, spine step 3.3f); the group `*Kw` enums map onto
+//!   this solver's private `FlexAxis`/`FlexWrapMode`/alignment/basis vocabulary
+//!   at one small boundary helper per enum
 //! - final node layout writes use active flex placement with anonymous flex
 //!   item generation for inline-level children per CSS Flexbox §4
+#![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs
+
 use std::collections::HashMap;
 
+use crate::domains::style::computed::{
+    AlignContentKw, AlignItemsKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw, JustifyContentKw,
+    OverflowKw,
+};
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
 use crate::types::dom_node::measure_text_intrinsic_from_content_and_font_size;
 use crate::types::{
-    AuthoredLength, DomAttribute, DomAttributeValue, DomBoxModel, DomError, DomIntrinsic, DomNode,
-    DomNodeSlotKey, DomRect, DomTextDirection, RootDom, parse_authored_length,
+    DomBoxModel, DomError, DomIntrinsic, DomNode, DomNodeSlotKey, DomRect, DomTextDirection,
+    RootDom,
 };
 
 use super::DomLayoutResolver;
@@ -41,6 +52,8 @@ use super::style::{BoxSides, LayoutDisplay, NodeStyle, PositionMode};
 use crate::domains::layout::IdentityDomLayoutResolver;
 #[cfg(test)]
 use crate::domains::layout::style::{layout_dirty_from_ref, node_box_from_ref};
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
 use crate::types::{BoxEdgeInsets, DomLayerKind, DomLayoutState, DomTag, RootDomContext};
 
@@ -85,12 +98,6 @@ enum FlexLineCrossAxisAlignment {
     SpaceEvenly,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FlexAutoMinOverflowMode {
-    Visible,
-    ZeroMin,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct FlexGapSizes {
     between_items_px: f32,
@@ -103,19 +110,6 @@ enum FlexBasisSource {
     Content,
     Zero,
     Length(f32),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ParsedFlexShorthand {
-    grow_factor: f32,
-    shrink_factor: f32,
-    basis: FlexBasisSource,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PlaceSelfAlignment {
-    Auto,
-    Alignment(FlexCrossAxisAlignment),
 }
 
 #[allow(dead_code)]
@@ -283,8 +277,7 @@ where
     R: DomLayoutResolver + ?Sized,
 {
     let container_node = node_for_key(root_dom, key)?;
-    let container_style =
-        staged_flex_container_style(container_node, &inherited_style, style.font_size_px);
+    let container_style = staged_flex_container_style(container_node);
     let entered = enter_node(
         root_dom,
         tree_size,
@@ -346,8 +339,7 @@ where
     R: DomLayoutResolver + ?Sized,
 {
     let container_node = node_for_key(root_dom, key)?;
-    let container_style =
-        staged_flex_container_style(container_node, &inherited_style, style.font_size_px);
+    let container_style = staged_flex_container_style(container_node);
     let entered = enter_node(
         root_dom,
         tree_size,
@@ -458,7 +450,7 @@ where
         child_key,
         child_context,
         child_style,
-        child_inherited_style.clone(),
+        child_inherited_style,
         resolver,
     )?;
     let measured_main_size_px =
@@ -468,8 +460,8 @@ where
     let node = node_for_key(root_dom, child_key)?;
     let order = item_order_from_node(node);
     let align_self = item_align_self(node);
-    let flex_grow_factor = item_flex_grow_factor_from_node(node, child_style.font_size_px);
-    let flex_shrink_factor = item_flex_shrink_factor_from_node(node, child_style.font_size_px);
+    let flex_grow_factor = item_flex_grow_factor_from_node(node);
+    let flex_shrink_factor = item_flex_shrink_factor_from_node(node);
     let main_axis_border_padding_px =
         main_axis_border_padding_size_px(child_style.sides, main_axis);
     let flex_base_size_px =
@@ -592,8 +584,7 @@ where
     // flex_layout_algorithm.cc. ui-dom uses its existing entry/exit model for
     // the measuring phase and avoids writing retained layout state here.
     let container_node = node_for_key(root_dom, key)?;
-    let container_style =
-        staged_flex_container_style(container_node, &inherited_style, style.font_size_px);
+    let container_style = staged_flex_container_style(container_node);
     let entered = enter_node(
         root_dom,
         tree_size,
@@ -986,368 +977,95 @@ fn measured_inline_max_content_width(entered: &EnteredNodeLayout, flow: InlineFl
     entered.max_content_width_px
 }
 
-fn staged_flex_container_style(
-    node: &DomNode,
-    inherited_style: &InheritedStyleContext,
-    font_size_px: f32,
-) -> FlexContainerStyle {
-    let (main_axis, is_main_reversed) = staged_flex_direction(node);
+fn staged_flex_container_style(node: &DomNode) -> FlexContainerStyle {
+    let flex = node.computed_flex();
+    let (main_axis, is_main_reversed) = flex_direction_from_kw(flex.direction);
     FlexContainerStyle {
         main_axis,
         is_main_reversed,
-        text_direction: effective_flex_container_text_direction(node, inherited_style),
-        wrap_mode: staged_flex_wrap_mode(node),
-        justify_content: staged_justify_content(node),
-        align_items: staged_align_items(node),
-        align_content: staged_align_content(node),
-        gap_sizes: staged_flex_gap_sizes(node, main_axis, font_size_px),
+        text_direction: effective_flex_container_text_direction(node),
+        wrap_mode: flex_wrap_mode_from_kw(flex.wrap),
+        justify_content: justify_content_from_kw(flex.justify_content),
+        align_items: align_items_from_kw(flex.align_items),
+        align_content: align_content_from_kw(flex.align_content),
+        gap_sizes: flex_gap_sizes(flex.gap, main_axis),
     }
 }
 
-fn supported_active_flex_container_style(
-    node: &DomNode,
-    inherited_style: &InheritedStyleContext,
-    font_size_px: f32,
-) -> Option<FlexContainerStyle> {
-    let (main_axis, is_main_reversed) = supported_flex_direction(node)?;
-    Some(FlexContainerStyle {
-        main_axis,
-        is_main_reversed,
-        text_direction: effective_flex_container_text_direction(node, inherited_style),
-        wrap_mode: supported_flex_wrap_mode(node)?,
-        justify_content: supported_justify_content(node)?,
-        align_items: supported_align_items(node)?,
-        align_content: supported_align_content(node)?,
-        gap_sizes: supported_flex_gap_sizes(node, main_axis, font_size_px)?,
-    })
-}
-
-fn staged_flex_direction(node: &DomNode) -> (FlexAxis, bool) {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::FlexDirection) {
-        return flex_direction_from_str(value)
-            .unwrap_or_else(|| panic!("staged flex direction is unsupported: {value}"));
-    }
-    let Some(flow_value) = presented_string_attr(node, &DomAttribute::FlexFlow) else {
-        return (FlexAxis::Horizontal, false);
-    };
-    flex_direction_from_flow_value(flow_value).unwrap_or((FlexAxis::Horizontal, false))
-}
-
-fn supported_flex_direction(node: &DomNode) -> Option<(FlexAxis, bool)> {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::FlexDirection) {
-        return flex_direction_from_str(value);
-    }
-    let Some(flow_value) = presented_string_attr(node, &DomAttribute::FlexFlow) else {
-        return Some((FlexAxis::Horizontal, false));
-    };
-    supported_flex_direction_from_flow_value(flow_value)
-}
-
-fn flex_direction_from_str(value: &str) -> Option<(FlexAxis, bool)> {
-    match value {
-        "row" => Some((FlexAxis::Horizontal, false)),
-        "row-reverse" => Some((FlexAxis::Horizontal, true)),
-        "column" => Some((FlexAxis::Vertical, false)),
-        "column-reverse" => Some((FlexAxis::Vertical, true)),
-        _ => None,
+fn flex_direction_from_kw(kw: FlexDirectionKw) -> (FlexAxis, bool) {
+    match kw {
+        FlexDirectionKw::Row => (FlexAxis::Horizontal, false),
+        FlexDirectionKw::RowReverse => (FlexAxis::Horizontal, true),
+        FlexDirectionKw::Column => (FlexAxis::Vertical, false),
+        FlexDirectionKw::ColumnReverse => (FlexAxis::Vertical, true),
     }
 }
 
-fn effective_flex_container_text_direction(
-    node: &DomNode,
-    inherited_style: &InheritedStyleContext,
-) -> DomTextDirection {
-    node.presented_attr(&DomAttribute::Direction)
-        .or_else(|| node.presented_attr(&DomAttribute::Dir))
-        .map(crate::types::text_direction_from_attr_value)
-        .transpose()
-        .unwrap_or_else(|_| panic!("staged flex container direction should stay valid"))
-        .unwrap_or_else(|| inherited_style.effective_text_direction())
-}
-
-fn flex_direction_from_flow_value(value: &str) -> Option<(FlexAxis, bool)> {
-    let mut saw_unknown_token = false;
-    for token in value.split_whitespace() {
-        if let Some(direction) = flex_direction_from_str(token) {
-            return Some(direction);
-        }
-        if !matches!(token, "nowrap" | "wrap") {
-            saw_unknown_token = true;
-        }
-    }
-    assert!(
-        !saw_unknown_token,
-        "staged flex-flow contains an unsupported direction token: {value}",
-    );
-    None
-}
-
-fn supported_flex_direction_from_flow_value(value: &str) -> Option<(FlexAxis, bool)> {
-    for token in value.split_whitespace() {
-        if let Some(direction) = flex_direction_from_str(token) {
-            return Some(direction);
-        }
-        if !matches!(token, "nowrap" | "wrap") {
-            return None;
-        }
-    }
-    Some((FlexAxis::Horizontal, false))
-}
-
-fn staged_flex_wrap_mode(node: &DomNode) -> FlexWrapMode {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::FlexWrap) {
-        return flex_wrap_from_str(value)
-            .unwrap_or_else(|| panic!("staged flex wrap mode is unsupported: {value}"));
-    }
-    let Some(flow_value) = presented_string_attr(node, &DomAttribute::FlexFlow) else {
-        return FlexWrapMode::NoWrap;
-    };
-    flex_wrap_from_flow_value(flow_value).unwrap_or(FlexWrapMode::NoWrap)
-}
-
-fn supported_flex_wrap_mode(node: &DomNode) -> Option<FlexWrapMode> {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::FlexWrap) {
-        return flex_wrap_from_str(value);
-    }
-    let Some(flow_value) = presented_string_attr(node, &DomAttribute::FlexFlow) else {
-        return Some(FlexWrapMode::NoWrap);
-    };
-    supported_flex_wrap_from_flow_value(flow_value)
-}
-
-fn flex_wrap_from_flow_value(value: &str) -> Option<FlexWrapMode> {
-    let mut saw_unknown_token = false;
-    for token in value.split_whitespace() {
-        if let Some(wrap_mode) = flex_wrap_from_str(token) {
-            return Some(wrap_mode);
-        }
-        if !matches!(token, "row" | "row-reverse" | "column" | "column-reverse") {
-            saw_unknown_token = true;
-        }
-    }
-    assert!(
-        !saw_unknown_token,
-        "staged flex-flow contains an unsupported wrap token: {value}",
-    );
-    None
-}
-
-fn supported_flex_wrap_from_flow_value(value: &str) -> Option<FlexWrapMode> {
-    for token in value.split_whitespace() {
-        if let Some(wrap_mode) = flex_wrap_from_str(token) {
-            return Some(wrap_mode);
-        }
-        if !matches!(token, "row" | "row-reverse" | "column" | "column-reverse") {
-            return None;
-        }
-    }
-    Some(FlexWrapMode::NoWrap)
-}
-
-fn flex_wrap_from_str(value: &str) -> Option<FlexWrapMode> {
-    match value {
-        "nowrap" => Some(FlexWrapMode::NoWrap),
-        "wrap" => Some(FlexWrapMode::Wrap),
-        "wrap-reverse" => Some(FlexWrapMode::WrapReverse),
-        _ => None,
+fn flex_wrap_mode_from_kw(kw: FlexWrapKw) -> FlexWrapMode {
+    match kw {
+        FlexWrapKw::NoWrap => FlexWrapMode::NoWrap,
+        FlexWrapKw::Wrap => FlexWrapMode::Wrap,
+        FlexWrapKw::WrapReverse => FlexWrapMode::WrapReverse,
     }
 }
 
-fn place_tokens(value: &str) -> Option<(&str, Option<&str>)> {
-    let mut tokens = value.split_whitespace();
-    match (tokens.next(), tokens.next(), tokens.next()) {
-        (Some(first), None, None) => Some((first, None)),
-        (Some(first), Some(second), None) => Some((first, Some(second))),
-        _ => None,
+fn justify_content_from_kw(kw: JustifyContentKw) -> FlexMainAxisAlignment {
+    match kw {
+        JustifyContentKw::Start => FlexMainAxisAlignment::Start,
+        JustifyContentKw::End => FlexMainAxisAlignment::End,
+        JustifyContentKw::FlexStart => FlexMainAxisAlignment::FlexStart,
+        JustifyContentKw::FlexEnd => FlexMainAxisAlignment::FlexEnd,
+        JustifyContentKw::Center => FlexMainAxisAlignment::Center,
+        JustifyContentKw::SpaceBetween => FlexMainAxisAlignment::SpaceBetween,
+        JustifyContentKw::SpaceAround => FlexMainAxisAlignment::SpaceAround,
+        JustifyContentKw::SpaceEvenly => FlexMainAxisAlignment::SpaceEvenly,
     }
 }
 
-fn staged_place_items_align(node: &DomNode) -> Option<FlexCrossAxisAlignment> {
-    let value = presented_string_attr(node, &DomAttribute::PlaceItems)?;
-    let (align_token, _) = place_tokens(value).unwrap_or_else(|| {
-        panic!("staged place-items should use one or two alignment tokens: {value}")
-    });
-    Some(
-        align_items_from_str(align_token).unwrap_or_else(|| {
-            panic!("staged place-items align token is unsupported: {align_token}")
-        }),
-    )
-}
-
-fn supported_place_items_align(node: &DomNode) -> Option<FlexCrossAxisAlignment> {
-    let value = presented_string_attr(node, &DomAttribute::PlaceItems)?;
-    let (align_token, _) = place_tokens(value)?;
-    align_items_from_str(align_token)
-}
-
-fn staged_place_self_align(node: &DomNode) -> Option<PlaceSelfAlignment> {
-    let value = presented_string_attr(node, &DomAttribute::PlaceSelf)?;
-    let (align_token, _) = place_tokens(value).unwrap_or_else(|| {
-        panic!("staged place-self should use one or two alignment tokens: {value}")
-    });
-    if align_token == "auto" {
-        return Some(PlaceSelfAlignment::Auto);
-    }
-    Some(PlaceSelfAlignment::Alignment(
-        align_items_from_str(align_token).unwrap_or_else(|| {
-            panic!("staged place-self align token is unsupported: {align_token}")
-        }),
-    ))
-}
-
-fn staged_place_content_alignments(
-    node: &DomNode,
-) -> Option<(FlexLineCrossAxisAlignment, FlexMainAxisAlignment)> {
-    let value = presented_string_attr(node, &DomAttribute::PlaceContent)?;
-    let (align_token, justify_token) = place_tokens(value).unwrap_or_else(|| {
-        panic!("staged place-content should use one or two alignment tokens: {value}")
-    });
-    let justify_token = justify_token.unwrap_or(align_token);
-    Some((
-        align_content_from_str(align_token).unwrap_or_else(|| {
-            panic!("staged place-content align token is unsupported: {align_token}")
-        }),
-        justify_content_from_str(justify_token).unwrap_or_else(|| {
-            panic!("staged place-content justify token is unsupported: {justify_token}")
-        }),
-    ))
-}
-
-fn supported_place_content_alignments(
-    node: &DomNode,
-) -> Option<(FlexLineCrossAxisAlignment, FlexMainAxisAlignment)> {
-    let value = presented_string_attr(node, &DomAttribute::PlaceContent)?;
-    let (align_token, justify_token) = place_tokens(value)?;
-    let justify_token = justify_token.unwrap_or(align_token);
-    Some((
-        align_content_from_str(align_token)?,
-        justify_content_from_str(justify_token)?,
-    ))
-}
-
-fn staged_justify_content(node: &DomNode) -> FlexMainAxisAlignment {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::JustifyContent) {
-        return justify_content_from_str(value)
-            .unwrap_or_else(|| panic!("staged justify-content is unsupported: {value}"));
-    }
-    staged_place_content_alignments(node)
-        .map_or(FlexMainAxisAlignment::FlexStart, |(_, justify_content)| {
-            justify_content
-        })
-}
-
-fn supported_justify_content(node: &DomNode) -> Option<FlexMainAxisAlignment> {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::JustifyContent) {
-        return justify_content_from_str(value);
-    }
-    Some(
-        supported_place_content_alignments(node)
-            .map_or(FlexMainAxisAlignment::FlexStart, |(_, justify_content)| {
-                justify_content
-            }),
-    )
-}
-
-fn justify_content_from_str(value: &str) -> Option<FlexMainAxisAlignment> {
-    match value {
-        "start" => Some(FlexMainAxisAlignment::Start),
-        "end" => Some(FlexMainAxisAlignment::End),
-        "flex-start" => Some(FlexMainAxisAlignment::FlexStart),
-        "flex-end" => Some(FlexMainAxisAlignment::FlexEnd),
-        "center" => Some(FlexMainAxisAlignment::Center),
-        "space-between" => Some(FlexMainAxisAlignment::SpaceBetween),
-        "space-around" => Some(FlexMainAxisAlignment::SpaceAround),
-        "space-evenly" => Some(FlexMainAxisAlignment::SpaceEvenly),
-        _ => None,
+fn align_items_from_kw(kw: AlignItemsKw) -> FlexCrossAxisAlignment {
+    match kw {
+        AlignItemsKw::Start => FlexCrossAxisAlignment::Start,
+        AlignItemsKw::End => FlexCrossAxisAlignment::End,
+        AlignItemsKw::FlexStart => FlexCrossAxisAlignment::FlexStart,
+        AlignItemsKw::FlexEnd => FlexCrossAxisAlignment::FlexEnd,
+        AlignItemsKw::Center => FlexCrossAxisAlignment::Center,
+        AlignItemsKw::Stretch => FlexCrossAxisAlignment::Stretch,
     }
 }
 
-fn staged_align_items(node: &DomNode) -> FlexCrossAxisAlignment {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::AlignItems) {
-        return align_items_from_str(value)
-            .unwrap_or_else(|| panic!("staged align-items is unsupported: {value}"));
+fn align_content_from_kw(kw: AlignContentKw) -> FlexLineCrossAxisAlignment {
+    match kw {
+        AlignContentKw::Start => FlexLineCrossAxisAlignment::Start,
+        AlignContentKw::End => FlexLineCrossAxisAlignment::End,
+        AlignContentKw::FlexStart => FlexLineCrossAxisAlignment::FlexStart,
+        AlignContentKw::FlexEnd => FlexLineCrossAxisAlignment::FlexEnd,
+        AlignContentKw::Center => FlexLineCrossAxisAlignment::Center,
+        AlignContentKw::Stretch => FlexLineCrossAxisAlignment::Stretch,
+        AlignContentKw::SpaceBetween => FlexLineCrossAxisAlignment::SpaceBetween,
+        AlignContentKw::SpaceAround => FlexLineCrossAxisAlignment::SpaceAround,
+        AlignContentKw::SpaceEvenly => FlexLineCrossAxisAlignment::SpaceEvenly,
     }
-    staged_place_items_align(node).unwrap_or(FlexCrossAxisAlignment::Stretch)
 }
 
-fn supported_align_items(node: &DomNode) -> Option<FlexCrossAxisAlignment> {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::AlignItems) {
-        return align_items_from_str(value);
+fn flex_basis_source_from_kw(kw: FlexBasisKw) -> FlexBasisSource {
+    match kw {
+        FlexBasisKw::Auto => FlexBasisSource::Auto,
+        FlexBasisKw::Content => FlexBasisSource::Content,
+        FlexBasisKw::Length(0.0) => FlexBasisSource::Zero,
+        FlexBasisKw::Length(px) => FlexBasisSource::Length(px),
     }
-    Some(supported_place_items_align(node).unwrap_or(FlexCrossAxisAlignment::Stretch))
 }
 
-fn align_items_from_str(value: &str) -> Option<FlexCrossAxisAlignment> {
-    match value {
-        "start" => Some(FlexCrossAxisAlignment::Start),
-        "end" => Some(FlexCrossAxisAlignment::End),
-        "flex-start" => Some(FlexCrossAxisAlignment::FlexStart),
-        "flex-end" => Some(FlexCrossAxisAlignment::FlexEnd),
-        "center" => Some(FlexCrossAxisAlignment::Center),
-        "stretch" => Some(FlexCrossAxisAlignment::Stretch),
-        _ => None,
-    }
+fn effective_flex_container_text_direction(node: &DomNode) -> DomTextDirection {
+    node.computed_text().direction
 }
 
 fn item_align_self(node: &DomNode) -> Option<FlexCrossAxisAlignment> {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::AlignSelf) {
-        if value == "auto" {
-            return None;
-        }
-        return align_items_from_str(value)
-            .or_else(|| panic!("staged align-self is unsupported: {value}"));
-    }
-    match staged_place_self_align(node) {
-        Some(PlaceSelfAlignment::Auto) | None => None,
-        Some(PlaceSelfAlignment::Alignment(alignment)) => Some(alignment),
-    }
+    node.computed_flex().align_self.map(align_items_from_kw)
 }
 
-fn staged_align_content(node: &DomNode) -> FlexLineCrossAxisAlignment {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::AlignContent) {
-        return align_content_from_str(value)
-            .unwrap_or_else(|| panic!("staged align-content is unsupported: {value}"));
-    }
-    // CSS Align 3 §5.1.3 (flex containers): the `align-content` initial
-    // value `normal` behaves as `stretch`; CSS Flexbox 1 §8.4 names the same
-    // initial. Browsers therefore stretch lines into leftover cross space
-    // unless the author picks a different packing alignment.
-    staged_place_content_alignments(node)
-        .map_or(FlexLineCrossAxisAlignment::Stretch, |(align_content, _)| {
-            align_content
-        })
-}
-
-fn supported_align_content(node: &DomNode) -> Option<FlexLineCrossAxisAlignment> {
-    if let Some(value) = presented_string_attr(node, &DomAttribute::AlignContent) {
-        return align_content_from_str(value);
-    }
-    // See the CSS Align 3 §5.1.3 note in `staged_align_content`.
-    Some(
-        supported_place_content_alignments(node)
-            .map_or(FlexLineCrossAxisAlignment::Stretch, |(align_content, _)| {
-                align_content
-            }),
-    )
-}
-
-fn align_content_from_str(value: &str) -> Option<FlexLineCrossAxisAlignment> {
-    match value {
-        "start" => Some(FlexLineCrossAxisAlignment::Start),
-        "end" => Some(FlexLineCrossAxisAlignment::End),
-        "flex-start" => Some(FlexLineCrossAxisAlignment::FlexStart),
-        "flex-end" => Some(FlexLineCrossAxisAlignment::FlexEnd),
-        "center" => Some(FlexLineCrossAxisAlignment::Center),
-        "stretch" => Some(FlexLineCrossAxisAlignment::Stretch),
-        "space-between" => Some(FlexLineCrossAxisAlignment::SpaceBetween),
-        "space-around" => Some(FlexLineCrossAxisAlignment::SpaceAround),
-        "space-evenly" => Some(FlexLineCrossAxisAlignment::SpaceEvenly),
-        _ => None,
-    }
-}
-
-fn staged_flex_gap_sizes(node: &DomNode, main_axis: FlexAxis, font_size_px: f32) -> FlexGapSizes {
-    let (row_gap_px, column_gap_px) = staged_row_and_column_gap_px(node, font_size_px);
+fn flex_gap_sizes(gap: [f32; 2], main_axis: FlexAxis) -> FlexGapSizes {
+    let [row_gap_px, column_gap_px] = gap;
     match main_axis {
         FlexAxis::Horizontal => FlexGapSizes {
             between_items_px: column_gap_px,
@@ -1358,24 +1076,6 @@ fn staged_flex_gap_sizes(node: &DomNode, main_axis: FlexAxis, font_size_px: f32)
             between_lines_px: column_gap_px,
         },
     }
-}
-
-fn supported_flex_gap_sizes(
-    node: &DomNode,
-    main_axis: FlexAxis,
-    font_size_px: f32,
-) -> Option<FlexGapSizes> {
-    let (row_gap_px, column_gap_px) = supported_row_and_column_gap_px(node, font_size_px)?;
-    Some(match main_axis {
-        FlexAxis::Horizontal => FlexGapSizes {
-            between_items_px: column_gap_px,
-            between_lines_px: row_gap_px,
-        },
-        FlexAxis::Vertical => FlexGapSizes {
-            between_items_px: row_gap_px,
-            between_lines_px: column_gap_px,
-        },
-    })
 }
 
 fn inline_start_is_reversed(text_direction: DomTextDirection) -> bool {
@@ -1490,254 +1190,24 @@ fn resolved_line_cross_axis_alignment(
     }
 }
 
-fn staged_row_and_column_gap_px(node: &DomNode, font_size_px: f32) -> (f32, f32) {
-    let (mut row_gap_px, mut column_gap_px) = staged_gap_shorthand_px(node, font_size_px);
-    if let Some(value) = presented_string_attr(node, &DomAttribute::RowGap) {
-        row_gap_px = gap_length_px(value, font_size_px);
-    }
-    if let Some(value) = presented_string_attr(node, &DomAttribute::ColumnGap) {
-        column_gap_px = gap_length_px(value, font_size_px);
-    }
-    (row_gap_px, column_gap_px)
-}
-
-fn supported_row_and_column_gap_px(node: &DomNode, font_size_px: f32) -> Option<(f32, f32)> {
-    let (mut row_gap_px, mut column_gap_px) = supported_gap_shorthand_px(node, font_size_px)?;
-    if let Some(value) = presented_string_attr(node, &DomAttribute::RowGap) {
-        row_gap_px = supported_gap_length_px(value, font_size_px)?;
-    }
-    if let Some(value) = presented_string_attr(node, &DomAttribute::ColumnGap) {
-        column_gap_px = supported_gap_length_px(value, font_size_px)?;
-    }
-    Some((row_gap_px, column_gap_px))
-}
-
-fn staged_gap_shorthand_px(node: &DomNode, font_size_px: f32) -> (f32, f32) {
-    let Some(value) = presented_string_attr(node, &DomAttribute::Gap) else {
-        return (0.0, 0.0);
-    };
-    let mut tokens = value.split_whitespace();
-    match (tokens.next(), tokens.next(), tokens.next()) {
-        (Some(single), None, None) => {
-            let gap_px = gap_length_px(single, font_size_px);
-            (gap_px, gap_px)
-        }
-        (Some(row), Some(column), None) => (
-            gap_length_px(row, font_size_px),
-            gap_length_px(column, font_size_px),
-        ),
-        _ => panic!("staged gap shorthand should have one or two lengths: {value}"),
-    }
-}
-
-fn supported_gap_shorthand_px(node: &DomNode, font_size_px: f32) -> Option<(f32, f32)> {
-    let Some(value) = presented_string_attr(node, &DomAttribute::Gap) else {
-        return Some((0.0, 0.0));
-    };
-    let mut tokens = value.split_whitespace();
-    match (tokens.next(), tokens.next(), tokens.next()) {
-        (Some(single), None, None) => {
-            let gap_px = supported_gap_length_px(single, font_size_px)?;
-            Some((gap_px, gap_px))
-        }
-        (Some(row), Some(column), None) => Some((
-            supported_gap_length_px(row, font_size_px)?,
-            supported_gap_length_px(column, font_size_px)?,
-        )),
-        _ => None,
-    }
-}
-
-fn gap_length_px(value: &str, font_size_px: f32) -> f32 {
-    if value == "normal" {
-        return 0.0;
-    }
-    authored_length_px(value, font_size_px).unwrap_or_else(|| {
-        panic!("staged gap length should be normal or an authored length: {value}")
-    })
-}
-
-fn supported_gap_length_px(value: &str, font_size_px: f32) -> Option<f32> {
-    if value == "normal" {
-        return Some(0.0);
-    }
-    authored_length_px(value, font_size_px)
-}
-
 fn item_order_from_node(node: &DomNode) -> i32 {
-    let Some(value) = node.presented_attr(&DomAttribute::Order) else {
-        return 0;
-    };
-    match value {
-        DomAttributeValue::Integer(value) => {
-            i32::try_from(*value).expect("flex item order should fit in i32")
-        }
-        DomAttributeValue::String(value) => value
-            .parse::<i32>()
-            .expect("flex item order should be an integer string"),
-        DomAttributeValue::Float(_) | DomAttributeValue::Bool(_) | DomAttributeValue::Color(_) => {
-            panic!("flex item order should be integer-backed")
-        }
-    }
+    node.computed_flex().order
 }
 
-fn item_flex_grow_factor_from_node(node: &DomNode, font_size_px: f32) -> f32 {
-    flex_factor_from_node(
-        node,
-        &DomAttribute::FlexGrow,
-        staged_flex_shorthand(node, font_size_px).map(|shorthand| shorthand.grow_factor),
-        0.0,
-    )
+fn item_flex_grow_factor_from_node(node: &DomNode) -> f32 {
+    node.computed_flex().grow
 }
 
-fn item_flex_shrink_factor_from_node(node: &DomNode, font_size_px: f32) -> f32 {
-    flex_factor_from_node(
-        node,
-        &DomAttribute::FlexShrink,
-        staged_flex_shorthand(node, font_size_px).map(|shorthand| shorthand.shrink_factor),
-        1.0,
-    )
+fn item_flex_shrink_factor_from_node(node: &DomNode) -> f32 {
+    node.computed_flex().shrink
 }
 
-fn flex_factor_from_node(
-    node: &DomNode,
-    attribute: &DomAttribute,
-    shorthand_value: Option<f32>,
-    default_value: f32,
-) -> f32 {
-    let Some(value) = node.presented_attr(attribute) else {
-        return shorthand_value.unwrap_or(default_value);
-    };
-    let parsed_value = match value {
-        DomAttributeValue::Float(value) => *value,
-        DomAttributeValue::Integer(value) => value
-            .to_string()
-            .parse::<f32>()
-            .expect("integer-backed flex factor should parse as f32"),
-        DomAttributeValue::String(value) => value
-            .parse::<f32>()
-            .unwrap_or_else(|_| panic!("flex factor should be numeric: {value}")),
-        DomAttributeValue::Bool(_) | DomAttributeValue::Color(_) => {
-            panic!("flex factor should be numeric-backed")
-        }
-    };
-    assert!(
-        parsed_value.is_finite() && parsed_value >= 0.0,
-        "flex factor should be finite and non-negative",
-    );
-    parsed_value
+fn flex_basis_source_from_node(node: &DomNode) -> FlexBasisSource {
+    flex_basis_source_from_kw(node.computed_flex().basis)
 }
 
-fn staged_flex_shorthand(node: &DomNode, font_size_px: f32) -> Option<ParsedFlexShorthand> {
-    let value = presented_string_attr(node, &DomAttribute::Flex)?;
-    Some(
-        parse_flex_shorthand(value, font_size_px).unwrap_or_else(|| {
-            panic!("staged flex shorthand should use a supported token sequence: {value}")
-        }),
-    )
-}
-
-fn parse_flex_shorthand(value: &str, font_size_px: f32) -> Option<ParsedFlexShorthand> {
-    match value {
-        "none" => {
-            return Some(ParsedFlexShorthand {
-                grow_factor: 0.0,
-                shrink_factor: 0.0,
-                basis: FlexBasisSource::Auto,
-            });
-        }
-        "auto" => {
-            return Some(ParsedFlexShorthand {
-                grow_factor: 1.0,
-                shrink_factor: 1.0,
-                basis: FlexBasisSource::Auto,
-            });
-        }
-        "initial" => {
-            return Some(ParsedFlexShorthand {
-                grow_factor: 0.0,
-                shrink_factor: 1.0,
-                basis: FlexBasisSource::Auto,
-            });
-        }
-        _ => {}
-    }
-    let mut tokens = value.split_whitespace();
-    match (tokens.next(), tokens.next(), tokens.next(), tokens.next()) {
-        (Some(single), None, None, None) => {
-            Some(if let Some(grow_factor) = flex_factor_from_token(single) {
-                ParsedFlexShorthand {
-                    grow_factor,
-                    shrink_factor: 1.0,
-                    basis: FlexBasisSource::Zero,
-                }
-            } else {
-                ParsedFlexShorthand {
-                    grow_factor: 1.0,
-                    shrink_factor: 1.0,
-                    basis: parse_flex_basis_source(single, font_size_px)?,
-                }
-            })
-        }
-        (Some(first), Some(second), None, None) => {
-            let grow_factor = flex_factor_from_token(first)?;
-            Some(
-                if let Some(shrink_factor) = flex_factor_from_token(second) {
-                    ParsedFlexShorthand {
-                        grow_factor,
-                        shrink_factor,
-                        basis: FlexBasisSource::Zero,
-                    }
-                } else {
-                    ParsedFlexShorthand {
-                        grow_factor,
-                        shrink_factor: 1.0,
-                        basis: parse_flex_basis_source(second, font_size_px)?,
-                    }
-                },
-            )
-        }
-        (Some(first), Some(second), Some(third), None) => Some(ParsedFlexShorthand {
-            grow_factor: flex_factor_from_token(first)?,
-            shrink_factor: flex_factor_from_token(second)?,
-            basis: parse_flex_basis_source(third, font_size_px)?,
-        }),
-        _ => None,
-    }
-}
-
-fn flex_factor_from_token(value: &str) -> Option<f32> {
-    let parsed_value = value.parse::<f32>().ok()?;
-    if parsed_value.is_finite() && parsed_value >= 0.0 {
-        return Some(parsed_value);
-    }
-    None
-}
-
-fn parse_flex_basis_source(value: &str, font_size_px: f32) -> Option<FlexBasisSource> {
-    match value {
-        "auto" => Some(FlexBasisSource::Auto),
-        "content" => Some(FlexBasisSource::Content),
-        "0" => Some(FlexBasisSource::Zero),
-        _ => authored_length_px(value, font_size_px).map(FlexBasisSource::Length),
-    }
-}
-
-fn flex_basis_source_from_node(node: &DomNode, style: NodeStyle) -> Option<FlexBasisSource> {
-    if let Some(basis_value) = presented_string_attr(node, &DomAttribute::FlexBasis) {
-        return Some(parse_flex_basis_source(basis_value, style.font_size_px).unwrap_or_else(
-            || {
-                panic!(
-                    "flex-basis should be auto, content, or a supported authored length: {basis_value}",
-                )
-            },
-        ));
-    }
-    staged_flex_shorthand(node, style.font_size_px).map(|shorthand| shorthand.basis)
-}
-
-fn preferred_flex_basis_px(node: &DomNode, style: NodeStyle) -> Option<f32> {
-    match flex_basis_source_from_node(node, style)? {
+fn preferred_flex_basis_px(node: &DomNode) -> Option<f32> {
+    match flex_basis_source_from_node(node) {
         FlexBasisSource::Auto | FlexBasisSource::Content => None,
         FlexBasisSource::Zero => Some(0.0),
         FlexBasisSource::Length(length_px) => Some(length_px),
@@ -1750,7 +1220,7 @@ fn measured_flex_base_size_px(
     main_axis: FlexAxis,
     measured_border_box_main_size_px: f32,
 ) -> f32 {
-    preferred_flex_basis_px(node, style).map_or(measured_border_box_main_size_px, |basis_px| {
+    preferred_flex_basis_px(node).map_or(measured_border_box_main_size_px, |basis_px| {
         basis_px + main_axis_border_padding_size_px(style.sides, main_axis)
     })
 }
@@ -1781,7 +1251,7 @@ fn supported_automatic_min_main_size_px(
 }
 
 fn supported_auto_min_resolves_to_zero(node: &DomNode) -> bool {
-    !item_overflow_is_visible(node)
+    node.computed_box().overflow != OverflowKw::Visible
 }
 
 fn content_based_auto_min_main_size_px(
@@ -1816,7 +1286,6 @@ fn horizontal_content_based_auto_min_content_width_px(
         return horizontal_flex_container_content_based_auto_min_content_width_px(
             root_dom,
             key,
-            style,
             inherited_style,
         );
     }
@@ -1850,15 +1319,16 @@ fn horizontal_content_based_auto_min_content_width_px(
 fn horizontal_flex_container_content_based_auto_min_content_width_px(
     root_dom: &RootDom,
     key: DomNodeSlotKey,
-    style: NodeStyle,
     inherited_style: &InheritedStyleContext,
 ) -> Result<f32, DomError> {
     let container_node = node_for_key(root_dom, key)?;
-    let Some(container_style) =
-        supported_active_flex_container_style(container_node, inherited_style, style.font_size_px)
-    else {
-        panic!("visible-overflow flex auto-min should only measure a supported flex container");
-    };
+    // The active-solver gate used to reject a flex-flow `wrap-reverse` token at
+    // the stringly direction gate (`supported_flex_direction_from_flow_value`
+    // returned `None`). The typed flex group cannot distinguish `flex-flow:
+    // wrap-reverse` from the `flex-wrap: wrap-reverse` longhand, so it maps both
+    // to `FlexWrapKw::WrapReverse`; the `flex_container_content_based_auto_min_is_supported`
+    // assert below (which requires `NoWrap`) preserves the reject verdict.
+    let container_style = staged_flex_container_style(container_node);
     assert!(
         flex_container_content_based_auto_min_is_supported(container_style),
         "visible-overflow flex auto-min should stay inside the supported intrinsic subset",
@@ -1906,10 +1376,10 @@ fn horizontal_flex_container_auto_min_child_border_box_contribution_px(
     child_border_box_min_width_px: f32,
 ) -> f32 {
     assert!(
-        item_flex_grow_factor_from_node(child_node, child_style.font_size_px) == 0.0,
+        item_flex_grow_factor_from_node(child_node) == 0.0,
         "visible-overflow flex container auto-min should only measure non-growing children",
     );
-    if item_flex_shrink_factor_from_node(child_node, child_style.font_size_px) == 0.0 {
+    if item_flex_shrink_factor_from_node(child_node) == 0.0 {
         return child_border_box_min_width_px.max(
             horizontal_flex_item_definite_base_border_box_width_px(child_node, child_style)
                 .unwrap_or(child_border_box_min_width_px),
@@ -1922,8 +1392,7 @@ fn horizontal_flex_item_definite_base_border_box_width_px(
     child_node: &DomNode,
     child_style: NodeStyle,
 ) -> Option<f32> {
-    let base_content_width_px =
-        preferred_flex_basis_px(child_node, child_style).or(child_style.width_px)?;
+    let base_content_width_px = preferred_flex_basis_px(child_node).or(child_style.width_px)?;
     Some(
         base_content_width_px
             + main_axis_border_padding_size_px(child_style.sides, FlexAxis::Horizontal),
@@ -1965,35 +1434,6 @@ fn text_min_content_width_px(text: &str, font_size_px: f32) -> f32 {
         return widest_segment_width_px;
     }
     measure_text_intrinsic_from_content_and_font_size(text, font_size_px).max_content_width_px
-}
-
-fn item_overflow_is_visible(node: &DomNode) -> bool {
-    strict_flex_auto_min_overflow_mode(node) == FlexAutoMinOverflowMode::Visible
-}
-
-fn flex_auto_min_overflow_mode(node: &DomNode) -> Option<FlexAutoMinOverflowMode> {
-    match presented_string_attr(node, &DomAttribute::Overflow) {
-        None | Some("visible") => Some(FlexAutoMinOverflowMode::Visible),
-        Some("hidden" | "scroll" | "auto" | "clip") => Some(FlexAutoMinOverflowMode::ZeroMin),
-        Some(_) => None,
-    }
-}
-
-fn strict_flex_auto_min_overflow_mode(node: &DomNode) -> FlexAutoMinOverflowMode {
-    flex_auto_min_overflow_mode(node).unwrap_or_else(|| {
-        panic!(
-            "active flex auto-min overflow is unsupported: {:?}",
-            presented_string_attr(node, &DomAttribute::Overflow),
-        )
-    })
-}
-
-fn authored_length_px(value: &str, font_size_px: f32) -> Option<f32> {
-    match parse_authored_length(value)? {
-        AuthoredLength::Px(value_px) => Some(value_px),
-        AuthoredLength::Em(scale) => Some(scale * font_size_px),
-        AuthoredLength::Unset => None,
-    }
 }
 
 fn clamp_main_axis_size(style: NodeStyle, main_axis: FlexAxis, value_px: f32) -> f32 {
@@ -3319,14 +2759,6 @@ fn node_for_key(root_dom: &RootDom, key: DomNodeSlotKey) -> Result<&DomNode, Dom
     root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)
 }
 
-fn presented_string_attr<'a>(node: &'a DomNode, attribute: &DomAttribute) -> Option<&'a str> {
-    let value = node.presented_attr(attribute)?;
-    let DomAttributeValue::String(value) = value else {
-        return None;
-    };
-    Some(value.as_str())
-}
-
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
@@ -3536,7 +2968,8 @@ mod tests {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let document_key = root.document_node().0;
         let container = append_div(&mut root, document_key);
-        root.set_attr_str(container, "display", "flex")
+        root.style_mut(container)
+            .set("display", "flex")
             .expect("display should set");
         (root, container, base_context())
     }
@@ -3546,15 +2979,14 @@ mod tests {
         container: DomNodeSlotKey,
         context: LayoutContext,
     ) -> Vec<MeasuredFlexItem> {
+        let document_key = root.document_node().0;
+        recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
         let mut resolver = IdentityDomLayoutResolver;
         let (style, inherited_style) =
             resolved_node_style(root, container, &context.inherited_style)
                 .expect("container style");
-        let container_style = staged_flex_container_style(
-            root.nodes.get(container).expect("container node"),
-            &inherited_style,
-            style.font_size_px,
-        );
+        let container_style =
+            staged_flex_container_style(root.nodes.get(container).expect("container node"));
         let entered = enter_node(
             root,
             (320.0, 320.0),
@@ -3582,6 +3014,8 @@ mod tests {
         container: DomNodeSlotKey,
         context: LayoutContext,
     ) -> super::FlexContainerSolve {
+        let document_key = root.document_node().0;
+        recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
         let mut resolver = IdentityDomLayoutResolver;
         let (style, inherited_style) =
             resolved_node_style(root, container, &context.inherited_style)
@@ -3619,9 +3053,11 @@ mod tests {
     fn measured_item_record_uses_explicit_width_and_height() {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "width", "12px")
+        root.style_mut(child)
+            .set("width", "12px")
             .expect("width should set");
-        root.set_attr_str(child, "height", "18px")
+        root.style_mut(child)
+            .set("height", "18px")
             .expect("height should set");
 
         let items = collect_items_for_container(&mut root, container, context);
@@ -3641,13 +3077,17 @@ mod tests {
     fn measured_item_record_adds_padding_to_explicit_flex_basis() {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "height", "18px")
+        root.style_mut(child)
+            .set("height", "18px")
             .expect("height should set");
-        root.set_attr_str(child, "flex-basis", "12px")
+        root.style_mut(child)
+            .set("flex-basis", "12px")
             .expect("basis should set");
-        root.set_attr_str(child, "padding-left", "4px")
+        root.style_mut(child)
+            .set("padding-left", "4px")
             .expect("left padding should set");
-        root.set_attr_str(child, "padding-right", "6px")
+        root.style_mut(child)
+            .set("padding-right", "6px")
             .expect("right padding should set");
 
         let items = collect_items_for_container(&mut root, container, context);
@@ -3685,9 +3125,11 @@ mod tests {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
         let span = append_span(&mut root, child);
-        root.set_attr_str(span, "width", "20px")
+        root.style_mut(span)
+            .set("width", "20px")
             .expect("span width should set");
-        root.set_attr_str(span, "height", "40px")
+        root.style_mut(span)
+            .set("height", "40px")
             .expect("span height should set");
         let text = append_text(&mut root, span, "UnbreakableFlexLabel");
 
@@ -3711,7 +3153,8 @@ mod tests {
     fn measured_item_record_uses_zero_automatic_min_main_size_for_scroll_overflow() {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "overflow", "scroll")
+        root.style_mut(child)
+            .set("overflow", "scroll")
             .expect("overflow should set");
         append_text(&mut root, child, "UnbreakableFlexLabel");
 
@@ -3726,7 +3169,8 @@ mod tests {
     fn measured_item_record_uses_zero_automatic_min_main_size_for_hidden_overflow() {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "overflow", "hidden")
+        root.style_mut(child)
+            .set("overflow", "hidden")
             .expect("overflow should set");
         append_text(&mut root, child, "UnbreakableFlexLabel");
 
@@ -3741,7 +3185,8 @@ mod tests {
     fn measured_item_record_uses_zero_automatic_min_main_size_for_clip_overflow() {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "overflow", "clip")
+        root.style_mut(child)
+            .set("overflow", "clip")
             .expect("overflow should set");
         append_text(&mut root, child, "UnbreakableFlexLabel");
 
@@ -3756,7 +3201,8 @@ mod tests {
     fn measured_item_record_uses_content_based_automatic_min_main_size_for_visible_overflow() {
         let (mut root, container, context) = flex_container_with_context();
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "overflow", "visible")
+        root.style_mut(child)
+            .set("overflow", "visible")
             .expect("overflow should set");
         append_text(&mut root, child, "UnbreakableFlexLabel");
 
@@ -3770,10 +3216,12 @@ mod tests {
     #[test]
     fn measured_item_record_uses_text_min_content_width_for_visible_overflow_auto_min() {
         let (mut root, container, context) = flex_container_with_context();
-        root.set_attr_str(container, "width", "20px")
+        root.style_mut(container)
+            .set("width", "20px")
             .expect("width should set");
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "overflow", "visible")
+        root.style_mut(child)
+            .set("overflow", "visible")
             .expect("overflow should set");
         let text = append_text(&mut root, child, "tiny Supercalifragilistic tiny");
 
@@ -3795,14 +3243,16 @@ mod tests {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let document_key = root.document_node().0;
         let container = append_div(&mut root, document_key);
-        root.set_attr_str(container, "display", "flex")
+        root.style_mut(container)
+            .set("display", "flex")
             .expect("display should set");
         let input = root
             .create_element(DomTag::Input)
             .expect("input should insert");
         root.append_child(container, input)
             .expect("input should append");
-        root.set_attr_str(input, "overflow", "visible")
+        root.style_mut(input)
+            .set("overflow", "visible")
             .expect("overflow should set");
 
         let items = collect_items_for_container(&mut root, container, base_context());
@@ -3815,23 +3265,31 @@ mod tests {
     #[test]
     fn measured_item_record_uses_measured_height_for_vertical_visible_overflow_auto_min() {
         let (mut root, container, context) = flex_container_with_context();
-        root.set_attr_str(container, "flex-direction", "column")
+        root.style_mut(container)
+            .set("flex-direction", "column")
             .expect("direction should set");
-        root.set_attr_str(container, "width", "20px")
+        root.style_mut(container)
+            .set("width", "20px")
             .expect("width should set");
-        root.set_attr_str(container, "height", "40px")
+        root.style_mut(container)
+            .set("height", "40px")
             .expect("height should set");
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "overflow", "visible")
+        root.style_mut(child)
+            .set("overflow", "visible")
             .expect("overflow should set");
-        root.set_attr_str(child, "width", "20px")
+        root.style_mut(child)
+            .set("width", "20px")
             .expect("width should set");
-        root.set_attr_str(child, "flex-basis", "10px")
+        root.style_mut(child)
+            .set("flex-basis", "10px")
             .expect("basis should set");
         let nested = append_div(&mut root, child);
-        root.set_attr_str(nested, "width", "20px")
+        root.style_mut(nested)
+            .set("width", "20px")
             .expect("nested width should set");
-        root.set_attr_str(nested, "height", "30px")
+        root.style_mut(nested)
+            .set("height", "30px")
             .expect("nested height should set");
 
         let items = collect_items_for_container(&mut root, container, context);
@@ -3844,25 +3302,34 @@ mod tests {
     #[test]
     fn staged_measurement_solve_measures_nested_flex_without_writing_layout() {
         let (mut root, container, context) = flex_container_with_context();
-        root.set_attr_str(container, "width", "90px")
+        root.style_mut(container)
+            .set("width", "90px")
             .expect("width should set");
-        root.set_attr_str(container, "height", "20px")
+        root.style_mut(container)
+            .set("height", "20px")
             .expect("height should set");
         let nested = append_div(&mut root, container);
         let nested_child = append_div(&mut root, nested);
-        root.set_attr_str(nested, "display", "flex")
+        root.style_mut(nested)
+            .set("display", "flex")
             .expect("nested display should set");
-        root.set_attr_str(nested, "height", "20px")
+        root.style_mut(nested)
+            .set("height", "20px")
             .expect("nested height should set");
-        root.set_attr_str(nested, "flex-basis", "20px")
+        root.style_mut(nested)
+            .set("flex-basis", "20px")
             .expect("nested basis should set");
-        root.set_attr_str(nested, "overflow", "scroll")
+        root.style_mut(nested)
+            .set("overflow", "scroll")
             .expect("nested overflow should set");
-        root.set_attr_str(nested_child, "flex-basis", "10px")
+        root.style_mut(nested_child)
+            .set("flex-basis", "10px")
             .expect("nested child basis should set");
-        root.set_attr_str(nested_child, "height", "10px")
+        root.style_mut(nested_child)
+            .set("height", "10px")
             .expect("nested child height should set");
-        root.set_attr_str(nested_child, "overflow", "scroll")
+        root.style_mut(nested_child)
+            .set("overflow", "scroll")
             .expect("nested child overflow should set");
 
         let nested_layout_before = node_layout(&root, nested);
@@ -3890,14 +3357,18 @@ mod tests {
     #[test]
     fn staged_measurement_solve_does_not_write_node_layout_or_box_model() {
         let (mut root, container, context) = flex_container_with_context();
-        root.set_attr_str(container, "width", "40px")
+        root.style_mut(container)
+            .set("width", "40px")
             .expect("width should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
+        root.style_mut(container)
+            .set("flex-wrap", "wrap")
             .expect("wrap should set");
         let child = append_div(&mut root, container);
-        root.set_attr_str(child, "width", "24px")
+        root.style_mut(child)
+            .set("width", "24px")
             .expect("width should set");
-        root.set_attr_str(child, "height", "10px")
+        root.style_mut(child)
+            .set("height", "10px")
             .expect("height should set");
         let text = append_text(&mut root, child, "Flex label");
 
@@ -3932,15 +3403,20 @@ mod tests {
         let first = append_div(&mut root, container);
         let second = append_div(&mut root, container);
         let third = append_div(&mut root, container);
-        root.set_attr_str(first, "width", "10px")
+        root.style_mut(first)
+            .set("width", "10px")
             .expect("width should set");
-        root.set_attr_str(second, "width", "10px")
+        root.style_mut(second)
+            .set("width", "10px")
             .expect("width should set");
-        root.set_attr_str(third, "width", "10px")
+        root.style_mut(third)
+            .set("width", "10px")
             .expect("width should set");
-        root.set_attr_str(second, "order", "2")
+        root.style_mut(second)
+            .set("order", "2")
             .expect("order should set");
-        root.set_attr_str(third, "order", "-1")
+        root.style_mut(third)
+            .set("order", "-1")
             .expect("order should set");
 
         let items = collect_items_for_container(&mut root, container, context);
@@ -3966,22 +3442,29 @@ mod tests {
     #[test]
     fn line_membership_uses_outer_hypothetical_main_sizes() {
         let (mut root, container, context) = flex_container_with_context();
-        root.set_attr_str(container, "flex-wrap", "wrap")
+        root.style_mut(container)
+            .set("flex-wrap", "wrap")
             .expect("wrap should set");
         let first = append_div(&mut root, container);
         let second = append_div(&mut root, container);
         let third = append_div(&mut root, container);
-        root.set_attr_str(first, "width", "30px")
+        root.style_mut(first)
+            .set("width", "30px")
             .expect("width should set");
-        root.set_attr_str(first, "height", "10px")
+        root.style_mut(first)
+            .set("height", "10px")
             .expect("height should set");
-        root.set_attr_str(second, "width", "30px")
+        root.style_mut(second)
+            .set("width", "30px")
             .expect("width should set");
-        root.set_attr_str(second, "height", "10px")
+        root.style_mut(second)
+            .set("height", "10px")
             .expect("height should set");
-        root.set_attr_str(third, "width", "20px")
+        root.style_mut(third)
+            .set("width", "20px")
             .expect("width should set");
-        root.set_attr_str(third, "height", "10px")
+        root.style_mut(third)
+            .set("height", "10px")
             .expect("height should set");
 
         let items = collect_items_for_container(&mut root, container, context);
@@ -4104,28 +3587,38 @@ mod tests {
     #[test]
     fn staged_measurement_solve_orders_items_before_collecting_lines() {
         let (mut root, container, context) = flex_container_with_context();
-        root.set_attr_str(container, "width", "35px")
+        root.style_mut(container)
+            .set("width", "35px")
             .expect("width should set");
-        root.set_attr_str(container, "flex-wrap", "wrap")
+        root.style_mut(container)
+            .set("flex-wrap", "wrap")
             .expect("wrap should set");
         let first = append_div(&mut root, container);
         let second = append_div(&mut root, container);
         let third = append_div(&mut root, container);
-        root.set_attr_str(first, "width", "20px")
+        root.style_mut(first)
+            .set("width", "20px")
             .expect("width should set");
-        root.set_attr_str(first, "height", "10px")
+        root.style_mut(first)
+            .set("height", "10px")
             .expect("height should set");
-        root.set_attr_str(first, "order", "2")
+        root.style_mut(first)
+            .set("order", "2")
             .expect("order should set");
-        root.set_attr_str(second, "width", "15px")
+        root.style_mut(second)
+            .set("width", "15px")
             .expect("width should set");
-        root.set_attr_str(second, "height", "10px")
+        root.style_mut(second)
+            .set("height", "10px")
             .expect("height should set");
-        root.set_attr_str(second, "order", "-1")
+        root.style_mut(second)
+            .set("order", "-1")
             .expect("order should set");
-        root.set_attr_str(third, "width", "20px")
+        root.style_mut(third)
+            .set("width", "20px")
             .expect("width should set");
-        root.set_attr_str(third, "height", "10px")
+        root.style_mut(third)
+            .set("height", "10px")
             .expect("height should set");
 
         let solve = build_solve_for_container(&mut root, container, context);
@@ -5310,28 +4803,38 @@ mod tests {
     #[test]
     fn resolve_active_flex_container_uses_order_modified_sequence_for_offsets() {
         let (mut root, container, context) = flex_container_with_context();
-        root.set_attr_str(container, "width", "30px")
+        root.style_mut(container)
+            .set("width", "30px")
             .expect("width should set");
         let first = append_div(&mut root, container);
         let second = append_div(&mut root, container);
         let third = append_div(&mut root, container);
-        root.set_attr_str(first, "flex-basis", "10px")
+        root.style_mut(first)
+            .set("flex-basis", "10px")
             .expect("basis should set");
-        root.set_attr_str(first, "height", "10px")
+        root.style_mut(first)
+            .set("height", "10px")
             .expect("height should set");
-        root.set_attr_str(first, "order", "3")
+        root.style_mut(first)
+            .set("order", "3")
             .expect("order should set");
-        root.set_attr_str(second, "flex-basis", "10px")
+        root.style_mut(second)
+            .set("flex-basis", "10px")
             .expect("basis should set");
-        root.set_attr_str(second, "height", "10px")
+        root.style_mut(second)
+            .set("height", "10px")
             .expect("height should set");
-        root.set_attr_str(second, "order", "1")
+        root.style_mut(second)
+            .set("order", "1")
             .expect("order should set");
-        root.set_attr_str(third, "flex-basis", "10px")
+        root.style_mut(third)
+            .set("flex-basis", "10px")
             .expect("basis should set");
-        root.set_attr_str(third, "height", "10px")
+        root.style_mut(third)
+            .set("height", "10px")
             .expect("height should set");
-        root.set_attr_str(third, "order", "2")
+        root.style_mut(third)
+            .set("order", "2")
             .expect("order should set");
 
         let measured_solve = build_solve_for_container(&mut root, container, context);

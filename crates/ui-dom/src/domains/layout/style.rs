@@ -5,18 +5,18 @@
 //! What this file contains:
 //!
 //! - DOM-themed display and position interpretation
-//! - strict extraction of authored box-edge and size properties
-//! - layer-kind derivation from current node state and authored properties
+//! - extraction of box-edge and size properties from the typed computed groups
+//! - layer-kind derivation from current node state and computed groups
 //! - layer-order lookup from internal node layout state
 //! - node-owned dirty and paint state accessors used by layout and composite
-//! - small parsing helpers for transform translate values and pixel attrs
+//! - a transform translate helper read from the computed transform group
 //!
 //! Invariants and rules:
 //!
-//! - this file interprets authored DOM properties but does not walk the tree
+//! - this file interprets computed group values but does not walk the tree
 //! - this file does not solve layout; it only derives property-level answers
 //! - every answer here must be derivable from the current node and its current
-//!   authored/presented properties
+//!   computed groups (read visit-locally via `DomNode::computed_*`)
 //! - this file must stay strict with supported DOM value meanings and fail
 //!   closed through defaults rather than inventing new CSS-like behavior
 //! - layer decisions here describe the node to later phases; they must not act
@@ -26,20 +26,21 @@
 //!
 //! - keep vocabulary DOM-themed: display, position, overflow, transform
 //! - prefer direct derivation over storing extra state for later convenience
-//! - keep parsing local and unsurprising so solver code can trust the answers
+//! - keep the `*Kw` → solver-enum mapping local and unsurprising so solver code
+//!   can trust the answers
 //! - if a helper is only needed by one solver branch, keep it there instead of
 //!   teaching `style.rs` a broader concept than the DOM actually exposes
 //!
-use crate::domains::visitor::inherited_style::InheritedStyleContext;
-use crate::numeric::i64_to_f32;
+use crate::domains::style::computed::{DisplayKw, PositionKw};
 use crate::types::primitives::PointPx;
 use crate::types::{
-    AuthoredLength, BoxEdgeInsets, DomAttribute, DomAttributeValue, DomBoxModel, DomError,
-    DomIntrinsic, DomLayerKind, DomNode, DomRect, parse_authored_length,
+    BoxEdgeInsets, DomBoxModel, DomError, DomIntrinsic, DomLayerKind, DomNode, DomRect,
 };
 
 #[cfg(test)]
-use crate::domains::visitor::inherited_style::inherited_context_from_node;
+use crate::domains::style::computed::{ComputedGroups, OverflowKw};
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
 use crate::types::{DomNodeSlotKey, DomTag, RootDom, RootDomContext};
 
@@ -174,10 +175,11 @@ pub(crate) fn clear_layout_dirty(node: &mut DomNode) {
 /// }
 /// ```
 pub(crate) fn layer_kind_for_node(node: &DomNode) -> DomLayerKind {
-    if presented_display(node) == LayoutDisplay::None {
+    let box_ = node.computed_box();
+    if box_.display == DisplayKw::None {
         return DomLayerKind::None;
     }
-    if node_has_clipped_layer(node) {
+    if box_.overflow.creates_clip() || box_.isolate {
         return DomLayerKind::Clipped;
     }
     if node.parent_key().is_none() || node_has_unclipped_layer(node) {
@@ -196,10 +198,9 @@ pub(crate) fn layer_kind_for_node(node: &DomNode) -> DomLayerKind {
 /// clipped layer, which allows local size updates.
 ///
 pub(crate) fn layer_allows_local_size_update(node: &DomNode) -> bool {
-    matches!(
-        presented_position(node),
-        PositionMode::Absolute | PositionMode::Fixed
-    ) || overflow_creates_clipped_layer(node)
+    let box_ = node.computed_box();
+    matches!(box_.position, PositionKw::Absolute | PositionKw::Fixed)
+        || box_.overflow.creates_clip()
 }
 
 /// Derives the current layout-facing property view for one node. This gives
@@ -213,31 +214,29 @@ pub(crate) fn layer_allows_local_size_update(node: &DomNode) -> bool {
 /// assert_eq!(style.position, PositionMode::Static);
 /// ```
 #[allow(clippy::unnecessary_wraps)]
-pub(super) fn node_style(
-    node: &DomNode,
-    current_inherited_context: &InheritedStyleContext,
-) -> Result<NodeStyle, DomError> {
-    let font_size_px = current_inherited_context.effective_font_size_px();
+pub(super) fn node_style(node: &DomNode) -> Result<NodeStyle, DomError> {
+    let box_ = node.computed_box();
+    let font = node.computed_font();
     Ok(NodeStyle {
         display: presented_display(node),
         position: presented_position(node),
         layer_kind: layer_kind_for_node(node),
-        font_size_px,
+        font_size_px: font.size_px,
         sides: BoxSides {
-            margin: box_edge_insets_for(node, EdgeKind::Margin, font_size_px),
-            border: box_edge_insets_for(node, EdgeKind::Border, font_size_px),
-            padding: box_edge_insets_for(node, EdgeKind::Padding, font_size_px),
+            margin: box_edge_insets_from_array(box_.margin),
+            border: box_edge_insets_from_array(box_.border_width),
+            padding: box_edge_insets_from_array(box_.padding),
         },
-        width_px: layout_length_attr_px(node, &DomAttribute::Width, font_size_px),
-        height_px: layout_length_attr_px(node, &DomAttribute::Height, font_size_px),
-        min_width_px: layout_length_attr_px(node, &DomAttribute::MinWidth, font_size_px),
-        min_height_px: layout_length_attr_px(node, &DomAttribute::MinHeight, font_size_px),
-        max_width_px: layout_length_attr_px(node, &DomAttribute::MaxWidth, font_size_px),
-        max_height_px: layout_length_attr_px(node, &DomAttribute::MaxHeight, font_size_px),
-        top_px: layout_length_attr_px(node, &DomAttribute::Top, font_size_px),
-        left_px: layout_length_attr_px(node, &DomAttribute::Left, font_size_px),
-        right_px: layout_length_attr_px(node, &DomAttribute::Right, font_size_px),
-        bottom_px: layout_length_attr_px(node, &DomAttribute::Bottom, font_size_px),
+        width_px: box_.width,
+        height_px: box_.height,
+        min_width_px: box_.min_width,
+        min_height_px: box_.min_height,
+        max_width_px: box_.max_width,
+        max_height_px: box_.max_height,
+        top_px: box_.top,
+        left_px: box_.left,
+        right_px: box_.right,
+        bottom_px: box_.bottom,
     })
 }
 
@@ -328,11 +327,44 @@ fn intrinsic_border_box_for_non_intrinsic_node(
     }
 }
 
-/// Returns whether the node should currently produce paint output. This gives
-/// paint/composite one derived visibility answer from current DOM props.
-///
+/// Maps the computed `display` keyword onto the solver's `LayoutDisplay`
+/// vocabulary. The variant sets are identical (`display_kw.rs` boundary note).
+fn display_from_kw(kw: DisplayKw) -> LayoutDisplay {
+    match kw {
+        DisplayKw::None => LayoutDisplay::None,
+        DisplayKw::Block => LayoutDisplay::Block,
+        DisplayKw::Inline => LayoutDisplay::Inline,
+        DisplayKw::InlineBlock => LayoutDisplay::InlineBlock,
+        DisplayKw::Flex => LayoutDisplay::Flex,
+        DisplayKw::InlineFlex => LayoutDisplay::InlineFlex,
+    }
+}
+
+/// Maps the computed `position` keyword onto the solver's `PositionMode`
+/// vocabulary. The variant sets are identical (`position_kw.rs` boundary note).
+fn position_from_kw(kw: PositionKw) -> PositionMode {
+    match kw {
+        PositionKw::Static => PositionMode::Static,
+        PositionKw::Relative => PositionMode::Relative,
+        PositionKw::Absolute => PositionMode::Absolute,
+        PositionKw::Fixed => PositionMode::Fixed,
+    }
+}
+
+/// Reorders the box group's `[top, right, bottom, left]` array into the
+/// `BoxEdgeInsets` field order (`top_px`, `right_px`, `bottom_px`, `left_px`).
+fn box_edge_insets_from_array([top, right, bottom, left]: [f32; 4]) -> BoxEdgeInsets {
+    BoxEdgeInsets {
+        left_px: left,
+        top_px: top,
+        right_px: right,
+        bottom_px: bottom,
+    }
+}
+
 /// Returns the current DOM display meaning for one node. This normalizes
-/// text-node and authored display behavior into one enum.
+/// text-node behavior (always `Inline`) and maps the computed box group's
+/// `DisplayKw` onto the solver's `LayoutDisplay`.
 ///
 /// Example:
 ///
@@ -343,18 +375,11 @@ pub(super) fn presented_display(node: &DomNode) -> LayoutDisplay {
     if matches!(node, DomNode::Text(_)) {
         return LayoutDisplay::Inline;
     }
-    match string_attr_for_attribute(node, &DomAttribute::Display) {
-        Some("none") => LayoutDisplay::None,
-        Some("inline") => LayoutDisplay::Inline,
-        Some("inline-block") => LayoutDisplay::InlineBlock,
-        Some("flex") => LayoutDisplay::Flex,
-        Some("inline-flex") => LayoutDisplay::InlineFlex,
-        _ => LayoutDisplay::Block,
-    }
+    display_from_kw(node.computed_box().display)
 }
 
-/// Returns the current DOM position meaning for one node. This normalizes
-/// authored `position` values into one strict layout enum.
+/// Returns the current DOM position meaning for one node. This maps the
+/// computed box group's `PositionKw` onto the solver's `PositionMode`.
 ///
 /// Example:
 ///
@@ -363,115 +388,22 @@ pub(super) fn presented_display(node: &DomNode) -> LayoutDisplay {
 /// assert!(matches!(position, PositionMode::Static | PositionMode::Relative));
 /// ```
 pub(super) fn presented_position(node: &DomNode) -> PositionMode {
-    match string_attr_for_attribute(node, &DomAttribute::Position) {
-        Some("relative") => PositionMode::Relative,
-        Some("absolute") => PositionMode::Absolute,
-        Some("fixed") => PositionMode::Fixed,
-        _ => PositionMode::Static,
-    }
-}
-
-#[derive(Clone, Copy)]
-enum EdgeKind {
-    Margin,
-    Border,
-    Padding,
-}
-
-fn box_edge_insets_for(node: &DomNode, edge_kind: EdgeKind, font_size_px: f32) -> BoxEdgeInsets {
-    let (top, left, right, bottom) = match edge_kind {
-        EdgeKind::Margin => (
-            DomAttribute::MarginTop,
-            DomAttribute::MarginLeft,
-            DomAttribute::MarginRight,
-            DomAttribute::MarginBottom,
-        ),
-        EdgeKind::Border => (
-            DomAttribute::BorderTop,
-            DomAttribute::BorderLeft,
-            DomAttribute::BorderRight,
-            DomAttribute::BorderBottom,
-        ),
-        EdgeKind::Padding => (
-            DomAttribute::PaddingTop,
-            DomAttribute::PaddingLeft,
-            DomAttribute::PaddingRight,
-            DomAttribute::PaddingBottom,
-        ),
-    };
-    BoxEdgeInsets {
-        left_px: layout_length_attr_px(node, &left, font_size_px).unwrap_or(0.0),
-        top_px: layout_length_attr_px(node, &top, font_size_px).unwrap_or(0.0),
-        right_px: layout_length_attr_px(node, &right, font_size_px).unwrap_or(0.0),
-        bottom_px: layout_length_attr_px(node, &bottom, font_size_px).unwrap_or(0.0),
-    }
-}
-
-fn layout_length_attr_px(
-    node: &DomNode,
-    attribute: &DomAttribute,
-    font_size_px: f32,
-) -> Option<f32> {
-    match node.presented_attr(attribute) {
-        Some(DomAttributeValue::String(value)) => match parse_authored_length(value.as_str())? {
-            AuthoredLength::Unset => None,
-            AuthoredLength::Px(px) => Some(px),
-            AuthoredLength::Em(scale) => Some(font_size_px * scale),
-        },
-        Some(DomAttributeValue::Float(value)) => Some(*value),
-        Some(DomAttributeValue::Integer(value)) => Some(i64_to_f32(*value)),
-        Some(DomAttributeValue::Bool(value)) => {
-            panic!("layout length attrs should not use boolean payloads: {attribute:?}={value}")
-        }
-        _ => None,
-    }
-}
-
-fn node_has_clipped_layer(node: &DomNode) -> bool {
-    overflow_creates_clipped_layer(node) || isolate_creates_clipped_layer(node)
+    position_from_kw(node.computed_box().position)
 }
 
 fn node_has_unclipped_layer(node: &DomNode) -> bool {
-    if positioned_node_creates_unclipped_layer(node) {
+    if matches!(
+        node.computed_box().position,
+        PositionKw::Relative | PositionKw::Absolute | PositionKw::Fixed
+    ) {
         return true;
     }
-    let Some(transform) = string_attr_for_attribute(node, &DomAttribute::Transform) else {
-        return false;
-    };
-    transform != "none"
+    node.computed_transform().has_transform
 }
 
-fn positioned_node_creates_unclipped_layer(node: &DomNode) -> bool {
-    matches!(
-        string_attr_for_attribute(node, &DomAttribute::Position),
-        Some(value) if matches!(value, "relative" | "absolute" | "fixed")
-    )
-}
-
-fn overflow_creates_clipped_layer(node: &DomNode) -> bool {
-    let Some(overflow) = string_attr_for_attribute(node, &DomAttribute::Overflow) else {
-        return false;
-    };
-    overflow != "visible"
-}
-
-fn isolate_creates_clipped_layer(node: &DomNode) -> bool {
-    match node.presented_attr(&DomAttribute::Isolate) {
-        Some(DomAttributeValue::Bool(value)) => *value,
-        Some(DomAttributeValue::String(value)) => value == "true" || value == "isolate",
-        _ => false,
-    }
-}
-
-fn string_attr_for_attribute<'a>(node: &'a DomNode, attribute: &DomAttribute) -> Option<&'a str> {
-    match node.presented_attr(attribute) {
-        Some(DomAttributeValue::String(value)) => Some(value.as_str()),
-        _ => None,
-    }
-}
-
-/// Returns the local translate offset encoded in the node's transform attr.
-/// This gives composite and hit testing one strict, derived translate answer.
+/// Returns the local translate offset encoded in the node's computed transform
+/// group. This gives composite and hit testing one strict, derived translate
+/// answer.
 ///
 /// Example:
 ///
@@ -480,20 +412,11 @@ fn string_attr_for_attribute<'a>(node: &'a DomNode, attribute: &DomAttribute) ->
 /// assert_eq!(offset.x_px, 8.0);
 /// ```
 pub(super) fn transform_translate_for_node(node: &DomNode) -> PointPx {
-    let Some(transform) = presented_transform_attr(node) else {
-        return PointPx::default();
-    };
-    parse_translate(transform)
+    let [x_px, y_px] = node.computed_transform().translate_px;
+    PointPx { x_px, y_px }
 }
 
-fn presented_transform_attr(node: &DomNode) -> Option<&str> {
-    match node.presented_attr(&DomAttribute::Transform) {
-        Some(DomAttributeValue::String(value)) => Some(value.as_str()),
-        _ => None,
-    }
-}
-
-fn parse_translate(transform: &str) -> PointPx {
+pub(crate) fn parse_translate(transform: &str) -> PointPx {
     if let Some(value) = translate_scalar(transform, "translateX(") {
         return PointPx {
             x_px: value,
@@ -538,6 +461,20 @@ fn parse_px(value: Option<&str>) -> f32 {
     number.parse::<f32>().unwrap_or(0.0)
 }
 
+/// Feeds a detached element node's computed groups directly (spine 3.3g-2a):
+/// inline tests write typed group values onto the node record, and the layout
+/// readers (`node_style`/`presented_display`/`layer_kind_for_node`) read them
+/// back visit-locally. There is no attr-projection channel anymore — the old
+/// `project_detached_node_for_test` scaffold died with the stored-attr channel.
+#[cfg(test)]
+fn with_computed_groups<F: FnOnce(&mut ComputedGroups)>(mut node: DomNode, update: F) -> DomNode {
+    match &mut node {
+        DomNode::Element(element) => update(&mut element.base.presentation.computed),
+        _ => unreachable!("layout style tests feed element nodes"),
+    }
+    node
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,31 +504,8 @@ mod tests {
         key
     }
 
-    fn resolved_node_style(node: &DomNode) -> super::NodeStyle {
-        let inherited =
-            inherited_context_from_node(node, &InheritedStyleContext::default()).expect("context");
-        node_style(node, &inherited).expect("style")
-    }
-
-    fn resolved_node_style_with_parent_font_size(
-        node: &DomNode,
-        parent_font_size_px: f32,
-    ) -> super::NodeStyle {
-        let inherited = inherited_context_from_node(
-            node,
-            &InheritedStyleContext {
-                color: None,
-                font_size_px: Some(parent_font_size_px),
-                line_height_px: None,
-                text_align: None,
-                text_direction: None,
-                white_space: None,
-                overflow_wrap: None,
-                word_break: None,
-            },
-        )
-        .expect("context");
-        node_style(node, &inherited).expect("style")
+    fn node_style_of(node: &DomNode) -> super::NodeStyle {
+        node_style(node).expect("style")
     }
 
     #[test]
@@ -599,75 +513,42 @@ mod tests {
         let text = DomNode::fixture_text(test_owner_document_key(), "hello");
         assert_eq!(presented_display(&text), LayoutDisplay::Inline);
 
-        let mut flex = div_node();
-        flex.set_attr(
-            DomAttribute::Display,
-            Some(DomAttributeValue::String("flex".to_string())),
-        )
-        .expect("flex display");
+        let flex = with_computed_groups(div_node(), |groups| {
+            groups.box_.display = DisplayKw::Flex;
+        });
         assert_eq!(presented_display(&flex), LayoutDisplay::Flex);
 
-        let mut inline_flex = div_node();
-        inline_flex
-            .set_attr(
-                DomAttribute::Display,
-                Some(DomAttributeValue::String("inline-flex".to_string())),
-            )
-            .expect("inline-flex display");
+        let inline_flex = with_computed_groups(div_node(), |groups| {
+            groups.box_.display = DisplayKw::InlineFlex;
+        });
         assert_eq!(presented_display(&inline_flex), LayoutDisplay::InlineFlex);
     }
 
     #[test]
     fn presented_position_maps_supported_position_values() {
-        let mut relative = div_node();
-        relative
-            .set_attr(
-                DomAttribute::Position,
-                Some(DomAttributeValue::String("relative".to_string())),
-            )
-            .expect("relative position");
+        let relative = with_computed_groups(div_node(), |groups| {
+            groups.box_.position = PositionKw::Relative;
+        });
         assert_eq!(presented_position(&relative), PositionMode::Relative);
 
-        let mut absolute = div_node();
-        absolute
-            .set_attr(
-                DomAttribute::Position,
-                Some(DomAttributeValue::String("absolute".to_string())),
-            )
-            .expect("absolute position");
+        let absolute = with_computed_groups(div_node(), |groups| {
+            groups.box_.position = PositionKw::Absolute;
+        });
         assert_eq!(presented_position(&absolute), PositionMode::Absolute);
     }
 
     #[test]
     fn node_style_reads_pixel_edges_and_sizes() {
-        let mut node = div_node();
-        node.set_attr(
-            DomAttribute::MarginLeft,
-            Some(DomAttributeValue::String("6px".to_string())),
-        )
-        .expect("margin-left");
-        node.set_attr(
-            DomAttribute::PaddingTop,
-            Some(DomAttributeValue::String("4px".to_string())),
-        )
-        .expect("padding-top");
-        node.set_attr(
-            DomAttribute::BorderRight,
-            Some(DomAttributeValue::String("2px".to_string())),
-        )
-        .expect("border-right");
-        node.set_attr(
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("40px".to_string())),
-        )
-        .expect("width");
-        node.set_attr(
-            DomAttribute::Bottom,
-            Some(DomAttributeValue::String("0".to_string())),
-        )
-        .expect("bottom");
+        let node = with_computed_groups(div_node(), |groups| {
+            // `margin`/`padding`/`border_width` are [top, right, bottom, left].
+            groups.box_.margin[3] = 6.0; // margin-left
+            groups.box_.padding[0] = 4.0; // padding-top
+            groups.box_.border_width[1] = 2.0; // border-right
+            groups.box_.width = Some(40.0);
+            groups.box_.bottom = Some(0.0);
+        });
 
-        let style = resolved_node_style(&node);
+        let style = node_style_of(&node);
 
         assert_close(style.sides.margin.left_px, 6.0);
         assert_close(style.sides.padding.top_px, 4.0);
@@ -677,30 +558,19 @@ mod tests {
     }
 
     #[test]
-    fn node_style_resolves_em_lengths_from_current_font_size() {
-        let mut node = div_node();
-        node.set_attr(
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("2em".to_string())),
-        )
-        .expect("font-size");
-        node.set_attr(
-            DomAttribute::Width,
-            Some(DomAttributeValue::String("3em".to_string())),
-        )
-        .expect("width");
-        node.set_attr(
-            DomAttribute::PaddingLeft,
-            Some(DomAttributeValue::String("1em".to_string())),
-        )
-        .expect("padding-left");
-        node.set_attr(
-            DomAttribute::MarginTop,
-            Some(DomAttributeValue::String("0.5em".to_string())),
-        )
-        .expect("margin-top");
+    fn node_style_reads_resolved_em_lengths_and_font_size() {
+        // The style pass resolves `em` against the element's own font size and
+        // writes resolved px into the groups; `node_style` reads those resolved
+        // values (the `2em` font-size, `3em` width, `1em` padding-left, `0.5em`
+        // margin-top all resolved against a 10px parent seed -> 20/60/20/10).
+        let node = with_computed_groups(div_node(), |groups| {
+            groups.font.size_px = 20.0;
+            groups.box_.width = Some(60.0);
+            groups.box_.padding[3] = 20.0; // padding-left
+            groups.box_.margin[0] = 10.0; // margin-top
+        });
 
-        let style = resolved_node_style_with_parent_font_size(&node, 10.0);
+        let style = node_style_of(&node);
 
         assert_close(style.font_size_px, 20.0);
         assert_eq!(style.width_px, Some(60.0));
@@ -710,47 +580,30 @@ mod tests {
 
     #[test]
     fn layer_rules_mark_positioned_and_overflow_nodes_as_layers() {
-        let mut relative = div_node();
-        relative
-            .set_attr(
-                DomAttribute::Position,
-                Some(DomAttributeValue::String("relative".to_string())),
-            )
-            .expect("relative position");
+        let relative = with_computed_groups(div_node(), |groups| {
+            groups.box_.position = PositionKw::Relative;
+        });
         assert_eq!(layer_kind_for_node(&relative), DomLayerKind::Normal);
 
-        let mut transformed = div_node();
-        transformed
-            .set_attr(
-                DomAttribute::Transform,
-                Some(DomAttributeValue::String("translateX(6px)".to_string())),
-            )
-            .expect("transform");
+        let transformed = with_computed_groups(div_node(), |groups| {
+            groups.transform.translate_px = [6.0, 0.0];
+            groups.transform.has_transform = true;
+        });
         assert_eq!(layer_kind_for_node(&transformed), DomLayerKind::Normal);
 
-        let mut hidden = div_node();
-        hidden
-            .set_attr(
-                DomAttribute::Overflow,
-                Some(DomAttributeValue::String("hidden".to_string())),
-            )
-            .expect("overflow hidden");
+        let hidden = with_computed_groups(div_node(), |groups| {
+            groups.box_.overflow = OverflowKw::Hidden;
+        });
         assert_eq!(layer_kind_for_node(&hidden), DomLayerKind::Clipped);
 
-        let mut auto = div_node();
-        auto.set_attr(
-            DomAttribute::Overflow,
-            Some(DomAttributeValue::String("auto".to_string())),
-        )
-        .expect("overflow auto");
+        let auto = with_computed_groups(div_node(), |groups| {
+            groups.box_.overflow = OverflowKw::Auto;
+        });
         assert_eq!(layer_kind_for_node(&auto), DomLayerKind::Clipped);
 
-        let mut clip = div_node();
-        clip.set_attr(
-            DomAttribute::Overflow,
-            Some(DomAttributeValue::String("clip".to_string())),
-        )
-        .expect("overflow clip");
+        let clip = with_computed_groups(div_node(), |groups| {
+            groups.box_.overflow = OverflowKw::Clip;
+        });
         assert_eq!(layer_kind_for_node(&clip), DomLayerKind::Clipped);
     }
 
@@ -765,12 +618,11 @@ mod tests {
     fn static_position_does_not_create_a_layer() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let key = attached_div(&mut root);
-        root.set_attr(
-            key,
-            DomAttribute::Position,
-            Some(DomAttributeValue::String("static".to_string())),
-        )
-        .expect("static");
+        root.style_mut(key)
+            .set("position", "static")
+            .expect("static");
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("style pass");
         assert_eq!(
             layer_kind_for_node(root.nodes.get(key).expect("node")),
             DomLayerKind::None
@@ -781,18 +633,14 @@ mod tests {
     fn display_none_does_not_create_a_layer() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let key = attached_div(&mut root);
-        root.set_attr(
-            key,
-            DomAttribute::Display,
-            Some(DomAttributeValue::String("none".to_string())),
-        )
-        .expect("display none");
-        root.set_attr(
-            key,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(4px)".to_string())),
-        )
-        .expect("transform");
+        root.style_mut(key)
+            .set("display", "none")
+            .expect("display none");
+        root.style_mut(key)
+            .set("transform", "translateX(4px)")
+            .expect("transform");
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("style pass");
         assert_eq!(
             layer_kind_for_node(root.nodes.get(key).expect("node")),
             DomLayerKind::None
@@ -821,29 +669,15 @@ mod tests {
 
     #[test]
     fn transform_translate_parses_supported_translate_functions() {
-        let mut node = div_node();
-        node.set_attr(
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String(
-                "translate(8px, 12px)".to_string(),
-            )),
-        )
-        .expect("translate");
         assert_eq!(
-            transform_translate_for_node(&node),
+            parse_translate("translate(8px, 12px)"),
             PointPx {
                 x_px: 8.0,
                 y_px: 12.0,
             }
         );
-
-        node.set_attr(
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateY(5px)".to_string())),
-        )
-        .expect("translateY");
         assert_eq!(
-            transform_translate_for_node(&node),
+            parse_translate("translateY(5px)"),
             PointPx {
                 x_px: 0.0,
                 y_px: 5.0,

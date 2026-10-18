@@ -1,15 +1,19 @@
 #![allow(rustdoc::bare_urls)]
+// The style pass resolves px/em and rgba channels to exact `f32` literals
+// (integer px and the computed groups' initial values are bit-exact), so the
+// typed computed-group comparisons in this module are deliberate exact checks.
+#![allow(clippy::float_cmp)]
 
 //! CSS cascade and inheritance layout proofs.
 //!
 //! This module owns the integration proofs for the `ui-dom` cascade model:
 //! selector specificity, source-order and origin precedence, inheritance
-//! transmission, pseudo-state rule application, and the two registered
-//! off-spec divergences (direct-attr writes and shorthand/longhand
-//! coexistence). Every family is table-driven and asserts through the public
-//! `RootDom` surface: staged paint plans are the primary measure for geometry
-//! families, and `presented_attr`/retained intrinsics pin the non-paintable
-//! inheritance and off-spec outcomes.
+//! transmission, pseudo-state rule application, and declaration-block error
+//! handling (stylesheet and `style`-attribute halves, both on-spec). Every
+//! family is table-driven and asserts through the public `RootDom` surface:
+//! staged paint plans are the primary measure for geometry families, and
+//! typed computed-group reads (`root.computed_style(...)`) plus retained text
+//! intrinsics pin the non-paintable inheritance outcomes.
 //!
 //! Spec references:
 //! - CSS Cascade 5 §3 (inheritance):
@@ -20,6 +24,13 @@
 //!   <https://www.w3.org/TR/selectors-3/#specificity>
 //! - CSS 2.1 §6.4 (the cascade):
 //!   <https://www.w3.org/TR/CSS21/cascade.html#cascading-order>
+//! - CSS 2.1 §4.1.7 (rules for handling parsing errors):
+//!   <https://www.w3.org/TR/CSS21/syndata.html#parsing-errors>
+//! - css-style-attr §3 (syntax and parsing of the style attribute):
+//!   <https://drafts.csswg.org/css-style-attr/#syntax>
+//! - CSS Fonts 4 §3.1–3.3 (font-family, font-weight, font-style; each
+//!   "Inherited: yes"):
+//!   <https://drafts.csswg.org/css-fonts-4/#font-family-prop>
 //!
 //! Browser implementation references:
 //! - Blink match result / selector / style engine:
@@ -36,24 +47,30 @@
 //!   `!important`, a built-in UA stylesheet, and cascade layers are absent by
 //!   design (see the off-spec registry in `layout_proofs/README.md`)
 //! - the transmitting inherited set is exactly `color`, `font-size`,
-//!   `line-height`, `text-align`, `direction`, `white-space`, `overflow-wrap`,
-//!   and `word-break`; only `color`, `font-size`, `text-align`, and
-//!   `direction` are materialized into presented attributes, while the other
-//!   four stay context-carried into text intrinsics (architecture pin)
-//! - off-spec rows are labeled `off_spec_*` and pin current values; a failure
-//!   means the divergence moved (see the registry)
+//!   `line-height`, `font-family`, `font-weight`, `font-style`, `text-align`,
+//!   `direction`, `white-space`, `overflow-wrap`, and `word-break`; each is
+//!   carried in the descendant's computed font/text/color groups (spine
+//!   3.3g-2a), while non-inherited box/visual/flex longhands stay at their
+//!   initial values on the descendant
+//! - stylesheet and `style`-attribute declaration blocks both parse
+//!   drop-and-continue with a counted, observable report (CSS 2.1 §4.1.7,
+//!   css-style-attr §3); this module has no off-spec proofs (see the registry
+//!   in `layout_proofs/README.md` for the one remaining divergence, in
+//!   `normal_flow.rs`)
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomAttribute, DomAttributeValue, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerState,
-    DomPointerUpdate, RootDom, StyleRuleOrigin, TextIntrinsic, parse_css_color_rgba,
+    AlignContentKw, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerState, DomPointerUpdate,
+    DomTextAlign, DomTextDirection, FlexBasisKw, JustifyContentKw, Keyword, RootDom,
+    RootDomMetricName, StyleRuleOrigin, TextIntrinsic, parse_css_color_rgba,
 };
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
     assert_load_root_stylesheet, assert_node_layout, assert_rect_op_fill, assert_rect_op_geometry,
-    assert_root_dom_update, assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
-    take_staged_layer_paint_plans, theme_stylesheet_origin,
+    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    theme_stylesheet_origin,
 };
 
 /// The border-box height every geometry family pins on the target div so a
@@ -78,17 +95,6 @@ fn assert_single_rect_target_width(root: &RootDom, expected_width_px: f32, label
     assert_rect_op_fill(&plans[0].rects[0], [0.0; 4], label);
 }
 
-/// Clones one node's presented attribute value, or `None` when absent.
-fn presented(
-    root: &RootDom,
-    key: DomNodeSlotKey,
-    attr: &DomAttribute,
-) -> Option<DomAttributeValue> {
-    root.node(key)
-        .and_then(|node| node.presented_attr(attr))
-        .cloned()
-}
-
 /// Clones one text node's retained intrinsic metrics.
 fn text_intrinsic(root: &RootDom, key: DomNodeSlotKey) -> TextIntrinsic {
     match root.node(key).map(DomNode::intrinsic) {
@@ -109,7 +115,7 @@ fn target_div_setup(id: Option<&str>, class: &str) -> (World, RootDom, DomNodeSl
     if !class.is_empty() {
         assert_set_attr_str(&mut root, target, "class", class);
     }
-    assert_set_attr_str(&mut root, target, "height", "40px");
+    assert_style_set(&mut root, target, "height", "40px");
     (world, root, target)
 }
 
@@ -310,89 +316,54 @@ fn origin_priority_dominates_specificity() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-// OFF-SPEC (divergent): CSS Cascade §6.4.3 — declarations from the style
-// attribute win over normal author declarations, deterministically.
-// <https://drafts.csswg.org/css-cascade-5/#cascade-sort>
+// ON-SPEC (relabeled from
+// `off_spec_direct_attr_write_loses_to_stylesheet_on_next_recompute`):
+// css-style-attr §4 — declarations in a style attribute "are considered to
+// have author origin and a specificity higher than any selector", and "must be
+// interpreted exactly as if they were given in a CSS style rule that applies to
+// the element". PLAN.md proposal A acceptance test: the inline declaration is
+// element-owned and beats the stylesheet at all times, surviving class
+// rewrites, any stylesheet load order, and stylesheet unload (unload re-folds,
+// and the element-owned inline block is the only remaining width source).
+// <https://drafts.csswg.org/css-style-attr/>
 // Gecko: servo/components/style/stylist.rs; Blink: core/css/resolver/match_result.cc.
 // Closest WPT: css/css-cascade/important-and-inline-*.html family.
-//
-// CURRENT (asserted below): the winner between a direct attr write and a
-// stylesheet rule is timing-dependent. A direct `width` write stands only
-// until the next style recompute dirtied by anything else; the stylesheet
-// then re-applies its value and claims the attribute in the style-pass
-// ownership set, so unloading the stylesheet removes the attribute entirely
-// instead of restoring the direct value.
-// SPEC-CORRECT: a direct (inline-style) write beats the stylesheet rule at
-// all times, and stylesheet unload restores it.
-// ROOT CAUSE: `RootDom::apply_styles` writes the matched map onto retained
-// attrs without distinguishing direct-authored values, and
-// `style_pass_attrs_by_node` takes ownership of anything the pass has
-// applied.
-// RECLASSIFY: if this proof fails, the divergence moved — see the off-spec
-// registry in tests/layout_proofs/README.md.
-fn off_spec_direct_attr_write_loses_to_stylesheet_on_next_recompute() {
+fn inline_style_beats_stylesheet_and_survives_unload() {
     const THEME_CSS: &str = ".s { width: 20px; height: 40px }";
 
-    enum DirectWriteScenario {
+    enum InlineWriteScenario {
         AfterStyle,
         ThenClassRewrite,
         BeforeLoad,
         ThenUnload,
     }
 
-    struct DirectWriteCase {
-        name: &'static str,
-        scenario: DirectWriteScenario,
-        expected_presented_width: Option<&'static str>,
-        expected_rect_width_px: Option<f32>,
-    }
-
-    let cases = [
-        DirectWriteCase {
-            name: "direct_write_stands_until_style_recompute",
-            scenario: DirectWriteScenario::AfterStyle,
-            expected_presented_width: Some("10px"),
-            expected_rect_width_px: Some(10.0),
-        },
-        DirectWriteCase {
-            name: "class_rewrite_reapplies_stylesheet_width",
-            scenario: DirectWriteScenario::ThenClassRewrite,
-            expected_presented_width: Some("20px"),
-            expected_rect_width_px: Some(20.0),
-        },
-        DirectWriteCase {
-            name: "stylesheet_wins_when_loaded_after_direct_write",
-            scenario: DirectWriteScenario::BeforeLoad,
-            expected_presented_width: Some("20px"),
-            expected_rect_width_px: Some(20.0),
-        },
-        DirectWriteCase {
-            name: "stylesheet_unload_removes_attribute_instead_of_restoring",
-            scenario: DirectWriteScenario::ThenUnload,
-            expected_presented_width: None,
-            expected_rect_width_px: None,
-        },
+    let scenarios = [
+        ("after_style", InlineWriteScenario::AfterStyle),
+        ("class_rewrite", InlineWriteScenario::ThenClassRewrite),
+        ("before_load", InlineWriteScenario::BeforeLoad),
+        ("then_unload", InlineWriteScenario::ThenUnload),
     ];
 
-    for case in cases {
+    for (name, scenario) in scenarios {
         let (mut world, mut root, target) = target_div_setup(None, "s");
-        match case.scenario {
-            DirectWriteScenario::BeforeLoad => {
-                assert_set_attr_str(&mut root, target, "width", "10px");
+        match scenario {
+            InlineWriteScenario::BeforeLoad => {
+                assert_style_set(&mut root, target, "width", "10px");
                 assert_load_root_stylesheet(&root, StyleRuleOrigin::new("theme", 1), THEME_CSS);
                 assert_set_attr_str(&mut root, target, "class", "s");
                 assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
             }
-            DirectWriteScenario::AfterStyle
-            | DirectWriteScenario::ThenClassRewrite
-            | DirectWriteScenario::ThenUnload => {
+            InlineWriteScenario::AfterStyle
+            | InlineWriteScenario::ThenClassRewrite
+            | InlineWriteScenario::ThenUnload => {
                 assert_load_root_stylesheet(&root, StyleRuleOrigin::new("theme", 1), THEME_CSS);
                 assert_set_attr_str(&mut root, target, "class", "s");
                 assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-                assert_set_attr_str(&mut root, target, "width", "10px");
+                assert_style_set(&mut root, target, "width", "10px");
                 assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-                match case.scenario {
-                    DirectWriteScenario::ThenClassRewrite => {
+                match scenario {
+                    InlineWriteScenario::ThenClassRewrite => {
                         assert_set_attr_str(&mut root, target, "class", "s b");
                         assert_root_dom_update(
                             &mut world,
@@ -401,7 +372,7 @@ fn off_spec_direct_attr_write_loses_to_stylesheet_on_next_recompute() {
                             DomPointerUpdate::Unchanged,
                         );
                     }
-                    DirectWriteScenario::ThenUnload => {
+                    InlineWriteScenario::ThenUnload => {
                         let _unloaded = root.context().unload_stylesheet("theme");
                         assert_root_dom_update(
                             &mut world,
@@ -410,56 +381,45 @@ fn off_spec_direct_attr_write_loses_to_stylesheet_on_next_recompute() {
                             DomPointerUpdate::Unchanged,
                         );
                     }
-                    DirectWriteScenario::AfterStyle | DirectWriteScenario::BeforeLoad => {}
+                    InlineWriteScenario::AfterStyle | InlineWriteScenario::BeforeLoad => {}
                 }
             }
         }
 
+        // The inline width wins in every scenario — after the class rewrite,
+        // regardless of stylesheet load order, and after stylesheet unload
+        // (the element-owned inline declaration is restored by re-folding).
         assert_eq!(
-            presented(&root, target, &DomAttribute::Width),
-            case.expected_presented_width
-                .map(|value| DomAttributeValue::String(value.to_string())),
-            "{} presented width",
-            case.name
+            root.computed_style(target)
+                .expect("target should remain readable")
+                .as_box()
+                .width,
+            Some(10.0),
+            "{name} inline width should win",
         );
-        if let Some(width_px) = case.expected_rect_width_px {
-            assert_single_rect_target_width(&root, width_px, case.name);
-        }
+        assert_single_rect_target_width(&root, 10.0, name);
     }
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
-// CSS Cascade 5 §3 (inheritance) and §6 (cascade). The transmitting set is
-// exactly color/font-size/line-height/text-align/direction/white-space/
-// overflow-wrap/word-break. Only color, font-size, text-align, and direction
-// materialize into presented attributes (the materialized channel); the other
-// four are context-carried into text intrinsics and never appear as presented
-// attributes on the descendant (architecture pin).
+// CSS Cascade 5 §3 (inheritance) and §6 (cascade). The transmitting inherited
+// set is exactly color/font-size/line-height/text-align/direction/white-space/
+// overflow-wrap/word-break; each is carried in the descendant's computed groups
+// (spine 3.3g-2a: the font/text/color groups hold the inherited value), while
+// non-inherited box/visual/flex longhands stay at their initial values on the
+// descendant.
 fn inherited_properties_transmit_and_non_inherited_do_not() {
     enum InheritedAssertion {
-        SpanColorEquals {
-            hex: &'static str,
-        },
-        SpanFontSizeEquals {
-            value: &'static str,
-            text_font_size_px: f32,
-        },
-        SpanTextAlignEquals {
-            value: &'static str,
-        },
-        SpanDirectionEquals {
-            value: &'static str,
-        },
-        LineHeightContextCarried {
-            text_line_height_px: f32,
-        },
+        SpanColorEquals { hex: &'static str },
+        SpanFontSizeEquals { px: f32, text_font_size_px: f32 },
+        SpanTextAlignEquals { align: DomTextAlign },
+        SpanDirectionEquals { direction: DomTextDirection },
+        LineHeightInherited { text_line_height_px: f32 },
         TextSingleLine,
         TextWraps,
-        NonInheritedAttrsAbsent,
-        TextFontSizeEquals {
-            px: f32,
-        },
+        NonInheritedLonghandsAbsent,
+        TextFontSizeEquals { px: f32 },
     }
 
     struct InheritedCase {
@@ -485,7 +445,7 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
             css: ".p { font-size: 20px; }",
             scenario: InheritedScenario::SpanText,
             assertion: InheritedAssertion::SpanFontSizeEquals {
-                value: "20px",
+                px: 20.0,
                 text_font_size_px: 20.0,
             },
             text: "font size carry",
@@ -495,7 +455,9 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
             name: "text_align_transmits_to_span",
             css: ".p { text-align: center; }",
             scenario: InheritedScenario::SpanText,
-            assertion: InheritedAssertion::SpanTextAlignEquals { value: "center" },
+            assertion: InheritedAssertion::SpanTextAlignEquals {
+                align: DomTextAlign::Center,
+            },
             text: "text align carry",
             width_constraint: WidthConstraint::Authored,
         },
@@ -503,7 +465,9 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
             name: "direction_transmits_to_span",
             css: ".p { direction: rtl; }",
             scenario: InheritedScenario::SpanText,
-            assertion: InheritedAssertion::SpanDirectionEquals { value: "rtl" },
+            assertion: InheritedAssertion::SpanDirectionEquals {
+                direction: DomTextDirection::Rtl,
+            },
             text: "direction carry",
             width_constraint: WidthConstraint::Authored,
         },
@@ -511,7 +475,7 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
             name: "line_height_context_carried_to_text",
             css: ".p { line-height: 28px; }",
             scenario: InheritedScenario::SpanText,
-            assertion: InheritedAssertion::LineHeightContextCarried {
+            assertion: InheritedAssertion::LineHeightInherited {
                 text_line_height_px: 28.0,
             },
             text: "line height carry",
@@ -549,7 +513,7 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
             name: "non_inherited_box_attrs_absent_on_span",
             css: ".p { width: 100px; margin-left: 7px; padding-left: 6px; background-color: #112233; border-top: 2px; }",
             scenario: InheritedScenario::SpanText,
-            assertion: InheritedAssertion::NonInheritedAttrsAbsent,
+            assertion: InheritedAssertion::NonInheritedLonghandsAbsent,
             text: "non inherited",
             width_constraint: WidthConstraint::Authored,
         },
@@ -579,12 +543,12 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
             WidthConstraint::MinContentMinusOne => {
                 let baseline = text_intrinsic(&root, text);
                 let constrained = (baseline.min_content_width_px - 1.0).max(1.0);
-                assert_set_attr_str(&mut root, container, "width", &format!("{constrained}px"));
+                assert_style_set(&mut root, container, "width", &format!("{constrained}px"));
             }
             WidthConstraint::MaxContentMinusOne => {
                 let baseline = text_intrinsic(&root, text);
                 let constrained = (baseline.max_content_width_px - 1.0).max(1.0);
-                assert_set_attr_str(&mut root, container, "width", &format!("{constrained}px"));
+                assert_style_set(&mut root, container, "width", &format!("{constrained}px"));
             }
         }
         assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -592,23 +556,26 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
         match case.assertion {
             InheritedAssertion::SpanColorEquals { hex } => {
                 assert_eq!(
-                    presented(&root, mid, &DomAttribute::Custom("color".to_string())),
-                    Some(DomAttributeValue::Color(
-                        parse_css_color_rgba(hex).expect("proof color should parse")
-                    )),
-                    "{} span presented color",
+                    root.computed_style(mid)
+                        .expect("span should remain readable")
+                        .as_color()
+                        .color_rgba,
+                    parse_css_color_rgba(hex).expect("proof color should parse"),
+                    "{} span computed color",
                     case.name
                 );
             }
             InheritedAssertion::SpanFontSizeEquals {
-                value,
+                px,
                 text_font_size_px,
             } => {
-                assert_eq!(
-                    presented(&root, mid, &DomAttribute::FontSize),
-                    Some(DomAttributeValue::String(value.to_string())),
-                    "{} span presented font-size",
-                    case.name
+                assert_close(
+                    root.computed_style(mid)
+                        .expect("span should remain readable")
+                        .as_font()
+                        .size_px,
+                    px,
+                    &format!("{} span computed font-size", case.name),
                 );
                 assert_close(
                     text_intrinsic(&root, text).font_size_px,
@@ -616,23 +583,29 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
                     &format!("{} text intrinsic font size", case.name),
                 );
             }
-            InheritedAssertion::SpanTextAlignEquals { value } => {
+            InheritedAssertion::SpanTextAlignEquals { align } => {
                 assert_eq!(
-                    presented(&root, mid, &DomAttribute::TextAlign),
-                    Some(DomAttributeValue::String(value.to_string())),
-                    "{} span presented text-align",
+                    root.computed_style(mid)
+                        .expect("span should remain readable")
+                        .as_text()
+                        .align,
+                    align,
+                    "{} span computed text-align",
                     case.name
                 );
             }
-            InheritedAssertion::SpanDirectionEquals { value } => {
+            InheritedAssertion::SpanDirectionEquals { direction } => {
                 assert_eq!(
-                    presented(&root, mid, &DomAttribute::Direction),
-                    Some(DomAttributeValue::String(value.to_string())),
-                    "{} span presented direction",
+                    root.computed_style(mid)
+                        .expect("span should remain readable")
+                        .as_text()
+                        .direction,
+                    direction,
+                    "{} span computed direction",
                     case.name
                 );
             }
-            InheritedAssertion::LineHeightContextCarried {
+            InheritedAssertion::LineHeightInherited {
                 text_line_height_px,
             } => {
                 assert_close(
@@ -641,9 +614,12 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
                     &format!("{} text intrinsic line-height", case.name),
                 );
                 assert_eq!(
-                    presented(&root, mid, &DomAttribute::LineHeight),
-                    None,
-                    "{} span should not materialize line-height",
+                    root.computed_style(mid)
+                        .expect("span should remain readable")
+                        .as_font()
+                        .line_height_px,
+                    Some(text_line_height_px),
+                    "{} span computed line-height",
                     case.name
                 );
             }
@@ -665,21 +641,40 @@ fn inherited_properties_transmit_and_non_inherited_do_not() {
                     case.name
                 );
             }
-            InheritedAssertion::NonInheritedAttrsAbsent => {
-                for attr in [
-                    DomAttribute::Width,
-                    DomAttribute::MarginLeft,
-                    DomAttribute::PaddingLeft,
-                    DomAttribute::Custom("background-color".to_string()),
-                    DomAttribute::BorderTop,
-                ] {
-                    assert_eq!(
-                        presented(&root, mid, &attr),
-                        None,
-                        "{} span should not present {attr:?}",
-                        case.name
-                    );
-                }
+            InheritedAssertion::NonInheritedLonghandsAbsent => {
+                let box_ = root
+                    .computed_style(mid)
+                    .expect("span should remain readable")
+                    .as_box();
+                assert_eq!(
+                    box_.width, None,
+                    "{} span should not inherit width",
+                    case.name
+                );
+                assert_eq!(
+                    box_.margin[3], 0.0,
+                    "{} span should not inherit margin-left",
+                    case.name
+                );
+                assert_eq!(
+                    box_.padding[3], 0.0,
+                    "{} span should not inherit padding-left",
+                    case.name
+                );
+                assert_eq!(
+                    box_.border_width[0], 0.0,
+                    "{} span should not inherit border-top width",
+                    case.name
+                );
+                assert_eq!(
+                    root.computed_style(mid)
+                        .expect("span should remain readable")
+                        .as_visual()
+                        .background_rgba,
+                    [0.0; 4],
+                    "{} span should not inherit background-color",
+                    case.name
+                );
             }
             InheritedAssertion::TextFontSizeEquals { px } => {
                 assert_close(
@@ -733,7 +728,7 @@ fn build_inherited_scenario(
     let (mid, text_key) = match scenario {
         InheritedScenario::SpanText => {
             let span = assert_append_span_to(&mut root, container);
-            assert_set_attr_str(&mut root, span, "display", "block");
+            assert_style_set(&mut root, span, "display", "block");
             let text_key = assert_append_text_to(&mut root, span, text);
             (span, text_key)
         }
@@ -745,7 +740,7 @@ fn build_inherited_scenario(
         }
         InheritedScenario::FixedLayer => {
             let layer = assert_append_div_to(&mut root, container);
-            assert_set_attr_str(&mut root, layer, "position", "fixed");
+            assert_style_set(&mut root, layer, "position", "fixed");
             let text_key = assert_append_text_to(&mut root, layer, text);
             (layer, text_key)
         }
@@ -841,7 +836,7 @@ fn pseudo_state_rules_apply_on_state_and_follow_specificity() {
     }
 }
 
-/// Asserts one hover phase: the target's presented width equals `expected_px`,
+/// Asserts one hover phase: the target's computed width equals `expected_px`,
 /// and — when that width changed from the previous phase — one repaint rect
 /// exists at that width; when it is unchanged, no repaint is staged.
 fn assert_hover_phase_width(
@@ -852,9 +847,12 @@ fn assert_hover_phase_width(
     label: &str,
 ) {
     assert_eq!(
-        presented(root, target, &DomAttribute::Width),
-        Some(DomAttributeValue::String(format!("{expected_width_px}px"))),
-        "{label} presented width",
+        root.computed_style(target)
+            .expect("hover target should remain readable")
+            .as_box()
+            .width,
+        Some(expected_width_px),
+        "{label} computed width",
     );
     match previous_width_px {
         Some(previous) if (expected_width_px - previous).abs() <= f32::EPSILON => {
@@ -870,68 +868,305 @@ fn assert_hover_phase_width(
 }
 
 #[test]
-// OFF-SPEC (divergent): CSS shorthand declarations reset their longhands at
-// declaration time, and shorthand-vs-longhand precedence resolves by cascade
-// order (CSS Cascade §6 + the shorthand reset rules of each property spec).
+// CSS Cascade 5 §3 (shorthand expansion) + §6 (cascade order): a shorthand
+// resets its longhands at declaration time, and shorthand-vs-longhand
+// precedence resolves by cascade order.
+// <https://drafts.csswg.org/css-cascade-5/#shorthand>
+// Gecko: servo/components/style/properties/declaration_block.rs (shorthands
+// expand to longhand drains at parse); Blink:
+// core/css/css_property_value_set.h (shorthand expansion at set time).
+// Closest WPT family: css/css-flexbox/ (flex shorthand expansion and
+// longhand override).
 //
-// CURRENT (asserted below): shorthand and longhand are independent attributes
-// that never interact in the cascade — both land in presented attrs and
-// precedence between them is defined per-consumer, not by the cascade.
-// SPEC-CORRECT: `flex: 1 0 auto; flex-grow: 3` yields exactly one winning
-// grow factor (3) at the cascade level.
-// ROOT CAUSE: the attribute model has no shorthand expansion;
-// `parse_style_attr_map` in src/types/dom_attr_parse.rs stores declarations
-// verbatim.
-// RECLASSIFY: if this proof fails, the divergence moved — see the off-spec
-// registry in tests/layout_proofs/README.md.
-fn off_spec_shorthand_and_longhand_coexist_without_cascade_reset() {
-    struct ShorthandCase {
-        name: &'static str,
-        css: &'static str,
-        class: &'static str,
-        shorthand_attr: DomAttribute,
-        shorthand_value: &'static str,
-        longhand_attr: DomAttribute,
-        longhand_value: &'static str,
+// Relabeled from `off_spec_shorthand_and_longhand_coexist_without_cascade_reset`
+// in spine step 2: the typed declaration store expands shorthands at parse
+// time (A1), so the shorthand attribute no longer coexists verbatim — the
+// longhand is the only winning value at the cascade level.
+fn shorthand_and_longhand_cascade_resets_longhands() {
+    enum ShorthandCase {
+        Flex {
+            css: &'static str,
+            class: &'static str,
+        },
+        PlaceContent {
+            css: &'static str,
+            class: &'static str,
+        },
     }
 
     let cases = [
-        ShorthandCase {
-            name: "flex_shorthand_and_grow_longhand_coexist",
+        ShorthandCase::Flex {
             css: ".f { flex: 1 0 auto; flex-grow: 3 }",
             class: "f",
-            shorthand_attr: DomAttribute::Flex,
-            shorthand_value: "1 0 auto",
-            longhand_attr: DomAttribute::FlexGrow,
-            longhand_value: "3",
         },
-        ShorthandCase {
-            name: "place_content_shorthand_and_align_content_longhand_coexist",
+        ShorthandCase::PlaceContent {
             css: ".p { place-content: center start; align-content: space-around }",
             class: "p",
-            shorthand_attr: DomAttribute::PlaceContent,
-            shorthand_value: "center start",
-            longhand_attr: DomAttribute::AlignContent,
-            longhand_value: "space-around",
         },
     ];
 
     for case in cases {
-        let (mut world, mut root, target) = target_div_setup(None, case.class);
-        assert_load_root_stylesheet(&root, theme_stylesheet_origin(), case.css);
+        let (name, css, class) = match case {
+            ShorthandCase::Flex { css, class } => {
+                ("flex_shorthand_expands_and_grow_longhand_wins", css, class)
+            }
+            ShorthandCase::PlaceContent { css, class } => (
+                "place_content_expands_and_align_content_longhand_wins",
+                css,
+                class,
+            ),
+        };
+        let (mut world, mut root, target) = target_div_setup(None, class);
+        assert_load_root_stylesheet(&root, theme_stylesheet_origin(), css);
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+        let flex = root.computed_style(target).expect("target").as_flex();
+        match case {
+            ShorthandCase::Flex { .. } => {
+                // The flex shorthand expands to grow/shrink/basis, then the
+                // later flex-grow longhand wins; the shorthand itself has no
+                // computed-group field (it expanded at parse time).
+                assert_eq!(flex.grow, 3.0, "{name} winning flex-grow longhand");
+                assert_eq!(flex.shrink, 0.0, "{name} shorthand shrink expansion");
+                assert_eq!(
+                    flex.basis,
+                    FlexBasisKw::Auto,
+                    "{name} shorthand basis expansion"
+                );
+            }
+            ShorthandCase::PlaceContent { .. } => {
+                // place-content expands to align-content + justify-content;
+                // the later align-content longhand wins.
+                assert_eq!(
+                    flex.align_content,
+                    AlignContentKw::SpaceAround,
+                    "{name} winning align-content longhand"
+                );
+                assert_eq!(
+                    flex.justify_content,
+                    JustifyContentKw::Start,
+                    "{name} place-content justify expansion"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+// CSS 2.1 §4.1.7 + css-style-attr §3 (drop-and-continue, reported, never
+// silent): a malformed declaration in a stylesheet block is dropped and
+// parsing continues with the next declaration; the drop is counted in the
+// load report and the context's monotonic drop counter.
+// <https://www.w3.org/TR/CSS21/syndata.html#parsing-errors>
+// <https://drafts.csswg.org/css-style-attr/#syntax>
+// Gecko: servo/components/style/stylesheets/rule_parser.rs (error-recovering
+// declaration parse); Blink: core/css/parser/css_parser_impl.cc (consume
+// declaration, drop on error).
+// Closest WPT families: css/css2/syntax/ (CSS 2.1 §4.1.7 error recovery).
+//
+// This relabels the stylesheet half of the former off-spec proof
+// `off_spec_malformed_declaration_rejects_entire_declaration_block`: the
+// typed declaration store (spine step 2) parses declaration blocks
+// drop-and-continue with a counted report, never silent.
+fn malformed_stylesheet_declarations_drop_and_continue_with_report() {
+    struct MalformedCase {
+        name: &'static str,
+        declarations: &'static str,
+    }
+
+    let cases = [
+        MalformedCase {
+            name: "declaration_missing_separator",
+            declarations: "width: 20px; height 40px",
+        },
+        MalformedCase {
+            name: "declaration_missing_name",
+            declarations: "width: 20px; : 40px",
+        },
+        MalformedCase {
+            name: "declaration_missing_value",
+            declarations: "width: 20px; height:",
+        },
+        MalformedCase {
+            name: "value_failing_grammar",
+            declarations: "width: 20px; height: lots",
+        },
+        MalformedCase {
+            name: "unadmitted_property_name",
+            declarations: "width: 20px; frobnicate: 1",
+        },
+    ];
+
+    for case in cases {
+        let (mut world, mut root, target) = target_div_setup(None, "s");
+        let report = root
+            .context()
+            .load_stylesheet(
+                theme_stylesheet_origin(),
+                &format!(".s {{ {} }}", case.declarations),
+            )
+            .expect("malformed declaration should drop, not reject the load");
+        assert_eq!(
+            report.declarations_dropped, 1,
+            "{}: exactly one malformed declaration is dropped",
+            case.name
+        );
+        assert_eq!(
+            report.declarations_applied, 1,
+            "{}: the valid width declaration applies",
+            case.name
+        );
+        assert_eq!(
+            root.context().declaration_drop_count(),
+            1,
+            "{}: the drop counter records the dropped declaration",
+            case.name
+        );
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target)
+                .expect("target should remain readable")
+                .as_box()
+                .width,
+            Some(20.0),
+            "{}: valid width declaration must apply after drop-and-continue",
+            case.name
+        );
+    }
+}
+
+#[test]
+// ON-SPEC (relabeled from
+// `off_spec_malformed_declaration_rejects_entire_style_attribute_write`):
+// css-style-attr §3 — the style attribute value is a declaration list parsed
+// with forward-compatible error handling: a malformed declaration is dropped
+// and parsing continues, and the drop is observable (counted), never silent.
+// The `style` attribute routes into the inline declaration store
+// (spine 3.3g-2a), which counts each drop on
+// `RootDomMetricName::StyleDeclarationDropped`.
+// <https://drafts.csswg.org/css-style-attr/#syntax>
+// Gecko: servo/components/style/stylesheets/rule_parser.rs; Blink:
+// core/css/parser/css_parser_impl.cc.
+// Closest WPT family: css/css-style-attr/ (style attribute parsing).
+fn style_attribute_drops_malformed_declarations_and_counts_them() {
+    struct DropCase {
+        name: &'static str,
+        declarations: &'static str,
+    }
+
+    let cases = [
+        DropCase {
+            name: "declaration_missing_separator",
+            declarations: "width: 20px; height 40px",
+        },
+        DropCase {
+            name: "declaration_missing_name",
+            declarations: "width: 20px; : 40px",
+        },
+        DropCase {
+            name: "declaration_missing_value",
+            declarations: "width: 20px; height:",
+        },
+        DropCase {
+            name: "value_failing_grammar",
+            declarations: "width: 20px; height: lots",
+        },
+        DropCase {
+            name: "unadmitted_property_name",
+            declarations: "width: 20px; frobnicate: 1",
+        },
+    ];
+
+    for case in cases {
+        let (mut world, mut root, target) = target_div_setup(None, "");
+        root.set_attr_str(target, "style", case.declarations)
+            .expect("style attribute should drop-and-continue, not reject");
         assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
         assert_eq!(
-            presented(&root, target, &case.shorthand_attr),
-            Some(DomAttributeValue::String(case.shorthand_value.to_string())),
-            "{} presented shorthand",
+            root.computed_style(target)
+                .expect("target should remain readable")
+                .as_box()
+                .width,
+            Some(20.0),
+            "{}: valid width declaration must apply after drop-and-continue",
             case.name
         );
         assert_eq!(
-            presented(&root, target, &case.longhand_attr),
-            Some(DomAttributeValue::String(case.longhand_value.to_string())),
-            "{} presented longhand",
+            root.count(RootDomMetricName::StyleDeclarationDropped),
+            1,
+            "{}: exactly one malformed declaration is dropped and counted",
             case.name
         );
+    }
+}
+
+#[test]
+// ON-SPEC (relabeled from `off_spec_font_family_weight_and_style_do_not_inherit`):
+// font-family, font-weight, and font-style are inherited properties — CSS Fonts
+// 4 §3.1 (font-family), §3.2 (font-weight), and §3.3 (font-style) each state
+// "Inherited: yes". PLAN.md A5 group-copy inheritance: the descendant's
+// computed font group copies the parent's resolved family/weight/style.
+// <https://drafts.csswg.org/css-fonts-4/#font-family-prop>
+// Gecko: servo/components/style/values/computed/font.rs (the computed font
+// struct propagates through inheritance); Blink:
+// core/css/resolver/style_resolver.cc (parent-style propagation).
+// Closest WPT: css/css-fonts/inheritance.html.
+fn font_family_weight_and_style_inherit() {
+    enum FontAssertion {
+        Family,
+        Weight,
+        Style,
+    }
+
+    let cases = [
+        (
+            "font_family",
+            ".p { font-family: ui-sans, sans-serif; }",
+            FontAssertion::Family,
+        ),
+        (
+            "font_weight",
+            ".p { font-weight: 600; }",
+            FontAssertion::Weight,
+        ),
+        (
+            "font_style",
+            ".p { font-style: italic; }",
+            FontAssertion::Style,
+        ),
+    ];
+
+    for (name, css, assertion) in cases {
+        let (mut world, mut root, _container, span, _text) =
+            build_inherited_scenario(InheritedScenario::SpanText, css, "font carry");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+        let view = root
+            .computed_style(span)
+            .expect("span should remain readable");
+        match assertion {
+            FontAssertion::Family => {
+                assert_eq!(
+                    view.font_family(),
+                    Some("ui-sans, sans-serif"),
+                    "{name} span should inherit font-family"
+                );
+            }
+            FontAssertion::Weight => {
+                assert_eq!(
+                    view.as_font().weight,
+                    600,
+                    "{name} span should inherit font-weight"
+                );
+            }
+            FontAssertion::Style => {
+                assert_eq!(
+                    view.as_font().style,
+                    Keyword::Italic,
+                    "{name} span should inherit font-style"
+                );
+            }
+        }
     }
 }

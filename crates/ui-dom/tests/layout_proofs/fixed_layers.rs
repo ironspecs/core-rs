@@ -12,10 +12,10 @@
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_close, assert_load_root_stylesheet, assert_node_layout,
-    assert_root_dom_update, assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
-    attached_gpu_root_dom_setup, fixed_layer_with_absolute_scroll_box_setup,
-    fixed_layer_with_block_and_text_setup, fixed_layer_with_two_blocks_setup,
-    theme_stylesheet_origin,
+    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    attached_gpu_root_dom_default_viewport_setup, attached_gpu_root_dom_setup,
+    fixed_layer_with_absolute_scroll_box_setup, fixed_layer_with_block_and_text_setup,
+    fixed_layer_with_two_blocks_setup, theme_stylesheet_origin,
 };
 use ui_dom::{DomIntrinsic, DomNode, DomPointerUpdate, node_box};
 
@@ -25,10 +25,10 @@ use ui_dom::{DomIntrinsic, DomNode, DomPointerUpdate, node_box};
 fn fixed_left_right_layer_and_block_fill_viewport_width() {
     let (mut world, mut root, fixed_layer, block, _text) = fixed_layer_with_block_and_text_setup();
 
-    assert_set_attr_str(&mut root, fixed_layer, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_layer, "top", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "left", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "right", "0px");
+    assert_style_set(&mut root, fixed_layer, "position", "fixed");
+    assert_style_set(&mut root, fixed_layer, "top", "0px");
+    assert_style_set(&mut root, fixed_layer, "left", "0px");
+    assert_style_set(&mut root, fixed_layer, "right", "0px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -51,10 +51,10 @@ fn fixed_left_right_layer_and_block_fill_viewport_width() {
 fn text_inside_block_in_fixed_layer_inherits_constrained_block_width() {
     let (mut world, mut root, fixed_layer, block, text) = fixed_layer_with_block_and_text_setup();
 
-    assert_set_attr_str(&mut root, fixed_layer, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_layer, "top", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "left", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "right", "0px");
+    assert_style_set(&mut root, fixed_layer, "position", "fixed");
+    assert_style_set(&mut root, fixed_layer, "top", "0px");
+    assert_style_set(&mut root, fixed_layer, "left", "0px");
+    assert_style_set(&mut root, fixed_layer, "right", "0px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -83,12 +83,12 @@ fn fixed_top_bottom_layer_keeps_viewport_height_with_two_block_children() {
     let (mut world, mut root, fixed_layer, first_block, second_block) =
         fixed_layer_with_two_blocks_setup();
 
-    assert_set_attr_str(&mut root, fixed_layer, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_layer, "top", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "right", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "bottom", "0px");
-    assert_set_attr_str(&mut root, first_block, "height", "30px");
-    assert_set_attr_str(&mut root, second_block, "height", "40px");
+    assert_style_set(&mut root, fixed_layer, "position", "fixed");
+    assert_style_set(&mut root, fixed_layer, "top", "0px");
+    assert_style_set(&mut root, fixed_layer, "right", "0px");
+    assert_style_set(&mut root, fixed_layer, "bottom", "0px");
+    assert_style_set(&mut root, first_block, "height", "30px");
+    assert_style_set(&mut root, second_block, "height", "40px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -110,14 +110,14 @@ fn absolute_scroll_box_sizes_to_children_inside_fixed_top_bottom_parent() {
     let (mut world, mut root, fixed_layer, scroll_box, first_block, second_block) =
         fixed_layer_with_absolute_scroll_box_setup();
 
-    assert_set_attr_str(&mut root, fixed_layer, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_layer, "top", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "right", "0px");
-    assert_set_attr_str(&mut root, fixed_layer, "bottom", "0px");
-    assert_set_attr_str(&mut root, scroll_box, "position", "absolute");
-    assert_set_attr_str(&mut root, scroll_box, "overflow", "scroll");
-    assert_set_attr_str(&mut root, first_block, "height", "30px");
-    assert_set_attr_str(&mut root, second_block, "height", "40px");
+    assert_style_set(&mut root, fixed_layer, "position", "fixed");
+    assert_style_set(&mut root, fixed_layer, "top", "0px");
+    assert_style_set(&mut root, fixed_layer, "right", "0px");
+    assert_style_set(&mut root, fixed_layer, "bottom", "0px");
+    assert_style_set(&mut root, scroll_box, "position", "absolute");
+    assert_style_set(&mut root, scroll_box, "overflow", "scroll");
+    assert_style_set(&mut root, first_block, "height", "30px");
+    assert_style_set(&mut root, second_block, "height", "40px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -155,22 +155,21 @@ fn nested_fixed_right_anchored_auto_width_shrink_wraps_block_children() {
     let first_block = assert_append_div_to(&mut root, fixed_panel);
     let second_block = assert_append_div_to(&mut root, fixed_panel);
 
-    assert_set_attr_str(&mut root, wrapper, "width", "140px");
-    assert_set_attr_str(&mut root, wrapper, "margin-left", "80px");
-    assert_set_attr_str(&mut root, fixed_panel, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_panel, "top", "20px");
-    assert_set_attr_str(&mut root, fixed_panel, "right", "20px");
-    assert_set_attr_str(&mut root, first_block, "width", "80px");
-    assert_set_attr_str(&mut root, first_block, "height", "24px");
-    assert_set_attr_str(&mut root, second_block, "width", "100px");
-    assert_set_attr_str(&mut root, second_block, "height", "32px");
+    assert_style_set(&mut root, wrapper, "width", "140px");
+    assert_style_set(&mut root, wrapper, "margin-left", "80px");
+    assert_style_set(&mut root, fixed_panel, "position", "fixed");
+    assert_style_set(&mut root, fixed_panel, "top", "20px");
+    assert_style_set(&mut root, fixed_panel, "right", "20px");
+    assert_style_set(&mut root, first_block, "width", "80px");
+    assert_style_set(&mut root, first_block, "height", "24px");
+    assert_style_set(&mut root, second_block, "width", "100px");
+    assert_style_set(&mut root, second_block, "height", "32px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let panel_snapshot = root
-        .node(fixed_panel)
-        .expect("fixed panel should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(fixed_panel)
+        .expect("fixed panel should remain readable after layout");
     let first_block_box = node_box(&root, first_block).expect("first block should expose a box");
     let second_block_box = node_box(&root, second_block).expect("second block should expose a box");
 
@@ -214,22 +213,21 @@ fn nested_fixed_bottom_anchored_auto_height_shrink_wraps_block_children() {
     let first_block = assert_append_div_to(&mut root, fixed_panel);
     let second_block = assert_append_div_to(&mut root, fixed_panel);
 
-    assert_set_attr_str(&mut root, wrapper, "height", "140px");
-    assert_set_attr_str(&mut root, wrapper, "margin-top", "80px");
-    assert_set_attr_str(&mut root, fixed_panel, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_panel, "left", "20px");
-    assert_set_attr_str(&mut root, fixed_panel, "bottom", "20px");
-    assert_set_attr_str(&mut root, first_block, "width", "80px");
-    assert_set_attr_str(&mut root, first_block, "height", "24px");
-    assert_set_attr_str(&mut root, second_block, "width", "100px");
-    assert_set_attr_str(&mut root, second_block, "height", "32px");
+    assert_style_set(&mut root, wrapper, "height", "140px");
+    assert_style_set(&mut root, wrapper, "margin-top", "80px");
+    assert_style_set(&mut root, fixed_panel, "position", "fixed");
+    assert_style_set(&mut root, fixed_panel, "left", "20px");
+    assert_style_set(&mut root, fixed_panel, "bottom", "20px");
+    assert_style_set(&mut root, first_block, "width", "80px");
+    assert_style_set(&mut root, first_block, "height", "24px");
+    assert_style_set(&mut root, second_block, "width", "100px");
+    assert_style_set(&mut root, second_block, "height", "32px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let panel_snapshot = root
-        .node(fixed_panel)
-        .expect("fixed panel should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(fixed_panel)
+        .expect("fixed panel should remain readable after layout");
     let panel_box = node_box(&root, fixed_panel).expect("fixed panel should expose a box");
     let first_block_box = node_box(&root, first_block).expect("first block should expose a box");
     let second_block_box = node_box(&root, second_block).expect("second block should expose a box");
@@ -278,23 +276,22 @@ fn nested_fixed_right_anchored_explicit_width_stays_on_viewport_right_edge() {
     let fixed_panel = assert_append_div_to(&mut root, wrapper);
     let slot = assert_append_div_to(&mut root, fixed_panel);
 
-    assert_set_attr_str(&mut root, wrapper, "width", "140px");
-    assert_set_attr_str(&mut root, wrapper, "margin-left", "80px");
-    assert_set_attr_str(&mut root, fixed_panel, "position", "fixed");
-    assert_set_attr_str(&mut root, fixed_panel, "top", "25px");
-    assert_set_attr_str(&mut root, fixed_panel, "right", "25px");
-    assert_set_attr_str(&mut root, fixed_panel, "width", "196px");
-    assert_set_attr_str(&mut root, fixed_panel, "height", "82px");
-    assert_set_attr_str(&mut root, slot, "width", "27.5px");
-    assert_set_attr_str(&mut root, slot, "height", "27.5px");
+    assert_style_set(&mut root, wrapper, "width", "140px");
+    assert_style_set(&mut root, wrapper, "margin-left", "80px");
+    assert_style_set(&mut root, fixed_panel, "position", "fixed");
+    assert_style_set(&mut root, fixed_panel, "top", "25px");
+    assert_style_set(&mut root, fixed_panel, "right", "25px");
+    assert_style_set(&mut root, fixed_panel, "width", "196px");
+    assert_style_set(&mut root, fixed_panel, "height", "82px");
+    assert_style_set(&mut root, slot, "width", "27.5px");
+    assert_style_set(&mut root, slot, "height", "27.5px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let panel_box = node_box(&root, fixed_panel).expect("fixed panel should expose a box");
     let panel_snapshot = root
-        .node(fixed_panel)
-        .expect("fixed panel should remain readable after layout")
-        .snapshot();
+        .canonical_snapshot(fixed_panel)
+        .expect("fixed panel should remain readable after layout");
 
     assert_close(
         panel_snapshot.layout.used_width_px,
@@ -346,15 +343,15 @@ fn stylesheet_driven_fixed_right_toolbar_with_absolute_slots_stays_on_viewport_r
     let first_slot = assert_append_div_to(&mut root, toolbar);
     let second_slot = assert_append_div_to(&mut root, toolbar);
 
-    assert_set_attr_str(&mut root, wrapper, "width", "140px");
-    assert_set_attr_str(&mut root, wrapper, "margin-left", "80px");
+    assert_style_set(&mut root, wrapper, "width", "140px");
+    assert_style_set(&mut root, wrapper, "margin-left", "80px");
     assert_set_attr_str(&mut root, toolbar, "class", "ingame-toolbar");
     assert_set_attr_str(&mut root, first_slot, "class", "ingame-toolbar-slot");
-    assert_set_attr_str(&mut root, first_slot, "left", "6px");
-    assert_set_attr_str(&mut root, first_slot, "top", "6px");
+    assert_style_set(&mut root, first_slot, "left", "6px");
+    assert_style_set(&mut root, first_slot, "top", "6px");
     assert_set_attr_str(&mut root, second_slot, "class", "ingame-toolbar-slot");
-    assert_set_attr_str(&mut root, second_slot, "left", "39.5px");
-    assert_set_attr_str(&mut root, second_slot, "top", "6px");
+    assert_style_set(&mut root, second_slot, "left", "39.5px");
+    assert_style_set(&mut root, second_slot, "top", "6px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -430,8 +427,8 @@ fn stylesheet_driven_fixed_right_toolbar_with_auto_height_stays_on_viewport_righ
     let content = assert_append_div_to(&mut root, toolbar);
     let line = assert_append_div_to(&mut root, content);
 
-    assert_set_attr_str(&mut root, wrapper, "width", "140px");
-    assert_set_attr_str(&mut root, wrapper, "margin-left", "80px");
+    assert_style_set(&mut root, wrapper, "width", "140px");
+    assert_style_set(&mut root, wrapper, "margin-left", "80px");
     assert_set_attr_str(&mut root, toolbar, "class", "ingame-debug-toolbar");
     assert_set_attr_str(
         &mut root,
@@ -440,8 +437,8 @@ fn stylesheet_driven_fixed_right_toolbar_with_auto_height_stays_on_viewport_righ
         "ingame-debug-toolbar-slot-row",
     );
     assert_set_attr_str(&mut root, slot, "class", "ingame-toolbar-slot");
-    assert_set_attr_str(&mut root, slot, "left", "6px");
-    assert_set_attr_str(&mut root, slot, "top", "6px");
+    assert_style_set(&mut root, slot, "left", "6px");
+    assert_style_set(&mut root, slot, "top", "6px");
     assert_set_attr_str(&mut root, content, "class", "ingame-debug-toolbar-content");
     assert_set_attr_str(&mut root, line, "class", "ingame-debug-toolbar-line");
 
@@ -503,8 +500,8 @@ fn multi_class_fixed_right_toolbar_style_merge_stays_on_viewport_right_edge() {
     let toolbar = assert_append_div_to(&mut root, wrapper);
     let slot_row = assert_append_div_to(&mut root, toolbar);
 
-    assert_set_attr_str(&mut root, wrapper, "width", "140px");
-    assert_set_attr_str(&mut root, wrapper, "margin-left", "80px");
+    assert_style_set(&mut root, wrapper, "width", "140px");
+    assert_style_set(&mut root, wrapper, "margin-left", "80px");
     assert_set_attr_str(
         &mut root,
         toolbar,
@@ -652,8 +649,8 @@ fn append_debug_toolbar_slots(root: &mut ui_dom::RootDom, slot_row: ui_dom::DomN
     for left_px in ["6px", "44px", "82px", "120px", "158px"] {
         let slot = assert_append_div_to(root, slot_row);
         assert_set_attr_str(root, slot, "class", "ingame-toolbar-slot");
-        assert_set_attr_str(root, slot, "left", left_px);
-        assert_set_attr_str(root, slot, "top", "6px");
+        assert_style_set(root, slot, "left", left_px);
+        assert_style_set(root, slot, "top", "6px");
     }
 }
 
@@ -715,11 +712,11 @@ fn set_exact_ingame_top_right_toolbar_attrs(
     toolbar: ui_dom::DomNodeSlotKey,
 ) {
     assert_set_attr_str(root, toolbar, "class", "ingame-toolbar ingame-view-toolbar");
-    assert_set_attr_str(root, toolbar, "position", "fixed");
-    assert_set_attr_str(root, toolbar, "top", "25px");
-    assert_set_attr_str(root, toolbar, "right", "25px");
-    assert_set_attr_str(root, toolbar, "width", "196px");
-    assert_set_attr_str(root, toolbar, "height", "82px");
+    assert_style_set(root, toolbar, "position", "fixed");
+    assert_style_set(root, toolbar, "top", "25px");
+    assert_style_set(root, toolbar, "right", "25px");
+    assert_style_set(root, toolbar, "width", "196px");
+    assert_style_set(root, toolbar, "height", "82px");
     assert_set_attr_str(root, toolbar, "pointer-events", "auto");
 }
 
@@ -733,10 +730,10 @@ fn set_exact_ingame_debug_toolbar_attrs(
         "class",
         "ingame-toolbar ingame-debug-toolbar",
     );
-    assert_set_attr_str(root, toolbar, "position", "fixed");
-    assert_set_attr_str(root, toolbar, "top", "132px");
-    assert_set_attr_str(root, toolbar, "right", "25px");
-    assert_set_attr_str(root, toolbar, "width", "196px");
+    assert_style_set(root, toolbar, "position", "fixed");
+    assert_style_set(root, toolbar, "top", "132px");
+    assert_style_set(root, toolbar, "right", "25px");
+    assert_style_set(root, toolbar, "width", "196px");
     assert_set_attr_str(root, toolbar, "pointer-events", "none");
 }
 
@@ -774,8 +771,8 @@ fn append_exact_nested_ingame_debug_toolbar(
     let content = assert_append_div_to(root, debug_toolbar);
     let line_text_keys = append_debug_toolbar_lines(root, content);
 
-    assert_set_attr_str(root, wrapper, "display", "block");
-    assert_set_attr_str(root, wrapper, "position", "relative");
+    assert_style_set(root, wrapper, "display", "block");
+    assert_style_set(root, wrapper, "position", "relative");
     if include_normal_flow_sibling {
         let flow_sibling = assert_append_div_to(root, wrapper);
         let flow_sibling_inner = assert_append_div_to(root, flow_sibling);
@@ -784,12 +781,12 @@ fn append_exact_nested_ingame_debug_toolbar(
             flow_sibling_inner,
             "preceding block sibling should not become the fixed toolbar containing width",
         );
-        assert_set_attr_str(root, flow_sibling, "display", "block");
-        assert_set_attr_str(root, flow_sibling, "padding-left", "10px");
-        assert_set_attr_str(root, flow_sibling, "padding-right", "10px");
-        assert_set_attr_str(root, flow_sibling_inner, "display", "block");
-        assert_set_attr_str(root, flow_sibling_inner, "width", "196px");
-        assert_set_attr_str(root, flow_sibling_inner, "white-space", "nowrap");
+        assert_style_set(root, flow_sibling, "display", "block");
+        assert_style_set(root, flow_sibling, "padding-left", "10px");
+        assert_style_set(root, flow_sibling, "padding-right", "10px");
+        assert_style_set(root, flow_sibling_inner, "display", "block");
+        assert_style_set(root, flow_sibling_inner, "width", "196px");
+        assert_style_set(root, flow_sibling_inner, "white-space", "nowrap");
     }
 
     set_exact_ingame_top_right_toolbar_attrs(root, top_right_toolbar);
@@ -812,23 +809,28 @@ fn append_auto_height_fixed_sibling_above_debug_toolbar(root: &mut ui_dom::RootD
     crate::layout_proofs::support::assert_append_text_to(root, first_line, "top fixed sibling");
     crate::layout_proofs::support::assert_append_text_to(root, second_line, "keeps auto height");
 
-    assert_set_attr_str(root, top_sibling, "display", "block");
-    assert_set_attr_str(root, top_sibling, "position", "fixed");
-    assert_set_attr_str(root, top_sibling, "top", "25px");
-    assert_set_attr_str(root, top_sibling, "right", "25px");
-    assert_set_attr_str(root, top_sibling, "width", "196px");
-    assert_set_attr_str(root, top_sibling, "padding-left", "6px");
-    assert_set_attr_str(root, top_sibling, "padding-right", "6px");
-    assert_set_attr_str(root, top_sibling, "padding-top", "6px");
-    assert_set_attr_str(root, top_sibling, "padding-bottom", "6px");
-    assert_set_attr_str(root, first_line, "display", "block");
-    assert_set_attr_str(root, second_line, "display", "block");
+    assert_style_set(root, top_sibling, "display", "block");
+    assert_style_set(root, top_sibling, "position", "fixed");
+    assert_style_set(root, top_sibling, "top", "25px");
+    assert_style_set(root, top_sibling, "right", "25px");
+    assert_style_set(root, top_sibling, "width", "196px");
+    assert_style_set(root, top_sibling, "padding-left", "6px");
+    assert_style_set(root, top_sibling, "padding-right", "6px");
+    assert_style_set(root, top_sibling, "padding-top", "6px");
+    assert_style_set(root, top_sibling, "padding-bottom", "6px");
+    assert_style_set(root, first_line, "display", "block");
+    assert_style_set(root, second_line, "display", "block");
 }
 
 fn set_ingame_document_root_screen_size(root: &mut ui_dom::RootDom, width_px: f32, height_px: f32) {
+    // The document root is viewport-sized: its box model comes from the Bevy
+    // sprite the root is attached under (1280x720 in these proofs), not from
+    // authored width/height declarations — the style pass skips document
+    // nodes, so there is no document-level inline declaration store (spine
+    // 3.3g-2a). The size parameters are retained only to keep the helper's
+    // call sites honest about the intended screen geometry.
+    let _ = (width_px, height_px);
     let document_root = root.document_node().0;
-    assert_set_attr_str(root, document_root, "width", &format!("{width_px}px"));
-    assert_set_attr_str(root, document_root, "height", &format!("{height_px}px"));
     assert_set_attr_str(root, document_root, "pointer-events", "none");
 }
 
@@ -847,21 +849,21 @@ fn append_exact_ingame_bottom_toolbar(root: &mut ui_dom::RootDom) {
         "class",
         "ingame-toolbar ingame-bottom-toolbar",
     );
-    assert_set_attr_str(root, toolbar, "position", "fixed");
-    assert_set_attr_str(root, toolbar, "bottom", "25px");
-    assert_set_attr_str(root, toolbar, "width", "386px");
-    assert_set_attr_str(root, toolbar, "height", "44px");
+    assert_style_set(root, toolbar, "position", "fixed");
+    assert_style_set(root, toolbar, "bottom", "25px");
+    assert_style_set(root, toolbar, "width", "386px");
+    assert_style_set(root, toolbar, "height", "44px");
 }
 
 fn append_exact_ingame_npc_toolbar(root: &mut ui_dom::RootDom) {
     let document_root = root.document_node().0;
     let toolbar = assert_append_div_to(root, document_root);
     assert_set_attr_str(root, toolbar, "class", "ingame-toolbar ingame-npc-toolbar");
-    assert_set_attr_str(root, toolbar, "position", "fixed");
-    assert_set_attr_str(root, toolbar, "top", "25px");
-    assert_set_attr_str(root, toolbar, "left", "25px");
-    assert_set_attr_str(root, toolbar, "width", "44px");
-    assert_set_attr_str(root, toolbar, "height", "82px");
+    assert_style_set(root, toolbar, "position", "fixed");
+    assert_style_set(root, toolbar, "top", "25px");
+    assert_style_set(root, toolbar, "left", "25px");
+    assert_style_set(root, toolbar, "width", "44px");
+    assert_style_set(root, toolbar, "height", "82px");
 }
 
 fn append_normal_flow_width_probe_before_fixed_toolbars(root: &mut ui_dom::RootDom) {
@@ -874,12 +876,12 @@ fn append_normal_flow_width_probe_before_fixed_toolbars(root: &mut ui_dom::RootD
         "normal flow sibling should not narrow later fixed siblings",
     );
 
-    assert_set_attr_str(root, flow_block, "display", "block");
-    assert_set_attr_str(root, flow_block, "padding-left", "10px");
-    assert_set_attr_str(root, flow_block, "padding-right", "10px");
-    assert_set_attr_str(root, inner_block, "display", "block");
-    assert_set_attr_str(root, inner_block, "width", "196px");
-    assert_set_attr_str(root, inner_block, "white-space", "nowrap");
+    assert_style_set(root, flow_block, "display", "block");
+    assert_style_set(root, flow_block, "padding-left", "10px");
+    assert_style_set(root, flow_block, "padding-right", "10px");
+    assert_style_set(root, inner_block, "display", "block");
+    assert_style_set(root, inner_block, "width", "196px");
+    assert_style_set(root, inner_block, "white-space", "nowrap");
 }
 
 #[test]
@@ -900,9 +902,8 @@ fn debug_toolbar_below_top_right_sibling_keeps_right_anchor_after_text_update() 
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 
@@ -947,9 +948,8 @@ fn exact_ingame_debug_toolbar_attrs_keep_right_anchor_after_text_update() {
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 
@@ -990,9 +990,8 @@ fn normal_flow_sibling_before_exact_fixed_debug_toolbar_does_not_narrow_right_an
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 
@@ -1027,9 +1026,8 @@ fn nested_exact_fixed_debug_toolbar_keeps_right_anchor_after_text_update() {
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 
@@ -1064,9 +1062,8 @@ fn nested_fixed_debug_toolbar_with_flow_sibling_keeps_right_anchor_after_text_up
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 
@@ -1102,9 +1099,8 @@ fn auto_height_fixed_sibling_above_debug_toolbar_does_not_narrow_right_anchor() 
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 
@@ -1148,9 +1144,8 @@ fn ingame_surface_second_update_keeps_debug_toolbar_viewport_width() {
     assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 
@@ -1206,9 +1201,8 @@ fn ingame_surface_third_update_keeps_debug_toolbar_viewport_width() {
     assert_root_dom_update(&mut world, &mut root, 2.0, DomPointerUpdate::Unchanged);
 
     let toolbar_snapshot = root
-        .node(scenario.debug_toolbar)
-        .expect("debug toolbar should remain readable")
-        .snapshot();
+        .canonical_snapshot(scenario.debug_toolbar)
+        .expect("debug toolbar should remain readable");
     let toolbar_box =
         node_box(&root, scenario.debug_toolbar).expect("debug toolbar should expose a box");
 

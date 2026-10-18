@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::{DomCanonicalLayoutSnapshot, DomCanonicalStyleSnapshot};
 
 #[cfg(test)]
-use crate::types::{DomAttribute, DomAttributeValue, DomIntrinsic, TextIntrinsic};
+use crate::types::{DomAttributeValue, DomIntrinsic, TextIntrinsic};
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 /// Public canonical snapshot for replaying authored style inputs and layout
@@ -45,11 +45,11 @@ mod tests {
             style: DomCanonicalStyleSnapshot {
                 styles: vec![
                     (
-                        DomAttribute::Width,
+                        "width".to_string(),
                         DomAttributeValue::String("14px".to_string()),
                     ),
                     (
-                        DomAttribute::Custom("color".to_string()),
+                        "color".to_string(),
                         DomAttributeValue::Color([1.0, 1.0, 1.0, 1.0]),
                     ),
                 ],

@@ -1,4 +1,4 @@
-//! Gate scenarios G1–G9 (PLAN.md §7.3) for the `RenderOpsHandler` staging seam.
+//! Gate scenarios G1–G9 for the `RenderOpsHandler` staging seam.
 //!
 //! These tests observe the exact render ops a `RootDom::update` produces, after
 //! the update and before the render world's extract moves them. They pin the
@@ -72,9 +72,11 @@ fn append_sized_div(
 ) -> ui_dom::DomNodeSlotKey {
     let key = root.create_element(DomTag::Div).expect("div should insert");
     root.append_child(parent, key).expect("div should append");
-    root.set_attr_str(key, "width", width)
+    root.style_mut(key)
+        .set("width", width)
         .expect("width should parse");
-    root.set_attr_str(key, "height", height)
+    root.style_mut(key)
+        .set("height", height)
         .expect("height should parse");
     key
 }
@@ -134,7 +136,8 @@ fn g3_multi_layer_document() {
     // the positioned sibling is its own layer root.
     append_sized_div(&mut root, document, "100px", "40px");
     let child = append_sized_div(&mut root, document, "120px", "80px");
-    root.set_attr_str(child, "position", "fixed")
+    root.style_mut(child)
+        .set("position", "fixed")
         .expect("position should parse");
 
     root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
@@ -422,9 +425,11 @@ fn g12_number_input_icons_stage_with_element_color() {
     let input = support::assert_append_input_to(&mut root, document);
     root.set_attr_str(input, "type", "number")
         .expect("type should parse");
-    root.set_attr_str(input, "width", "120px")
+    root.style_mut(input)
+        .set("width", "120px")
         .expect("width should parse");
-    root.set_attr_str(input, "height", "24px")
+    root.style_mut(input)
+        .set("height", "24px")
         .expect("height should parse");
     root.set_attr_str(input, "value", "4")
         .expect("value should parse");

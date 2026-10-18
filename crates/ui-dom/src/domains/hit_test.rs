@@ -19,6 +19,8 @@ use crate::domains::layer_hit::{LayerClusterHit, collect_layer_cluster_hits_from
 #[cfg(test)]
 use crate::domains::layer_hit::{LayerPointHit, collect_layer_hits_from_root_point};
 use crate::domains::layout::{layer_kind_for_node, node_box_from_ref, relative_offset_for_node};
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 use crate::types::primitives::PointPx;
 use crate::types::{DomAttribute, DomAttributeValue, DomError, DomNodeSlotKey, DomRect, RootDom};
 
@@ -403,10 +405,12 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("absolute overlay");
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
+        resolve_styles(&mut root);
 
         let layer_paths = detached_layer_paths_from_root_point(&root, point(5.0, 5.0))
             .expect("hit test should succeed");
@@ -424,12 +428,15 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(underlay, "position", "absolute")
+        root.style_mut(underlay)
+            .set("position", "absolute")
             .expect("absolute underlay");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("absolute overlay");
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
+        resolve_styles(&mut root);
 
         let layer_paths = detached_layer_paths_from_root_point(&root, point(5.0, 5.0))
             .expect("hit test should succeed");
@@ -519,12 +526,15 @@ mod tests {
             .expect("append underlay");
         root.append_child(root.root, overlay)
             .expect("append overlay");
-        root.set_attr_str(underlay, "position", "absolute")
+        root.style_mut(underlay)
+            .set("position", "absolute")
             .expect("absolute underlay");
-        root.set_attr_str(overlay, "position", "absolute")
+        root.style_mut(overlay)
+            .set("position", "absolute")
             .expect("absolute overlay");
         set_box(&mut root, underlay, 0.0, 0.0, 40.0, 40.0);
         set_box(&mut root, overlay, 0.0, 0.0, 40.0, 40.0);
+        resolve_styles(&mut root);
 
         let layer_paths = detached_layer_paths_from_root_point(&root, point(5.0, 5.0))
             .expect("hit test should succeed");
@@ -561,6 +571,11 @@ mod tests {
             layer_paths.push(hit.path);
         }
         Ok(layer_paths)
+    }
+
+    fn resolve_styles(root: &mut RootDom) {
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
     }
 
     fn set_box(

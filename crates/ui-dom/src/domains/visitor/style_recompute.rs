@@ -7,12 +7,20 @@
 //!    collecting only the transmitting inherited properties.
 //! 3. Walk the subtree in DFS, carrying only traversal-local inherited state.
 //! 4. For each element, match stylesheet rules directly in this visitor pass.
-//! 5. Build that element's effective stylesheet-owned map from:
-//!    - the carried inherited transmitting state
-//!    - then the matched local stylesheet declarations
-//! 6. Apply that effective map onto retained node attrs.
-//! 7. Derive the child traversal state from the element's effective retained
-//!    result, including direct attrs and transition-presented values.
+//! 5. Fold the element's TYPED winners (base behavior sheet → active
+//!    pseudo-state behavior sheet → matched rules in ascending precedence →
+//!    inline block) and resolve + write the seven computed groups + the
+//!    transition-longhand slot directly on the node record (spine 3.3g-2a,
+//!    `winners_fold.rs`). There is no legacy map and no `apply_styles`.
+//! 6. Diff the freshly resolved groups against the last completed pass's
+//!    groups (`NodePresentation::previous_computed`, captured before the fold):
+//!    schedule pass-driven transitions for the moved fields (spine 3.3g-1b,
+//!    D2 one-timing — the change is detected at the style update, not the
+//!    write) and apply A7's group-diff dirty classification. The first pass
+//!    establishes the baseline without diffing, so initial style application
+//!    never schedules a transition.
+//! 7. Derive the child traversal state from the element's freshly projected
+//!    groups, including transition-presented values.
 //! 8. For text nodes, remeasure retained intrinsic text metrics from the
 //!    carried effective font size in this same visitor pass.
 //! 9. Clear style dirtiness for each visited node.
@@ -40,22 +48,21 @@
 
 #[cfg(test)]
 use crate::domains::style::StyleRuleOrigin;
-use crate::domains::style::{
-    ComputedStyleMap, apply_pseudo_state_style_declarations, matched_style_rules_for_element,
-};
+use crate::domains::style::computed::GroupDirtyClassification;
 #[cfg(test)]
 use crate::domains::visitor::inherited_style::inherited_style_context_from_ancestors;
 use crate::domains::visitor::inherited_style::{
-    InheritedStyleContext, inherited_color_attribute, inherited_context_from_node,
+    InheritedStyleContext, inherited_context_from_node,
 };
+use crate::domains::visitor::winners_fold::fold_element_winners;
 use crate::types::dom_node::{DomNode, DomNodeSlotKey};
-use crate::types::{
-    DomAttribute, DomAttributeValue, DomError, DomOverflowWrap, DomWhiteSpace, DomWordBreak,
-    RootDom, RootDomMetricName,
-};
 #[cfg(test)]
 use crate::types::{
-    DomIntrinsic, DomTag, RootDomContext, RootDomContextConfig, parse_css_color_rgba,
+    DomAttribute, DomAttributeValue, DomIntrinsic, DomTag, RootDomContext, RootDomContextConfig,
+    parse_css_color_rgba,
+};
+use crate::types::{
+    DomError, DomOverflowWrap, DomWhiteSpace, DomWordBreak, RootDom, RootDomMetricName,
 };
 
 #[cfg(test)]
@@ -138,7 +145,7 @@ fn recompute_style_for_node(
     match node {
         DomNode::Document(_) | DomNode::DocumentFragment(_) => {
             clear_node_style_dirty(root_dom, node_key)?;
-            Ok(inherited_context.clone())
+            Ok(*inherited_context)
         }
         DomNode::Element(_) => recompute_element_style(root_dom, node_key, inherited_context),
         DomNode::Text(_) => recompute_text_style(root_dom, node_key, inherited_context),
@@ -150,21 +157,79 @@ fn recompute_element_style(
     node_key: DomNodeSlotKey,
     inherited_context: &InheritedStyleContext,
 ) -> Result<InheritedStyleContext, DomError> {
-    let element = root_dom
-        .node(node_key)
-        .and_then(DomNode::as_element)
-        .ok_or(DomError::InvalidAttributeTarget)?;
-    let matched_rules = matched_style_rules_for_element(root_dom, node_key)?;
-    let mut next_map = stylesheet_map_from_inherited_context(inherited_context);
-    apply_pseudo_state_style_declarations(element, &mut next_map);
-    for rule in matched_rules {
-        for (attribute, value) in &rule.attr_map {
-            next_map.insert(attribute.clone(), value.clone());
+    // Capture the last-pass groups BEFORE the fold (D2's one-timing model: the
+    // diff is against the last style update, not the write). `None` = the
+    // node's first pass — the baseline establishes without diffing, so the
+    // initial style application never schedules a transition (matching CSS).
+    // The write path (style_mut / the style-attribute route) only upserts the
+    // inline block and marks style-dirty, leaving `previous_computed` untouched,
+    // so a direct write's pre-change value survives to here.
+    let previous_computed = root_dom
+        .nodes
+        .get(node_key)
+        .and_then(DomNode::previous_computed);
+
+    // Element resolution cost unit (proposal J's visited counter). Only
+    // elements reach this function — Document/DocumentFragment/Text nodes are
+    // routed to their own `recompute_*` arms — because the winners fold +
+    // group resolution work this counter prices is paid per element, not per
+    // document container or text node.
+    root_dom.increment_metric(RootDomMetricName::StylePassNodeVisited);
+
+    // Typed winners fold (spine 3.3g-2a): fold base behavior sheet → active
+    // pseudo-state behavior sheet → matched rules (ascending precedence) →
+    // inline block, then resolve and write the seven groups + transition slot
+    // directly on the node record (seeded from the parent's inherited groups).
+    // No legacy-map rebuild, no `apply_styles`, no attr projection.
+    fold_element_winners(root_dom, node_key)?;
+
+    // Read the freshly resolved groups + slot, then diff/schedule/classify.
+    // Order: fold → new slot available → diff/schedule with the NEW slot
+    // (browsers resolve the whole cascade then schedule, so a same-pass
+    // transition-longhand change applies to changes scheduled this pass).
+    let (new_groups, slot) = {
+        let node = root_dom
+            .nodes
+            .get(node_key)
+            .ok_or(DomError::InvalidNodeKey)?;
+        (
+            node.stored_computed_groups(),
+            node.resolved_transition_longhands().clone(),
+        )
+    };
+    if let Some(old_groups) = previous_computed {
+        root_dom.schedule_pass_transitions(node_key, &old_groups, &new_groups, &slot)?;
+        let classification =
+            root_dom.apply_group_diff_classification(node_key, &old_groups, &new_groups);
+        // Consequence volume (proposal J's changed counter): the group diff
+        // classified above is the same diff this counter prices — the C1/C3
+        // coarseness signal is visited vs changed, so the changed count is
+        // driven off the classification the pass already computed.
+        if classification != GroupDirtyClassification::NONE {
+            root_dom.increment_metric(RootDomMetricName::StylePassNodeChanged);
         }
+    } else {
+        // Baseline (first pass): no transition scheduling (D2 one-timing, CSS),
+        // but the layer membership must still be re-evaluated — a freshly
+        // styled node that became a layer root (e.g. `position: fixed`) needs
+        // its layer materialized by the pass now that the write path no longer
+        // queues it synchronously (spine 3.3g-2a).
+        root_dom.reevaluate_layer_membership_on_baseline(node_key);
     }
-    root_dom.apply_styles(node_key, &next_map)?;
-    let node = root_dom.node(node_key).ok_or(DomError::InvalidNodeKey)?;
-    let child_context = inherited_context_from_node(node, inherited_context)?;
+    // Record the freshly resolved groups as the new baseline for the next pass.
+    let node = root_dom
+        .nodes
+        .get_mut(node_key)
+        .ok_or(DomError::InvalidNodeKey)?;
+    node.set_previous_computed(new_groups);
+
+    // Derive the child traversal state from the element's freshly projected
+    // groups, then remeasure text intrinsics.
+    let node = root_dom
+        .nodes
+        .get(node_key)
+        .ok_or(DomError::InvalidNodeKey)?;
+    let child_context = inherited_context_from_node(node, inherited_context);
     recompute_text_metric_intrinsic_for_style_pass(
         root_dom,
         node_key,
@@ -174,6 +239,7 @@ fn recompute_element_style(
         child_context.effective_overflow_wrap(),
         child_context.effective_word_break(),
     )?;
+
     clear_node_style_dirty(root_dom, node_key)?;
     Ok(child_context)
 }
@@ -193,7 +259,7 @@ fn recompute_text_style(
         inherited_context.effective_word_break(),
     )?;
     clear_node_style_dirty(root_dom, node_key)?;
-    Ok(inherited_context.clone())
+    Ok(*inherited_context)
 }
 
 fn clear_node_style_dirty(
@@ -211,60 +277,6 @@ fn clear_node_style_dirty(
         DomNode::Text(text) => text.base.style.dirty = false,
     }
     Ok(())
-}
-
-fn stylesheet_map_from_inherited_context(
-    inherited_context: &InheritedStyleContext,
-) -> ComputedStyleMap {
-    let mut map = ComputedStyleMap::new();
-    if let Some(value) = &inherited_context.color {
-        map.insert(inherited_color_attribute(), value.clone());
-    }
-    if let Some(font_size_px) = inherited_context.font_size_px {
-        map.insert(
-            DomAttribute::FontSize,
-            font_size_attr_value_from_px(font_size_px),
-        );
-    }
-    if let Some(text_align) = inherited_context.text_align {
-        map.insert(
-            DomAttribute::TextAlign,
-            DomAttributeValue::String(
-                match text_align {
-                    crate::types::DomTextAlign::Start => "start",
-                    crate::types::DomTextAlign::Left => "left",
-                    crate::types::DomTextAlign::Center => "center",
-                    crate::types::DomTextAlign::Right => "right",
-                    crate::types::DomTextAlign::Justified => "justify",
-                    crate::types::DomTextAlign::End => "end",
-                }
-                .to_string(),
-            ),
-        );
-    }
-    if let Some(text_direction) = inherited_context.text_direction {
-        map.insert(
-            DomAttribute::Direction,
-            DomAttributeValue::String(
-                match text_direction {
-                    crate::types::DomTextDirection::Ltr => "ltr",
-                    crate::types::DomTextDirection::Rtl => "rtl",
-                }
-                .to_string(),
-            ),
-        );
-    }
-    map
-}
-
-fn font_size_attr_value_from_px(font_size_px: f32) -> DomAttributeValue {
-    if font_size_px == 0.0 {
-        return DomAttributeValue::String("0".to_string());
-    }
-    if font_size_px.fract() == 0.0 {
-        return DomAttributeValue::String(format!("{font_size_px:.0}px"));
-    }
-    DomAttributeValue::String(format!("{font_size_px}px"))
 }
 
 fn recompute_text_metric_intrinsic_for_style_pass(
@@ -309,10 +321,6 @@ mod tests {
         );
     }
 
-    fn color(value: &str) -> DomAttributeValue {
-        DomAttributeValue::Color(parse_css_color_rgba(value).expect("test color should parse"))
-    }
-
     #[test]
     fn style_recompute_applies_transition_longhands_for_scheduling() {
         let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
@@ -321,7 +329,8 @@ mod tests {
         root.append_child(root.root, panel).expect("append panel");
         root.set_attr_str(panel, "class", "drawer")
             .expect("class should set");
-        root.set_attr_str(panel, "left", "0px")
+        root.style_mut(panel)
+            .set("left", "0px")
             .expect("initial left should set");
         context
             .load_stylesheet(
@@ -331,16 +340,82 @@ mod tests {
             .expect("stylesheet should load");
         let document_key = root.root;
 
+        // Baseline pass: applies the transition longhands and establishes the
+        // node's computed groups (left=0) as the pre-change value.
         recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
-            .expect("recompute should apply transition longhands");
-        root.set_attr_str(panel, "left", "100px")
+            .expect("baseline recompute should apply transition longhands");
+        root.style_mut(panel)
+            .set("left", "100px")
             .expect("left should transition");
+        // Pass-driven scheduling (D2 one-timing): the pass detects the change
+        // and schedules the transition, presented at `from`.
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("recompute should schedule the transition");
 
         assert_eq!(
             root.node(panel)
                 .expect("panel should exist")
-                .presented_attr(&DomAttribute::Left),
-            Some(&DomAttributeValue::Float(0.0))
+                .computed_box()
+                .left,
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn style_pass_work_counters_price_resolve_and_change_volume() {
+        let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
+        let mut root = RootDom::new(context.clone());
+        let container = root.create_element(DomTag::Div).expect("container");
+        let leaf = root.create_element(DomTag::Span).expect("leaf");
+        root.append_child(root.root, container)
+            .expect("append container");
+        root.append_child(container, leaf).expect("append leaf");
+        root.style_mut(container)
+            .set("background-color", "#111111")
+            .expect("container background");
+        let document_key = root.root;
+
+        // First pass establishes the baseline: both elements are resolved
+        // (visited == 2), but the baseline establishes without diffing, so no
+        // element reports a change.
+        root.reset_metrics();
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("baseline");
+        assert_eq!(
+            root.metrics()
+                .count(RootDomMetricName::StylePassNodeVisited),
+            2
+        );
+        assert_eq!(
+            root.metrics()
+                .count(RootDomMetricName::StylePassNodeChanged),
+            0
+        );
+
+        // A real group change on a non-inherited property: background-color
+        // lives in the visual group, which the leaf does not inherit. The
+        // container's visual group moves, the leaf's stays initial, so changed
+        // prices exactly one element — and changed <= visited always.
+        root.style_mut(container)
+            .set("background-color", "#222222")
+            .expect("recolor");
+        root.reset_metrics();
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("recompute");
+        assert_eq!(
+            root.metrics()
+                .count(RootDomMetricName::StylePassNodeVisited),
+            2
+        );
+        assert_eq!(
+            root.metrics()
+                .count(RootDomMetricName::StylePassNodeChanged),
+            1
+        );
+        assert!(
+            root.metrics()
+                .count(RootDomMetricName::StylePassNodeChanged)
+                <= root
+                    .metrics()
+                    .count(RootDomMetricName::StylePassNodeVisited)
         );
     }
 
@@ -377,13 +452,10 @@ mod tests {
         };
         assert_f32_eq(intrinsic.font_size_px, 20.0);
         let label_node = root.node(label).expect("label node");
+        assert_eq!(label_node.computed_font().size_px, 20.0);
         assert_eq!(
-            label_node.presented_attr(&DomAttribute::FontSize),
-            Some(&DomAttributeValue::String("20px".to_string()))
-        );
-        assert_eq!(
-            label_node.presented_attr(&DomAttribute::Custom("color".to_string())),
-            Some(&color("#abcdef"))
+            label_node.computed_color().color_rgba,
+            parse_css_color_rgba("#abcdef").expect("#abcdef")
         );
     }
 
@@ -420,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn style_recompute_keeps_stylesheet_em_font_size_raw_and_remeasures_text_from_it() {
+    fn style_recompute_resolves_stylesheet_em_font_size_and_remeasures_text_from_it() {
         let context = Arc::new(RootDomContext::new(RootDomContextConfig::cpu()));
         let mut root = RootDom::new(context.clone());
         let container = root.create_element(DomTag::Div).expect("container");
@@ -444,11 +516,10 @@ mod tests {
 
         recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("recompute");
 
+        // The computed font group stores the resolved px (1.5em against the 14px
+        // default base -> 21px), not the authored `em` string.
         let container_node = root.node(container).expect("container node");
-        assert_eq!(
-            container_node.presented_attr(&DomAttribute::FontSize),
-            Some(&DomAttributeValue::String("1.5em".to_string()))
-        );
+        assert_eq!(container_node.computed_font().size_px, 21.0);
         let text_node = root.node(text).expect("text node");
         let DomIntrinsic::Text(intrinsic) = text_node.intrinsic() else {
             panic!("text node should keep text intrinsic state");
@@ -468,12 +539,9 @@ mod tests {
         root.append_child(ancestor, container)
             .expect("append container");
         root.append_child(container, text).expect("append text");
-        root.set_attr(
-            ancestor,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("10px".to_string())),
-        )
-        .expect("ancestor font-size");
+        root.style_mut(ancestor)
+            .set("font-size", "10px")
+            .expect("ancestor font-size");
         root.set_attr(
             container,
             DomAttribute::Class,
@@ -525,19 +593,18 @@ mod tests {
             .expect("append ancestor");
         root.append_child(ancestor, start).expect("append start");
         root.append_child(start, text).expect("append text");
-        root.set_attr(
-            ancestor,
-            DomAttribute::FontSize,
-            Some(DomAttributeValue::String("22px".to_string())),
-        )
-        .expect("ancestor font-size");
-        root.set_attr(
-            start,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(4px)".to_string())),
-        )
-        .expect("start layer");
+        root.style_mut(ancestor)
+            .set("font-size", "22px")
+            .expect("ancestor font-size");
+        root.style_mut(start)
+            .set("transform", "translateX(4px)")
+            .expect("start layer");
 
+        // Resolve the ancestor's font-size first (the style pass folds from the
+        // document; `start` is a layer root whose ancestors are outside it).
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("baseline recompute");
         recompute_dirty_style_subtree_for_layer_root(&mut root, start).expect("recompute");
 
         let text_node = root.node(text).expect("text node");
@@ -720,18 +787,12 @@ mod tests {
             .expect("append ancestor");
         root.append_child(ancestor, start).expect("append start");
         root.append_child(start, leaf).expect("append leaf");
-        root.set_attr(
-            ancestor,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#101010".to_string())),
-        )
-        .expect("seed color");
-        root.set_attr(
-            start,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(6px)".to_string())),
-        )
-        .expect("start layer");
+        root.style_mut(ancestor)
+            .set("color", "#101010")
+            .expect("seed color");
+        root.style_mut(start)
+            .set("transform", "translateX(6px)")
+            .expect("start layer");
         root.set_attr(
             start,
             DomAttribute::Class,
@@ -739,10 +800,15 @@ mod tests {
         )
         .expect("style dirty");
 
+        // Resolve the ancestor's color first (the seed climbs to ancestors
+        // outside the start layer root).
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("baseline recompute");
         recompute_dirty_style_subtree_for_layer_root(&mut root, start).expect("recompute");
         assert_eq!(
-            element_attr(&root, leaf, &DomAttribute::Custom("color".to_string())),
-            Some(color("#101010"))
+            computed_color_rgba(&root, leaf),
+            parse_css_color_rgba("#101010").expect("#101010")
         );
     }
 
@@ -761,24 +827,15 @@ mod tests {
         root.append_child(near_ancestor, start)
             .expect("append start");
         root.append_child(start, leaf).expect("append leaf");
-        root.set_attr(
-            far_ancestor,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#111111".to_string())),
-        )
-        .expect("far ancestor color");
-        root.set_attr(
-            near_ancestor,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#222222".to_string())),
-        )
-        .expect("near ancestor color");
-        root.set_attr(
-            start,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(6px)".to_string())),
-        )
-        .expect("start layer");
+        root.style_mut(far_ancestor)
+            .set("color", "#111111")
+            .expect("far ancestor color");
+        root.style_mut(near_ancestor)
+            .set("color", "#222222")
+            .expect("near ancestor color");
+        root.style_mut(start)
+            .set("transform", "translateX(6px)")
+            .expect("start layer");
         root.set_attr(
             start,
             DomAttribute::Class,
@@ -786,11 +843,14 @@ mod tests {
         )
         .expect("style dirty");
 
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("baseline recompute");
         recompute_dirty_style_subtree_for_layer_root(&mut root, start).expect("recompute");
 
         assert_eq!(
-            element_attr(&root, leaf, &DomAttribute::Custom("color".to_string())),
-            Some(color("#222222"))
+            computed_color_rgba(&root, leaf),
+            parse_css_color_rgba("#222222").expect("#222222")
         );
     }
 
@@ -805,12 +865,9 @@ mod tests {
         root.append_child(start, nested_layer)
             .expect("append nested");
         root.append_child(nested_layer, leaf).expect("append leaf");
-        root.set_attr(
-            nested_layer,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(4px)".to_string())),
-        )
-        .expect("nested layer");
+        root.style_mut(nested_layer)
+            .set("transform", "translateX(4px)")
+            .expect("nested layer");
         root.set_attr(
             start,
             DomAttribute::Class,
@@ -826,8 +883,8 @@ mod tests {
 
         recompute_dirty_style_subtree_for_layer_root(&mut root, start).expect("recompute");
         assert_eq!(
-            element_attr(&root, leaf, &DomAttribute::Custom("color".to_string())),
-            Some(color("#abcdef"))
+            computed_color_rgba(&root, leaf),
+            parse_css_color_rgba("#abcdef").expect("#abcdef")
         );
     }
 
@@ -868,16 +925,14 @@ mod tests {
 
         recompute_dirty_style_subtree_for_layer_root(&mut root, start).expect("recompute");
         assert_eq!(
-            element_attr(&root, left_leaf, &DomAttribute::Custom("color".to_string())),
-            Some(color("#ee1111"))
+            computed_color_rgba(&root, left_leaf),
+            parse_css_color_rgba("#ee1111").expect("#ee1111")
         );
         assert_eq!(
-            element_attr(
-                &root,
-                right_leaf,
-                &DomAttribute::Custom("color".to_string())
-            ),
-            None
+            computed_color_rgba(&root, right_leaf),
+            // The sibling with no matching color rule keeps the initial text
+            // color (spine 3.3g-2a: computed groups carry the resolved value).
+            [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0, 1.0]
         );
     }
 
@@ -912,18 +967,12 @@ mod tests {
             .expect("append ancestor");
         root.append_child(ancestor, start).expect("append start");
         root.append_child(start, leaf).expect("append leaf");
-        root.set_attr(
-            ancestor,
-            DomAttribute::Custom("background-color".to_string()),
-            Some(DomAttributeValue::String("#222222".to_string())),
-        )
-        .expect("ancestor background-color");
-        root.set_attr(
-            start,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(2px)".to_string())),
-        )
-        .expect("start layer");
+        root.style_mut(ancestor)
+            .set("background-color", "#222222")
+            .expect("ancestor background-color");
+        root.style_mut(start)
+            .set("transform", "translateX(2px)")
+            .expect("start layer");
         root.set_attr(
             start,
             DomAttribute::Class,
@@ -934,12 +983,10 @@ mod tests {
         recompute_dirty_style_subtree_for_layer_root(&mut root, start).expect("recompute");
 
         assert_eq!(
-            element_attr(
-                &root,
-                leaf,
-                &DomAttribute::Custom("background-color".to_string())
-            ),
-            None
+            computed_background_rgba(&root, leaf),
+            // background-color is non-inherited: the leaf keeps the transparent
+            // initial even though the ancestor authored a background.
+            [0.0, 0.0, 0.0, 0.0]
         );
     }
 
@@ -954,18 +1001,12 @@ mod tests {
         root.append_child(start, nested_layer)
             .expect("append nested");
         root.append_child(nested_layer, leaf).expect("append leaf");
-        root.set_attr(
-            start,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(1px)".to_string())),
-        )
-        .expect("start layer");
-        root.set_attr(
-            nested_layer,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(2px)".to_string())),
-        )
-        .expect("nested layer");
+        root.style_mut(start)
+            .set("transform", "translateX(1px)")
+            .expect("start layer");
+        root.style_mut(nested_layer)
+            .set("transform", "translateX(2px)")
+            .expect("nested layer");
         root.set_attr(
             start,
             DomAttribute::Class,
@@ -1009,24 +1050,15 @@ mod tests {
         root.append_child(start, nested_layer)
             .expect("append nested layer");
         root.append_child(nested_layer, leaf).expect("append leaf");
-        root.set_attr(
-            ancestor,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#111111".to_string())),
-        )
-        .expect("ancestor color");
-        root.set_attr(
-            start,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(1px)".to_string())),
-        )
-        .expect("start layer");
-        root.set_attr(
-            nested_layer,
-            DomAttribute::Transform,
-            Some(DomAttributeValue::String("translateX(2px)".to_string())),
-        )
-        .expect("nested layer");
+        root.style_mut(ancestor)
+            .set("color", "#111111")
+            .expect("ancestor color");
+        root.style_mut(start)
+            .set("transform", "translateX(1px)")
+            .expect("start layer");
+        root.style_mut(nested_layer)
+            .set("transform", "translateX(2px)")
+            .expect("nested layer");
         root.set_attr(
             start,
             DomAttribute::Class,
@@ -1034,32 +1066,39 @@ mod tests {
         )
         .expect("style dirty");
 
+        let document_key = root.root;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("baseline recompute");
         recompute_dirty_style_subtree_for_layer_root(&mut root, start).expect("start pass");
-        let before = element_attr(&root, leaf, &DomAttribute::Custom("color".to_string()));
-        assert_eq!(before, Some(color("#111111")));
+        let before = computed_color_rgba(&root, leaf);
+        assert_eq!(before, parse_css_color_rgba("#111111").expect("#111111"));
         assert!(!style_dirty(&root, nested_layer));
 
-        root.set_attr(
-            ancestor,
-            DomAttribute::Custom("color".to_string()),
-            Some(DomAttributeValue::String("#333333".to_string())),
-        )
-        .expect("ancestor color update");
+        root.style_mut(ancestor)
+            .set("color", "#333333")
+            .expect("ancestor color update");
 
         recompute_dirty_style_subtree_for_layer_root(&mut root, nested_layer).expect("nested pass");
-        let after = element_attr(&root, leaf, &DomAttribute::Custom("color".to_string()));
+        let after = computed_color_rgba(&root, leaf);
 
         assert_eq!(after, before);
     }
 
-    fn element_attr(
-        root: &RootDom,
-        key: DomNodeSlotKey,
-        attribute: &DomAttribute,
-    ) -> Option<DomAttributeValue> {
-        let node = root.node(key)?;
-        let element = node.as_element()?;
-        element.attrs.attributes.get(attribute).cloned()
+    /// The leaf's resolved text color, read through the computed color group
+    /// (spine 3.3g-2a: presentation values live in the computed groups, not
+    /// the attrs map).
+    fn computed_color_rgba(root: &RootDom, key: DomNodeSlotKey) -> [f32; 4] {
+        root.node(key)
+            .expect("node should exist")
+            .computed_color()
+            .color_rgba
+    }
+
+    fn computed_background_rgba(root: &RootDom, key: DomNodeSlotKey) -> [f32; 4] {
+        root.node(key)
+            .expect("node should exist")
+            .computed_visual()
+            .background_rgba
     }
 
     fn style_dirty(root: &RootDom, key: DomNodeSlotKey) -> bool {

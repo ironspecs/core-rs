@@ -32,7 +32,9 @@
 //!   fragment-local keys past the staging boundary
 use std::collections::HashMap;
 
-use crate::types::dom_attr_parse::normalize_attribute_value;
+use crate::domains::style::name_is_presentation;
+#[cfg(test)]
+use crate::types::dom_attribute_node::DomAttributeNode;
 use crate::types::dom_event_listener::{
     DomEventListener, DomEventListenerOptions, add_event_listener_to_node,
     remove_event_listener_from_node,
@@ -49,20 +51,17 @@ use crate::types::dom_query_selector::{
     query_selector_from as query_selector_from_in_store,
 };
 use crate::types::dom_tag::DomTag;
+#[cfg(test)]
+use crate::types::root_dom::RootDom;
 use crate::types::root_dom::{
     append_child_to_parent, collect_subtree_keys, detach_node_from_parent, next_id_from_attr,
 };
+#[cfg(test)]
+use crate::types::root_dom_context::RootDomContext;
 use crate::types::{
     DomAttribute, DomAttributeValue, DomError, DomEventListenerOwner, parse_authored_value_input,
 };
 use slotmap::SlotMap;
-
-#[cfg(test)]
-use crate::types::root_dom::RootDom;
-#[cfg(test)]
-use crate::types::root_dom_context::RootDomContext;
-#[cfg(test)]
-use crate::types::{DomAttributeNode, parse_css_color_rgba};
 
 #[derive(Debug)]
 pub struct RootDomFragment {
@@ -299,13 +298,30 @@ impl RootDomFragment {
     /// This is the fragment-owned mutation path for authored attrs before
     /// import. It exists so detached authoring can obey the same validation and
     /// id-integrity rules as live documents.
+    ///
+    /// Unlike `RootDom::set_attr`, this path does **not** re-project the
+    /// computed presentation groups: a detached tree never runs layout/paint,
+    /// and presentation is written through `style_mut` anyway (spine 3.3g-2a).
     pub fn set_attr(
         &mut self,
         key: DomNodeSlotKey,
         attribute: DomAttribute,
         value: Option<DomAttributeValue>,
     ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
+        // D5 enforcement (spine 3.3g-2a). Detached fragment trees have no
+        // inline declaration store and `style_mut` is unavailable on them, so
+        // the `style` attribute errors loudly rather than routing into a store
+        // that lands only on import; every other presentation write is the
+        // same `PresentationRequiresStyleMut` gate as `RootDom`.
+        if attribute == DomAttribute::Style {
+            return Err(DomError::InvalidAttributeTarget);
+        }
+        if let DomAttribute::Custom(name) = &attribute
+            && name_is_presentation(name)
+        {
+            return Err(DomError::PresentationRequiresStyleMut);
+        }
+
         let is_id_attribute = attribute == DomAttribute::Id;
         let previous_id = self.current_element_id(key);
         let next_id = next_id_from_attr(&attribute, value.as_ref())?;
@@ -337,6 +353,9 @@ impl RootDomFragment {
         attribute: &str,
         value: &str,
     ) -> Result<(), DomError> {
+        if name_is_presentation(attribute) {
+            return Err(DomError::PresentationRequiresStyleMut);
+        }
         let attribute = DomAttribute::try_from(attribute)?;
         let value = parse_authored_value_input(&attribute, value)?;
         self.set_attr(key, attribute, value)
@@ -524,10 +543,6 @@ mod tests {
             .collect()
     }
 
-    fn color(value: &str) -> DomAttributeValue {
-        DomAttributeValue::Color(parse_css_color_rgba(value).expect("test color should parse"))
-    }
-
     fn build_query_test_fragment(
         fragment: &mut RootDomFragment,
     ) -> (
@@ -694,71 +709,6 @@ mod tests {
                 .intrinsic(),
             &before
         );
-    }
-
-    #[test]
-    fn img_intrinsic_materializes_placeholder_and_one_sided_sizes_in_fragment() {
-        let mut fragment = RootDomFragment::new();
-        let img_key = fragment
-            .create_element(DomTag::Img)
-            .expect("img should insert");
-
-        fragment
-            .set_attr(
-                img_key,
-                DomAttribute::Src,
-                Some(DomAttributeValue::String("memory://a.png".to_string())),
-            )
-            .expect("src should set");
-        match fragment
-            .node(img_key)
-            .expect("img should exist")
-            .intrinsic()
-        {
-            DomIntrinsic::Img(metrics) => {
-                assert!((metrics.width_px - 160.0).abs() < f32::EPSILON);
-                assert!((metrics.height_px - 90.0).abs() < f32::EPSILON);
-            }
-            other => panic!("expected placeholder img intrinsic, got {other:?}"),
-        }
-
-        fragment
-            .set_attr(
-                img_key,
-                DomAttribute::Width,
-                Some(DomAttributeValue::String("96px".to_string())),
-            )
-            .expect("width should set");
-        match fragment
-            .node(img_key)
-            .expect("img should exist")
-            .intrinsic()
-        {
-            DomIntrinsic::Img(metrics) => {
-                assert!((metrics.width_px - 96.0).abs() < f32::EPSILON);
-                assert!((metrics.height_px - 54.0).abs() < f32::EPSILON);
-            }
-            other => panic!("expected one-sided img intrinsic, got {other:?}"),
-        }
-        fragment
-            .set_attr(
-                img_key,
-                DomAttribute::Height,
-                Some(DomAttributeValue::String("48px".to_string())),
-            )
-            .expect("height should set");
-
-        match fragment
-            .node(img_key)
-            .expect("img should exist")
-            .intrinsic()
-        {
-            DomIntrinsic::Img(metrics) => {
-                assert!((metrics.width_px - 96.0).abs() < f32::EPSILON);
-                assert!((metrics.height_px - 48.0).abs() < f32::EPSILON);
-            }
-            other => panic!("expected img intrinsic, got {other:?}"),
-        }
     }
 
     #[test]
@@ -1039,8 +989,8 @@ mod tests {
             .set_attr_str(element, "id", "hero")
             .expect("id should parse");
         fragment
-            .set_attr_str(element, "font-size", "14px")
-            .expect("font-size should parse");
+            .set_attr_str(element, "class", "panel")
+            .expect("class should parse");
         fragment
             .set_attr_str(element, "slot", "panel")
             .expect("custom attr should parse");
@@ -1051,8 +1001,8 @@ mod tests {
             .expect("element node");
         assert_eq!(element_node.attrs.id.as_deref(), Some("hero"));
         assert_eq!(
-            element_node.attrs.attributes.get(&DomAttribute::FontSize),
-            Some(&DomAttributeValue::String("14px".to_owned()))
+            element_node.attrs.attributes.get(&DomAttribute::Class),
+            Some(&DomAttributeValue::String("panel".to_owned()))
         );
         assert_eq!(
             element_node
@@ -1060,48 +1010,6 @@ mod tests {
                 .attributes
                 .get(&DomAttribute::Custom("slot".to_owned())),
             Some(&DomAttributeValue::String("panel".to_owned()))
-        );
-    }
-
-    #[test]
-    fn fragment_set_attr_str_accepts_em_font_size() {
-        let mut fragment = RootDomFragment::new();
-        let element = fragment.create_element(DomTag::Div).expect("element");
-
-        fragment
-            .set_attr_str(element, "font-size", "1em")
-            .expect("em font-size should succeed in step 3");
-        let element_node = fragment
-            .node(element)
-            .and_then(DomNode::as_element)
-            .expect("element node");
-        assert_eq!(
-            element_node.attrs.attributes.get(&DomAttribute::FontSize),
-            Some(&DomAttributeValue::String("1em".to_owned()))
-        );
-    }
-
-    #[test]
-    fn fragment_set_attr_str_accepts_em_inside_style_attr_in_step_4() {
-        let mut fragment = RootDomFragment::new();
-        let element = fragment.create_element(DomTag::Div).expect("element");
-
-        fragment
-            .set_attr_str(element, "style", "font-size: 1.5em; width: 2em")
-            .expect("em style should parse in step 4");
-        let element_node = fragment
-            .node(element)
-            .and_then(DomNode::as_element)
-            .expect("element node");
-        assert_eq!(
-            element_node
-                .attribute_style_map()
-                .get(&DomAttribute::FontSize),
-            Some(&DomAttributeValue::String("1.5em".to_string()))
-        );
-        assert_eq!(
-            element_node.attribute_style_map().get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("2em".to_string()))
         );
     }
 
@@ -1127,41 +1035,6 @@ mod tests {
                 .attributes
                 .get(&DomAttribute::Custom("slot".to_owned())),
             None
-        );
-    }
-
-    #[test]
-    fn fragment_set_attr_str_updates_style_raw_attr_and_parsed_map() {
-        let mut fragment = RootDomFragment::new();
-        let element = fragment.create_element(DomTag::Div).expect("element");
-
-        fragment
-            .set_attr_str(
-                element,
-                "style",
-                "width: 12px; background-color: #112233; width: 14px",
-            )
-            .expect("style should parse");
-
-        let element_node = fragment
-            .node(element)
-            .and_then(DomNode::as_element)
-            .expect("element node");
-        assert_eq!(
-            element_node.attrs.attributes.get(&DomAttribute::Style),
-            Some(&DomAttributeValue::String(
-                "width: 12px; background-color: #112233; width: 14px".to_string()
-            ))
-        );
-        assert_eq!(
-            element_node.attribute_style_map().get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("14px".to_string()))
-        );
-        assert_eq!(
-            element_node
-                .attribute_style_map()
-                .get(&DomAttribute::Custom("background-color".to_owned())),
-            Some(&color("#112233"))
         );
     }
 
@@ -1193,29 +1066,6 @@ mod tests {
     }
 
     #[test]
-    fn fragment_set_attr_str_unset_clears_style_raw_attr_and_parsed_map() {
-        let mut fragment = RootDomFragment::new();
-        let element = fragment.create_element(DomTag::Div).expect("element");
-
-        fragment
-            .set_attr_str(element, "style", "width: 12px; color: #ffffff")
-            .expect("style should parse");
-        fragment
-            .set_attr_str(element, "style", "unset")
-            .expect("unset should clear style");
-
-        let element_node = fragment
-            .node(element)
-            .and_then(DomNode::as_element)
-            .expect("element node");
-        assert_eq!(
-            element_node.attrs.attributes.get(&DomAttribute::Style),
-            None
-        );
-        assert!(element_node.attribute_style_map().is_empty());
-    }
-
-    #[test]
     fn fragment_set_attr_str_unset_clears_class_raw_attr_and_parsed_list() {
         let mut fragment = RootDomFragment::new();
         let element = fragment.create_element(DomTag::Div).expect("element");
@@ -1239,38 +1089,19 @@ mod tests {
     }
 
     #[test]
-    fn fragment_set_attr_str_invalid_style_keeps_previous_raw_attr_and_parsed_map() {
+    fn fragment_set_attr_str_rejects_presentation_and_style() {
         let mut fragment = RootDomFragment::new();
         let element = fragment.create_element(DomTag::Div).expect("element");
 
-        fragment
-            .set_attr_str(element, "style", "width: 12px; color: #ffffff")
-            .expect("style should parse");
-
-        let error = fragment
-            .set_attr_str(element, "style", "slot: panel")
-            .expect_err("invalid style should fail");
-
-        assert_eq!(error, DomError::InvalidAttributeValue);
-        let element_node = fragment
-            .node(element)
-            .and_then(DomNode::as_element)
-            .expect("element node");
+        // Detached fragments have no inline declaration store, so the `style`
+        // attribute errors loudly; presentation properties route to `style_mut`.
         assert_eq!(
-            element_node.attrs.attributes.get(&DomAttribute::Style),
-            Some(&DomAttributeValue::String(
-                "width: 12px; color: #ffffff".to_string()
-            ))
+            fragment.set_attr_str(element, "style", "width: 12px"),
+            Err(DomError::InvalidAttributeTarget)
         );
         assert_eq!(
-            element_node.attribute_style_map().get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("12px".to_string()))
-        );
-        assert_eq!(
-            element_node
-                .attribute_style_map()
-                .get(&DomAttribute::Custom("color".to_owned())),
-            Some(&color("#ffffff"))
+            fragment.set_attr_str(element, "width", "12px"),
+            Err(DomError::PresentationRequiresStyleMut)
         );
     }
 

@@ -21,7 +21,7 @@
 //! - keep root APIs DOM-shaped and unsurprising
 //! - push one-off helpers downward; keep ownership decisions here explicit
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 
@@ -39,8 +39,15 @@ use crate::domains::layout::{layer_kind_for_node, layer_offset_from_dom_climb, n
 use crate::domains::paint::{
     mark_full_repaint_up_to_layout_root, mark_node_dirty_up_to_layout_root,
 };
+use crate::domains::style::computed::project;
+use crate::domains::style::computed::{
+    ComputedGroups, FlexBasisKw, GroupDirtyClassification, ResolvedTransitionLonghands,
+    for_each_moved_field,
+};
 use crate::domains::style::{
-    ComputedStyleMap, apply_pseudo_state_style_declarations, matched_style_rules_for_element,
+    ComputedStyleRef, DeclBlock, DeclDropReport, DeclGrammar, DeclLength, DeclStore, DeclValue,
+    Declaration, Keyword, PresentationProperty, StyleMut, TextInterner, TextKey,
+    decl_value_to_dom_value, name_is_presentation, parse_declaration_block,
 };
 use crate::domains::visitor::event_target::{
     DomPointEventTarget, dispatch_event_from_point_and_finish, dispatch_event_to_target_and_finish,
@@ -50,13 +57,13 @@ use crate::domains::visitor::pseudo_state::{
     active_pointer_target_from_attached_point, active_pointer_target_from_point,
     sync_hover_from_attached_pointer,
 };
+use crate::domains::visitor::winners_fold::{CollectedWinners, collect_winners};
 use crate::domains::{ExternalLayerTarget, LayerLease, LayerPool, LayerPoolPolicy};
 use crate::element_controls::{
     NumericStepDirection, ResolvedElementControl, range_value_string_from_point,
     resolved_control_part_from_point, resolved_element_control, resolved_text_edit_kind,
 };
 use crate::types::dom_attr_node::DomAttributeNode;
-use crate::types::dom_attr_parse::{normalize_attribute_value, style_attr_allows_property};
 use crate::types::dom_event::{
     DomEvent, DomEventDetail, DomEventListener, DomEventListenerOptions, DomEventName,
     DomFocusEvent, DomModifierState, DomMouseButton, DomMouseEvent, DomPointerEvent,
@@ -67,7 +74,7 @@ use crate::types::dom_event_listener::{
 };
 use crate::types::dom_node::{
     AttributeInvalidation, DomDocumentNode, DomIntrinsic, DomNode, DomNodeSlotKey, LayerOrder,
-    attribute_changes_layer_membership, attribute_invalidation,
+    attribute_invalidation,
 };
 use crate::types::dom_pseudo_state::{DomPointerState, DomPseudoState};
 use crate::types::dom_query_selector::{
@@ -78,10 +85,7 @@ use crate::types::dom_query_selector::{
 };
 use crate::types::dom_tag::{DomElementEditKind, DomTag};
 use crate::types::dom_transition::{DomTransition, DomTransitionStore};
-use crate::types::dom_transition::{
-    DomTransitionConfig, TransitionLonghandValues, transition_longhand_values_from_shorthand,
-    transition_spec_for_attribute,
-};
+use crate::types::dom_transition::{DomTransitionConfig, transition_spec_for_longhands};
 use crate::types::element_behaviors::{
     ActiveRangeDragSession, DomElementAfterClick, DomElementAfterFocus, DomElementOnActivation,
     DomElementOnBlur, DomElementOnKeyboard, DomElementOnPointer, DomElementPresentOptionsBehavior,
@@ -105,7 +109,8 @@ use crate::types::root_dom_nodes::{
     RootDomNodesMetricHistoryIter, RootDomNodesMetricName, RootDomNodesMetrics,
 };
 use crate::types::{
-    DomAttribute, DomAttributeValue, DomError, DomEventListenerOwner, parse_authored_value_input,
+    DomAttribute, DomAttributeValue, DomCanonicalSnapshot, DomCanonicalStyleSnapshot, DomError,
+    DomEventListenerOwner, parse_authored_value_input,
 };
 use crate::types::{RootDomMetricHistoryIter, RootDomMetricName, RootDomMetrics};
 use slotmap::SlotMap;
@@ -118,6 +123,8 @@ use crate::domains::layer_hit::topmost_attached_layer_hit_from_root_point;
 use crate::domains::paint::build_layer_paint_plan;
 #[cfg(test)]
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
+#[cfg(test)]
+use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
 use crate::types::primitives::DomRect;
 #[cfg(test)]
@@ -211,10 +218,16 @@ pub struct RootDom {
     pub(crate) root: DomNodeSlotKey,
     pub(crate) nodes: RootDomNodes,
     id_lookup: HashMap<String, DomNodeSlotKey>,
-    style_pass_attrs_by_node: HashMap<DomNodeSlotKey, BTreeSet<DomAttribute>>,
+    inline_decl_store: DeclStore,
     pseudo_state: RootDomPseudoState,
     selection: DomSelection,
     transitions: DomTransitionStore,
+    /// The document's computed-text interner (spine 3.3a): computed
+    /// `font-family` keys resolve here. Written by the style pass's
+    /// projection during recompute; read by `ComputedStyleRef::font_family`
+    /// (and, later, paint's font selection). `TextKey` values are
+    /// document-local, exactly like `DomNodeSlotKey`.
+    pub(crate) computed_texts: TextInterner,
     // Root-owned queue of finished DOM event instances awaiting ownership
     // transfer out of `update(...)`.
     //
@@ -255,10 +268,11 @@ impl RootDom {
             root,
             nodes,
             id_lookup: HashMap::new(),
-            style_pass_attrs_by_node: HashMap::new(),
+            inline_decl_store: DeclStore::new(),
             pseudo_state: RootDomPseudoState::default(),
             selection: DomSelection::None,
             transitions: DomTransitionStore::default(),
+            computed_texts: TextInterner::default(),
             emitted_events: Vec::new(),
             attached_bevy_parent: None,
             pending_layer_append_roots: Vec::new(),
@@ -1510,6 +1524,10 @@ impl RootDom {
         }
         self.index_node_id_if_present(imported_key);
         append_child_to_parent(&mut self.nodes, parent_key, imported_key)?;
+        // The imported element is born style-dirty (mark_node_born_dirty above);
+        // the style pass resolves its groups on the next frame. Fragment
+        // `set_attr` never projected groups while detached (the projection
+        // channel died in spine 3.3g-2a); the pass is now the only writer.
         Ok(imported_key)
     }
 
@@ -1697,7 +1715,7 @@ impl RootDom {
             &mut self.nodes,
             &removed_keys,
             &mut self.transitions.active_nodes,
-            &mut self.style_pass_attrs_by_node,
+            &mut self.inline_decl_store,
             &mut self.id_lookup,
         );
         Ok(())
@@ -1721,11 +1739,21 @@ impl RootDom {
         attribute: DomAttribute,
         value: Option<DomAttributeValue>,
     ) -> Result<(), DomError> {
-        let value = normalize_attribute_value(&attribute, value)?;
-        if attribute == DomAttribute::Transition {
-            let longhand_values = transition_longhand_values_from_shorthand(value.as_ref())?;
-            self.set_transition_longhand_attrs(key, longhand_values)?;
+        // D5 enforcement + style-attribute routing (spine 3.3g-2a), BEFORE any
+        // normalization/expansion: the `style` attribute itself routes into the
+        // inline declaration store (never stored as an attr); a `Custom`
+        // presentation name is a typed error pointing at `style_mut`; other
+        // `Custom` names are content data (the documented escape hatch) and
+        // content attributes continue unchanged.
+        if attribute == DomAttribute::Style {
+            return self.route_style_attribute(key, value);
         }
+        if let DomAttribute::Custom(name) = &attribute
+            && name_is_presentation(name)
+        {
+            return Err(DomError::PresentationRequiresStyleMut);
+        }
+
         let is_id_attribute = attribute == DomAttribute::Id;
         let previous_id = self.current_element_id(key);
         let next_id = next_id_from_attr(&attribute, value.as_ref())?;
@@ -1736,17 +1764,6 @@ impl RootDom {
         if current_node.attr(&attribute_for_refresh) == value.as_ref() {
             return Ok(());
         }
-        let pending_transition = transition_for_attr_change(
-            current_node,
-            key,
-            &attribute_for_refresh,
-            value.as_ref(),
-            self.clock_s,
-        );
-        let canceled_elapsed_s = current_node
-            .active_transition(&attribute_for_refresh)
-            .map(|transition| transition_elapsed_s_at(transition, self.clock_s));
-        let had_active_transition = canceled_elapsed_s.is_some();
         let mut invalidation = attribute_invalidation(&attribute_for_refresh);
         let prepared_intrinsic_after_attr_write = current_node
             .before_attr_write_intrinsic_update(&attribute_for_refresh, value.as_ref())?;
@@ -1759,46 +1776,22 @@ impl RootDom {
             None
         };
         let intrinsic_after_attr_write_ran = prepared_intrinsic_after_attr_write.is_some();
-        let scheduled_transition = pending_transition.is_some();
         let live_text_selection = match self.selection {
             DomSelection::TextSelected(selection) if selection.target_element == key => {
                 Some(selection)
             }
             _ => None,
         };
-        let node_has_active_transitions = {
+        {
             let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
-            if had_active_transition {
-                node.clear_transition(&attribute_for_refresh);
-            }
             node.set_attr(attribute, value)?;
             let _intrinsic_changed =
                 node.after_attr_write_intrinsic_update(prepared_intrinsic_after_attr_write);
-            if let Some(transition) = pending_transition {
-                node.set_transition(transition);
-            }
-            node.active_transition_attributes().next().is_some()
-        };
+        }
         let next_layer_kind = {
             let node = self.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
             layer_kind_for_node(node)
         };
-        if scheduled_transition {
-            self.increment_metric(RootDomMetricName::TransitionScheduleAllocation);
-        }
-        if had_active_transition {
-            self.dispatch_and_record_transition_event(
-                key,
-                DomEventName::TransitionCancel,
-                attribute_for_refresh.clone(),
-                canceled_elapsed_s.expect("existing transition should carry elapsed time"),
-            );
-        }
-        if node_has_active_transitions {
-            self.transitions.active_nodes.insert(key);
-        } else {
-            self.transitions.active_nodes.remove(&key);
-        }
         if intrinsic_after_attr_write_ran
             && matches!(
                 self.node(key).and_then(DomNode::as_element),
@@ -1820,7 +1813,6 @@ impl RootDom {
         if is_id_attribute {
             self.replace_indexed_id(key, previous_id, next_id);
         }
-        self.sync_vertical_scroll_entry_for_attr_change(key, &attribute_for_refresh);
         if attribute_for_refresh == DomAttribute::Value {
             let (edit_kind, current_value) = {
                 let element = self
@@ -1882,43 +1874,57 @@ impl RootDom {
         Ok(())
     }
 
-    fn set_transition_longhand_attrs(
+    /// Routes the `style` attribute into the inline declaration store (spine
+    /// 3.3g-2a). The style attribute is never stored as an attr: `None` clears
+    /// the node's inline block (removal semantics), a `String` parses
+    /// drop-and-continue (CSS 2.1 §4.1.7) and replaces the block wholesale
+    /// (cssText semantics). Block replacement is one mutating write: it marks
+    /// style-dirty and counts `StyleDeclarationUpsert` via
+    /// `replace_inline_decl_block`, plus `StyleDeclarationDropped` per dropped
+    /// declaration. Any other value kind is a typed error.
+    fn route_style_attribute(
         &mut self,
         key: DomNodeSlotKey,
-        values: TransitionLonghandValues,
+        value: Option<DomAttributeValue>,
     ) -> Result<(), DomError> {
-        for (attribute, value) in transition_longhand_attr_values(values) {
-            self.set_attr_internal(key, attribute, value)?;
+        let node = self.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
+        if matches!(node, DomNode::Text(_)) {
+            return Err(DomError::InvalidAttributeTarget);
+        }
+        let (block, report) = match value {
+            None => (DeclBlock::new(), DeclDropReport::default()),
+            Some(DomAttributeValue::String(text)) => {
+                parse_declaration_block(&text, self.inline_texts_mut())
+            }
+            Some(_) => return Err(DomError::InvalidAttributeValue),
+        };
+        let changed = self.replace_inline_decl_block(key, block);
+        if changed {
+            for _ in 0..report.dropped {
+                self.increment_metric(RootDomMetricName::StyleDeclarationDropped);
+            }
         }
         Ok(())
-    }
-
-    fn sync_vertical_scroll_entry_for_attr_change(
-        &mut self,
-        key: DomNodeSlotKey,
-        attribute: &DomAttribute,
-    ) {
-        if *attribute != DomAttribute::Overflow {
-            return;
-        }
-        let Some(node) = self.node(key) else {
-            return;
-        };
-        if node_allows_vertical_scroll_offset(node) {
-            return;
-        }
-        self.vertical_scroll_offset_by_node.remove(&key);
     }
 
     /// Sets one node attribute from authored string name/value text.
     ///
     /// Use `"unset"` as the authored removal value.
+    ///
+    /// The name-based D5 gate runs FIRST: a presentation name (a longhand or
+    /// shorthand property name) is a typed error pointing at `style_mut`; the
+    /// `style` name routes into the inline declaration store; anything else
+    /// parses into the CONTENT vocabulary (with `Custom` fallthrough for
+    /// non-presentation unknowns).
     pub fn set_attr_str(
         &mut self,
         key: DomNodeSlotKey,
         attribute: &str,
         value: &str,
     ) -> Result<(), DomError> {
+        if name_is_presentation(attribute) {
+            return Err(DomError::PresentationRequiresStyleMut);
+        }
         let attribute = DomAttribute::try_from(attribute)?;
         let value = parse_authored_value_input(&attribute, value)?;
         self.set_attr(key, attribute, value)
@@ -1967,66 +1973,90 @@ impl RootDom {
         Ok(())
     }
 
+    /// Returns the node's computed-presentation view (typed groups; each
+    /// accessor merges the node's active-transition overlay). `None` for a
+    /// missing or already-removed node key — a bad key is boundary data and
+    /// must not fabricate a group.
+    #[must_use]
+    pub fn computed_style(&self, node: DomNodeSlotKey) -> Option<ComputedStyleRef<'_>> {
+        self.nodes
+            .contains_key(node)
+            .then(|| ComputedStyleRef::new(self, node))
+    }
+
+    /// Resolves one document-local computed-text key back to its string.
+    /// `None` for an out-of-range key (never a panic).
+    #[must_use]
+    pub(crate) fn resolve_computed_text(&self, key: TextKey) -> Option<&str> {
+        self.computed_texts.resolve(key)
+    }
+
+    /// Debug-priced on-demand style query (PLAN.md open question 9: the
+    /// `getComputedStyle`-freedom successor to the old attr-map fold). Re-folds
+    /// the node's winners from CURRENT sources (behavior base + active
+    /// pseudo-states + matched rules under one runtime lock + the node's inline
+    /// block), seeds from the parent's retained merged groups, and projects each
+    /// winning declaration to `(property, DomAttributeValue)` (text resolved via
+    /// the fold's scratch interner; lengths/keywords/numbers formatted as
+    /// strings through the surviving value formatter). This is NOT on the live
+    /// recompute path: the retained pass resolves groups through the typed
+    /// winners fold and never calls this.
     pub fn compute_style_map(
         &self,
         node_key: DomNodeSlotKey,
-        parent_attr_map: Option<&ComputedStyleMap>,
-    ) -> Result<ComputedStyleMap, DomError> {
-        let element = self
-            .node(node_key)
-            .and_then(DomNode::as_element)
-            .ok_or(DomError::InvalidAttributeTarget)?;
-        let matched_rules = matched_style_rules_for_element(self, node_key)?;
-        let mut resolved = parent_attr_map.cloned().unwrap_or_default();
-        apply_pseudo_state_style_declarations(element, &mut resolved);
-        for rule in matched_rules {
-            for (attribute, value) in &rule.attr_map {
-                resolved.insert(attribute.clone(), value.clone());
+    ) -> Result<BTreeMap<PresentationProperty, DomAttributeValue>, DomError> {
+        let CollectedWinners {
+            winners, scratch, ..
+        } = collect_winners(self, node_key)?;
+        let mut map = BTreeMap::new();
+        for property in PresentationProperty::ALL {
+            let Some((value, _precedence)) = winners[property.index()] else {
+                continue;
+            };
+            map.insert(
+                property,
+                decl_value_to_dom_value(&value, |key| scratch.resolve(key)),
+            );
+        }
+        Ok(map)
+    }
+
+    /// The canonical public style list for one node: the node's inline
+    /// declarations in block order, projected to the public wire shape
+    /// `(property-name, value)` (spine 3.3g-2a). `Text` values resolve through
+    /// the inline store's interner; lengths/keywords/numbers/colors use the
+    /// same formatter `compute_style_map` shares. A missing node yields an
+    /// empty list (it has no inline declarations).
+    #[must_use]
+    pub fn canonical_style_snapshot(&self, node_key: DomNodeSlotKey) -> DomCanonicalStyleSnapshot {
+        let mut styles = Vec::new();
+        if let Some(block) = self.inline_decl_block(node_key) {
+            for declaration in block.declarations() {
+                styles.push((
+                    declaration.property.name().to_string(),
+                    decl_value_to_dom_value(&declaration.value, |key| {
+                        self.resolve_inline_text(key)
+                    }),
+                ));
             }
         }
-        Ok(resolved)
+        DomCanonicalStyleSnapshot { styles }
     }
 
-    pub fn apply_styles(
-        &mut self,
+    /// The canonical public snapshot for one node: the inline-declaration style
+    /// list plus the node-local layout snapshot (spine 3.3g-2a). The style side
+    /// lives here because only the root can resolve the inline store.
+    pub fn canonical_snapshot(
+        &self,
         node_key: DomNodeSlotKey,
-        map: &ComputedStyleMap,
-    ) -> Result<(), DomError> {
-        let removable_attributes =
-            style_removed_attributes_for_node(self.style_pass_attrs_by_node.get(&node_key), map);
-        if removable_attributes.capacity() > 0 {
-            self.increment_metric(RootDomMetricName::StylesheetRemovedAttributeListAllocation);
-        }
-        for attribute in removable_attributes
-            .iter()
-            .filter(|attribute| **attribute != DomAttribute::Transition)
-        {
-            self.set_attr_internal(node_key, attribute.clone(), None)?;
-        }
-        if removable_attributes.contains(&DomAttribute::Transition) {
-            self.set_attr_internal(node_key, DomAttribute::Transition, None)?;
-        }
-        for (attribute, value) in map {
-            self.set_attr_internal(node_key, attribute.clone(), Some(value.clone()))?;
-        }
-        self.record_style_pass_attrs(node_key, map.keys().cloned());
-        if !map.is_empty() {
-            self.increment_metric(RootDomMetricName::StylesheetTrackedAttributeSetAllocation);
-        }
-        Ok(())
-    }
-
-    fn record_style_pass_attrs(
-        &mut self,
-        key: DomNodeSlotKey,
-        attributes: impl IntoIterator<Item = DomAttribute>,
-    ) {
-        let attrs = self.style_pass_attrs_by_node.entry(key).or_default();
-        attrs.clear();
-        attrs.extend(attributes);
-        if attrs.is_empty() {
-            self.style_pass_attrs_by_node.remove(&key);
-        }
+    ) -> Result<DomCanonicalSnapshot, DomError> {
+        let layout = self
+            .nodes
+            .get(node_key)
+            .ok_or(DomError::InvalidNodeKey)?
+            .canonical_layout_snapshot();
+        let style = self.canonical_style_snapshot(node_key);
+        Ok(DomCanonicalSnapshot { style, layout })
     }
 
     /// Schedules one node-owned transition and keeps the node in the root
@@ -2036,13 +2066,13 @@ impl RootDom {
         key: DomNodeSlotKey,
         transition: DomTransition,
     ) -> Result<(), DomError> {
-        let transition = validate_and_normalize_transition_payload(transition)?;
-        let attribute = transition.attribute.clone();
+        let transition = validate_transition_payload(transition)?;
+        let property = transition.property;
         let canceled_elapsed_s = self
             .nodes
             .get(key)
             .ok_or(DomError::InvalidNodeKey)?
-            .active_transition(&attribute)
+            .active_transition(property)
             .map(|existing| transition_elapsed_s_at(existing, self.clock_s));
         let had_active_transition = canceled_elapsed_s.is_some();
         let node = self.nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?;
@@ -2053,7 +2083,7 @@ impl RootDom {
             self.dispatch_and_record_transition_event(
                 key,
                 DomEventName::TransitionCancel,
-                attribute,
+                property,
                 canceled_elapsed_s.expect("existing transition should carry elapsed time"),
             );
         }
@@ -2074,10 +2104,9 @@ impl RootDom {
                 continue;
             };
             let previous_layer_kind = layer_kind_for_node(node);
-            let previous_layer_root = if node
-                .active_transition_attributes()
-                .any(attribute_changes_layer_membership)
-            {
+            let previous_layer_root = if node.active_transition_properties().any(|property| {
+                GroupDirtyClassification::for_group(property.group()).reevaluate_layer_membership
+            }) {
                 current_layer_root_key(&self.nodes, key)
             } else {
                 None
@@ -2087,18 +2116,23 @@ impl RootDom {
             };
             let result = node.sync_transitions(self.clock_s);
             let next_layer_kind = layer_kind_for_node(node);
-            if result.invalidation.layout() {
+            if result.invalidation.layout {
                 self.mark_layout_dirty_for_attribute_change(key);
             }
-            if result.invalidation.paint() {
+            if result.invalidation.paint {
                 self.mark_paint_dirty_for_attribute_change(key);
             }
-            if result.invalidation.style() {
+            // A7 `remeasure_text` (font/text) and CSS Cascade §6.1 (inherited
+            // font/text/color interpolation re-seeds descendants): both need
+            // the node's style phase re-run up to its layer root so the pass
+            // remeasures text and re-seeds descendants with the interpolated
+            // values.
+            if result.invalidation.remeasure_text || result.inherited_progress {
                 self.mark_style_dirty_for_attribute_change(key);
             }
             self.mark_previous_layer_dirty_when_membership_changes(
                 key,
-                result.invalidation,
+                attribute_invalidation_from_classification(result.invalidation),
                 previous_layer_root,
             );
             if previous_layer_kind != next_layer_kind {
@@ -2109,17 +2143,176 @@ impl RootDom {
                     self.queue_layer_append_root(key);
                 }
             }
-            for finished in result.finished_attributes {
+            for finished in result.finished_properties {
                 self.dispatch_and_record_transition_event(
                     key,
                     DomEventName::TransitionEnd,
-                    finished.attribute,
+                    finished.property,
                     finished.elapsed_s,
                 );
             }
             if result.still_active {
                 self.transitions.active_nodes.insert(key);
             }
+        }
+    }
+
+    /// Schedules the pass-driven transitions for one element whose computed
+    /// groups changed from `old_groups` to `new_groups` during this style pass
+    /// (spine 3.3g-1b, D2 one-timing). For each moved field (A7's field-level
+    /// compare), maps field → `PresentationProperty`, resolves the slot's spec
+    /// (`transition_spec_for_longhands`), and installs a transition with `from`
+    /// = the last-pass presented value (the active transition's presented value
+    /// for a re-target; the raw old field otherwise) and `to` = the new field.
+    /// Cancellation, the schedule metric, and `active_nodes` registration ride
+    /// through `set_transition` — one `TransitionScheduleAllocation` increment
+    /// per scheduled transition, the same semantic the counter has today.
+    pub(crate) fn schedule_pass_transitions(
+        &mut self,
+        node_key: DomNodeSlotKey,
+        old_groups: &ComputedGroups,
+        new_groups: &ComputedGroups,
+        slot: &ResolvedTransitionLonghands,
+    ) -> Result<(), DomError> {
+        let mut schedule_error = None;
+        for_each_moved_field(old_groups, new_groups, |property| {
+            if schedule_error.is_some() {
+                return;
+            }
+            let Some(spec) = transition_spec_for_longhands(slot, property) else {
+                return;
+            };
+            let from = {
+                let node = self
+                    .nodes
+                    .get(node_key)
+                    .expect("pass-scheduled transition node should exist");
+                match node.active_transition(property) {
+                    Some(transition) => Some(transition.presented),
+                    None => decl_value_for_groups(old_groups, property),
+                }
+            };
+            let Some(from) = from else {
+                return;
+            };
+            let Some(to) = decl_value_for_groups(new_groups, property) else {
+                return;
+            };
+            if from == to {
+                return;
+            }
+            let transition = DomTransition::new(DomTransitionConfig {
+                node_key,
+                property,
+                from,
+                to,
+                started_at_s: self.clock_s,
+                duration_s: spec.duration_s,
+                delay_s: spec.delay_s,
+                timing: spec.timing,
+            });
+            if let Err(error) = self.set_transition(node_key, transition) {
+                schedule_error = Some(error);
+            }
+        });
+        match schedule_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Applies A7's group-diff dirty classification for a pass-driven group
+    /// change (spine 3.3g-1b; primary since 3.3g-2a, when the write path's
+    /// static invalidation classes died with the attr-projection channel).
+    /// `remeasure_text` is deliberately not mapped to a style mark: the pass
+    /// already remeasures text intrinsics via
+    /// `recompute_text_metric_intrinsic_for_style_pass`. Returns the computed
+    /// classification so the caller can observe it (e.g. `StylePassNodeChanged`)
+    /// without re-running the diff.
+    pub(crate) fn apply_group_diff_classification(
+        &mut self,
+        node_key: DomNodeSlotKey,
+        old_groups: &ComputedGroups,
+        new_groups: &ComputedGroups,
+    ) -> GroupDirtyClassification {
+        let classification = GroupDirtyClassification::diff(old_groups, new_groups);
+        if classification.layout {
+            self.mark_layout_dirty_for_attribute_change(node_key);
+        }
+        if classification.paint {
+            self.mark_paint_dirty_for_attribute_change(node_key);
+        }
+        if classification.reevaluate_layer_membership {
+            self.reevaluate_layer_membership_for_pass(node_key, classification);
+        }
+        classification
+    }
+
+    /// The pass-side layer-membership re-evaluation (spine 3.3g-1b, staged for
+    /// 3.3g-2 where it becomes primary). Idempotent against the attr-write
+    /// path's own membership detection: it compares the node's stored
+    /// `layout.layer_kind` (the last layout pass's kind) against the freshly
+    /// derived `layer_kind_for_node` and only runs the flip machinery (previous
+    /// layer remainder dirty + queue append/remove root) on an actual
+    /// difference — the queues dedup, so a difference the attr path already
+    /// handled no-ops.
+    fn reevaluate_layer_membership_for_pass(
+        &mut self,
+        node_key: DomNodeSlotKey,
+        classification: GroupDirtyClassification,
+    ) {
+        let (stored_layer_kind, next_layer_kind) = {
+            let node = self
+                .nodes
+                .get(node_key)
+                .expect("pass-classified node should exist");
+            (node.layout().layer_kind, layer_kind_for_node(node))
+        };
+        if stored_layer_kind == next_layer_kind {
+            return;
+        }
+        let previous_layer_root = if stored_layer_kind == crate::types::DomLayerKind::None {
+            current_layer_root_key(&self.nodes, node_key)
+        } else {
+            Some(node_key)
+        };
+        self.mark_previous_layer_dirty_when_membership_changes(
+            node_key,
+            attribute_invalidation_from_classification(classification),
+            previous_layer_root,
+        );
+        if stored_layer_kind != crate::types::DomLayerKind::None {
+            self.queue_layer_remove_root(node_key);
+        }
+        if next_layer_kind != crate::types::DomLayerKind::None {
+            self.queue_layer_append_root(node_key);
+        }
+    }
+
+    /// Baseline layer-membership re-evaluation (spine 3.3g-2a). The write path
+    /// no longer re-projects or queues layer membership synchronously, so a
+    /// freshly-styled node that became a layer root on its FIRST pass (e.g.
+    /// `position: fixed`) must have its layer materialized by the pass itself.
+    /// Mirrors the deleted write-path flip: compare the node's stored (last
+    /// layout) layer kind against the freshly derived kind and queue the
+    /// append/remove — there is no previous layer remainder to mark on a
+    /// baseline.
+    pub(crate) fn reevaluate_layer_membership_on_baseline(&mut self, node_key: DomNodeSlotKey) {
+        let (stored_layer_kind, next_layer_kind) = {
+            let node = self
+                .nodes
+                .get(node_key)
+                .expect("baseline-classified node should exist");
+            (node.layout().layer_kind, layer_kind_for_node(node))
+        };
+        if stored_layer_kind == next_layer_kind {
+            return;
+        }
+        if stored_layer_kind != crate::types::DomLayerKind::None {
+            self.queue_layer_remove_root(node_key);
+        }
+        if next_layer_kind != crate::types::DomLayerKind::None {
+            self.queue_layer_append_root(node_key);
         }
     }
 
@@ -2334,14 +2527,14 @@ impl RootDom {
         &mut self,
         key: DomNodeSlotKey,
         name: DomEventName,
-        attribute: DomAttribute,
+        property: PresentationProperty,
         elapsed_s: f64,
     ) {
         self.increment_metric(RootDomMetricName::TransitionEventPathAllocation);
         let mut event = DomEvent::new(
             name,
             DomEventDetail::Transition(DomTransitionEvent {
-                attribute,
+                property,
                 elapsed_s,
             }),
         );
@@ -2509,6 +2702,164 @@ impl RootDom {
             previous_layer_root,
             invalidation,
         );
+    }
+}
+
+impl RootDom {
+    /// Returns the node's inline declaration block handle (css-style-attr:
+    /// the style attribute / programmatic declaration store).
+    pub fn style_mut(&mut self, node: DomNodeSlotKey) -> StyleMut<'_> {
+        StyleMut::new(self, node)
+    }
+
+    /// Returns the node's inline declaration block, if it has one (absent
+    /// means the node has never had an inline style written).
+    pub(crate) fn inline_decl_block(&self, node: DomNodeSlotKey) -> Option<&DeclBlock> {
+        let key = self.nodes.get(node)?.inline_decl()?;
+        self.inline_decl_store.get(key)
+    }
+
+    /// Resolves one interned inline text key against the inline store's
+    /// interner.
+    pub(crate) fn resolve_inline_text(&self, key: TextKey) -> Option<&str> {
+        self.inline_decl_store.resolve(key)
+    }
+
+    /// Mutable access to the inline store's interner, so declaration parsing
+    /// interns text through the document's inline arena (a `TextKey` is
+    /// store-relative).
+    pub(crate) fn inline_texts_mut(&mut self) -> &mut TextInterner {
+        self.inline_decl_store.texts_mut()
+    }
+
+    /// Level accessor over retained state (observability doctrine: levels are
+    /// read accessors, not emitted gauges): live inline declaration blocks.
+    pub(crate) fn inline_decl_live_block_count(&self) -> usize {
+        self.inline_decl_store.live_block_count()
+    }
+
+    /// Upserts parsed declarations into the node's inline block (created on
+    /// first use; the key is written to `node.presentation.decl`, the single
+    /// source). Returns whether the block changed.
+    pub(crate) fn upsert_inline_declarations(
+        &mut self,
+        node: DomNodeSlotKey,
+        declarations: &[Declaration],
+    ) -> bool {
+        if declarations.is_empty() {
+            return false;
+        }
+        let key = if let Some(key) = self.nodes.get(node).and_then(DomNode::inline_decl) {
+            key
+        } else {
+            let new_key = self.inline_decl_store.insert(DeclBlock::new());
+            self.nodes
+                .get_mut(node)
+                .expect("upsert target node should exist")
+                .set_inline_decl(Some(new_key));
+            new_key
+        };
+        let mut changed = false;
+        {
+            let Some(block) = self.inline_decl_store.get_mut(key) else {
+                return false;
+            };
+            for declaration in declarations {
+                changed |= block.upsert(*declaration);
+            }
+        }
+        if changed {
+            self.mark_style_dirty_for_attribute_change(node);
+            self.increment_metric(RootDomMetricName::StyleDeclarationUpsert);
+        }
+        changed
+    }
+
+    /// Replaces the node's inline block wholesale (cssText semantics): an empty
+    /// block clears `presentation.decl` and frees the old block; otherwise the
+    /// old block is freed and the new one stored. Returns whether the stored
+    /// declarations differ from the previous block.
+    pub(crate) fn replace_inline_decl_block(
+        &mut self,
+        node: DomNodeSlotKey,
+        block: DeclBlock,
+    ) -> bool {
+        let old_key = self.nodes.get(node).and_then(DomNode::inline_decl);
+        let changed = match old_key {
+            Some(old_key) => {
+                let differs = match self.inline_decl_store.get(old_key) {
+                    Some(old_block) => old_block != &block,
+                    None => true,
+                };
+                self.inline_decl_store.remove(old_key);
+                if block.is_empty() {
+                    self.nodes
+                        .get_mut(node)
+                        .expect("replace target node should exist")
+                        .set_inline_decl(None);
+                } else {
+                    let new_key = self.inline_decl_store.insert(block);
+                    self.nodes
+                        .get_mut(node)
+                        .expect("replace target node should exist")
+                        .set_inline_decl(Some(new_key));
+                }
+                differs
+            }
+            None => {
+                if block.is_empty() {
+                    false
+                } else {
+                    let new_key = self.inline_decl_store.insert(block);
+                    self.nodes
+                        .get_mut(node)
+                        .expect("replace target node should exist")
+                        .set_inline_decl(Some(new_key));
+                    true
+                }
+            }
+        };
+        if changed {
+            self.mark_style_dirty_for_attribute_change(node);
+            self.increment_metric(RootDomMetricName::StyleDeclarationUpsert);
+        }
+        changed
+    }
+
+    /// Removes the named properties from the node's inline block; frees the
+    /// block and clears `presentation.decl` if it becomes empty. Returns
+    /// whether anything was removed.
+    pub(crate) fn remove_inline_declarations(
+        &mut self,
+        node: DomNodeSlotKey,
+        properties: &[PresentationProperty],
+    ) -> bool {
+        let Some(key) = self.nodes.get(node).and_then(DomNode::inline_decl) else {
+            return false;
+        };
+        let mut changed = false;
+        let became_empty = {
+            let Some(block) = self.inline_decl_store.get_mut(key) else {
+                return false;
+            };
+            for property in properties {
+                changed |= block.remove(*property);
+            }
+            block.is_empty()
+        };
+        if !changed {
+            return false;
+        }
+        if became_empty {
+            self.nodes
+                .get_mut(node)
+                .expect("remove target node should exist")
+                .set_inline_decl(None);
+            self.inline_decl_store.remove(key);
+        }
+        self.mark_style_dirty_for_attribute_change(node);
+        self.increment_metric(RootDomMetricName::StyleDeclarationUpsert);
+        true
     }
 }
 
@@ -3632,7 +3983,7 @@ impl RootDom {
         let row_content_height_px = presented_options_row_content_height_px();
         self.append_child(popup_scroll_key, row_key)?;
         self.append_child(row_key, text_key)?;
-        self.set_attr_str(row_key, "display", "block")?;
+        self.style_mut(row_key).set("display", "block")?;
         self.set_attr(
             row_key,
             DomAttribute::PresentedOptionsRole,
@@ -3652,55 +4003,27 @@ impl RootDom {
             DomAttribute::Value,
             Some(DomAttributeValue::String(option_record.value.clone())),
         )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String(format!(
-                "{}px",
-                owner_width_px.max(1.0)
-            ))),
+        self.style_mut(row_key)
+            .set("width", &(format!("{}px", owner_width_px.max(1.0))))?;
+        self.style_mut(row_key)
+            .set("height", &(format!("{row_content_height_px}px")))?;
+        self.style_mut(row_key)
+            .set("line-height", &(format!("{row_content_height_px}px")))?;
+        self.style_mut(row_key).set(
+            "padding-left",
+            &(format!("{PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX}px")),
         )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String(format!(
-                "{row_content_height_px}px"
-            ))),
+        self.style_mut(row_key).set(
+            "padding-right",
+            &(format!("{PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX}px")),
         )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::LineHeight,
-            Some(DomAttributeValue::String(format!(
-                "{row_content_height_px}px"
-            ))),
+        self.style_mut(row_key).set(
+            "padding-top",
+            &(format!("{PRESENTED_OPTIONS_VERTICAL_PADDING_PX}px")),
         )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::PaddingLeft,
-            Some(DomAttributeValue::String(format!(
-                "{PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX}px"
-            ))),
-        )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::PaddingRight,
-            Some(DomAttributeValue::String(format!(
-                "{PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX}px"
-            ))),
-        )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::PaddingTop,
-            Some(DomAttributeValue::String(format!(
-                "{PRESENTED_OPTIONS_VERTICAL_PADDING_PX}px"
-            ))),
-        )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::PaddingBottom,
-            Some(DomAttributeValue::String(format!(
-                "{PRESENTED_OPTIONS_VERTICAL_PADDING_PX}px"
-            ))),
+        self.style_mut(row_key).set(
+            "padding-bottom",
+            &(format!("{PRESENTED_OPTIONS_VERTICAL_PADDING_PX}px")),
         )?;
         self.set_presented_options_row_highlight_attrs(row_key, highlighted)
     }
@@ -3711,37 +4034,27 @@ impl RootDom {
         popup_anchor: PresentedOptionsPopupAnchor,
         popup_height_px: f32,
     ) -> Result<(), DomError> {
-        self.set_attr_str(popup_shell_key, "display", "block")?;
-        self.set_attr_str(popup_shell_key, "position", "absolute")?;
+        self.style_mut(popup_shell_key).set("display", "block")?;
+        self.style_mut(popup_shell_key)
+            .set("position", "absolute")?;
         self.set_presented_options_popup_anchor_attrs(popup_shell_key, popup_anchor)?;
-        self.set_attr(
-            popup_shell_key,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String(format!(
-                "{}px",
-                popup_anchor.owner_box.width_px.max(1.0)
-            ))),
+        self.style_mut(popup_shell_key).set(
+            "width",
+            &(format!("{}px", popup_anchor.owner_box.width_px.max(1.0))),
         )?;
-        self.set_attr(
-            popup_shell_key,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
-        )?;
-        self.set_attr_str(popup_shell_key, "transition", "opacity 120ms ease-out")?;
-        self.set_attr(
-            popup_shell_key,
-            DomAttribute::Custom("background-color".to_string()),
-            Some(DomAttributeValue::String("#141922".to_string())),
-        )?;
-        self.set_attr(
-            popup_shell_key,
-            DomAttribute::Custom("border-color".to_string()),
-            Some(DomAttributeValue::String("#394254".to_string())),
-        )?;
-        self.set_attr_str(popup_shell_key, "border-top", "1px")?;
-        self.set_attr_str(popup_shell_key, "border-right", "1px")?;
-        self.set_attr_str(popup_shell_key, "border-bottom", "1px")?;
-        self.set_attr_str(popup_shell_key, "border-left", "1px")?;
+        self.style_mut(popup_shell_key)
+            .set("height", &(format!("{popup_height_px}px")))?;
+        self.style_mut(popup_shell_key)
+            .set("transition", "opacity 120ms ease-out")?;
+        self.style_mut(popup_shell_key)
+            .set("background-color", "#141922")?;
+        self.style_mut(popup_shell_key)
+            .set("border-color", "#394254")?;
+        self.style_mut(popup_shell_key).set("border-top", "1px")?;
+        self.style_mut(popup_shell_key).set("border-right", "1px")?;
+        self.style_mut(popup_shell_key)
+            .set("border-bottom", "1px")?;
+        self.style_mut(popup_shell_key).set("border-left", "1px")?;
         self.set_attr(
             popup_shell_key,
             DomAttribute::PresentedOptionsRole,
@@ -3763,21 +4076,14 @@ impl RootDom {
         popup_shell_key: DomNodeSlotKey,
         popup_anchor: PresentedOptionsPopupAnchor,
     ) -> Result<(), DomError> {
-        self.set_attr(
-            popup_shell_key,
-            DomAttribute::Left,
-            Some(DomAttributeValue::String(format!(
-                "{}px",
-                popup_anchor.owner_box.left_px
-            ))),
-        )?;
-        self.set_attr(
-            popup_shell_key,
-            DomAttribute::Top,
-            Some(DomAttributeValue::String(format!(
+        self.style_mut(popup_shell_key)
+            .set("left", &(format!("{}px", popup_anchor.owner_box.left_px)))?;
+        self.style_mut(popup_shell_key).set(
+            "top",
+            &(format!(
                 "{}px",
                 popup_anchor.owner_box.top_px + popup_anchor.owner_box.height_px
-            ))),
+            )),
         )
     }
 
@@ -3787,21 +4093,12 @@ impl RootDom {
         owner_width_px: f32,
         popup_height_px: f32,
     ) -> Result<(), DomError> {
-        self.set_attr_str(popup_scroll_key, "display", "block")?;
-        self.set_attr_str(popup_scroll_key, "overflow", "scroll")?;
-        self.set_attr(
-            popup_scroll_key,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String(format!(
-                "{}px",
-                owner_width_px.max(1.0)
-            ))),
-        )?;
-        self.set_attr(
-            popup_scroll_key,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
-        )?;
+        self.style_mut(popup_scroll_key).set("display", "block")?;
+        self.style_mut(popup_scroll_key).set("overflow", "scroll")?;
+        self.style_mut(popup_scroll_key)
+            .set("width", &(format!("{}px", owner_width_px.max(1.0))))?;
+        self.style_mut(popup_scroll_key)
+            .set("height", &(format!("{popup_height_px}px")))?;
         self.set_attr(
             popup_scroll_key,
             DomAttribute::PresentedOptionsRole,
@@ -3828,32 +4125,18 @@ impl RootDom {
             self.presented_options_popup_row_keys(owner_key).len(),
         )?;
         self.set_presented_options_popup_anchor_attrs(shell_key, popup_anchor)?;
-        self.set_attr(
-            shell_key,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String(format!(
-                "{}px",
-                popup_anchor.owner_box.width_px.max(1.0)
-            ))),
+        self.style_mut(shell_key).set(
+            "width",
+            &(format!("{}px", popup_anchor.owner_box.width_px.max(1.0))),
         )?;
-        self.set_attr(
-            shell_key,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
+        self.style_mut(shell_key)
+            .set("height", &(format!("{popup_height_px}px")))?;
+        self.style_mut(scroll_key).set(
+            "width",
+            &(format!("{}px", popup_anchor.owner_box.width_px.max(1.0))),
         )?;
-        self.set_attr(
-            scroll_key,
-            DomAttribute::Width,
-            Some(DomAttributeValue::String(format!(
-                "{}px",
-                popup_anchor.owner_box.width_px.max(1.0)
-            ))),
-        )?;
-        self.set_attr(
-            scroll_key,
-            DomAttribute::Height,
-            Some(DomAttributeValue::String(format!("{popup_height_px}px"))),
-        )?;
+        self.style_mut(scroll_key)
+            .set("height", &(format!("{popup_height_px}px")))?;
         Ok(())
     }
 
@@ -4044,11 +4327,12 @@ impl RootDom {
             DomAttribute::PresentedOptionsHighlighted,
             highlighted.then_some(DomAttributeValue::Bool(true)),
         )?;
-        self.set_attr(
-            row_key,
-            DomAttribute::Custom("background-color".to_string()),
-            highlighted.then(|| DomAttributeValue::String("#273754".to_string())),
-        )
+        if highlighted {
+            self.style_mut(row_key).set("background-color", "#273754")?;
+        } else {
+            self.style_mut(row_key).remove("background-color")?;
+        }
+        Ok(())
     }
 
     fn resolve_presented_options_owner_key_from_target(
@@ -4177,11 +4461,8 @@ impl RootDom {
         shell_key: DomNodeSlotKey,
         opacity: f32,
     ) -> Result<(), DomError> {
-        self.set_attr(
-            shell_key,
-            DomAttribute::Custom("opacity".to_string()),
-            Some(DomAttributeValue::Float(opacity)),
-        )
+        self.style_mut(shell_key)
+            .set("opacity", &format!("{opacity}"))
     }
 }
 
@@ -4207,231 +4488,337 @@ pub(crate) fn next_id_from_attr(
     }
 }
 
-fn style_removed_attributes_for_node(
-    previous_stylesheet_attrs: Option<&BTreeSet<DomAttribute>>,
-    next_map: &ComputedStyleMap,
-) -> Vec<DomAttribute> {
-    let Some(stored_attributes) = previous_stylesheet_attrs else {
-        return Vec::new();
-    };
-    stored_attributes
-        .iter()
-        .filter(|attribute| {
-            style_attr_allows_property(attribute) && !next_map.contains_key(*attribute)
-        })
-        .cloned()
-        .collect()
-}
-
-fn transition_longhand_attr_values(
-    values: TransitionLonghandValues,
-) -> [(DomAttribute, Option<DomAttributeValue>); 4] {
-    [
-        (DomAttribute::TransitionProperty, values.property),
-        (DomAttribute::TransitionDuration, values.duration),
-        (
-            DomAttribute::TransitionTimingFunction,
-            values.timing_function,
-        ),
-        (DomAttribute::TransitionDelay, values.delay),
-    ]
-}
-
-fn transition_for_attr_change(
-    node: &DomNode,
-    key: DomNodeSlotKey,
-    attribute: &DomAttribute,
-    next_value: Option<&DomAttributeValue>,
-    now_s: f64,
-) -> Option<DomTransition> {
-    let spec = transition_spec_for_attribute(
-        node.attr(&DomAttribute::TransitionProperty),
-        node.attr(&DomAttribute::TransitionDuration),
-        node.attr(&DomAttribute::TransitionTimingFunction),
-        node.attr(&DomAttribute::TransitionDelay),
-        attribute,
-    );
-    let spec = match spec {
-        Ok(Some(spec)) => spec,
-        Ok(None) => return None,
-        Err(error) => {
-            tracing::warn!(
-                attribute = ?attribute,
-                error = ?error,
-                "transition_ignored"
-            );
-            return None;
+/// Converts one computed-group field back to its `DeclValue` (the inverse of
+/// the resolver's field writes). Reads the *raw* groups, never the transition
+/// overlay: the scheduler composes the overlay separately — a re-targeted
+/// transition starts from the active transition's presented value, a fresh one
+/// from the raw old field. `None` means the field has no representable
+/// transitionable value (text-valued properties whose source the group already
+/// resolved away — font-family's `TextKey`, transform's translate), so no
+/// transition is scheduled.
+#[allow(clippy::too_many_lines)] // mechanical field-by-field inverse projection
+pub(crate) fn decl_value_for_groups(
+    groups: &ComputedGroups,
+    property: PresentationProperty,
+) -> Option<DeclValue> {
+    match property {
+        // Inherited — font group
+        PresentationProperty::FontSize => {
+            Some(DeclValue::Length(DeclLength::Px(groups.font.size_px)))
         }
-    };
-    let start_value = node
-        .presented_attr(attribute)
-        .map(|value| normalize_transition_value(attribute, value))?;
-    let next_value = transition_target_value(attribute, next_value)?;
-    if start_value == next_value {
+        PresentationProperty::LineHeight => match groups.font.line_height_px {
+            Some(px) => Some(DeclValue::Length(DeclLength::Px(px))),
+            None => Some(DeclValue::Keyword(Keyword::Normal)),
+        },
+        PresentationProperty::FontWeight => Some(DeclValue::Integer(i64::from(groups.font.weight))),
+        PresentationProperty::FontStyle => Some(DeclValue::Keyword(groups.font.style)),
+        // Inherited — text group
+        PresentationProperty::TextAlign => Some(DeclValue::Keyword(text_keyword(
+            PresentationProperty::TextAlign,
+            groups.text.align,
+            project::text_align,
+        )?)),
+        PresentationProperty::Direction => Some(DeclValue::Keyword(text_keyword(
+            PresentationProperty::Direction,
+            groups.text.direction,
+            project::text_direction,
+        )?)),
+        PresentationProperty::WhiteSpace => Some(DeclValue::Keyword(text_keyword(
+            PresentationProperty::WhiteSpace,
+            groups.text.white_space,
+            project::white_space,
+        )?)),
+        PresentationProperty::OverflowWrap => Some(DeclValue::Keyword(text_keyword(
+            PresentationProperty::OverflowWrap,
+            groups.text.overflow_wrap,
+            project::overflow_wrap,
+        )?)),
+        PresentationProperty::WordBreak => Some(DeclValue::Keyword(text_keyword(
+            PresentationProperty::WordBreak,
+            groups.text.word_break,
+            project::word_break,
+        )?)),
+        // Inherited — color group
+        PresentationProperty::Color => Some(DeclValue::Color(groups.color.color_rgba)),
+        // Non-inherited — box group
+        PresentationProperty::Display => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::Display,
+            groups.box_.display.name(),
+        )?)),
+        PresentationProperty::Position => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::Position,
+            groups.box_.position.name(),
+        )?)),
+        PresentationProperty::Overflow => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::Overflow,
+            groups.box_.overflow.name(),
+        )?)),
+        PresentationProperty::Isolate => Some(DeclValue::Keyword(if groups.box_.isolate {
+            Keyword::Isolate
+        } else {
+            Keyword::Auto
+        })),
+        PresentationProperty::Width => Some(optional_length_decl_value(groups.box_.width)),
+        PresentationProperty::Height => Some(optional_length_decl_value(groups.box_.height)),
+        PresentationProperty::MinWidth => Some(optional_length_decl_value(groups.box_.min_width)),
+        PresentationProperty::MinHeight => Some(optional_length_decl_value(groups.box_.min_height)),
+        PresentationProperty::MaxWidth => Some(optional_length_decl_value(groups.box_.max_width)),
+        PresentationProperty::MaxHeight => Some(optional_length_decl_value(groups.box_.max_height)),
+        PresentationProperty::Top => Some(box_edge_decl_value(groups.box_.top)),
+        PresentationProperty::Left => Some(box_edge_decl_value(groups.box_.left)),
+        PresentationProperty::Right => Some(box_edge_decl_value(groups.box_.right)),
+        PresentationProperty::Bottom => Some(box_edge_decl_value(groups.box_.bottom)),
+        PresentationProperty::MarginTop => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[0])))
+        }
+        PresentationProperty::MarginRight => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[1])))
+        }
+        PresentationProperty::MarginBottom => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[2])))
+        }
+        PresentationProperty::MarginLeft => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.margin[3])))
+        }
+        PresentationProperty::PaddingTop => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[0])))
+        }
+        PresentationProperty::PaddingRight => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[1])))
+        }
+        PresentationProperty::PaddingBottom => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[2])))
+        }
+        PresentationProperty::PaddingLeft => {
+            Some(DeclValue::Length(DeclLength::Px(groups.box_.padding[3])))
+        }
+        PresentationProperty::BorderTopWidth => Some(DeclValue::Length(DeclLength::Px(
+            groups.box_.border_width[0],
+        ))),
+        PresentationProperty::BorderRightWidth => Some(DeclValue::Length(DeclLength::Px(
+            groups.box_.border_width[1],
+        ))),
+        PresentationProperty::BorderBottomWidth => Some(DeclValue::Length(DeclLength::Px(
+            groups.box_.border_width[2],
+        ))),
+        PresentationProperty::BorderLeftWidth => Some(DeclValue::Length(DeclLength::Px(
+            groups.box_.border_width[3],
+        ))),
+        // Non-inherited — flex group
+        PresentationProperty::FlexDirection => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::FlexDirection,
+            groups.flex.direction.name(),
+        )?)),
+        PresentationProperty::FlexWrap => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::FlexWrap,
+            groups.flex.wrap.name(),
+        )?)),
+        PresentationProperty::FlexGrow => Some(DeclValue::Number(groups.flex.grow)),
+        PresentationProperty::FlexShrink => Some(DeclValue::Number(groups.flex.shrink)),
+        PresentationProperty::FlexBasis => match groups.flex.basis {
+            FlexBasisKw::Auto => Some(DeclValue::Keyword(Keyword::Auto)),
+            FlexBasisKw::Content => Some(DeclValue::Keyword(Keyword::Content)),
+            FlexBasisKw::Length(px) => Some(DeclValue::Length(DeclLength::Px(px))),
+        },
+        PresentationProperty::Order => Some(DeclValue::Integer(i64::from(groups.flex.order))),
+        PresentationProperty::JustifyContent => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::JustifyContent,
+            groups.flex.justify_content.name(),
+        )?)),
+        PresentationProperty::AlignItems => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::AlignItems,
+            groups.flex.align_items.name(),
+        )?)),
+        PresentationProperty::AlignSelf => match groups.flex.align_self {
+            Some(align) => Some(DeclValue::Keyword(keyword_from_name(
+                PresentationProperty::AlignSelf,
+                align.name(),
+            )?)),
+            None => Some(DeclValue::Keyword(Keyword::Auto)),
+        },
+        PresentationProperty::AlignContent => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::AlignContent,
+            groups.flex.align_content.name(),
+        )?)),
+        PresentationProperty::RowGap => Some(DeclValue::Length(DeclLength::Px(groups.flex.gap[0]))),
+        PresentationProperty::ColumnGap => {
+            Some(DeclValue::Length(DeclLength::Px(groups.flex.gap[1])))
+        }
+        // Non-inherited — visual group
+        PresentationProperty::Opacity => Some(DeclValue::Number(groups.visual.opacity)),
+        PresentationProperty::BackgroundColor => {
+            Some(DeclValue::Color(groups.visual.background_rgba))
+        }
+        PresentationProperty::BorderTopColor => {
+            Some(DeclValue::Color(groups.visual.border_rgba[0]))
+        }
+        PresentationProperty::BorderRightColor => {
+            Some(DeclValue::Color(groups.visual.border_rgba[1]))
+        }
+        PresentationProperty::BorderBottomColor => {
+            Some(DeclValue::Color(groups.visual.border_rgba[2]))
+        }
+        PresentationProperty::BorderLeftColor => {
+            Some(DeclValue::Color(groups.visual.border_rgba[3]))
+        }
+        PresentationProperty::OutlineColor => Some(DeclValue::Color(groups.visual.outline_rgba)),
+        PresentationProperty::OutlineWidth => Some(DeclValue::Length(DeclLength::Px(
+            groups.visual.outline_width,
+        ))),
+        PresentationProperty::OutlineOffset => Some(DeclValue::Length(DeclLength::Px(
+            groups.visual.outline_offset,
+        ))),
+        // `caret-color: auto` (None) has no representable color `from`.
+        PresentationProperty::CaretColor => groups.visual.caret_rgba.map(DeclValue::Color),
+        PresentationProperty::BorderTopLeftRadius => {
+            Some(DeclValue::Length(DeclLength::Px(groups.visual.radius[0])))
+        }
+        PresentationProperty::BorderTopRightRadius => {
+            Some(DeclValue::Length(DeclLength::Px(groups.visual.radius[1])))
+        }
+        PresentationProperty::BorderBottomRightRadius => {
+            Some(DeclValue::Length(DeclLength::Px(groups.visual.radius[2])))
+        }
+        PresentationProperty::BorderBottomLeftRadius => {
+            Some(DeclValue::Length(DeclLength::Px(groups.visual.radius[3])))
+        }
+        // Text-valued properties whose source the group already resolved away
+        // (font-family's TextKey, transform's translate) and the transition
+        // scheduler slots are never transitionable.
+        PresentationProperty::FontFamily
+        | PresentationProperty::Transform
+        | PresentationProperty::TransitionProperty
+        | PresentationProperty::TransitionDuration
+        | PresentationProperty::TransitionTimingFunction
+        | PresentationProperty::TransitionDelay => None,
+    }
+}
+
+/// Maps an `Option<f32>` length field back to a `DeclValue`; `None` (unset) is
+/// the group's default `Length(Unset)`.
+fn optional_length_decl_value(value: Option<f32>) -> DeclValue {
+    match value {
+        Some(px) => DeclValue::Length(DeclLength::Px(px)),
+        None => DeclValue::Length(DeclLength::Unset),
+    }
+}
+
+/// Maps an `Option<f32>` box-edge field back to a `DeclValue`; a missing edge
+/// defaults to zero (`attribute_uses_zero_when_missing` semantics).
+fn box_edge_decl_value(value: Option<f32>) -> DeclValue {
+    DeclValue::Length(DeclLength::Px(value.unwrap_or(0.0)))
+}
+
+/// Resolves a keyword-grammar group field's canonical name back to its
+/// `Keyword` within the property's admitted set.
+fn keyword_from_name(property: PresentationProperty, name: &str) -> Option<Keyword> {
+    let DeclGrammar::Keywords(set) = property.grammar() else {
         return None;
-    }
-    Some(DomTransition::new(DomTransitionConfig {
-        node_key: key,
-        attribute: attribute.clone(),
-        from: start_value,
-        to: next_value,
-        started_at_s: now_s,
-        duration_s: spec.duration_s,
-        delay_s: spec.delay_s,
-        timing: spec.timing,
-    }))
+    };
+    Keyword::from_name_in(set, name)
 }
 
-fn transition_target_value(
-    attribute: &DomAttribute,
-    next_value: Option<&DomAttributeValue>,
-) -> Option<DomAttributeValue> {
-    next_value
-        .map(|value| normalize_transition_value(attribute, value))
-        .or_else(|| removed_attr_transition_target(attribute))
+/// Resolves a text-group enum field back to its `Keyword` by scanning the
+/// property's admitted keyword set for the member whose forward map equals the
+/// field.
+fn text_keyword<T: Copy + Eq>(
+    property: PresentationProperty,
+    field: T,
+    forward: impl Fn(Keyword) -> Option<T>,
+) -> Option<Keyword> {
+    let DeclGrammar::Keywords(set) = property.grammar() else {
+        return None;
+    };
+    set.iter()
+        .copied()
+        .find(|keyword| forward(*keyword) == Some(field))
 }
 
-fn removed_attr_transition_target(attribute: &DomAttribute) -> Option<DomAttributeValue> {
-    if attribute_uses_zero_when_missing(attribute) {
-        return Some(DomAttributeValue::Float(0.0));
-    }
-    None
-}
-
-fn attribute_uses_zero_when_missing(attribute: &DomAttribute) -> bool {
-    matches!(
-        attribute,
-        DomAttribute::Top
-            | DomAttribute::Left
-            | DomAttribute::Right
-            | DomAttribute::Bottom
-            | DomAttribute::MarginTop
-            | DomAttribute::MarginLeft
-            | DomAttribute::MarginRight
-            | DomAttribute::MarginBottom
-            | DomAttribute::PaddingTop
-            | DomAttribute::PaddingLeft
-            | DomAttribute::PaddingRight
-            | DomAttribute::PaddingBottom
-            | DomAttribute::BorderTop
-            | DomAttribute::BorderLeft
-            | DomAttribute::BorderRight
-            | DomAttribute::BorderBottom
-    )
-}
-
-fn normalize_transition_value(
-    attribute: &DomAttribute,
-    value: &DomAttributeValue,
-) -> DomAttributeValue {
-    if let Some(numeric_value) = parse_transition_numeric_value(attribute, value) {
-        return DomAttributeValue::Float(numeric_value);
-    }
-    value.clone()
-}
-
-fn validate_and_normalize_transition_payload(
-    transition: DomTransition,
-) -> Result<DomTransition, DomError> {
-    let attribute = transition.attribute.clone();
-    validate_transition_value(&attribute, &transition.from)?;
-    validate_transition_value(&attribute, &transition.to)?;
-    validate_transition_value(&attribute, &transition.presented)?;
-    Ok(DomTransition {
-        from: normalize_transition_value(&attribute, &transition.from),
-        to: normalize_transition_value(&attribute, &transition.to),
-        presented: normalize_transition_value(&attribute, &transition.presented),
-        ..transition
-    })
-}
-
-fn validate_transition_value(
-    attribute: &DomAttribute,
-    value: &DomAttributeValue,
-) -> Result<(), DomError> {
-    if transition_attribute_uses_numeric_interpolation(attribute)
-        && parse_transition_numeric_value(attribute, value).is_none()
+fn validate_transition_payload(transition: DomTransition) -> Result<DomTransition, DomError> {
+    let property = transition.property;
+    if transition_longhand_property(property)
+        || !decl_value_matches_grammar(property, &transition.from)
+        || !decl_value_matches_grammar(property, &transition.to)
     {
         return Err(DomError::InvalidAttributeValue);
     }
-    Ok(())
+    Ok(transition)
 }
 
-fn transition_attribute_uses_numeric_interpolation(attribute: &DomAttribute) -> bool {
-    matches!(attribute, DomAttribute::Custom(name) if name == "opacity")
-        || matches!(
-            attribute,
-            DomAttribute::Width
-                | DomAttribute::Height
-                | DomAttribute::MinWidth
-                | DomAttribute::MinHeight
-                | DomAttribute::MaxWidth
-                | DomAttribute::MaxHeight
-                | DomAttribute::Top
-                | DomAttribute::Left
-                | DomAttribute::Right
-                | DomAttribute::Bottom
-                | DomAttribute::MarginTop
-                | DomAttribute::MarginLeft
-                | DomAttribute::MarginRight
-                | DomAttribute::MarginBottom
-                | DomAttribute::PaddingTop
-                | DomAttribute::PaddingLeft
-                | DomAttribute::PaddingRight
-                | DomAttribute::PaddingBottom
-                | DomAttribute::BorderTop
-                | DomAttribute::BorderLeft
-                | DomAttribute::BorderRight
-                | DomAttribute::BorderBottom
-        )
+fn transition_longhand_property(property: PresentationProperty) -> bool {
+    matches!(
+        property,
+        PresentationProperty::TransitionProperty
+            | PresentationProperty::TransitionDuration
+            | PresentationProperty::TransitionTimingFunction
+            | PresentationProperty::TransitionDelay
+    )
 }
 
-fn parse_transition_numeric_value(
-    attribute: &DomAttribute,
-    value: &DomAttributeValue,
-) -> Option<f32> {
-    if matches!(attribute, DomAttribute::Custom(name) if name == "opacity") {
-        return match value {
-            DomAttributeValue::String(value) => value.parse::<f32>().ok(),
-            DomAttributeValue::Float(value) => Some(*value),
-            DomAttributeValue::Integer(value) => Some(crate::numeric::i64_to_f32(*value)),
-            DomAttributeValue::Bool(_) | DomAttributeValue::Color(_) => None,
-        };
+/// True when a `DeclValue`'s kind is valid for the property's grammar (the
+/// property grammar tables admit a closed kind per grammar). Range constraints
+/// are enforced at parse time, not here.
+fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue) -> bool {
+    match property.grammar() {
+        DeclGrammar::Length | DeclGrammar::LengthNoUnset => matches!(value, DeclValue::Length(_)),
+        DeclGrammar::LineHeight => matches!(
+            value,
+            DeclValue::Keyword(Keyword::Normal) | DeclValue::Number(_) | DeclValue::Length(_)
+        ),
+        DeclGrammar::Color => matches!(value, DeclValue::Color(_)),
+        DeclGrammar::Opacity | DeclGrammar::NonNegativeNumber => {
+            matches!(value, DeclValue::Number(_))
+        }
+        DeclGrammar::Integer => matches!(value, DeclValue::Integer(_)),
+        DeclGrammar::FontWeight => matches!(
+            value,
+            DeclValue::Integer(_)
+                | DeclValue::Keyword(
+                    Keyword::Normal | Keyword::Bold | Keyword::Bolder | Keyword::Lighter
+                )
+        ),
+        DeclGrammar::FlexBasis => matches!(
+            value,
+            DeclValue::Keyword(Keyword::Auto | Keyword::Content) | DeclValue::Length(_)
+        ),
+        DeclGrammar::Transform => {
+            matches!(
+                value,
+                DeclValue::Keyword(Keyword::None) | DeclValue::Text(_)
+            )
+        }
+        DeclGrammar::Text
+        | DeclGrammar::TransitionPropertyList
+        | DeclGrammar::TransitionTimeList
+        | DeclGrammar::TransitionSignedTimeList
+        | DeclGrammar::TransitionTimingList => matches!(value, DeclValue::Text(_)),
+        DeclGrammar::Keywords(set) => match value {
+            DeclValue::Keyword(keyword) => set.contains(keyword),
+            _ => false,
+        },
     }
-    if !matches!(
-        attribute,
-        DomAttribute::Width
-            | DomAttribute::Height
-            | DomAttribute::MinWidth
-            | DomAttribute::MinHeight
-            | DomAttribute::MaxWidth
-            | DomAttribute::MaxHeight
-            | DomAttribute::Top
-            | DomAttribute::Left
-            | DomAttribute::Right
-            | DomAttribute::Bottom
-            | DomAttribute::MarginTop
-            | DomAttribute::MarginLeft
-            | DomAttribute::MarginRight
-            | DomAttribute::MarginBottom
-            | DomAttribute::PaddingTop
-            | DomAttribute::PaddingLeft
-            | DomAttribute::PaddingRight
-            | DomAttribute::PaddingBottom
-            | DomAttribute::BorderTop
-            | DomAttribute::BorderLeft
-            | DomAttribute::BorderRight
-            | DomAttribute::BorderBottom
-    ) {
-        return None;
+}
+
+/// Projects the A7 dirty classification back into the `AttributeInvalidation`
+/// flags the shared upward-invalidation machinery consumes (`remeasure_text`
+/// maps to the style flag, which the pass remeasures text under).
+fn attribute_invalidation_from_classification(
+    classification: GroupDirtyClassification,
+) -> AttributeInvalidation {
+    let mut invalidation = AttributeInvalidation::default();
+    if classification.layout {
+        invalidation = invalidation.with_layout();
     }
-    match value {
-        DomAttributeValue::Float(value) => Some(*value),
-        DomAttributeValue::Integer(value) => Some(crate::numeric::i64_to_f32(*value)),
-        DomAttributeValue::String(value) if value == "0" => Some(0.0),
-        DomAttributeValue::String(value) => value.strip_suffix("px")?.parse::<f32>().ok(),
-        DomAttributeValue::Bool(_) | DomAttributeValue::Color(_) => None,
+    if classification.paint {
+        invalidation = invalidation.with_paint();
     }
+    if classification.remeasure_text {
+        invalidation = invalidation.with_style();
+    }
+    if classification.reevaluate_layer_membership {
+        invalidation = invalidation.with_layer_membership();
+    }
+    invalidation
 }
 
 fn mark_dirty_up_to_layer_root(root_dom: &mut RootDom, key: DomNodeSlotKey, dirty_flag: DirtyFlag) {
@@ -4569,11 +4956,7 @@ fn hover_layer_intersects_removed_keys(
 }
 
 fn node_allows_vertical_scroll_offset(node: &DomNode) -> bool {
-    matches!(
-        node.presented_attr(&DomAttribute::Overflow),
-        Some(DomAttributeValue::String(value))
-            if matches!(value.as_str(), "scroll" | "auto" | "hidden")
-    )
+    node.computed_box().overflow.allows_vertical_scroll()
 }
 
 fn scroll_viewport_height_px_for_node(
@@ -4980,12 +5363,14 @@ fn remove_collected_subtree_keys(
     nodes: &mut SlotMap<DomNodeSlotKey, DomNode>,
     removed_keys: &[DomNodeSlotKey],
     active_transitions: &mut std::collections::BTreeSet<DomNodeSlotKey>,
-    style_pass_attrs_by_node: &mut HashMap<DomNodeSlotKey, BTreeSet<DomAttribute>>,
+    inline_decl_store: &mut DeclStore,
     id_lookup: &mut HashMap<String, DomNodeSlotKey>,
 ) {
     for &removed_key in removed_keys {
         active_transitions.remove(&removed_key);
-        style_pass_attrs_by_node.remove(&removed_key);
+        if let Some(block_key) = nodes.get(removed_key).and_then(DomNode::inline_decl) {
+            inline_decl_store.remove(block_key);
+        }
         if let Some(id) = nodes
             .get(removed_key)
             .and_then(DomNode::as_element)
@@ -5345,6 +5730,62 @@ mod tests {
     };
 
     #[test]
+    fn presentation_writes_are_rejected_via_attr_and_custom_escape_hatch_stores() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let node = root.create_element(DomTag::Div).expect("node create");
+        root.append_child(root.document_node().0, node)
+            .expect("node attach");
+
+        // Name-based D5 gate: a presentation longhand name errors loudly.
+        assert_eq!(
+            root.set_attr_str(node, "width", "10px"),
+            Err(DomError::PresentationRequiresStyleMut)
+        );
+        // A presentation shorthand name errors too.
+        assert_eq!(
+            root.set_attr_str(node, "gap", "4px"),
+            Err(DomError::PresentationRequiresStyleMut)
+        );
+
+        // The style attribute itself still routes into the inline store.
+        root.set_attr_str(node, "style", "width: 10px")
+            .expect("style attribute should route");
+        assert_eq!(
+            root.canonical_style_snapshot(node).styles,
+            vec![(
+                "width".to_string(),
+                DomAttributeValue::String("10px".to_string())
+            )]
+        );
+
+        // Typed `Custom` writes with a presentation name error; other `Custom`
+        // names are content data (the documented escape hatch).
+        assert_eq!(
+            root.set_attr(
+                node,
+                DomAttribute::Custom("width".to_string()),
+                Some(DomAttributeValue::String("10px".to_string())),
+            ),
+            Err(DomError::PresentationRequiresStyleMut)
+        );
+        root.set_attr(
+            node,
+            DomAttribute::Custom("my-data".to_string()),
+            Some(DomAttributeValue::String("stored".to_string())),
+        )
+        .expect("custom content name should store");
+        assert_eq!(
+            root.node(node)
+                .and_then(DomNode::as_element)
+                .and_then(|element| element
+                    .attrs
+                    .attributes
+                    .get(&DomAttribute::Custom("my-data".to_string()))),
+            Some(&DomAttributeValue::String("stored".to_string()))
+        );
+    }
+
+    #[test]
     fn non_bubbling_dispatch_returns_none_when_target_has_no_exact_listener() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let target = root.create_element(DomTag::Button).expect("target create");
@@ -5581,7 +6022,7 @@ mod tests {
         root.dispatch_and_record_transition_event(
             shell_key,
             DomEventName::TransitionEnd,
-            DomAttribute::Custom("opacity".to_string()),
+            PresentationProperty::Opacity,
             0.12,
         );
 
@@ -5595,45 +6036,45 @@ mod tests {
         root.append_child(root.document_node().0, node)
             .expect("node attach");
 
-        root.set_attr_str(node, "transition", "left 180ms ease-out 40ms")
+        root.style_mut(node)
+            .set("transition", "left 180ms ease-out 40ms")
             .expect("transition shorthand should set");
+        let document_key = root.document_node().0;
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key).expect("recompute");
 
-        let node_ref = root.node(node).expect("node should exist");
+        // The shorthand expands to its four longhands, resolved into the
+        // scheduler-facing transition slot (spine 3.3g-2a: not stored as attrs).
+        let view = root.computed_style(node).expect("node should exist");
+        let longhands = view.transition_longhands();
         assert_eq!(
-            node_ref.attr(&DomAttribute::TransitionProperty),
-            Some(&DomAttributeValue::String("left".to_string()))
+            longhands.properties.as_slice(),
+            &[
+                crate::domains::style::computed::TransitionLonghandProperty::Property(
+                    PresentationProperty::Left
+                )
+            ]
         );
-        assert_eq!(
-            node_ref.attr(&DomAttribute::TransitionDuration),
-            Some(&DomAttributeValue::String("0.18s".to_string()))
-        );
-        assert_eq!(
-            node_ref.attr(&DomAttribute::TransitionTimingFunction),
-            Some(&DomAttributeValue::String("ease-out".to_string()))
-        );
-        assert_eq!(
-            node_ref.attr(&DomAttribute::TransitionDelay),
-            Some(&DomAttributeValue::String("0.04s".to_string()))
-        );
+        assert_eq!(longhands.durations_s.as_slice(), &[0.18]);
+        assert_eq!(longhands.timing_functions.as_slice(), &[Keyword::EaseOut]);
+        assert_eq!(longhands.delays_s.as_slice(), &[0.04]);
     }
 
     #[test]
-    fn transition_shorthand_unset_clears_longhand_attrs() {
+    fn transition_shorthand_removal_clears_longhand_attrs() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let node = root.create_element(DomTag::Div).expect("node create");
         root.append_child(root.document_node().0, node)
             .expect("node attach");
-        root.set_attr_str(node, "transition", "left 180ms ease-out 40ms")
+        root.style_mut(node)
+            .set("transition", "left 180ms ease-out 40ms")
             .expect("transition shorthand should set");
 
-        root.set_attr_str(node, "transition", "unset")
-            .expect("transition shorthand should unset");
+        root.style_mut(node)
+            .remove("transition")
+            .expect("transition shorthand removal should clear its longhands");
 
-        let node_ref = root.node(node).expect("node should exist");
-        assert_eq!(node_ref.attr(&DomAttribute::TransitionProperty), None);
-        assert_eq!(node_ref.attr(&DomAttribute::TransitionDuration), None);
-        assert_eq!(node_ref.attr(&DomAttribute::TransitionTimingFunction), None);
-        assert_eq!(node_ref.attr(&DomAttribute::TransitionDelay), None);
+        let view = root.computed_style(node).expect("node should exist");
+        assert!(view.transition_longhands().is_empty());
     }
 
     #[test]
@@ -5642,54 +6083,48 @@ mod tests {
         let node = root.create_element(DomTag::Div).expect("node create");
         root.append_child(root.document_node().0, node)
             .expect("node attach");
-        root.set_attr_str(node, "left", "0px")
+        root.style_mut(node)
+            .set("left", "0px")
             .expect("initial left");
-        root.set_attr_str(node, "top", "0px").expect("initial top");
-        root.set_attr_str(node, "transition-property", "left")
+        root.style_mut(node).set("top", "0px").expect("initial top");
+        root.style_mut(node)
+            .set("transition-property", "left")
             .expect("transition-property");
-        root.set_attr_str(node, "transition-duration", "180ms")
+        root.style_mut(node)
+            .set("transition-duration", "180ms")
             .expect("transition-duration");
+        let document_key = root.document_node().0;
+        // Baseline pass establishes the node's computed groups (left=0) as the
+        // pre-change value (D2 one-timing: scheduling moved to the pass).
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("baseline recompute");
 
-        root.set_attr_str(node, "left", "100px")
+        root.style_mut(node)
+            .set("left", "100px")
             .expect("left should transition");
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("recompute should schedule the left transition");
+        // The scheduled left transition overlays the computed box at its `from`
+        // value (0px).
         assert_eq!(
             root.node(node)
                 .expect("node should exist")
-                .presented_attr(&DomAttribute::Left),
-            Some(&DomAttributeValue::Float(0.0))
+                .computed_box()
+                .left,
+            Some(0.0)
         );
 
-        root.set_attr_str(node, "top", "100px")
+        root.style_mut(node)
+            .set("top", "100px")
             .expect("top should set without transition");
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document_key)
+            .expect("recompute should not schedule a top transition");
         assert_eq!(
             root.node(node)
                 .expect("node should exist")
-                .presented_attr(&DomAttribute::Top),
-            Some(&DomAttributeValue::String("100px".to_string()))
-        );
-    }
-
-    #[test]
-    fn invalid_transition_longhand_config_is_inert() {
-        let mut root = RootDom::new(RootDomContext::new_cpu());
-        let node = root.create_element(DomTag::Div).expect("node create");
-        root.append_child(root.document_node().0, node)
-            .expect("node attach");
-        root.set_attr_str(node, "left", "0px")
-            .expect("initial left");
-        root.set_attr_str(node, "transition-property", "left")
-            .expect("transition-property");
-        root.set_attr_str(node, "transition-duration", "bogus")
-            .expect("transition-duration should store authored user data");
-
-        root.set_attr_str(node, "left", "100px")
-            .expect("invalid transition config should not abort the attr change");
-
-        assert_eq!(
-            root.node(node)
-                .expect("node should exist")
-                .presented_attr(&DomAttribute::Left),
-            Some(&DomAttributeValue::String("100px".to_string()))
+                .computed_box()
+                .top,
+            Some(100.0)
         );
     }
 
@@ -5810,10 +6245,11 @@ mod tests {
         let child = root.create_element(DomTag::Div).expect("child create");
         root.append_child(root.document_node().0, child)
             .expect("child append");
-        root.set_attr_str(child, "position", "fixed")
+        root.style_mut(child)
+            .set("position", "fixed")
             .expect("fixed position");
-        root.set_attr_str(child, "left", "12px").expect("left");
-        root.set_attr_str(child, "top", "8px").expect("top");
+        root.style_mut(child).set("left", "12px").expect("left");
+        root.style_mut(child).set("top", "8px").expect("top");
 
         root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("update should succeed");
@@ -5831,16 +6267,18 @@ mod tests {
         let parent = root.create_element(DomTag::Div).expect("parent create");
         root.append_child(root.document_node().0, parent)
             .expect("parent append");
-        root.set_attr_str(parent, "position", "fixed")
+        root.style_mut(parent)
+            .set("position", "fixed")
             .expect("fixed position");
-        root.set_attr_str(parent, "left", "12px").expect("left");
-        root.set_attr_str(parent, "top", "8px").expect("top");
+        root.style_mut(parent).set("left", "12px").expect("left");
+        root.style_mut(parent).set("top", "8px").expect("top");
         let child = root.create_element(DomTag::Div).expect("child create");
         root.append_child(parent, child).expect("child append");
-        root.set_attr_str(child, "position", "absolute")
+        root.style_mut(child)
+            .set("position", "absolute")
             .expect("absolute position");
-        root.set_attr_str(child, "left", "3px").expect("left");
-        root.set_attr_str(child, "top", "2px").expect("top");
+        root.style_mut(child).set("left", "3px").expect("left");
+        root.style_mut(child).set("top", "2px").expect("top");
 
         root.update(&mut world, 0.0, DomPointerUpdate::Unchanged)
             .expect("update should succeed");
@@ -6091,8 +6529,10 @@ mod tests {
             .expect("set first option value");
         root.set_attr_str(second_option, "value", "beta")
             .expect("set second option value");
-        root.set_attr_str(select, "width", "120px").expect("width");
-        root.set_attr_str(select, "height", "28px").expect("height");
+        root.style_mut(select).set("width", "120px").expect("width");
+        root.style_mut(select)
+            .set("height", "28px")
+            .expect("height");
         select
     }
 
@@ -6115,8 +6555,10 @@ mod tests {
             .expect("set first option value");
         root.set_attr_str(second_option, "value", "beta")
             .expect("set second option value");
-        root.set_attr_str(select, "width", "120px").expect("width");
-        root.set_attr_str(select, "height", "28px").expect("height");
+        root.style_mut(select).set("width", "120px").expect("width");
+        root.style_mut(select)
+            .set("height", "28px")
+            .expect("height");
         select
     }
 
@@ -6335,9 +6777,11 @@ mod tests {
     fn pointer_click_opens_select_presented_options_after_click_activation() {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let select = append_select(&mut root);
-        root.set_attr_str(select, "margin-left", "12px")
+        root.style_mut(select)
+            .set("margin-left", "12px")
             .expect("select margin left");
-        root.set_attr_str(select, "margin-top", "40px")
+        root.style_mut(select)
+            .set("margin-top", "40px")
             .expect("select margin top");
         root.set_border_box_for_test(root.root, 0.0, 0.0, 180.0, 180.0);
         let mut world = World::new();
@@ -6394,21 +6838,31 @@ mod tests {
         let wrapper = root.create_element(DomTag::Div).expect("wrapper");
         root.append_child(root.root, wrapper)
             .expect("append wrapper");
-        root.set_attr_str(wrapper, "display", "block")
+        root.style_mut(wrapper)
+            .set("display", "block")
             .expect("wrapper display");
-        root.set_attr_str(wrapper, "margin-left", "31px")
+        root.style_mut(wrapper)
+            .set("margin-left", "31px")
             .expect("wrapper margin left");
-        root.set_attr_str(wrapper, "margin-top", "53px")
+        root.style_mut(wrapper)
+            .set("margin-top", "53px")
             .expect("wrapper margin top");
-        root.set_attr_str(wrapper, "padding-left", "9px")
+        root.style_mut(wrapper)
+            .set("padding-left", "9px")
             .expect("wrapper padding left");
-        root.set_attr_str(wrapper, "padding-top", "7px")
+        root.style_mut(wrapper)
+            .set("padding-top", "7px")
             .expect("wrapper padding top");
-        root.set_attr_str(root.root, "width", "240px")
-            .expect("root width");
-        root.set_attr_str(root.root, "height", "240px")
-            .expect("root height");
+        // The document node's inline style is not folded (the style pass skips
+        // document/fragment nodes), so make the root's content tall enough to
+        // keep the anchored popup inside the hit-test viewport instead of
+        // sizing the document box.
         let select = append_select_to_parent(&mut root, wrapper);
+        let spacer = root.create_element(DomTag::Div).expect("spacer");
+        root.append_child(wrapper, spacer).expect("append spacer");
+        root.style_mut(spacer)
+            .set("height", "80px")
+            .expect("spacer height");
         let mut world = World::new();
         let parent = attach_root_with_size(&mut root, &mut world, 240.0, 240.0);
         root.reset_metrics();
@@ -6440,5 +6894,54 @@ mod tests {
         assert_close(shell_transform.translation.x, 40.0);
         assert_close(shell_transform.translation.y, -88.0);
         assert_second_popup_row_mouse_click_commits(&mut root, &mut world, parent, select, &proof);
+    }
+
+    #[test]
+    fn name_is_presentation_covers_all_presentation_properties_and_shorthands() {
+        // Every longhand name of the 68-property vocabulary is presentation.
+        for property in PresentationProperty::ALL {
+            assert!(
+                name_is_presentation(property.name()),
+                "{} ({property:?}) should be a presentation name",
+                property.name()
+            );
+        }
+        // The shorthand names the declaration parser expands are presentation.
+        for name in [
+            "gap",
+            "flex",
+            "flex-flow",
+            "place-content",
+            "place-items",
+            "place-self",
+            "transition",
+            "border-radius",
+            "border-color",
+            "border-top",
+            "border-right",
+            "border-bottom",
+            "border-left",
+        ] {
+            assert!(name_is_presentation(name), "{name} should be presentation");
+        }
+        // Content and non-presentation names skip.
+        for name in [
+            "class",
+            "id",
+            "value",
+            "src",
+            "checked",
+            "style",
+            "disabled",
+            "readonly",
+            "lang",
+            "placeholder",
+            "data-role",
+        ] {
+            assert!(
+                !name_is_presentation(name),
+                "{name} should not be presentation"
+            );
+        }
     }
 }

@@ -1,18 +1,25 @@
-//! Retained style rule store for `ui-dom`.
+//! Retained style rule and declaration store for `ui-dom`.
 //!
 //! This file owns the `StyleRuntime` value that compiles authored stylesheet
-//! text into retained, indexed rules and answers candidate/matched-rule lookups
-//! for the shared style pipeline. Selector parsing, specificity, precedence,
-//! and the node-match walk stay in `style::mod`; the runtime keeps the rule
-//! store and its id/class/tag/universal/origin/identity indexes.
+//! text into retained, indexed rules backed by an arena of typed declaration
+//! blocks, and answers candidate/matched-rule lookups for the shared style
+//! pipeline. Selector parsing, specificity, precedence, the node-match walk,
+//! and the rule identity hash stay in `style::mod`; the runtime keeps the rule
+//! store, the `DeclStore` arena, and the id/class/tag/universal/origin/identity
+//! indexes.
 //!
 //! Invariants and rules:
 //!
 //! - this file owns only the `StyleRuntime` struct and its `impl` block
 //! - rule compilation delegates to the parent module's selector and block
 //!   parsers; the runtime never parses selector syntax on its own
+//! - declaration parsing is drop-and-continue (CSS 2.1 §4.1.7): malformed
+//!   declarations are counted into the load report and a monotonic
+//!   `declarations_dropped` counter, never silently swallowed
 //! - the indexes are retained per origin and per right-most selector so
 //!   candidate lookup and origin unload stay O(indexed) rather than O(rules)
+//! - dedup runs before a block is inserted, so a duplicate load never leaks a
+//!   declaration block into the arena
 //! - pseudo-state counts and the revision counter are kept exact and
 //!   zero-allocation; both are updated under the same retained-store lock
 
@@ -20,22 +27,26 @@ use std::collections::{HashMap, HashSet};
 
 use slotmap::SlotMap;
 
-use super::StyleRuleOrigin;
+use super::decl_block::DeclBlock;
+use super::decl_drop_report::StylesheetLoadReport;
+use super::decl_parse::parse_declaration_block;
 use super::{
-    CompiledRule, CssBlock, NodeLookup, NodeStyleIndex, PseudoStateCounts, StyleRule, StyleRuleKey,
-    append_rule_keys, compute_rule_identity_hash, extract_right_most_selector, parse_css_blocks,
-    parse_selector, pseudo_state_counts, selector_matches_node, specificity_for_selector_parts,
+    CompiledRule, DeclBlockKey, DeclStore, Declaration, NodeLookup, NodeStyleIndex,
+    PrecedenceTuple, PseudoStateCounts, SelectorSpecificity, SimpleSelector, StyleRuleKey,
+    StyleRuleOrigin, TextKey, append_rule_keys, compute_rule_identity_hash,
+    extract_right_most_selector, parse_css_blocks, parse_selector, pseudo_state_counts,
+    selector_matches_node, specificity_for_selector_parts,
 };
-use crate::types::{DomError, DomNodeSlotKey, DomPseudoState, parse_style_attr_map};
+use crate::types::{DomError, DomNodeSlotKey, DomPseudoState};
 
 #[cfg(test)]
-use super::{SelectorSpecificity, precedence_tuple};
-#[cfg(test)]
-use crate::types::{DomAttribute, DomAttributeValue};
+use super::{DeclLength, DeclValue, Keyword, PresentationProperty};
 
 #[derive(Debug, Default)]
 pub struct StyleRuntime {
     rules: SlotMap<StyleRuleKey, CompiledRule>,
+    decl_store: DeclStore,
+    declarations_dropped: u64,
     id_index: HashMap<String, Vec<StyleRuleKey>>,
     class_index: HashMap<String, Vec<StyleRuleKey>>,
     tag_index: HashMap<String, Vec<StyleRuleKey>>,
@@ -55,32 +66,69 @@ impl StyleRuntime {
         &mut self,
         origin: StyleRuleOrigin,
         css_text: &str,
-    ) -> Result<usize, DomError> {
+    ) -> Result<StylesheetLoadReport, DomError> {
         let StyleRuleOrigin {
             key: origin_key,
             priority: origin_priority,
         } = origin;
         let blocks = parse_css_blocks(css_text)?;
-        let mut inserted = 0usize;
+        let mut report = StylesheetLoadReport::default();
         for block in blocks {
-            let compiled_rule = self.compile_rule(
-                StyleRuleOrigin {
-                    key: origin_key.clone(),
-                    priority: origin_priority,
-                },
-                block,
-            )?;
-            if self.has_equivalent_active_rule(&compiled_rule) {
+            let selector_parts = parse_selector(&block.selector)?;
+            let right_most = extract_right_most_selector(&selector_parts)?;
+            let specificity = specificity_for_selector_parts(&selector_parts);
+            let (decl_block, drop_report) =
+                parse_declaration_block(&block.declarations, self.decl_store.texts_mut());
+            report.declarations_applied += drop_report.applied;
+            report.declarations_dropped += drop_report.dropped;
+            self.declarations_dropped = self.declarations_dropped.saturating_add(
+                u64::try_from(drop_report.dropped)
+                    .expect("declaration drop count should fit into u64"),
+            );
+
+            let origin = StyleRuleOrigin {
+                key: origin_key.clone(),
+                priority: origin_priority,
+            };
+            let identity_hash = compute_rule_identity_hash(
+                &origin,
+                specificity,
+                &selector_parts,
+                decl_block.declarations(),
+            );
+            if self.has_equivalent_active_rule(
+                identity_hash,
+                &selector_parts,
+                decl_block.declarations(),
+                specificity,
+                &origin,
+            ) {
                 continue;
             }
-            let key = self.rules.insert(compiled_rule);
+            let decl = self.decl_store.insert(decl_block);
+            let order = self.order_counter;
+            self.order_counter = self
+                .order_counter
+                .checked_add(1)
+                .expect("style rule order counter should not overflow");
+            let key = self.rules.insert(CompiledRule {
+                selector: block.selector,
+                selector_parts,
+                right_most,
+                decl,
+                specificity,
+                origin,
+                order,
+                identity_hash,
+                active: true,
+            });
             self.index_rule(key)?;
-            inserted += 1;
+            report.rules_inserted += 1;
         }
-        if inserted != 0 {
+        if report.rules_inserted != 0 {
             self.revision = self.revision.saturating_add(1);
         }
-        Ok(inserted)
+        Ok(report)
     }
 
     pub(crate) fn unload_stylesheet(&mut self, origin_key: &str) -> usize {
@@ -109,6 +157,29 @@ impl StyleRuntime {
     #[must_use]
     pub(crate) fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Monotonic count of declarations dropped by drop-and-continue parsing
+    /// across all loads on this runtime.
+    #[must_use]
+    pub(crate) fn declarations_dropped_count(&self) -> u64 {
+        self.declarations_dropped
+    }
+
+    /// Live declaration blocks in the stylesheet arena.
+    #[must_use]
+    pub(crate) fn decl_block_count(&self) -> usize {
+        self.decl_store.live_block_count()
+    }
+
+    #[must_use]
+    pub(crate) fn decl_block(&self, key: DeclBlockKey) -> Option<&DeclBlock> {
+        self.decl_store.get(key)
+    }
+
+    #[must_use]
+    pub(crate) fn resolve_text(&self, key: TextKey) -> Option<&str> {
+        self.decl_store.resolve(key)
     }
 
     #[must_use]
@@ -159,7 +230,7 @@ impl StyleRuntime {
         key: StyleRuleKey,
         lookup: NodeLookup<'_>,
         node_key: DomNodeSlotKey,
-    ) -> Result<Option<&StyleRule>, DomError> {
+    ) -> Result<Option<(PrecedenceTuple, DeclBlockKey)>, DomError> {
         let Some(rule) = self.rules.get(key) else {
             return Ok(None);
         };
@@ -169,38 +240,10 @@ impl StyleRuntime {
         if !selector_matches_node(lookup, node_key, &rule.selector_parts)? {
             return Ok(None);
         }
-        Ok(Some(&rule.rule))
-    }
-
-    fn compile_rule(
-        &mut self,
-        origin: StyleRuleOrigin,
-        block: CssBlock,
-    ) -> Result<CompiledRule, DomError> {
-        let selector_parts = parse_selector(&block.selector)?;
-        let right_most = extract_right_most_selector(&selector_parts)?;
-        let specificity = specificity_for_selector_parts(&selector_parts);
-        let attr_map = parse_style_attr_map(&block.declarations)?;
-        let order = self.order_counter;
-        self.order_counter = self
-            .order_counter
-            .checked_add(1)
-            .expect("style rule order counter should not overflow");
-        let rule = StyleRule {
-            selector: block.selector,
-            attr_map,
-            specificity,
-            origin,
-            order,
-        };
-        let identity_hash = compute_rule_identity_hash(&rule, &selector_parts);
-        Ok(CompiledRule {
-            rule,
-            selector_parts,
-            right_most,
-            identity_hash,
-            active: true,
-        })
+        Ok(Some((
+            (rule.origin.priority, rule.specificity, rule.order),
+            rule.decl,
+        )))
     }
 
     fn index_rule(&mut self, key: StyleRuleKey) -> Result<(), DomError> {
@@ -218,7 +261,7 @@ impl StyleRuntime {
             self.universal_index.push(key);
         }
         self.origin_index
-            .entry(rule.rule.origin.key.clone())
+            .entry(rule.origin.key.clone())
             .or_default()
             .push(key);
         self.identity_index
@@ -229,17 +272,27 @@ impl StyleRuntime {
         Ok(())
     }
 
-    fn has_equivalent_active_rule(&self, candidate: &CompiledRule) -> bool {
-        let Some(keys) = self.identity_index.get(&candidate.identity_hash) else {
+    fn has_equivalent_active_rule(
+        &self,
+        identity_hash: u64,
+        selector_parts: &[SimpleSelector],
+        declarations: &[Declaration],
+        specificity: SelectorSpecificity,
+        origin: &StyleRuleOrigin,
+    ) -> bool {
+        let Some(keys) = self.identity_index.get(&identity_hash) else {
             return false;
         };
         keys.iter().any(|key| {
             self.rules.get(*key).is_some_and(|existing| {
                 existing.active
-                    && existing.selector_parts == candidate.selector_parts
-                    && existing.rule.attr_map == candidate.rule.attr_map
-                    && existing.rule.specificity == candidate.rule.specificity
-                    && existing.rule.origin == candidate.rule.origin
+                    && existing.selector_parts.as_slice() == selector_parts
+                    && existing.specificity == specificity
+                    && &existing.origin == origin
+                    && self
+                        .decl_store
+                        .get(existing.decl)
+                        .is_some_and(|block| block.declarations() == declarations)
             })
         })
     }
@@ -358,15 +411,18 @@ mod tests {
     }
 
     #[test]
-    fn load_stylesheet_rejects_invalid_declaration() {
+    fn load_stylesheet_drops_unadmitted_declarations_with_report() {
         let mut runtime = StyleRuntime::default();
-        let error = runtime
+        let report = runtime
             .load_stylesheet(
                 StyleRuleOrigin::new("theme", 0),
                 "div { tab-index: 0; color: #112233; }",
             )
-            .expect_err("invalid declaration should fail");
-        assert_eq!(error, DomError::InvalidAttributeValue);
+            .expect("unadmitted declaration should drop, not reject the load");
+        assert_eq!(report.declarations_applied, 1);
+        assert_eq!(report.declarations_dropped, 1);
+        assert_eq!(report.rules_inserted, 1);
+        assert_eq!(runtime.declarations_dropped_count(), 1);
     }
 
     #[test]
@@ -386,21 +442,21 @@ mod tests {
             .copied()
             .expect("scaled rule");
         let rule = runtime.rules.get(rule_key).expect("rule");
+        let block = runtime.decl_block(rule.decl).expect("decl block");
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::Width),
-            Some(&DomAttributeValue::String("2em".to_string()))
+            block.get(PresentationProperty::Width),
+            Some(&DeclValue::Length(DeclLength::Em(2.0)))
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::FontSize),
-            Some(&DomAttributeValue::String("1.5em".to_string()))
+            block.get(PresentationProperty::FontSize),
+            Some(&DeclValue::Length(DeclLength::Em(1.5)))
         );
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn load_stylesheet_accepts_flex_surface_declarations() {
         let mut runtime = StyleRuntime::default();
-        runtime
+        let report = runtime
             .load_stylesheet(
                 StyleRuleOrigin::new("theme", 0),
                 ".flex {
@@ -426,6 +482,10 @@ mod tests {
             )
             .expect("stylesheet should load");
 
+        assert_eq!(report.declarations_applied, 18);
+        assert_eq!(report.declarations_dropped, 0);
+        assert_eq!(report.rules_inserted, 1);
+
         let rule_key = runtime
             .class_index
             .get("flex")
@@ -433,77 +493,54 @@ mod tests {
             .copied()
             .expect("flex rule");
         let rule = runtime.rules.get(rule_key).expect("rule");
+        let block = runtime.decl_block(rule.decl).expect("decl block");
+
+        let get = |property: PresentationProperty| -> DeclValue {
+            *block
+                .get(property)
+                .unwrap_or_else(|| panic!("expected {property:?} in block"))
+        };
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::FlexDirection),
-            Some(&DomAttributeValue::String("column".to_string()))
+            get(PresentationProperty::FlexDirection),
+            DeclValue::Keyword(Keyword::Column)
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::FlexWrap),
-            Some(&DomAttributeValue::String("wrap".to_string()))
+            get(PresentationProperty::FlexWrap),
+            DeclValue::Keyword(Keyword::Wrap)
+        );
+        assert_eq!(get(PresentationProperty::FlexGrow), DeclValue::Number(1.0));
+        assert_eq!(
+            get(PresentationProperty::FlexShrink),
+            DeclValue::Number(0.0)
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::FlexFlow),
-            Some(&DomAttributeValue::String("column wrap".to_string()))
+            get(PresentationProperty::FlexBasis),
+            DeclValue::Keyword(Keyword::Auto)
+        );
+        assert_eq!(get(PresentationProperty::Order), DeclValue::Integer(4));
+        assert_eq!(
+            get(PresentationProperty::JustifyContent),
+            DeclValue::Keyword(Keyword::Start)
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::FlexGrow),
-            Some(&DomAttributeValue::String("2".to_string()))
+            get(PresentationProperty::AlignItems),
+            DeclValue::Keyword(Keyword::Stretch)
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::FlexShrink),
-            Some(&DomAttributeValue::String("3".to_string()))
+            get(PresentationProperty::AlignSelf),
+            DeclValue::Keyword(Keyword::End)
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::FlexBasis),
-            Some(&DomAttributeValue::String("20px".to_string()))
+            get(PresentationProperty::AlignContent),
+            DeclValue::Keyword(Keyword::Center)
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::Flex),
-            Some(&DomAttributeValue::String("1 0 auto".to_string()))
+            get(PresentationProperty::RowGap),
+            DeclValue::Length(DeclLength::Px(8.0))
         );
         assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::Order),
-            Some(&DomAttributeValue::String("4".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::JustifyContent),
-            Some(&DomAttributeValue::String("space-between".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::AlignItems),
-            Some(&DomAttributeValue::String("stretch".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::AlignSelf),
-            Some(&DomAttributeValue::String("center".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::AlignContent),
-            Some(&DomAttributeValue::String("space-around".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::Gap),
-            Some(&DomAttributeValue::String("12px".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::RowGap),
-            Some(&DomAttributeValue::String("8px".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::ColumnGap),
-            Some(&DomAttributeValue::String("10px".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::PlaceContent),
-            Some(&DomAttributeValue::String("center start".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::PlaceItems),
-            Some(&DomAttributeValue::String("stretch center".to_string()))
-        );
-        assert_eq!(
-            rule.rule.attr_map.get(&DomAttribute::PlaceSelf),
-            Some(&DomAttributeValue::String("end auto".to_string()))
+            get(PresentationProperty::ColumnGap),
+            DeclValue::Length(DeclLength::Px(10.0))
         );
     }
 
@@ -560,7 +597,7 @@ mod tests {
             .expect("primary rule");
         let rule = runtime.rules.get(rule_key).expect("rule");
         assert_eq!(
-            rule.rule.specificity,
+            rule.specificity,
             SelectorSpecificity {
                 id: 0,
                 class: 3,
@@ -582,7 +619,7 @@ mod tests {
         let mut tuples = runtime
             .rules
             .values()
-            .map(|rule| precedence_tuple(&rule.rule))
+            .map(|rule| (rule.origin.priority, rule.specificity, rule.order))
             .collect::<Vec<_>>();
         tuples.sort();
 
@@ -625,14 +662,14 @@ mod tests {
             runtime
                 .rules
                 .values()
-                .filter(|rule| rule.rule.origin.key == "theme")
+                .filter(|rule| rule.origin.key == "theme")
                 .all(|rule| !rule.active)
         );
         assert!(
             runtime
                 .rules
                 .values()
-                .filter(|rule| rule.rule.origin.key == "base")
+                .filter(|rule| rule.origin.key == "base")
                 .all(|rule| rule.active)
         );
     }
@@ -647,8 +684,8 @@ mod tests {
             .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".cta { width: 10px; }")
             .expect("second load should pass");
 
-        assert_eq!(first, 1);
-        assert_eq!(second, 0);
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 0);
     }
 
     #[test]
@@ -667,8 +704,8 @@ mod tests {
             )
             .expect("second load should pass");
 
-        assert_eq!(first, 1);
-        assert_eq!(second, 0);
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 0);
     }
 
     #[test]
@@ -687,8 +724,8 @@ mod tests {
             )
             .expect("second load should pass");
 
-        assert_eq!(first, 1);
-        assert_eq!(second, 0);
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 0);
     }
 
     #[test]
@@ -707,8 +744,8 @@ mod tests {
             )
             .expect("second load should pass");
 
-        assert_eq!(first, 1);
-        assert_eq!(second, 0);
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 0);
     }
 
     #[test]
@@ -721,8 +758,8 @@ mod tests {
             .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".cta { width: 12px; }")
             .expect("second load should pass");
 
-        assert_eq!(first, 1);
-        assert_eq!(second, 1);
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 1);
     }
 
     #[test]
@@ -735,8 +772,8 @@ mod tests {
             .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".cta { width: 10px; }")
             .expect("second load should pass");
 
-        assert_eq!(first, 1);
-        assert_eq!(second, 1);
+        assert_eq!(first.rules_inserted, 1);
+        assert_eq!(second.rules_inserted, 1);
     }
 
     #[test]
@@ -750,22 +787,22 @@ mod tests {
             .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".cta { width: 10px; }")
             .expect("reload should pass");
 
-        assert_eq!(first, 1);
+        assert_eq!(first.rules_inserted, 1);
         assert_eq!(unloaded, 1);
-        assert_eq!(reloaded, 1);
+        assert_eq!(reloaded.rules_inserted, 1);
     }
 
     #[test]
     fn load_stylesheet_parses_block_comments() {
         let mut runtime = StyleRuntime::default();
-        let inserted = runtime
+        let report = runtime
             .load_stylesheet(
                 StyleRuleOrigin::new("theme", 1),
                 "/* header */ .cta { width: 10px; } /* footer */",
             )
             .expect("commented stylesheet should parse");
 
-        assert_eq!(inserted, 1);
+        assert_eq!(report.rules_inserted, 1);
     }
 
     #[test]
@@ -779,5 +816,53 @@ mod tests {
             .expect_err("unclosed comment should fail");
 
         assert_eq!(error, DomError::InvalidSelector);
+    }
+
+    #[test]
+    fn dedup_skip_does_not_leak_a_decl_block() {
+        let mut runtime = StyleRuntime::default();
+        runtime
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".cta { width: 10px; }")
+            .expect("first load");
+        assert_eq!(runtime.decl_block_count(), 1);
+
+        let second = runtime
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".cta { width: 10px; }")
+            .expect("duplicate load");
+        assert_eq!(second.rules_inserted, 0);
+        assert_eq!(runtime.decl_block_count(), 1);
+    }
+
+    #[test]
+    fn drop_counter_accumulates_across_loads() {
+        let mut runtime = StyleRuntime::default();
+        runtime
+            .load_stylesheet(StyleRuleOrigin::new("theme", 1), ".a { width: 10px; bad; }")
+            .expect("first load");
+        runtime
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 1),
+                ".b { height: notalength; }",
+            )
+            .expect("second load");
+
+        assert_eq!(runtime.declarations_dropped_count(), 2);
+    }
+
+    #[test]
+    fn unload_tombstones_keep_blocks_in_the_arena() {
+        let mut runtime = StyleRuntime::default();
+        runtime
+            .load_stylesheet(
+                StyleRuleOrigin::new("theme", 1),
+                ".cta { width: 10px; } .cta { height: 10px; }",
+            )
+            .expect("theme");
+        assert_eq!(runtime.decl_block_count(), 2);
+
+        let unloaded = runtime.unload_stylesheet("theme");
+        assert_eq!(unloaded, 2);
+        // Tombstones keep their blocks: reclamation is open question 6.
+        assert_eq!(runtime.decl_block_count(), 2);
     }
 }

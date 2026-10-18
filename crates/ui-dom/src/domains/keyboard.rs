@@ -1154,8 +1154,8 @@ mod tests {
         let input = root.create_element(DomTag::Input).expect("input");
         root.append_child(root.root, input).expect("append");
         root.set_attr_str(input, "type", "checkbox").expect("type");
-        root.set_attr_str(input, "width", "24px").expect("width");
-        root.set_attr_str(input, "height", "24px").expect("height");
+        root.style_mut(input).set("width", "24px").expect("width");
+        root.style_mut(input).set("height", "24px").expect("height");
         root.focus(input).expect("focus");
 
         let keydown_event = keyboard_input(ButtonState::Pressed, KeyCode::Space, Key::Space);
@@ -1215,8 +1215,8 @@ mod tests {
         let input = root.create_element(DomTag::Input).expect("input");
         root.append_child(root.root, input).expect("append");
         root.set_attr_str(input, "type", "checkbox").expect("type");
-        root.set_attr_str(input, "width", "24px").expect("width");
-        root.set_attr_str(input, "height", "24px").expect("height");
+        root.style_mut(input).set("width", "24px").expect("width");
+        root.style_mut(input).set("height", "24px").expect("height");
         root.add_event_listener(input, DomEventName::KeyUp, prevent_default_listener, None)
             .expect("keyup listener");
         root.focus(input).expect("focus");

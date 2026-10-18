@@ -22,6 +22,9 @@
 //!   and icon paths, compared unequal every pass — manufacturing phantom
 //!   layout/paint dirties. See `domains/visitor/README.md` for the dirty-bit
 //!   doctrine
+//! - control preferred sizes read the resolved line height from the style pass
+//!   (`inherited_line_height_px`), not the authored `line-height` attr (spine
+//!   3.3g-2a: presentation is written through `style_mut`, never as an attr)
 
 use crate::domains::paint::{
     measure_text_intrinsic, measure_text_intrinsic_with_font_size,
@@ -40,7 +43,7 @@ use crate::types::dom_node::{
 use crate::types::dom_tag::DomElementLifecycleBehavior;
 use crate::types::{
     DomAttribute, DomAttributeValue, DomAttrs, DomError, DomOverflowWrap, DomTag, DomWhiteSpace,
-    DomWordBreak, resolve_line_height_px,
+    DomWordBreak,
 };
 
 /// Declares which intrinsic-size lifecycle family one element uses.
@@ -96,8 +99,12 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
                     == DomElementLifecycleBehavior::ElementControls =>
         {
             let next_intrinsic = DomIntrinsic::ElementDefaultPreferredSize(
-                compute_preferred_size_intrinsic(element, inherited_font_size_px)
-                    .expect("text control intrinsic should stay validated"),
+                compute_preferred_size_intrinsic(
+                    element,
+                    inherited_font_size_px,
+                    inherited_line_height_px,
+                )
+                .expect("text control intrinsic should stay validated"),
             );
             replace_intrinsic_if_changed(node, next_intrinsic)
         }
@@ -109,9 +116,7 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
                     Some(LoweredImageSourceKind::InternalIcon(_))
                 ) =>
         {
-            let next_intrinsic =
-                icon_img_intrinsic_from_attrs(&element.attrs, inherited_font_size_px)
-                    .expect("icon img intrinsic attrs should stay validated");
+            let next_intrinsic = icon_img_intrinsic(inherited_font_size_px);
             replace_intrinsic_if_changed(node, next_intrinsic)
         }
         DomNode::Text(text) => {
@@ -152,6 +157,7 @@ fn compute_element_intrinsic_from_current_state(
             let next_intrinsic = compute_preferred_size_intrinsic(
                 element,
                 preferred_size_measurement_font_size_px(&element.base.intrinsic),
+                None,
             )?;
             Ok(DomIntrinsic::ElementDefaultPreferredSize(next_intrinsic))
         }
@@ -161,8 +167,13 @@ fn compute_element_intrinsic_from_current_state(
 fn compute_preferred_size_intrinsic(
     element: &DomElementNode,
     font_size_px: f32,
+    inherited_line_height_px: Option<f32>,
 ) -> Result<ElementDefaultPreferredSizeIntrinsic, DomError> {
-    let line_height_px = line_height_px_for_attrs(&element.attrs, font_size_px);
+    // The style pass supplies the resolved line height (spine 3.3g-2a: the
+    // authored `line-height` is a presentation property, no longer an attr);
+    // the create path falls back to the font-derived default.
+    let line_height_px = inherited_line_height_px
+        .unwrap_or_else(|| measure_text_intrinsic_with_font_size(" ", font_size_px).line_height_px);
     if element.tag == DomTag::Select {
         return select_intrinsic_from_current_state(element, font_size_px, line_height_px);
     }
@@ -205,22 +216,6 @@ fn compute_preferred_size_intrinsic(
         None => unreachable!(
             "default preferred size intrinsic should only measure opted-in form controls"
         ),
-    }
-}
-
-fn parse_optional_pixel_attr_value(
-    attrs: &DomAttrs,
-    target_attribute: &DomAttribute,
-) -> Result<Option<f32>, DomError> {
-    let Some(value) = stored_attribute_value(attrs, target_attribute) else {
-        return Ok(None);
-    };
-    match value {
-        DomAttributeValue::String(value) => parse_pixel_value(value).map(Some),
-        DomAttributeValue::Bool(_)
-        | DomAttributeValue::Integer(_)
-        | DomAttributeValue::Float(_)
-        | DomAttributeValue::Color(_) => Err(DomError::InvalidAttributeValue),
     }
 }
 
@@ -332,15 +327,8 @@ fn textarea_default_width_sample() -> String {
     "0".repeat(DEFAULT_TEXT_CONTROL_COLUMNS)
 }
 
-fn line_height_px_for_attrs(attrs: &DomAttrs, font_size_px: f32) -> f32 {
-    stored_attribute_value(attrs, &DomAttribute::LineHeight)
-        .and_then(|value| resolve_line_height_px(value, font_size_px))
-        .unwrap_or_else(|| measure_text_intrinsic_with_font_size(" ", font_size_px).line_height_px)
-}
-
 const IMG_PLACEHOLDER_WIDTH_PX: f32 = 160.0;
 const IMG_PLACEHOLDER_HEIGHT_PX: f32 = 90.0;
-const IMG_PLACEHOLDER_ASPECT_RATIO: f32 = IMG_PLACEHOLDER_WIDTH_PX / IMG_PLACEHOLDER_HEIGHT_PX;
 const DEFAULT_ICON_INTRINSIC_FONT_SIZE_PX: f32 = 14.0;
 const DEFAULT_TEXT_CONTROL_COLUMNS: usize = 20;
 const DEFAULT_TEXTAREA_ROWS: usize = 2;
@@ -354,20 +342,17 @@ fn img_intrinsic_from_current_state(element: &DomElementNode) -> Result<DomIntri
         return Ok(DomIntrinsic::NotMeasured);
     };
     validate_img_src(src)?;
-    let authored_width_px = parse_optional_pixel_attr_value(&element.attrs, &DomAttribute::Width)?;
-    let authored_height_px =
-        parse_optional_pixel_attr_value(&element.attrs, &DomAttribute::Height)?;
     if matches!(
         element.lowered_image_source_kind(),
         Some(LoweredImageSourceKind::InternalIcon(_))
     ) {
-        return icon_img_intrinsic_from_attrs(&element.attrs, DEFAULT_ICON_INTRINSIC_FONT_SIZE_PX);
+        return Ok(icon_img_intrinsic(DEFAULT_ICON_INTRINSIC_FONT_SIZE_PX));
     }
-    let (width_px, height_px) =
-        img_placeholder_dimensions_for_authored_size(authored_width_px, authored_height_px);
-    if width_px <= 0.0 || height_px <= 0.0 {
-        return Err(DomError::InvalidAttributeValue);
-    }
+    // `width`/`height` are presentation properties (spine 3.4): the image's
+    // authored dimensions are written through `style_mut` and resolved by
+    // layout, so the intrinsic falls back to the fixed placeholder size.
+    let width_px = IMG_PLACEHOLDER_WIDTH_PX;
+    let height_px = IMG_PLACEHOLDER_HEIGHT_PX;
     Ok(DomIntrinsic::Img(ImgIntrinsic {
         width_px,
         height_px,
@@ -375,59 +360,12 @@ fn img_intrinsic_from_current_state(element: &DomElementNode) -> Result<DomIntri
     }))
 }
 
-fn icon_img_intrinsic_from_attrs(
-    attrs: &DomAttrs,
-    inherited_font_size_px: f32,
-) -> Result<DomIntrinsic, DomError> {
-    let authored_width_px = parse_optional_pixel_attr_value(attrs, &DomAttribute::Width)?;
-    let authored_height_px = parse_optional_pixel_attr_value(attrs, &DomAttribute::Height)?;
-    let (width_px, height_px) = icon_intrinsic_dimensions_for_authored_size(
-        authored_width_px,
-        authored_height_px,
-        inherited_font_size_px,
-    );
-    Ok(DomIntrinsic::Img(ImgIntrinsic {
-        width_px,
-        height_px,
+fn icon_img_intrinsic(inherited_font_size_px: f32) -> DomIntrinsic {
+    DomIntrinsic::Img(ImgIntrinsic {
+        width_px: inherited_font_size_px,
+        height_px: inherited_font_size_px,
         aspect_ratio: 1.0,
-    }))
-}
-
-fn img_placeholder_dimensions_for_authored_size(
-    authored_width_px: Option<f32>,
-    authored_height_px: Option<f32>,
-) -> (f32, f32) {
-    match (authored_width_px, authored_height_px) {
-        (None, None) => (IMG_PLACEHOLDER_WIDTH_PX, IMG_PLACEHOLDER_HEIGHT_PX),
-        (Some(width_px), None) => (width_px, width_px / IMG_PLACEHOLDER_ASPECT_RATIO),
-        (None, Some(height_px)) => (height_px * IMG_PLACEHOLDER_ASPECT_RATIO, height_px),
-        (Some(width_px), Some(height_px)) => (width_px, height_px),
-    }
-}
-
-fn icon_intrinsic_dimensions_for_authored_size(
-    authored_width_px: Option<f32>,
-    authored_height_px: Option<f32>,
-    inherited_font_size_px: f32,
-) -> (f32, f32) {
-    match (authored_width_px, authored_height_px) {
-        (None, None) => (inherited_font_size_px, inherited_font_size_px),
-        (Some(width_px), None) => (width_px, width_px),
-        (None, Some(height_px)) => (height_px, height_px),
-        (Some(width_px), Some(height_px)) => (width_px, height_px),
-    }
-}
-
-fn parse_pixel_value(value: &str) -> Result<f32, DomError> {
-    if value == "0" {
-        return Ok(0.0);
-    }
-    let Some(number) = value.strip_suffix("px") else {
-        return Err(DomError::InvalidAttributeValue);
-    };
-    number
-        .parse::<f32>()
-        .map_err(|_| DomError::InvalidAttributeValue)
+    })
 }
 
 fn validate_img_src(value: &DomAttributeValue) -> Result<(), DomError> {
