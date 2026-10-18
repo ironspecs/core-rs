@@ -217,17 +217,22 @@ pub(crate) fn layer_allows_local_size_update(node: &DomNode) -> bool {
 /// solver code one strict, DOM-themed bundle of the properties it actually
 /// needs for layout decisions.
 ///
+/// `basis_width_px` is the (always-definite) containing-block width; the
+/// height-axis fields take `basis_height_px: Option<f32>` so an indefinite
+/// containing-block height propagates `None` to the height resolvers instead
+/// of manufacturing a 0.0 basis (see `BoxLength::resolve_height` et al.).
+///
 /// Example:
 ///
 /// ```ignore
-/// let style = node_style(node);
+/// let style = node_style(node, 200.0, Some(100.0))?;
 /// assert_eq!(style.position, PositionMode::Static);
 /// ```
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn node_style(
     node: &DomNode,
     basis_width_px: f32,
-    basis_height_px: f32,
+    basis_height_px: Option<f32>,
 ) -> Result<NodeStyle, DomError> {
     let box_ = node.computed_box();
     let font = node.computed_font();
@@ -246,15 +251,15 @@ pub(super) fn node_style(
         margin_auto,
         box_sizing: box_.box_sizing,
         width_px: box_.width.resolve(basis_width_px),
-        height_px: box_.height.resolve(basis_height_px),
+        height_px: box_.height.resolve_height(basis_height_px),
         min_width_px: box_.min_width.resolve(basis_width_px),
-        min_height_px: box_.min_height.resolve(basis_height_px),
+        min_height_px: box_.min_height.resolve_min_height(basis_height_px),
         max_width_px: box_.max_width.resolve(basis_width_px),
-        max_height_px: box_.max_height.resolve(basis_height_px),
-        top_px: box_.top.resolve(basis_height_px),
+        max_height_px: box_.max_height.resolve_max_height(basis_height_px),
+        top_px: box_.top.resolve_optional(basis_height_px),
         left_px: box_.left.resolve(basis_width_px),
         right_px: box_.right.resolve(basis_width_px),
-        bottom_px: box_.bottom.resolve(basis_height_px),
+        bottom_px: box_.bottom.resolve_optional(basis_height_px),
     })
 }
 
@@ -548,7 +553,7 @@ mod tests {
     }
 
     fn node_style_of(node: &DomNode) -> super::NodeStyle {
-        node_style(node, 0.0, 0.0).expect("style")
+        node_style(node, 0.0, None).expect("style")
     }
 
     #[test]

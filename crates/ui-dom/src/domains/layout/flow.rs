@@ -1115,7 +1115,10 @@ fn empty_intermediary_block_can_propagate_child_boundary_margins(
         && entered.box_model.padding.top_px <= 0.0
         && entered.box_model.padding.bottom_px <= 0.0
         && entered.style.height_px.is_none()
-        && entered.style.min_height_px.is_none()
+        // `min-height: auto` computes to 0 for a block (CSS Sizing 3), so the
+        // resolver carries it as `Some(0.0)`; an empty intermediary still
+        // collapses its margins unless a positive minimum forces it taller.
+        && entered.style.min_height_px.is_none_or(|px| px <= 0.0)
 }
 
 fn block_flow_min_content_width(entered: &EnteredNodeLayout, flow: BlockFlowState) -> f32 {
@@ -1317,7 +1320,7 @@ fn separate_tree_flow_size(
     image_size_px: (f32, f32),
 ) -> Result<FlowSize, DomError> {
     let node_inherited_style = inherited_context_from_node(node, inherited_style);
-    let style = node_style(node, 0.0, 0.0)?;
+    let style = node_style(node, 0.0, None)?;
     if style.display == LayoutDisplay::None
         || matches!(style.position, PositionMode::Absolute | PositionMode::Fixed)
     {
@@ -1433,15 +1436,17 @@ pub(super) fn resolved_node_style(
 
 /// Resolves a node's layout style + inherited context with a caller-supplied
 /// basis. Measurement paths and separate-tree intrinsic measurement have no
-/// containing block, so they pass `(0.0, 0.0)` (a percentage then resolves to
-/// its zero degenerate — the measurement subset is gated by the active-solver
-/// support boundaries anyway).
+/// containing block, so they pass `(0.0, None)`: the width basis stays a
+/// degenerate definite 0.0 (percentages resolve to 0 — the measurement subset
+/// is gated by the active-solver support boundaries anyway), while the height
+/// basis is `None` (indefinite) so percentage heights fall back to `auto`
+/// rather than collapsing to 0.
 pub(super) fn resolved_node_style_with_basis(
     root_dom: &RootDom,
     key: DomNodeSlotKey,
     inherited_style: &InheritedStyleContext,
     basis_width_px: f32,
-    basis_height_px: f32,
+    basis_height_px: Option<f32>,
 ) -> Result<(NodeStyle, InheritedStyleContext), DomError> {
     let node = root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
     let node_inherited_style = inherited_context_from_node(node, inherited_style);
@@ -1453,14 +1458,23 @@ pub(super) fn resolved_node_style_with_basis(
 /// against (CSS 2.1 §10.1, CSS Values §percentages): the containing block's
 /// content box. In-flow boxes use the available width/height; absolute/fixed
 /// boxes use their reference space (containing layer / viewport).
-fn node_style_basis(position: PositionMode, context: &LayoutContext) -> (f32, f32) {
+///
+/// The width basis is a plain `f32` because the containing-block width is
+/// always definite (CSS 2.1 §10.1: it propagates through the ancestor chain to
+/// the viewport), so a missing reference/available width falls back to a
+/// degenerate definite 0.0.
+///
+/// The height basis is `Option<f32>`: the containing-block height of an
+/// in-flow box is indefinite when the containing block is `height: auto`
+/// (CSS 2.1 §10.5), so `None` propagates "indefinite" to the height-axis
+/// resolvers instead of manufacturing a 0.0 basis that would collapse
+/// percentage heights to zero.
+fn node_style_basis(position: PositionMode, context: &LayoutContext) -> (f32, Option<f32>) {
     (
         positioned_width_reference_px_for(position, context)
             .or(context.available_width_px)
             .unwrap_or(0.0),
-        positioned_height_reference_px_for(position, context)
-            .or(context.available_height_px)
-            .unwrap_or(0.0),
+        positioned_height_reference_px_for(position, context).or(context.available_height_px),
     )
 }
 
@@ -2198,7 +2212,7 @@ mod tests {
     }
 
     fn resolved_node_style(node: &DomNode) -> NodeStyle {
-        node_style(node, 0.0, 0.0).expect("node style")
+        node_style(node, 0.0, None).expect("node style")
     }
 
     #[test]

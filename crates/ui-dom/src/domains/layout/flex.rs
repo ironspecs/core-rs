@@ -1296,8 +1296,13 @@ fn horizontal_content_based_auto_min_content_width_px(
     let mut child_key = first_child_key(root_dom, key)?;
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) =
-            resolved_node_style_with_basis(root_dom, current_child_key, inherited_style, 0.0, 0.0)?;
+        let (child_style, child_inherited_style) = resolved_node_style_with_basis(
+            root_dom,
+            current_child_key,
+            inherited_style,
+            0.0,
+            None,
+        )?;
         if child_style.display == LayoutDisplay::None
             || matches!(
                 child_style.position,
@@ -1341,8 +1346,13 @@ fn horizontal_flex_container_content_based_auto_min_content_width_px(
     let mut child_key = first_child_key(root_dom, key)?;
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) =
-            resolved_node_style_with_basis(root_dom, current_child_key, inherited_style, 0.0, 0.0)?;
+        let (child_style, child_inherited_style) = resolved_node_style_with_basis(
+            root_dom,
+            current_child_key,
+            inherited_style,
+            0.0,
+            None,
+        )?;
         if child_style.display == LayoutDisplay::None
             || matches!(
                 child_style.position,
@@ -3235,7 +3245,7 @@ mod tests {
             text,
             &InheritedStyleContext::default(),
             0.0,
-            0.0,
+            None,
         )
         .expect("text style");
         let expected_segment_width_px = super::measure_text_intrinsic_from_content_and_font_size(

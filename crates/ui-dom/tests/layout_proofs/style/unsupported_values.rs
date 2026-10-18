@@ -40,7 +40,7 @@ use ui_dom::{
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_append_textarea_to,
-    assert_decl_drop, assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    assert_close, assert_decl_drop, assert_root_dom_update, assert_set_attr_str, assert_style_set,
     attached_gpu_root_dom_default_viewport_setup, box_px, take_staged_layer_paint_plans,
     theme_stylesheet_origin,
 };
@@ -1525,4 +1525,233 @@ fn unsupported_css_wide_keywords_drop() {
     for case in cases {
         assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
     }
+}
+
+// — Percentage-height indefinite-basis resolution (PR 17 review fix) — //
+//
+// The height-axis percentage fields (`height`/`min-height`/`max-height`/
+// `top`/`bottom`) resolve against an `Option<f32>` containing-block height
+// basis. When the containing block is `height: auto`, that basis is
+// indefinite (`None`), and each field follows its own spec rule:
+// `height` → auto, `max-height` → none, `min-height` → 0, and the relative
+// offsets defer. The four height-axis pins below are on-spec; the flex-basis
+// and relative-offset rows are unimplemented and registered in the README.
+
+#[test]
+// ON-SPEC:
+// - SPEC: CSS 2.1 §10.5 — a percentage `height` on a non-positioned element
+//   resolves against the containing block's height; when that height is not
+//   explicitly specified (auto), the percentage resolves to `auto` and the
+//   box sizes to its content.
+//   <https://www.w3.org/TR/CSS21/visudet.html#the-height-property>
+// - CURRENT (asserted): the indefinite basis propagates `None` through
+//   `BoxLength::resolve_height`, so `height: 50%` under an auto-height parent
+//   computes to `auto` and the used height equals the natural content height —
+//   NOT 0.0 and NOT half of anything.
+fn percentage_height_against_indefinite_basis_computes_auto() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    let child = assert_append_div_to(&mut root, container);
+    let text = assert_append_text_to(&mut root, child, "child content");
+    assert_style_set(&mut root, child, "height", "50%");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let content_height = text_intrinsic(&root, text).line_height_px;
+    let used_height = ui_dom::node_box(&root, child)
+        .expect("box")
+        .border_box
+        .height_px;
+    assert!(
+        used_height > 0.0,
+        "height: 50% against an indefinite basis should not collapse to 0"
+    );
+    assert_close(
+        used_height,
+        content_height,
+        "height: 50% should resolve to auto and size to its content height",
+    );
+}
+
+#[test]
+// ON-SPEC:
+// - SPEC: CSS 2.1 §10.7 — a percentage `max-height` under an auto-height
+//   containing block resolves to `none` (no maximum); the box sizes to its
+//   content. <https://www.w3.org/TR/CSS21/visudet.html#min-max-heights>
+// - CURRENT (asserted): the indefinite basis propagates `None` through
+//   `BoxLength::resolve_max_height`, so no maximum is applied.
+fn percentage_max_height_against_indefinite_basis_computes_none() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    let child = assert_append_div_to(&mut root, container);
+    let text = assert_append_text_to(&mut root, child, "child content");
+    assert_style_set(&mut root, child, "max-height", "50%");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let content_height = text_intrinsic(&root, text).line_height_px;
+    let used_height = ui_dom::node_box(&root, child)
+        .expect("box")
+        .border_box
+        .height_px;
+    assert_close(
+        used_height,
+        content_height,
+        "max-height: 50% should resolve to none and not constrain the content height",
+    );
+}
+
+#[test]
+// ON-SPEC:
+// - SPEC: CSS 2.1 §10.7 — a percentage `min-height` under an auto-height
+//   containing block computes to 0 (the explicit §10.7 rule, DISTINCT from
+//   `height`'s auto rule), so it imposes no floor and the box sizes to its
+//   content. <https://www.w3.org/TR/CSS21/visudet.html#min-max-heights>
+// - CURRENT (asserted): `BoxLength::resolve_min_height` returns `Some(0.0)`
+//   for a percentage against an indefinite basis, so no minimum is applied.
+fn percentage_min_height_against_indefinite_basis_computes_zero() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    let child = assert_append_div_to(&mut root, container);
+    let text = assert_append_text_to(&mut root, child, "child content");
+    assert_style_set(&mut root, child, "min-height", "50%");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let content_height = text_intrinsic(&root, text).line_height_px;
+    let used_height = ui_dom::node_box(&root, child)
+        .expect("box")
+        .border_box
+        .height_px;
+    assert_close(
+        used_height,
+        content_height,
+        "min-height: 50% should compute to 0 and not impose a floor",
+    );
+}
+
+#[test]
+// ON-SPEC (the discriminating controls):
+// - SPEC: CSS 2.1 §10.5/§10.7 — a percentage `height`/`min-height`/`max-height`
+//   against a DEFINITE containing-block height resolves to the exact fraction.
+//   <https://www.w3.org/TR/CSS21/visudet.html#the-height-property>
+// - CURRENT (asserted): with an explicit `height: 200px` parent the height
+//   basis is `Some(200.0)`, so each percentage resolves to 100.0.
+fn percentage_height_bases_resolve_when_definite() {
+    // (a) height: 50% of an explicit 200px parent -> used height exactly 100.0.
+    {
+        let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+        let document_root = root.document_node().0;
+        let parent = assert_append_div_to(&mut root, document_root);
+        assert_style_set(&mut root, parent, "height", "200px");
+        let child = assert_append_div_to(&mut root, parent);
+        assert_style_set(&mut root, child, "height", "50%");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            ui_dom::node_box(&root, child)
+                .expect("box")
+                .border_box
+                .height_px,
+            100.0,
+            "height: 50% against a 200px parent should resolve to exactly 100px",
+        );
+    }
+
+    // (b) tall content + max-height: 50% -> used height capped at exactly 100.0.
+    {
+        let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+        let document_root = root.document_node().0;
+        let parent = assert_append_div_to(&mut root, document_root);
+        assert_style_set(&mut root, parent, "height", "200px");
+        let child = assert_append_div_to(&mut root, parent);
+        assert_style_set(&mut root, child, "max-height", "50%");
+        let tall = assert_append_div_to(&mut root, child);
+        assert_style_set(&mut root, tall, "height", "150px");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            ui_dom::node_box(&root, child)
+                .expect("box")
+                .border_box
+                .height_px,
+            100.0,
+            "max-height: 50% against a 200px parent should cap tall content at exactly 100px",
+        );
+    }
+
+    // (c) one line of text + min-height: 50% -> used height exactly 100.0 (the
+    // floor applies).
+    {
+        let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+        let document_root = root.document_node().0;
+        let parent = assert_append_div_to(&mut root, document_root);
+        assert_style_set(&mut root, parent, "height", "200px");
+        let child = assert_append_div_to(&mut root, parent);
+        let _text = assert_append_text_to(&mut root, child, "one line");
+        assert_style_set(&mut root, child, "min-height", "50%");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            ui_dom::node_box(&root, child)
+                .expect("box")
+                .border_box
+                .height_px,
+            100.0,
+            "min-height: 50% against a 200px parent should floor one line at exactly 100px",
+        );
+    }
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Flexbox 1 §7.3.3 — `flex-basis` takes `<content> | <'width'>`,
+//   where `<'width'>` is `<length-percentage>`, so `flex-basis: 50%` is valid
+//   and resolves against the flex container's main size.
+//   <https://drafts.csswg.org/css-flexbox-1/#flex-basis-property>
+// - CURRENT (asserted): the closed `FlexBasis` grammar admits only
+//   `auto | content | 0 | <px> | <em>` (`parse_flex_basis_length`,
+//   `decl_parse.rs:606-612`), so `flex-basis: 50%` drops + counts.
+// - SPEC-CORRECT: admit `<length-percentage>` on flex-basis.
+// - D6: admission-gated.
+fn flex_basis_percentage_drops() {
+    assert_decl_drop(".x { flex-basis: 50% }", 0, 1);
+}
+
+#[test]
+// UNIMPLEMENTED (class: unimplemented — offset-time resolution follow-up):
+// - SPEC: CSS 2.1 §9.4.2/§9.4.3 — a relatively positioned box's `top`/`bottom`
+//   percentage resolves against the containing block's height. The containing
+//   block is laid out before the relative offset applies, so a correct engine
+//   resolves `top: 50%` against the laid-out containing-block height.
+//   <https://www.w3.org/TR/CSS21/visuren.html#relative-positioning>
+// - CURRENT (asserted): `node_style` resolves `top`/`bottom` percentages
+//   against the node_style-time height basis (`None` under an auto-height
+//   containing block), so `top: 50%` defers to no offset and the box stays at
+//   its normal-flow position. Offset-time resolution against the laid-out
+//   containing block is a follow-up.
+fn relative_top_percentage_defers_to_offset_time() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    // A preceding 100px sibling gives the auto-height container a laid-out
+    // height of 100 + 20 = 120px, so a correct offset-time `top: 50%` would
+    // offset the child 60px. Today the percentage defers (no offset).
+    let spacer = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, spacer, "height", "100px");
+    let child = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, child, "position", "relative");
+    assert_style_set(&mut root, child, "top", "50%");
+    assert_style_set(&mut root, child, "height", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        ui_dom::node_box(&root, child)
+            .expect("box")
+            .border_box
+            .top_px,
+        100.0,
+        "relative top: 50% should defer to no offset under an auto-height containing block",
+    );
 }
