@@ -6329,6 +6329,208 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
     f32::from(value_u16)
 }
 
+// CSS Flexbox 1 §9.2 (line length determination) + CSS 2.1 §10.7 (minimum and
+// maximum heights): the flex container's main and cross sizes used for line
+// breaking, justify-content, and align-* distribution are its USED sizes,
+// clamped by min/max. Gecko (`FlexLine` construction and the cross-axis tracker
+// in `nsFlexContainerFrame.cpp`) and Blink (`flex_layout_algorithm.cc` uses the
+// clamped container size) both clamp before distribution. Closest WPT oracle:
+// `css/css-flexbox/` container min/max size families; the justify/line-break
+// interaction is cited from §9.2 + §10.7 directly.
+//
+// OFF-SPEC: `entered_container_main_size` (`flex.rs:1506`) and
+// `entered_container_cross_size` (`flex.rs:1513`) read the RAW
+// `entered.style.height_px` for the vertical axis (a column container's main
+// size, or a row container's cross size), bypassing the min/max-height clamp
+// that the block layout later applies to the painted box. The container paints
+// its clamped height, but justify/line-breaking/align distribution use the
+// unclamped height.
+#[test]
+fn off_spec_flex_container_ignores_min_max_main_cross_sizes() {
+    let rows: [ContainerMinMaxRow; 4] = [
+        (
+            "column_min_height_justify_uses_unclamped_main_size",
+            assert_column_min_height_justify_uses_unclamped_main_size,
+        ),
+        (
+            "column_max_height_justify_uses_unclamped_main_size",
+            assert_column_max_height_justify_uses_unclamped_main_size,
+        ),
+        (
+            "column_wrap_min_height_breaks_at_unclamped_main_size",
+            assert_column_wrap_min_height_breaks_at_unclamped_main_size,
+        ),
+        (
+            "row_min_height_stretch_uses_unclamped_cross_size",
+            assert_row_min_height_stretch_uses_unclamped_cross_size,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named container min/max probe: row name plus a runner.
+type ContainerMinMaxRow = (&'static str, fn(&str));
+
+fn assert_column_min_height_justify_uses_unclamped_main_size(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column");
+    assert_style_set(&mut root, container, "width", "50px");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "min-height", "100px");
+    assert_style_set(&mut root, container, "justify-content", "space-between");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "width", "50px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "width", "50px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // The container paints its clamped 100px height, but justify distributes
+    // only the 30px free space of the raw 50px main size, landing the second
+    // item at 40px (spec: 90px from the clamped 100px main size).
+    assert_rect_op_geometry(
+        &rects[0],
+        0.0,
+        0.0,
+        50.0,
+        100.0,
+        &format!("{name}: container"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        40.0,
+        50.0,
+        10.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_column_max_height_justify_uses_unclamped_main_size(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column");
+    assert_style_set(&mut root, container, "width", "50px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, container, "max-height", "50px");
+    assert_style_set(&mut root, container, "justify-content", "space-between");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "width", "50px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "width", "50px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // The container paints its clamped 50px height, but justify distributes
+    // the 80px free space of the raw 100px main size, pushing the second item
+    // to 90px (spec: 40px from the clamped 50px main size).
+    assert_rect_op_geometry(
+        &rects[0],
+        0.0,
+        0.0,
+        50.0,
+        50.0,
+        &format!("{name}: container"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        90.0,
+        50.0,
+        10.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_column_wrap_min_height_breaks_at_unclamped_main_size(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "100px");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "min-height", "100px");
+    assert_style_set(&mut root, container, "align-content", "flex-start");
+    for basis in ["40px", "40px", "40px"] {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "flex-basis", basis);
+        assert_style_set(&mut root, item, "width", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 4, "{name}: container + three items");
+    // Divergent: line breaking uses the raw 50px main size, so each 40px item
+    // wraps into its own column (3 columns). Spec: the clamped 100px main size
+    // fits the first two items in one column and wraps only the third.
+    assert_rect_op_geometry(
+        &rects[0],
+        0.0,
+        0.0,
+        100.0,
+        100.0,
+        &format!("{name}: container"),
+    );
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        40.0,
+        40.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        40.0,
+        0.0,
+        40.0,
+        40.0,
+        &format!("{name}: second item"),
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        80.0,
+        0.0,
+        40.0,
+        40.0,
+        &format!("{name}: third item"),
+    );
+}
+
+fn assert_row_min_height_stretch_uses_unclamped_cross_size(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "min-height", "100px");
+    assert_style_set(&mut root, container, "align-items", "stretch");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "30px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // The container paints its clamped 100px height, but the stretch target is
+    // the raw 50px cross size, so the item stretches to 50px (spec: 100px).
+    assert_rect_op_geometry(
+        &rects[0],
+        0.0,
+        0.0,
+        200.0,
+        100.0,
+        &format!("{name}: container"),
+    );
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 50.0, &format!("{name}: item"));
+}
+
 // CSS Flexbox 1 §8.3/§9.2/§9.4: a flex item's cross size is clamped by its
 // min/max cross size (min/max-height for a row container) both in the
 // hypothetical cross size that determines the line's cross size and in the
