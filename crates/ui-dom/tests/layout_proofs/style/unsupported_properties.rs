@@ -4,7 +4,7 @@
 // comparisons in this module are deliberate exact checks.
 #![allow(clippy::float_cmp)]
 
-//! Layout-impact property-table absence pins (PLAN.md B6).
+//! Layout-impact and text/effects property-table absence pins (PLAN.md B6, B11).
 //!
 //! Purpose: pin the observable behavior of the layout-impact properties that
 //! are NOT in the 68-property table (`presentation_property.rs`). Each name (or
@@ -14,9 +14,15 @@
 //! (`z-index`), sticky behaves as static, unadmitted display values fall back
 //! to the initial display, `float`/`clear` leave block flow stacking unchanged,
 //! replaced-element sizing stays on the intrinsic path, and the sizing model is
-//! unchanged by `box-sizing`. B11's tail family (`text-decoration`,
-//! `box-shadow`, filters, masks, `letter-spacing`, `line-clamp`, …) joins this
-//! file later as a separate table family.
+//! unchanged by `box-sizing`. B11's text/effects tail family (`text-decoration`
+//! shorthand + longhands, `box-shadow`, `text-transform`, `text-indent`,
+//! `text-shadow`, `text-overflow`, `letter-spacing`, `word-spacing`,
+//! `line-clamp`/`-webkit-line-clamp`, `hyphens`, `vertical-align`,
+//! `writing-mode`, `unicode-bidi`, `visibility`, `cursor`, `user-select`,
+//! `list-style*`, filters, blend modes, masks, `image-rendering`,
+//! `border-style`, table-*, column-*, `orphans`/`widows`, `animation*`, the
+//! value-function family, and the `content`/counter properties) lives here as a
+//! second table family after the `// — B11 … — //` banner.
 //!
 //! Class note: every row is `unsupported_*` = unimplemented — policy-gated
 //! absence per the D6 admission policy in `MIGRATION.md` (a named consumer
@@ -25,8 +31,9 @@
 //! `position: sticky` and `display: grid`/… rows drop at the VALUE level inside
 //! the admitted `position`/`display` grammar.
 //!
-//! Single-owner note: `overflow-x`/`overflow-y` (B10) and `text-decoration`
-//! (B11) are pinned in their owning files and are NOT repeated here.
+//! Single-owner note: `overflow-x`/`overflow-y` (B10) are pinned in
+//! `unsupported_shorthands.rs` and are NOT repeated here; `text-decoration`
+//! (B11) is owned by this file.
 //!
 //! Honesty notes (divergences from PLAN.md B6's stated model, pinned actual):
 //! - **`box-sizing` is content-box, not border-box.** PLAN.md B6 says
@@ -51,9 +58,9 @@ use ui_dom::{
 };
 
 use crate::layout_proofs::support::{
-    assert_append_div_to, assert_append_img_to, assert_close, assert_decl_drop,
-    assert_load_root_stylesheet, assert_node_layout, assert_rect_op_fill, assert_rect_op_geometry,
-    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    assert_append_div_to, assert_append_img_to, assert_append_text_to, assert_close,
+    assert_decl_drop, assert_load_root_stylesheet, assert_node_layout, assert_rect_op_fill,
+    assert_rect_op_geometry, assert_root_dom_update, assert_set_attr_str, assert_style_set,
     attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
     theme_stylesheet_origin,
 };
@@ -494,4 +501,260 @@ fn unsupported_layout_hint_properties_drop() {
         !take_staged_layer_paint_plans(&root).is_empty(),
         "update should stage a paint plan",
     );
+}
+
+// — B11: text/effects property tail — //
+
+/// Builds a lone text node under a class-"x" div, optionally loading `css` on
+/// the fresh root first, runs one update, and returns the total staged op count
+/// across every layer plan (text runs + rects + icons + strokes + svgs +
+/// images). Used to prove a dropped decoration adds no paint op.
+fn text_tail_op_count(css: Option<&str>) -> usize {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    if let Some(css) = css {
+        assert_load_root_stylesheet(&root, theme_stylesheet_origin(), css);
+    }
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, container, "class", "x");
+    assert_append_text_to(&mut root, container, "Hello world");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    take_staged_layer_paint_plans(&root)
+        .iter()
+        .map(|plan| {
+            plan.rects.len()
+                + plan.icons.len()
+                + plan.text_runs.len()
+                + plan.stroke_paths.len()
+                + plan.svgs.len()
+                + plan.images.len()
+        })
+        .sum()
+}
+
+/// Builds a backgrounded class-"x" div (a single rect), optionally loading
+/// `css` on the fresh root first, runs one update, and returns the total
+/// staged rect-op count. Used to prove a dropped `box-shadow` adds no rect.
+fn rect_tail_op_count(css: Option<&str>) -> usize {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    if let Some(css) = css {
+        assert_load_root_stylesheet(&root, theme_stylesheet_origin(), css);
+    }
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, target, "class", "x");
+    assert_style_set(&mut root, target, "background-color", "#336699");
+    assert_style_set(&mut root, target, "width", "40px");
+    assert_style_set(&mut root, target, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    take_staged_layer_paint_plans(&root)
+        .iter()
+        .map(|plan| plan.rects.len())
+        .sum()
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Text Decoration 4 §2 — `text-decoration` (shorthand) and its
+//   longhands `text-decoration-line`/`-color`/`-style`/`-thickness` draw a
+//   decoration line over/under/through text runs.
+//   <https://drafts.csswg.org/css-text-decor-4/#text-decoration-property>
+// - CURRENT (asserted): each name drops + counts (applied == 0, dropped == 1);
+//   the shorthand and every longhand are absent from the `property_shape` name
+//   table (`decl_parse.rs`), so they drop at name lookup. The no-effect
+//   control: a text node under a `text-decoration: underline` container stages
+//   the SAME total op count as an unstyled control — one text run, zero rects,
+//   no decoration op appears.
+// - SPEC-CORRECT: a text-group decoration field (line set + color) with paint
+//   emitting a decoration rect per run segment; admission per D6.
+fn unsupported_text_decoration_family_drops() {
+    for declaration in [
+        "text-decoration: underline",
+        "text-decoration-line: underline",
+        "text-decoration-color: red",
+        "text-decoration-style: wavy",
+        "text-decoration-thickness: 2px",
+    ] {
+        assert_decl_drop(&format!(".x {{ {declaration} }}"), 0, 1);
+    }
+
+    // No-effect control: the dropped decoration adds no paint op.
+    let control = text_tail_op_count(None);
+    let styled = text_tail_op_count(Some(".x { text-decoration: underline }"));
+    assert_eq!(
+        styled, control,
+        "text-decoration should leave the staged op count unchanged",
+    );
+    // One bare-div background rect + one text run; a decoration would add a
+    // rect per run segment, so the concrete count pins its absence.
+    assert_eq!(
+        styled, 2,
+        "one bare-div rect + one text run, no decoration op"
+    );
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Backgrounds 3 §7.1 `box-shadow` — draws a blurred offset shadow
+//   behind the element's box, inside the border box when `inset`.
+//   <https://drafts.csswg.org/css-backgrounds-3/#box-shadow>
+// - CURRENT (asserted): both forms drop + counts (applied == 0, dropped == 1);
+//   `box-shadow` is absent from the `property_shape` name table
+//   (`decl_parse.rs`). The no-effect control: a backgrounded box with
+//   `box-shadow` stages the SAME rect-op count as the unstyled control — one
+//   background rect, no shadow rect appears.
+// - SPEC-CORRECT: a bounded shadow list on the visual group with paint emitting
+//   blurred/offset rects before the box; admission per D6.
+fn unsupported_box_shadow_drops() {
+    assert_decl_drop(".x { box-shadow: 2px 3px 4px #000000 }", 0, 1);
+    assert_decl_drop(".x { box-shadow: inset 1px 1px 2px #112233 }", 0, 1);
+
+    // No-effect control: the dropped shadow adds no rect.
+    let control = rect_tail_op_count(None);
+    let styled = rect_tail_op_count(Some(".x { box-shadow: 2px 3px 4px #000000 }"));
+    assert_eq!(
+        styled, control,
+        "box-shadow should leave the staged rect-op count unchanged",
+    );
+    assert_eq!(styled, 1, "a backgrounded box stages exactly one rect");
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: the tail table names belong to CSS Text 4 (`text-transform`,
+//   `text-indent`, `text-shadow`, `letter-spacing`, `word-spacing`, `hyphens`),
+//   CSS Overflow 3/4 (`text-overflow`, `line-clamp`), CSS Inline Layout 3 +
+//   CSS 2.1 §10.8 (`vertical-align`), CSS Writing Modes 4 (`writing-mode`,
+//   `unicode-bidi`), CSS Display 3/2.1 §11.2 (`visibility`), CSS UI 4
+//   (`cursor`, `user-select`), CSS Lists 3 (`list-style*`), Filter Effects 1
+//   (`filter`), Compositing 1 + Filter Effects 2 (`mix-blend-mode`,
+//   `backdrop-filter`), CSS Masking 1 (`clip-path`, `mask*`), CSS Images 3
+//   (`image-rendering`), CSS Backgrounds 3 §4.2 (`border-style`), CSS 2.1 §17
+//   (`border-collapse`, `border-spacing`, `caption-side`, `empty-cells`,
+//   `table-layout`), CSS Multi-column 1 (`column-count`, `columns`,
+//   `column-rule`), CSS Fragmentation 3 + CSS 2.1 §13.3 (`orphans`, `widows`),
+//   and CSS Animations 1 (`animation-name`, `animation-duration`,
+//   `animation-timing-function`, `animation-delay`).
+// - CURRENT (asserted): every row drops + counts (applied == 0, dropped == 1) —
+//   the names are absent from `property_shape` (`decl_parse.rs`), so each
+//   declaration drops at name lookup, inert and crash-free.
+// - SPEC-CORRECT: per-property admission, gated by D6; the B11 tail table is
+//   regenerated from a CSS property index diffed against the 68-name table at
+//   each admission.
+fn unsupported_property_tail_drops() {
+    const TAIL: &[(&str, &str)] = &[
+        ("text_transform", "text-transform: uppercase"),
+        ("text_indent", "text-indent: 2em"),
+        ("text_shadow", "text-shadow: 1px 1px 2px #000"),
+        ("text_overflow", "text-overflow: ellipsis"),
+        ("letter_spacing", "letter-spacing: 1px"),
+        ("word_spacing", "word-spacing: 2px"),
+        ("line_clamp", "line-clamp: 2"),
+        ("webkit_line_clamp", "-webkit-line-clamp: 2"),
+        ("hyphens", "hyphens: auto"),
+        ("vertical_align", "vertical-align: middle"),
+        ("writing_mode", "writing-mode: vertical-rl"),
+        ("unicode_bidi", "unicode-bidi: embed"),
+        ("visibility", "visibility: hidden"),
+        ("cursor", "cursor: pointer"),
+        ("user_select", "user-select: none"),
+        ("list_style", "list-style: none"),
+        ("list_style_type", "list-style-type: disc"),
+        ("list_style_position", "list-style-position: inside"),
+        ("filter", "filter: blur(2px)"),
+        ("mix_blend_mode", "mix-blend-mode: multiply"),
+        ("backdrop_filter", "backdrop-filter: blur(2px)"),
+        ("clip_path", "clip-path: inset(0)"),
+        ("mask", "mask: none"),
+        ("mask_image", "mask-image: url(x.png)"),
+        ("image_rendering", "image-rendering: pixelated"),
+        ("border_style", "border-style: solid"),
+        ("border_collapse", "border-collapse: collapse"),
+        ("border_spacing", "border-spacing: 2px"),
+        ("caption_side", "caption-side: bottom"),
+        ("empty_cells", "empty-cells: hide"),
+        ("table_layout", "table-layout: fixed"),
+        ("column_count", "column-count: 2"),
+        ("columns", "columns: 2"),
+        ("column_rule", "column-rule: 1px solid red"),
+        ("orphans", "orphans: 2"),
+        ("widows", "widows: 2"),
+        ("animation_name", "animation-name: spin"),
+        ("animation_duration", "animation-duration: 1s"),
+        (
+            "animation_timing_function",
+            "animation-timing-function: ease",
+        ),
+        ("animation_delay", "animation-delay: 100ms"),
+    ];
+
+    for &(name, declaration) in TAIL {
+        assert_decl_drop(&format!(".{name} {{ {declaration} }}"), 0, 1);
+    }
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Values 4 §`url()`/§`env()`, CSS Values 5 §`attr()`, CSS Lists 3
+//   §`counter()`; CSS Images 4 §gradient functions — function-valued
+//   declarations whose function form is not admitted.
+// - CURRENT (asserted): each row drops + counts exactly once, at one of TWO
+//   sites, distinguished here:
+//   * name lookup (property unadmitted): `background-image` is absent from
+//     `property_shape` (`decl_parse.rs`), so `url(x.png)` and
+//     `linear-gradient(red, blue)` never reach a value grammar.
+//   * value grammar (unadmitted function on an ADMITTED property): `width` IS
+//     admitted, but `attr(data-w)`/`env(safe-area-inset-top)`/`counter(item)`
+//     fail the closed `NonNegativeLength` grammar — proven by the CONTROL
+//     `.x { width: 10px }`, which applies.
+// - SPEC-CORRECT: admit each function form into the relevant grammar;
+//   admission per D6.
+fn unsupported_value_functions_drop() {
+    // name lookup — `background-image` is unadmitted, so the function never
+    // reaches a value grammar:
+    for &(name, body) in &[
+        ("background_image_url", "background-image: url(x.png)"),
+        (
+            "background_image_linear_gradient",
+            "background-image: linear-gradient(red, blue)",
+        ),
+    ] {
+        assert_decl_drop(&format!(".{name} {{ {body} }}"), 0, 1);
+    }
+
+    // value grammar — `width` is admitted, but the function form fails the
+    // closed length grammar:
+    for &(name, body) in &[
+        ("width_attr", "width: attr(data-w)"),
+        ("width_env", "width: env(safe-area-inset-top)"),
+        ("width_counter", "width: counter(item)"),
+    ] {
+        assert_decl_drop(&format!(".{name} {{ {body} }}"), 0, 1);
+    }
+
+    // CONTROL: `width` itself is admitted — a valid length applies (proving the
+    // three `width:` rows drop at the value grammar, not the name).
+    assert_decl_drop(".x { width: 10px }", 1, 0);
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Content 3 §`content`/§`quotes` (generated content); CSS Lists 3
+//   §`counter-reset`/§`counter-increment` (CSS 2.1 §12.4/§12.5 — the counters'
+//   governing spec; CSS Counter Styles 3 governs `@counter-style`, not these
+//   two properties).
+// - CURRENT (asserted): each name drops + counts (applied == 0, dropped == 1);
+//   none of `content`, `quotes`, `counter-reset`, `counter-increment` are in
+//   the `property_shape` name table (`decl_parse.rs`), so they drop at name
+//   lookup.
+// - SPEC-CORRECT: a generated-content/counter subsystem; admission per D6.
+fn unsupported_content_and_counter_properties_drop() {
+    for &(name, declaration) in &[
+        ("content", r#"content: "x""#),
+        ("quotes", "quotes: auto"),
+        ("counter_reset", "counter-reset: item 0"),
+        ("counter_increment", "counter-increment: item 1"),
+    ] {
+        assert_decl_drop(&format!(".{name} {{ {declaration} }}"), 0, 1);
+    }
 }

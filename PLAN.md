@@ -1252,7 +1252,8 @@ Resolved this session: the `pointer-events` channel (content-side
   absence is pinned as unimplemented and would move into the presentation
   table only through admission.
 - **2026-10-18 — ownership.** `overflow-x/y` → B10; `text-decoration`
-  family → B11; `animation*` → B9; `border-style` → B11 (with B5's
+  family → B11; `animation` shorthand → B9 (tier row); `animation-*`
+  longhands → B11 (tail rows); `border-style` → B11 (with B5's
   cross-reference).
 - **2026-10-18 — two-commit rule for fix bundles; one commit for pin-only
   bundles.** No commit is ever red; behavior change and its proof move
@@ -1298,7 +1299,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B8 (b) — F1 atomicity fix (buffer-then-commit) + pin flip (`stylesheet_load_failure_is_atomic`) | done |
 | B9 — cascade tiers | **done** (pins; all rows verified — `!important` drops the declaration while the rule survives (stylesheet and `style`-attribute routes), `@layer` fails the whole load with `InvalidSelector`, `--brand`/`var()` drop at name lookup and value grammar respectively, `animation` drops, and the UA-sheet workaround is on-spec; see `style/cascade_tiers.rs`) |
 | B10 — other shorthands & overflow axes | **done** (pins; all rows verified — `font`/`background`/`all`/`overflow-x`/`overflow-y` drop+count at name lookup with group-initial computed reads; the two-token `overflow: scroll auto` drops as ONE declaration at the value grammar, and the CONTROL `overflow: scroll` single-token admitted form still applies; see `style/unsupported_shorthands.rs`) |
-| B11 — text/effects property tail | not started |
+| B11 — text/effects property tail | **done** (pins; all rows verified dropped+counted — `text-decoration` shorthand+longhands, `box-shadow`, the 40-row tail table, the value-function family (name-lookup vs value-grammar split, with the `width: 10px` CONTROL), and `content`/`quotes`/`counter-*`; `text-decoration`/`box-shadow` carry a no-effect control — staged op count equals the unstyled baseline; see `style/unsupported_properties.rs`) |
 | B12 — robustness | not started |
 | Phase 2 admissions | not started (gated on Phase 1 exit + consumer need) |
 
