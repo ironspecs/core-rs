@@ -1289,8 +1289,13 @@ fn content_based_auto_min_main_size_px(
     if main_axis == FlexAxis::Vertical {
         return Ok(measured_main_size_px);
     }
-    let content_width_px =
-        horizontal_content_based_auto_min_content_width_px(root_dom, key, style, inherited_style)?;
+    let content_width_px = horizontal_content_based_auto_min_content_width_px(
+        root_dom,
+        key,
+        style,
+        inherited_style,
+        measured_main_size_px,
+    )?;
     Ok(border_box_width(style.sides, content_width_px))
 }
 
@@ -1299,6 +1304,7 @@ fn horizontal_content_based_auto_min_content_width_px(
     key: DomNodeSlotKey,
     style: NodeStyle,
     inherited_style: &InheritedStyleContext,
+    measured_main_size_px: f32,
 ) -> Result<f32, DomError> {
     let node = node_for_key(root_dom, key)?;
     if let Some(intrinsic_content_width_px) =
@@ -1307,10 +1313,23 @@ fn horizontal_content_based_auto_min_content_width_px(
         return Ok(intrinsic_content_width_px);
     }
     if style.display == LayoutDisplay::Flex {
+        let container_style = staged_flex_container_style(node);
+        if !flex_container_content_based_auto_min_is_supported(container_style) {
+            // Graceful degradation (replacing the former fail-fast assert): a
+            // flex item whose own flex container shape falls outside the
+            // supported content-based auto-min subset (vertical main axis,
+            // reversed main axis incl. rtl rows, or wrap/wrap-reverse) refuses
+            // to shrink below its measured main size. Return the measured
+            // CONTENT width; the caller re-adds this node's border/padding via
+            // `border_box_width`, recovering the measured border-box main size.
+            return Ok(measured_main_size_px
+                - main_axis_border_padding_size_px(style.sides, FlexAxis::Horizontal));
+        }
         return horizontal_flex_container_content_based_auto_min_content_width_px(
             root_dom,
             key,
             inherited_style,
+            measured_main_size_px,
         );
     }
     let mut content_width_px: f32 = 0.0;
@@ -1339,6 +1358,7 @@ fn horizontal_content_based_auto_min_content_width_px(
                 current_child_key,
                 child_style,
                 &child_inherited_style,
+                measured_main_size_px,
             )?);
         child_key = next_child_key;
     }
@@ -1349,19 +1369,19 @@ fn horizontal_flex_container_content_based_auto_min_content_width_px(
     root_dom: &RootDom,
     key: DomNodeSlotKey,
     inherited_style: &InheritedStyleContext,
+    measured_main_size_px: f32,
 ) -> Result<f32, DomError> {
     let container_node = node_for_key(root_dom, key)?;
-    // The active-solver gate used to reject a flex-flow `wrap-reverse` token at
-    // the stringly direction gate (`supported_flex_direction_from_flow_value`
-    // returned `None`). The typed flex group cannot distinguish `flex-flow:
-    // wrap-reverse` from the `flex-wrap: wrap-reverse` longhand, so it maps both
-    // to `FlexWrapKw::WrapReverse`; the `flex_container_content_based_auto_min_is_supported`
-    // assert below (which requires `NoWrap`) preserves the reject verdict.
+    // The graceful-degradation gate now lives in the sole caller
+    // (`horizontal_content_based_auto_min_content_width_px`): this function is
+    // only reached when `flex_container_content_based_auto_min_is_supported`
+    // holds (horizontal, non-reversed, no-wrap). The former fail-fast assert
+    // here (which also preserved the `flex-flow: wrap-reverse` reject verdict
+    // lost in the typed `FlexWrapKw::WrapReverse` mapping) is replaced by that
+    // gate: unsupported shapes now return the measured main size instead of
+    // panicking. Every recursive re-entry into a nested container passes back
+    // through the caller's gate, so no descendant shape can panic either.
     let container_style = staged_flex_container_style(container_node);
-    assert!(
-        flex_container_content_based_auto_min_is_supported(container_style),
-        "visible-overflow flex auto-min should stay inside the supported intrinsic subset",
-    );
     let mut content_width_px = 0.0;
     let mut has_previous_item = false;
     let mut child_key = first_child_key(root_dom, key)?;
@@ -1391,6 +1411,7 @@ fn horizontal_flex_container_content_based_auto_min_content_width_px(
             current_child_key,
             child_style,
             &child_inherited_style,
+            measured_main_size_px,
         )?;
         content_width_px += horizontal_flex_container_auto_min_child_border_box_contribution_px(
             node_for_key(root_dom, current_child_key)?,
@@ -3342,6 +3363,171 @@ mod tests {
 
         assert_eq!(item.automatic_min_main_size_px, 30.0);
         assert_eq!(item.flex_base_size_px, 10.0);
+    }
+
+    #[test]
+    fn measured_item_record_uses_measured_main_size_for_column_flex_item_auto_min() {
+        let (mut root, container, context) = flex_container_with_context();
+        let item = append_div(&mut root, container);
+        root.style_mut(item)
+            .set("display", "flex")
+            .expect("display should set");
+        root.style_mut(item)
+            .set("flex-direction", "column")
+            .expect("direction should set");
+        // No explicit width and default visible overflow: the column shape is
+        // outside the supported content-based auto-min subset, so the auto-min
+        // falls back to the measured main size instead of panicking.
+        let nested = append_div(&mut root, item);
+        root.style_mut(nested)
+            .set("width", "30px")
+            .expect("nested width should set");
+        root.style_mut(nested)
+            .set("height", "20px")
+            .expect("nested height should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item_record = items.first().expect("child item");
+
+        assert!(item_record.flex_base_size_px > 0.0);
+        assert_eq!(
+            item_record.automatic_min_main_size_px, item_record.flex_base_size_px,
+            "unsupported column flex item auto-min should equal its measured main size",
+        );
+    }
+
+    #[test]
+    fn measured_item_record_uses_measured_main_size_for_reversed_and_wrapped_flex_item_auto_min() {
+        for configure in [
+            configure_row_reverse_item,
+            configure_wrap_item,
+            configure_rtl_row_item,
+        ] {
+            let (mut root, container, context) = flex_container_with_context();
+            let item = append_div(&mut root, container);
+            root.style_mut(item)
+                .set("display", "flex")
+                .expect("display should set");
+            configure(&mut root, item);
+            let nested = append_div(&mut root, item);
+            root.style_mut(nested)
+                .set("width", "30px")
+                .expect("nested width should set");
+            root.style_mut(nested)
+                .set("height", "20px")
+                .expect("nested height should set");
+
+            let items = collect_items_for_container(&mut root, container, context);
+            let item_record = items.first().expect("child item");
+
+            assert!(item_record.flex_base_size_px > 0.0);
+            assert_eq!(
+                item_record.automatic_min_main_size_px, item_record.flex_base_size_px,
+                "reversed/wrapped/rtl flex item auto-min should equal its measured main size",
+            );
+        }
+    }
+
+    fn configure_row_reverse_item(root: &mut RootDom, item: DomNodeSlotKey) {
+        root.style_mut(item)
+            .set("flex-direction", "row-reverse")
+            .expect("row-reverse should set");
+    }
+
+    fn configure_wrap_item(root: &mut RootDom, item: DomNodeSlotKey) {
+        root.style_mut(item)
+            .set("flex-wrap", "wrap")
+            .expect("wrap should set");
+    }
+
+    fn configure_rtl_row_item(root: &mut RootDom, item: DomNodeSlotKey) {
+        root.style_mut(item)
+            .set("direction", "rtl")
+            .expect("rtl should set");
+    }
+
+    #[test]
+    fn measured_item_record_computes_content_based_auto_min_for_supported_row_flex_item() {
+        let (mut root, container, context) = flex_container_with_context();
+        let item = append_div(&mut root, container);
+        root.style_mut(item)
+            .set("display", "flex")
+            .expect("display should set");
+        // Supported shape: horizontal, non-reversed, no-wrap. The auto-min must
+        // stay the content-based value (the text child's min-content width),
+        // not degrade to the 10px flex-basis measured base.
+        root.style_mut(item)
+            .set("flex-basis", "10px")
+            .expect("basis should set");
+        let text = append_text(&mut root, item, "UnbreakableFlexLabel");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item_record = items.first().expect("child item");
+        let (text_style, _) = resolved_node_style_with_basis(
+            &root,
+            text,
+            &InheritedStyleContext::default(),
+            0.0,
+            None,
+        )
+        .expect("text style");
+        let expected_segment_width_px = super::measure_text_intrinsic_from_content_and_font_size(
+            "UnbreakableFlexLabel",
+            text_style.font_size_px,
+        )
+        .max_content_width_px;
+
+        assert_eq!(item_record.flex_base_size_px, 10.0);
+        assert_eq!(
+            item_record.automatic_min_main_size_px,
+            expected_segment_width_px
+        );
+    }
+
+    #[test]
+    fn measured_item_record_grandchild_unsupported_flex_shape_degrades_gracefully() {
+        let (mut root, container, context) = flex_container_with_context();
+        // row item (supported) -> row child (supported) -> column grandchild
+        // (unsupported). The grandchild's unsupported shape must degrade to the
+        // measured size through the recursion instead of panicking.
+        let item = append_div(&mut root, container);
+        root.style_mut(item)
+            .set("display", "flex")
+            .expect("item display should set");
+        let child = append_div(&mut root, item);
+        root.style_mut(child)
+            .set("display", "flex")
+            .expect("child display should set");
+        let grandchild = append_div(&mut root, child);
+        root.style_mut(grandchild)
+            .set("display", "flex")
+            .expect("grandchild display should set");
+        root.style_mut(grandchild)
+            .set("flex-direction", "column")
+            .expect("grandchild direction should set");
+        let leaf = append_div(&mut root, grandchild);
+        root.style_mut(leaf)
+            .set("width", "30px")
+            .expect("leaf width should set");
+        root.style_mut(leaf)
+            .set("height", "20px")
+            .expect("leaf height should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item_record = items.first().expect("child item");
+
+        // The unsupported column grandchild degrades to the measured size
+        // threaded through the recursion (the enclosing row item's measured
+        // main size), which over-estimates the grandchild's true ~30px
+        // min-content instead of collapsing it or panicking.
+        assert_eq!(
+            item_record.automatic_min_main_size_px, item_record.flex_base_size_px,
+            "grandchild degradation should thread the enclosing item's measured size",
+        );
+        assert!(
+            item_record.automatic_min_main_size_px >= 30.0,
+            "grandchild degradation must not collapse the grandchild's 30px leaf",
+        );
     }
 
     #[test]

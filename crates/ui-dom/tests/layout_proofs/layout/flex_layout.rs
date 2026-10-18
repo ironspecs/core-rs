@@ -34,14 +34,16 @@
 //!   <https://chromium.googlesource.com/chromium/src/+/c50f75313342e085919cf7525192f45f2ab649d1/third_party/blink/renderer/core/layout/flex/flex_line.h>
 //!
 //! These proofs lock the admitted active-solver behavior in place; the
-//! subset the active solver does not yet admit fails fast at the one
+//! subset the active solver does not yet admit degrades gracefully at the one
 //! explicit support gate in `src/domains/layout/flex.rs`: the
 //! `flex_container_content_based_auto_min_is_supported` predicate
 //! (`flex.rs:1436`) admits content-based auto-min only for horizontal,
-//! non-reversed, no-wrap containers, and the assert inside
-//! `horizontal_flex_container_content_based_auto_min_content_width_px`
-//! (`flex.rs:1361`) rejects any visible-overflow auto-min measurement outside
-//! that subset. There is no placeholder solver fallback.
+//! non-reversed, no-wrap containers, and any visible-overflow auto-min
+//! measurement outside that subset falls back to the item's measured main
+//! size instead of panicking (see
+//! `off_spec_flex_auto_min_unsupported_shapes_use_measured_size`). There is
+//! no placeholder solver fallback — the measured-size fallback is a registered
+//! divergence deferred to the engine-mapped admission (PR 3).
 
 use ui_dom::{
     DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, node_box,
@@ -7275,6 +7277,158 @@ fn assert_content_min_exceeding_container_overflows_from_base(name: &str) {
     // the item stays at its 10px base and its text overflows, instead of the
     // item itself flooring to ~140.5px and overflowing the container.
     assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, &format!("{name}: item"));
+}
+
+// CSS Flexbox 1 §4.5 automatic minimum size: a visible-overflow flex item
+// that is itself a flex container uses its content-based minimum size before
+// shrink. The active solver admits that computation only for the horizontal,
+// non-reversed, no-wrap subset; the formerly fail-fast gate in
+// `horizontal_flex_container_content_based_auto_min_content_width_px`
+// (`flex.rs`) now degrades gracefully to the item's measured main size. No
+// single WPT oracle pairs the unsupported shapes (column/reverse/wrap items
+// whose auto-min is a measured-size fallback), so this is cited from §4.5
+// directly (the "no WPT" rule, README); closest family is
+// `css/css-flexbox/min-width-auto-*`. Gecko computes the automatic minimum in
+// `nsFlexContainerFrame.cpp` (`GenerateFlexItemForChild` → content-based
+// min-size); Blink in `flex_layout_algorithm.cc` (`ConstructAndAppendFlexItems`
+// → `FlexItem::UpdateAutoMinSize`).
+//
+// OFF-SPEC: for a flex item whose own flex container shape is vertical,
+// reversed (incl. rtl rows), or wrapping, the content-based auto-min path
+// returns the item's MEASURED main size instead of the true §4.5 content-based
+// minimum. The measured size over-estimates the true value (never collapses
+// content). Spec-correct for rows (a)–(d): the item keeps its true
+// content-based minimum (the column item's widest-child 40px), so the sibling
+// sits at 40px; the solver instead pins the item at its measured size and the
+// sibling after it. Row (e) pins the grandchild recursion shape.
+#[test]
+fn off_spec_flex_auto_min_unsupported_shapes_use_measured_size() {
+    let rows: [UnsupportedShapeRow; 5] = [
+        (
+            "column_item_keeps_measured_size",
+            assert_column_item_keeps_measured_size,
+        ),
+        ("row_reverse_item_variant", assert_row_reverse_item_variant),
+        ("wrap_item_variant", assert_wrap_item_variant),
+        ("rtl_row_item_variant", assert_rtl_row_item_variant),
+        ("grandchild_recursion", assert_grandchild_recursion),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named unsupported-flex-shape probe: row name plus a runner.
+type UnsupportedShapeRow = (&'static str, fn(&str));
+
+/// Builds the shared (a)–(d) scenario: an outer row whose first item is a flex
+/// container with `configure` shaping it, a 40px inner child, and a 10px
+/// inflexible sibling. Asserts the item keeps its measured width and the
+/// sibling is positioned after it.
+fn assert_unsupported_item_keeps_measured_size(
+    name: &str,
+    configure: fn(&mut RootDom, DomNodeSlotKey),
+) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "flex");
+    configure(&mut root, item);
+    let inner = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, inner, "width", "40px");
+    assert_style_set(&mut root, inner, "height", "10px");
+    let sibling = assert_append_div_to(&mut root, container);
+    assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_width_px = assert_node_layout(&root, item).width_px;
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item, rects[2] = inner, rects[3] = sibling.
+    // Divergent: the item pins at its measured 200px (spec: 40px content-based
+    // minimum), so the sibling sits at 200px instead of 40px.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        item_width_px,
+        20.0,
+        &format!("{name}: item"),
+    );
+    assert_rect_op_geometry(
+        &rects[3],
+        item_width_px,
+        0.0,
+        10.0,
+        20.0,
+        &format!("{name}: sibling after measured item"),
+    );
+}
+
+fn assert_column_item_keeps_measured_size(name: &str) {
+    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+        assert_style_set(root, item, "flex-direction", "column");
+    });
+}
+
+fn assert_row_reverse_item_variant(name: &str) {
+    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+        assert_style_set(root, item, "flex-direction", "row-reverse");
+    });
+}
+
+fn assert_wrap_item_variant(name: &str) {
+    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+        assert_style_set(root, item, "flex-wrap", "wrap");
+    });
+}
+
+fn assert_rtl_row_item_variant(name: &str) {
+    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+        assert_style_set(root, item, "direction", "rtl");
+    });
+}
+
+fn assert_grandchild_recursion(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "flex");
+    let child = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, child, "display", "flex");
+    let grandchild = assert_append_div_to(&mut root, child);
+    assert_style_set(&mut root, grandchild, "display", "flex");
+    assert_style_set(&mut root, grandchild, "flex-direction", "column");
+    let leaf = assert_append_div_to(&mut root, grandchild);
+    assert_style_set(&mut root, leaf, "width", "30px");
+    assert_style_set(&mut root, leaf, "height", "10px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_width_px = assert_node_layout(&root, item).width_px;
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item, rects[2] = child, rects[3] = grandchild, rects[4] = leaf.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        item_width_px,
+        20.0,
+        &format!("{name}: item"),
+    );
+    // The unsupported column grandchild degrades to the measured size threaded
+    // through the recursion (the enclosing row item's measured 200px), which
+    // over-estimates its true 30px min-content rather than collapsing it: the
+    // leaf keeps its own 30px width inside the oversized ancestor chain.
+    assert_close(
+        rects[4].size_px[0],
+        30.0,
+        &format!("{name}: leaf keeps its own width"),
+    );
 }
 
 // CSS Flexbox 1 §9.7 step 3 (Resolve Flexible Lengths): an inflexible item
