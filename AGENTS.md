@@ -136,7 +136,8 @@ Do not use panic-backed validation on boundary data such as:
 
 Prefer typed errors or explicit boundary rejection.
 
-Scoped exception (adjudicated 2026-10-17, PLAN.md proposal G): CSS
+Scoped exception (adjudicated 2026-10-17; the proposal G of the landed
+redesign — see PLAN.md's "Vocabulary carried from the redesign" section): CSS
 declaration parsing is drop-and-continue, because CSS 2.1 §4.1.7 and
 css-style-attr §3 mandate it — a malformed declaration is dropped and parsing
 continues. The exception is rule-shaped, never a graceful silent fallback:

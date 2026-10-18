@@ -3,7 +3,11 @@
 The declaration-store style redesign (proposals A+B+C on substrate S1) is
 LANDED at v0.6.0 (see `MIGRATION.md` for its API record; the redesign plan
 itself lives in git history). This document is the **coverage accounting
-plan**: every spec area the engine has deliberately set aside, bundled by
+plan**: the spec areas the engine has deliberately set aside — as complete
+an inventory as we can currently name, **growing as new gaps are
+discovered** (the honesty rule forbids claiming closed-world exhaustiveness;
+B11's tail table is regenerated from a CSS property index diffed against
+the 68-name table whenever an admission lands) — bundled by
 effort/popularity/priority, with the working discipline for pinning CURRENT
 behavior with running proofs.
 
@@ -19,8 +23,8 @@ The purpose is accounting, not redesign:
 3. **The registry stays honest.** Every pin is classified (below) and
    registered in `tests/layout_proofs/README.md` in the same change. No
    production behavior change except crash-hardening and explicitly
-   adjudicated divergence fixes (B1's sign rules; anything an adjudication
-   forces — each recorded here).
+   adjudicated divergence fixes (the B1 sign-rule family, the F1 atomicity
+   fix; anything an adjudication forces — each recorded here).
 
 ## The phases
 
@@ -30,8 +34,11 @@ The purpose is accounting, not redesign:
 - **Phase 1 — the accounting (B1–B12).** Every item in this document gets a
   running proof pinning its current behavior. Crashes on boundary data are
   fixed immediately (typed error or drop, never panic — the B12 rule). The
-  two pre-adjudicated divergence fixes (B1's sign rules) and the B5
-  adjudications land here too. Exit criteria: every row pinned and
+  pre-adjudicated correctness fixes land here too, each named: **(i)** the
+  B1 sign-rule family (longhand AND shorthand paths, plus the `font-size:
+  unset` admission-to-seed); **(ii)** the F1 `load_stylesheet` atomicity
+  fix (buffer-then-commit on success). The B5 adjudications record here.
+  Exit criteria: every row pinned and
   verified, the registry current, the full suite green, this document's
   "expected current" columns corrected against reality. **No new features
   ship in Phase 1.**
@@ -48,7 +55,8 @@ The purpose is accounting, not redesign:
 
 ## Conventions (read before writing any pin)
 
-- **Pin classes** (extends the README's registry classes):
+- **Pin classes** (extends the README's registry classes — CLOSED
+  vocabulary; no hedge suffixes, every row carries exactly one class):
   - **divergent** (`off_spec_*`) — current behavior contradicts the spec
     within or beside the admitted vocabulary; pinned at current values.
   - **unimplemented** (`unsupported_*`) — policy-gated absence (D6 admission
@@ -58,16 +66,79 @@ The purpose is accounting, not redesign:
   - **on-spec** — accounting found the behavior already correct; pin to keep.
   - **robustness** (`robustness_*`) — crash-resistance pins over adversarial
     inputs; orthogonal to the classes above.
+- **The admit-side/reject-side adjudication rule** (stated so structurally
+  identical situations stop getting ad-hoc treatment): when our behavior
+  *admits* what the spec rejects (accepting negative padding, illegal
+  values flowing into layout), the divergence is a hazard and is **fixed in
+  Phase 1** with its pin. When our behavior *rejects* what the spec admits
+  (clamped opacities, wider grammars, unsupported features), the divergence
+  is a gate and is **pinned, then moved through the D6 admission policy**
+  when a consumer need is named. Reject-side divergences that contradict
+  the semantics of an *admitted* property (e.g. `opacity` clamping) are
+  classed **divergent** and pinned; absences outside the table are
+  **unimplemented**.
+- **Array-order contracts (cite once, use everywhere):** `margin`, `padding`,
+  `border_width` are `[top, right, bottom, left]`; `radius` is `[TL, TR, BR,
+  BL]` (`computed_box_group.rs`/`computed_visual_group.rs` document these;
+  e.g. `margin-top` is `margin[0]`).
 - **Every pin header states**: spec claim + citation, CURRENT (asserted),
   SPEC-CORRECT, ROOT CAUSE (or the D6 admission reference for `unsupported_*`).
+  The word "verified" may only precede a claim the author checked against
+  the tree in that change; expectations stay labeled expectations until the
+  pin proves them (the honesty rule).
 - **Proof shape**: table-driven; public `RootDom` APIs; assert computed
   groups (`root.computed_style(...)`), load reports, metric counters
   (`declaration_drop_count`, `StyleDeclarationDropped`), layout rects,
   staged paint ops. A passing test is the no-crash proof (panics fail tests).
+- **`assert_decl_drop(root, css, applied, dropped)` contract:** the helper
+  builds a FRESH root per call and asserts BOTH the per-load
+  `StylesheetLoadReport` counts AND `context().declaration_drop_count()`
+  (which is cumulative per context — fresh root means cumulative == per-load
+  for that call). Table families share the helper, never a root.
 - **Honesty rule**: "expected current" columns are best knowledge at writing
   time; the pinning task verifies each row, and where reality differs the
   PIN records reality and this document's row is corrected in the same change.
 - **Gates per landing**: fmt, clippy, workspace tests, `cargo xtask lint`.
+
+## Vocabulary carried from the redesign (self-contained definitions)
+
+Terms this document actively uses, defined here so nothing depends on
+archaeology:
+
+- **D5** — the v0.6.0 hard-break migration contract: typed `set_attr` lost
+  its presentation variants (compile break); `set_attr_str` fails with
+  `DomError::PresentationRequiresStyleMut`; string ergonomics live on
+  `style_mut` (see `MIGRATION.md`).
+- **D6** — browser-conformance principle: inputs, outputs, and timings match
+  Blink/Gecko *for the admitted vocabulary*. Admission of a property or
+  grammar form requires (1) a named consumer need, (2) a spec citation plus
+  the Blink/Gecko algorithm reference, (3) a proof in the same change.
+- **D7** — damage rects are preserved; targeted repaint is a staged goal.
+- **D8** — preserve all functionality; where behavior is reinterpreted,
+  bias toward Blink/Gecko semantics.
+- **G** — the drop-and-continue declaration-parsing rule (CSS 2.1 §4.1.7,
+  css-style-attr §3): malformed declarations drop, parsing continues, and
+  every drop is counted by metric AND returned in an explicit report
+  (`StylesheetLoadReport`, `DeclDropReport`) — never silent. Scoped to
+  declaration lists; single-declaration APIs stay strict.
+- **F (cascade tier growth path)** — staged admissions: stage 1
+  `!important` (importance bits), stage 2 a real UA tier, stage 3 the
+  animation tier, stage 4 cascade layers. The `Precedence` record was
+  widened so these are additive.
+- **S1** — the substrate: declarations in arenas (`DeclStore`,
+  generational keys), computed style as seven small `Copy` groups stored
+  inline on the node (visit locality, value-compared, no refcounting),
+  typed `DeclValue` at the declaration boundary, bounded inline lists for
+  transition longhands (capacity 4).
+- **A1 / A3 / A5 / A6 / A7 / A10** — the algorithms: A1 declaration parse
+  (the ONE shorthand-expansion point, closed grammars); A3 selector parse +
+  specificity (closed subset); A5 defaulting/inheritance (inherited groups
+  seed from the parent, non-inherited from initial); A6 unit resolution
+  (font-size em → parent, others → own); A7 group-diff dirty
+  classification; A10 minimal-edit block upsert.
+- **P1 / P2 / P3** — the redesign's root problems (now fixed): P1
+  programmatic styles lost to recompute; P2 two timing models; P3 the
+  one-bag stringly attribute model.
 
 ## Batch 0 — the suite reorganization (land first)
 
@@ -115,7 +186,12 @@ depth; `tests/computed_projection.rs` folds into the suite as
 - **README (`tests/layout_proofs/README.md`):** every file citation in the
   registry table and spec-coverage map updates to the new paths
   (`style/cascade.rs`, `layout/normal_flow.rs`, `layout/replaced_elements.rs`,
-  `pipeline/transitions.rs`, …).
+  `pipeline/transitions.rs`, …). Also correct the stale precedence claim in
+  the same change: the registry's cascade row says precedence is
+  "(origin.priority, specificity, order)" — the actual `Precedence` record
+  is `{ origin_priority, inline, specificity, order }`
+  (`decl_value.rs:39-41`, with the `inline` flag sorting above any selector
+  per css-style-attr §4).
 - **Module headers:** check each moved file's `//!` header for self-path
   citations and update them (e.g. `style/cascade.rs`'s header still points
   at `tests/layout_proofs/README.md` — that reference is path-stable).
@@ -149,28 +225,39 @@ risk × consumer/admission likelihood. Landing order = table order.
 
 ## B1 — sign rules & numeric edges (divergent + crash-adjacent)
 
-Current length grammar (`unset | 0 | <px> | <em>`) has **no sign check**
-(verified: `parse_authored_length` accepts negatives for every property).
+Current length grammar (`unset | 0 | <px> | <em>`) is sign-agnostic per
+property except where a grammar already says otherwise — **line-height is
+the existing exception**: `parse_line_height` (`decl_parse.rs:330-346`)
+rejects negatives today through `parse_non_negative_f32` /
+`parse_non_negative_length`, the helpers the B1 fix generalizes. Everywhere
+else, negatives parse (verified: `parse_authored_length` at
+`dom_attr_parse.rs:116-130` is sign-agnostic).
 
 | Input | Expected current | Spec-correct | Class |
 | --- | --- | --- | --- |
 | `padding-left: -10px` | accepted → negative inset | illegal, CSS rejects | **divergent — fix candidate** |
-| `width: -10px`, `height: -1px` | accepted | illegal (non-negative) | **divergent — fix candidate** |
-| `border-top-width: -2px`, `border-radius: -4px` (longhand), `gap: -4px`, `outline-width: -2px` | accepted | illegal | **divergent — fix candidate** |
+| `width: -10px`, `height: -1px`, `min-width: -1px`, `max-width: -1px`, `min-height: -1px`, `max-height: -1px` | accepted | illegal (non-negative) | **divergent — fix candidate** |
+| `border-top-width: -2px`, `outline-width: -2px` | accepted | illegal | **divergent — fix candidate** |
+| `border-radius: -4px` (SHORTHAND path), `gap: -4px` (shorthand), `border-top: -2px` (side alias) | **accepted** (expansion helpers bypass the grammar layer — see the fix spec) | illegal | **divergent — fix candidate** |
 | `outline-offset: -2px` | accepted | **legal** | on-spec (pin to keep) |
 | `margin-left: -10px`, `top: -5px` | accepted | legal | on-spec (already covered; keep) |
 | `font-size: -10px` | accepted → negative font into text layout | illegal | **divergent + crash-adjacent — fix candidate (reject at grammar)** |
+| `font-size: unset` | dropped+counted (grammar is `LengthNoUnset`) | `unset` is CSS-wide (≈ inherit here) | **divergent — small fix in the same family (admit, resolve to seed)** |
 | `font-size: 0`, `font-size: 0px` | admitted → 0px font into text layout | legal | robustness (must not crash shaping/intrinsics) |
-| `line-height: 0` | admitted → 1px floor (verified) | legal | on-spec (pin the floor) |
-| `width: 1e400px`, `NaNpx`, `infpx`, `-infpx` | dropped+counted (non-finite rejected) | finite only | on-spec-ish; robustness |
-| `order: 9223372036854775807` (i64::MAX) | accepted → clamped to i32 (verify clamp target) | valid | robustness (no crash on clamp) |
-| `order: 99999999999999999999` (beyond i64) | dropped+counted | huge values valid in CSS | unimplemented |
+| `line-height: -5px` | dropped+counted (already rejected — `parse_non_negative_*`) | illegal | on-spec (pin to keep) |
+| `flex-shrink: -1` | dropped+counted | non-negative | on-spec (pin to keep; sibling of `flex-grow: -1`) |
+| `line-height: 0` | admitted → **render-side 1px clamp** (`line_height_px.max(1.0)`, `text_layout/mod.rs:719-722`) | legal (zero-height lines are meaningful) | **divergent** — a render-side clamp of a legal value; resolve at pin time: remove the floor if cosmic tolerates zero-height lines (render nothing), else reclassify deliberate-with-crash-reason and document it |
+| `width: 0` (unitless) | admitted (the grammar's `0` arm) → `0px` | legal | on-spec (guard pin against the other direction) |
+| `width: 1e400px`, `NaNpx`, `infpx`, `-infpx` | dropped+counted (non-finite rejected) | finite only | robustness |
+| `order: 9223372036854775807` (i64::MAX) | accepted → clamped to i32 (`project.rs:444-445`) | CSS admits any integer | unimplemented (implementation range limit; pin names the clamp) |
+| `order: 99999999999999999999` (beyond i64) | dropped+counted | CSS admits any integer | unimplemented (same range limit, same rationale, same class) |
 | `width: 3.4028235e38px`, `width: 1.4e-45px` (subnormal) | accepted (finite) | valid | robustness |
 | `border-radius: 10000px` on a 10px box | accepted (verify paint clamp) | CSS caps radii at render | robustness |
 | `transform: translate(999999px, -999999px)` | accepted (no clamp) | valid | robustness |
 | `flex-grow: -1` | dropped+counted | non-negative | on-spec (pin to keep) |
 | `order: 1.5` | dropped+counted | integer | on-spec (pin to keep) |
-| `opacity: 1.5`, `opacity: -0.5` | dropped+counted (range 0..=1) | CSS clamps at computed time (our strictness choice — note it) | unimplemented-ish; pin |
+| `opacity: 1.5`, `opacity: -0.5` | dropped+counted (range 0..=1) | CSS clamps out-of-range at computed time | **divergent** (reject-side contradiction of an admitted property's semantics; pinned; moves through admission) |
+
 
 **B1 scope and changes.**
 
@@ -182,8 +269,8 @@ Current length grammar (`unset | 0 | <px> | <em>`) has **no sign check**
   `StylesheetLoadReport.declarations_applied/dropped` and
   `context().declaration_drop_count()`. Most unsupported_* rows collapse to
   this one helper plus a computed-group read.
-- **Production change — the sign-rule divergence fix** (the only divergence
-  fixes in the accounting; adjudicated above):
+- **Production change — the sign-rule divergence fix** (adjudicated above;
+  the fix covers BOTH the longhand and shorthand paths):
   - `src/domains/style/presentation_property.rs`: split `DeclGrammar::Length`
     into `Length` (signed — margins ×4, top/right/bottom/left, outline-offset)
     and `NonNegativeLength` (padding ×4, width/height/min/max ×6,
@@ -192,17 +279,36 @@ Current length grammar (`unset | 0 | <px> | <em>`) has **no sign check**
     (`NonNegativeLengthNoUnset` or a flag — implementer's shape, the grammar
     enum is the admission table so the sign policy lives there as metadata);
     the `FlexBasis` grammar arm also rejects negative lengths (CSS: negative
-    flex-basis is illegal).
+    flex-basis is illegal). Reuse the existing `parse_non_negative_f32` /
+    `parse_non_negative_length` helpers (`decl_parse.rs`) — the non-negative
+    concept already exists in-tree (line-height); the fix generalizes it.
+  - **The expansion layer applies the per-longhand grammar, never the
+    primitive directly.** Today `expand_border_radius` (`decl_parse.rs:660`),
+    `expand_gap` (:720), and `expand_border_side` (:930) call the signed
+    length helpers directly and construct `Declaration`s by hand — so the
+    sign policy would be bypassed via `border-radius: -4px`, `gap: -4px`,
+    `border-top: -2px`. The fix: every expansion helper parses each produced
+    token THROUGH the target longhand's grammar (`parse_value` with the
+    longhand's `DeclGrammar`), making the invariant structural: expansion =
+    tokenization + per-longhand grammar application. (For the B1 grammars
+    the three helpers are all non-negative, so this is a policy-parametrized
+    call, not a redesign of expansion.)
   - `src/domains/style/decl_parse.rs`: the new grammar arms reject negative
     scalars (`scalar < 0.0 → None`). `parse_authored_length`
     (`src/types/dom_attr_parse.rs:116-130`) stays sign-agnostic; the policy
     lives in the grammar layer, not the primitive.
   - The resolver in `src/domains/style/computed/project.rs` needs no change
     (rejected negatives never reach it).
-- **Landing order within the batch (three commits for a clean record):**
-  (a) the `off_spec_*` pins of the current accepted-negative behavior (they
-  pass); (b) the grammar fix (pins fail); (c) relabel the pins on-spec and
-  update the registry rows in the same commit.
+  - **`font-size: unset` admission (same family):** `font-size`'s grammar
+    admits `unset`, resolving to the inherited seed (CSS: `unset` on an
+    inherited property = inherit; mechanically it resolves exactly like an
+    absent declaration — the winners fold's seed path). The resolver's font
+    size stays a plain `f32` (seed guarantees a value).
+- **Landing order within the batch (TWO commits — the plan's own gate
+  forbids a deliberately-red commit):** (a) the `off_spec_*` pins of the
+  current accepted-negative behavior (they pass); (b) the grammar fix AND
+  the pin relabel AND the registry update in one atomic commit (behavior
+  change and its proof move together).
 - **`font-size: 0`:** stays admitted (CSS-legal). The robustness pin proves
   `CosmicMetrics::new(0, …)` (`text_layout/mod.rs:189,279`) and intrinsic
   measurement survive. If cosmic panics at 0, the hardening is render-side
@@ -212,10 +318,13 @@ Current length grammar (`unset | 0 | <px> | <em>`) has **no sign check**
   `project.rs:444-445` (`i64` clamped to `i32::MIN..=MAX`); pin it on-spec.
   Non-finite rejection (`1e400px`, `NaNpx`, `infpx`) is already enforced by
   `parse_finite_length_scalar`; pin on-spec.
-- **Registry:** the B1 divergent rows (padding/width/border-width/radius/gap/
-  outline-width/font-size negatives) enter as `off_spec_*`, relabel on-spec
-  in commit (c); the on-spec/robustness rows register as pins with no
-  divergence entry.
+- **Registry:** the B1 divergent rows (padding/width/min-max/border-width/
+  outline-width negatives via longhand AND shorthand, font-size negatives,
+  `font-size: unset`) enter as `off_spec_*`, relabel on-spec
+  in commit (b); the on-spec/robustness rows register as pins with no
+  divergence entry. `opacity` and the `line-height: 0` floor enter as
+  **divergent** and stay pinned (reject-side — they move through admission,
+  not the B1 fix).
 
 **B1 data structures and algorithms (Phase 1 fix, referenced for the record).**
 Current state: the admission table is `DeclGrammar` in
@@ -361,13 +470,14 @@ quirky downstream. Verify each at pin time.
 | --- | --- | --- | --- |
 | `font-family` computed but ignored by text layout (hardcoded UiSans) | text renders UiSans regardless | consume the computed family | **divergent (step-5 follower)** — pin |
 | `font-weight` / `font-style` computed but ignored | rendered regular/upright | consume weight/style | divergent (same family) — pin |
-| `text-align: justify`/`justified` consumption | verify: justified lines or start-like fallback | justified text | verify; pin actual |
+| `text-align: justify`/`justified` consumption | **consumed** — `TextAlign::Justified → cosmic_text::Align::Justified` (`text_render.rs:104-106`) | justified text | on-spec (pin to keep) |
 | `font-style: oblique` | dropped+counted (closed set normal/italic) | oblique admitted in CSS | unimplemented |
 | `white-space: pre` / `pre-line` / `break-spaces` consumption | admitted keywords; verify real text-layout modes | full white-space modes | verify per keyword; pin actual |
-| `transform` transitions (`transition: transform 100ms`) | **no transition schedules** (jump; v0.5 had delayed step) | transform interpolates | **divergent (documented, MIGRATION.md)** — pin |
+| `transform` transitions (`transition: transform 100ms`) | **no transition schedules** — the transform value jumps at the next update (its `DeclValue` is interned text, which the scheduler cannot interpolate; the typed `[f32; 2]` pair is the admission shape; v0.5 had a delayed step) | transform interpolates | **divergent (documented, MIGRATION.md)** — pin |
 | range control + authored `border-radius: 0px` | falls to pill default (flattened presence) | authored wins over control default | **divergent (documented)** — pin; fix is the behavior-sheet tier (F) |
 | `dir` content attr vs `direction` property | `direction` wins (documented) | HTML/CSS interaction | on-spec (pin to keep) |
-| `pointer-events` channel | **verify first** (hit_test.rs reads a `pointer-events` channel — name it, its values) | — | verify; class accordingly |
+| `pointer-events` content-attr channel | `Custom("pointer-events")`: `"none"` → disabled, `"auto"` → enabled, else inherit (`hit_test.rs:331-337`) | behavior input (not cascaded) | on-spec for `auto`/`none`; wider CSS values stored-but-inherit — unimplemented |
+| `pointer-events` STYLESHEET channel | `.overlay { pointer-events: none }` → dropped+counted (name not in the presentation table), hit-testing unaffected | consumers reasonably expect it to work | **unimplemented** (the consumer-surprise row; admission would move the channel into the presentation table) |
 
 **B4 scope and changes.**
 
@@ -385,7 +495,7 @@ quirky downstream. Verify each at pin time.
   consumption is the named step-5 follower.
 - **`font-weight`/`font-style` unconsumed:** same shape (computed
   `as_font().weight`/`style` present; rendered run unchanged). Class: divergent.
-- **`text-align: justify`:** verified CONSUMED — `text_render.rs:106` maps
+- **`text-align: justify`:** verified CONSUMED — `text_render.rs:104-106` maps
   `TextAlign::Justified → cosmic_text::Align::Justified`. Pin on-spec with a
   two-word line in a constrained width (justified spacing must differ from
   start-aligned; the `text_auto_size.rs` harness provides the measurement
@@ -414,12 +524,14 @@ quirky downstream. Verify each at pin time.
   attribute; already resolved in the projection's `apply_dir_content_attribute`).
 - **`pointer-events` (verified):** the channel is the content-side
   `Custom("pointer-events")` attribute, consumed by hit-testing at
-  `hit_test.rs:332-336`: `"none"` → disabled, `"auto"` → enabled, anything
+  `hit_test.rs:331-337`: `"none"` → disabled, `"auto"` → enabled, anything
   else → inherit the parent's state. It is NOT in the presentation table by
   design (deliberate: it is behavior input, not a cascaded style). Pins:
   `auto`/`none` on-spec (subtree disable + re-enable); wider CSS values
   (`visiblePainted`, `painted`, `fill`, `stroke`, `all`) stored-but-inherit —
-  unimplemented rows.
+  unimplemented rows. The STYLESHEET row (the consumer surprise) pins the
+  other channel explicitly: `pointer-events` in a stylesheet is a
+  dropped+counted declaration with no hit-test effect.
 
 **B4 data structures and algorithms (Phase 2 preview).** Current state: the
 computed font group already carries everything text layout needs —
@@ -484,7 +596,9 @@ time, recorded here and in the registry:
     matters in combination with `border-style`; since `border-style` initial
     is `none`, undeclared borders are invisible in browsers too. Our
     width-gates-border model is observably identical for the undeclared
-    case; the `border-style` admission would revisit.
+    case. (`border-style` itself is an unadmitted property — its
+    dropped+counted pin is owned by B11; the `border-style` admission would
+    revisit this adjudication.)
 - **Registry:** one row per candidate with the class and rationale above;
   the near-white and border rows are permanent (deliberate), the
   line-height row is expected to move (divergent).
@@ -516,9 +630,10 @@ Pin per property: the drop is counted AND the defined no-effect holds
 `z-index`, `float`, `clear`, `box-sizing`, `position: sticky` (value-side
 drop), `display: grid` / `inline-grid` / `table` / `inline-table` /
 `flow-root` / `contents` / `ruby` (value-side drops), `aspect-ratio`,
-`object-fit`, `object-position`, `overflow-x` / `overflow-y` (also in B10),
-`contain`, `content-visibility`, `break-inside`, `resize`, `scroll-behavior`,
+`object-fit`, `object-position`, `contain`, `content-visibility`,
+`break-inside`, `resize`, `scroll-behavior`,
 `scroll-snap-*`, `overscroll-behavior`, `touch-action`, `will-change`.
+(`overflow-x`/`overflow-y` are owned by B10 — single-owner rule.)
 
 **B6 scope and changes.**
 
@@ -642,16 +757,43 @@ An unsupported selector fails `parse_selector` → `DomError::InvalidSelector`
 
 - **Proof file:** `crates/ui-dom/tests/layout_proofs/style/unsupported_selectors.rs`
   (new).
-- **No production changes.** Every selector row asserts the same two facts:
-  `load_stylesheet(...)` returns `Err(DomError::InvalidSelector)` AND no
-  rules from the sheet apply (a target matching the rule's selector presents
-  the initial value — because the load failed atomically, nothing was
-  inserted; verified in `style_runtime.rs::load_stylesheet`, the `?` on
-  `compile_rule` propagates before insertion).
-- **The fatal-shape is the accounting point:** each proof header notes
-  loudly that ONE unsupported selector fails the ENTIRE sheet — consumers
-  must strip unsupported selectors before load. The admission shape when a
-  feature lands (per-feature): keep the fatal shape for the rest.
+- **The atomicity truth (F1, adjudicated):** today's `load_stylesheet`
+  (`style_runtime.rs:65-132`) is NOT atomic on the error path: the loop
+  parses each block's selector (fatal `?`), but rules from EARLIER blocks
+  are already inserted, active, and indexed (`self.rules.insert(...)`,
+  `index_rule(...)`), and the revision bump sits after the loop so the
+  early return skips it. A failed load therefore leaves a silently-mutated
+  rule store: the valid prefix is live and will match at the next style
+  pass triggered by anything else, while a caller holding `Err` reasonably
+  believes nothing happened. That is a boundary-policy violation in
+  mechanics (an `Err` that does not mean "no effect"), independent of the
+  selector-support question.
+- **The F1 fix (Phase 1, named in the phases list):** buffer-then-commit.
+  Per block: parse selector (fatal), parse declarations into a LOCAL
+  `DeclBlock` (not the arena), dedup-check against active rules, and buffer
+  `(block, selector_parts, right_most, specificity, origin, identity_hash)`.
+  On full success: insert blocks into the decl arena, insert rules
+  (assigning `order` from the counter in buffer order), index them, and
+  bump `revision` once when at least one rule committed. On any error:
+  discard the buffer — no arena blocks, no rules, no revision touch. Dedup
+  dedup behavior unchanged (skipped rules simply aren't buffered). This
+  makes `Err` mean "nothing happened," the honest reading of the
+  typed-error boundary.
+- **Pin rows (two shapes):** (1) single-bad-rule rows asserting
+  `Err(InvalidSelector)`; (2) **partial-application rows** — a valid rule
+  BEFORE the bad selector — pinned at the CURRENT behavior first
+  (`off_spec_*`: `Err` AND the valid prefix still applies at the next
+  recompute, revision unbumped), then flipped with the fix in the same
+  atomic commit (fix + flip + registry, per the two-commit rule): after
+  the fix, `Err` AND nothing applies.
+- **The consumer-facing warning, corrected:** today the failure is not
+  "one unsupported selector fails the entire sheet" — it is "the load
+  errors AND the valid prefix silently applies." After the fix it becomes
+  "one unsupported selector fails the entire sheet, atomically" (pinned).
+- **`@import` / `@charset` rows:** `@import url(...)` (the first at-rule a
+  consumer bundling real CSS hits) and `@charset "utf-8"` — both whole-load
+  `Err` today (the block parser sees an at-rule as a selector), class
+  unimplemented.
 - **Stray-`}` / block-structure adjudication (decided, recorded here):** pin
   current whole-load-`Err(InvalidAttributeValue)` as **unimplemented**:
   statement-level error recovery (CSS 2.1 §4.1.7's malformed-statement
@@ -659,12 +801,12 @@ An unsupported selector fails `parse_selector` → `DomError::InvalidSelector`
   admission-gated parser feature. The load error is loud (typed `Err` to
   the caller), so the current shape is acceptable until a consumer need is
   named; the natural admission shape mirrors G at statement level (skip the
-  malformed statement, count it, continue).
-- **`@media` note:** same unimplemented class, and the pin header carries
-  the consumer-facing warning (one `@media` block fails the entire sheet).
+  malformed statement, count it, continue). The atomicity fix (above) makes
+  these error paths honest in the meantime.
 - **Registry:** `unsupported_*` rows per family (combinators, attribute
   selectors, pseudo-classes, pseudo-elements, selector lists, at-rules,
-  statement recovery).
+  statement recovery), plus the `off_spec_*` atomicity row that flips with
+  the F1 fix.
 
 **B8 data structures and algorithms (Phase 2 preview, per feature).**
 Current state: `SimpleSelector` (`style/mod.rs`) is a flat per-compound
@@ -722,9 +864,10 @@ lifted to statement level, with the same report-and-count contract).
   dropped+counted while the rest of the rule still applies (`.a { width:
   10px !important; height: 5px }` → height applies, width is dropped).
   Assert both the drop count and the surviving declaration. Note in the
-  header that F stage 1's design is already shaped (importance bits arrive
-  as a parallel bit-vector, Servo `declarations_importance` shape — see the
-  declaration-store design in git history and `decl_block.rs`'s header).
+  header that F stage 1's design is already shaped: importance bits arrive
+  as a parallel bit-vector (the Servo `declarations_importance` shape named
+  in the redesign's F verdict; `decl_block.rs`'s header notes the future
+  arrival).
 - **Custom properties / `var()`:** `--brand` drops at name lookup (counted);
   `width: var(--brand)` drops at value grammar (counted). Both rows assert
   the drops and the no-effect.
@@ -774,14 +917,15 @@ its interim guarantee).
 | --- | --- | --- | --- |
 | `font: italic 12px serif` | dropped+counted | font shorthand | unimplemented |
 | `background: #112233` | dropped+counted | background-color | unimplemented |
-| `text-decoration: underline` | dropped+counted | unadmitted family | unimplemented |
 | `all: initial` | dropped+counted | CSS-wide reset | unimplemented |
 | `overflow: scroll auto` (two-token), `overflow-x`, `overflow-y` | dropped+counted | per-axis overflow | unimplemented |
 
 **B10 scope and changes.**
 
 - **Proof file:** same `style/unsupported_shorthands.rs` (a second table
-  family next to B3's).
+  family next to B3's). B10 owns the `overflow-x`/`overflow-y` rows
+  (single-owner rule — B6's layout-impact file does not repeat them);
+  `text-decoration` is owned by B11.
 - **No production changes** — drop-pins plus initial-value computed reads,
   same shape as B3. The `overflow: scroll auto` row also asserts the
   single-token admitted form still works (guard against the pin
@@ -797,22 +941,31 @@ predicates (`creates_clip` = either axis ≠ Visible; `allows_vertical_scroll`
 = the y axis) and their consumers (layer kind, scroll gating, flex auto-min
 — all already centralized behind those two predicates, which is why the
 split stays cheap). `font` maps to the font group's five longhands with the
-CSS Fonts 4 shorthand rules (size/line-height/family required-ish, others
-initial — the closed-subset projection of the full grammar).
+CSS Fonts 4 shorthand rules (size/line-height/family are the required
+components per the spec's grammar, others initial — the closed-subset
+projection of the full grammar).
 
 
 
 ## B11 — text/effects property tail
 
-All dropped+counted, inert, no crash; one mechanical table. Rows:
-`text-decoration*`, `text-transform`, `text-indent`, `text-shadow`,
+All dropped+counted, inert, no crash; one mechanical table. B11 owns the
+`text-decoration` family and the `animation*` declaration names
+(single-owner rule). Rows: `text-decoration` (shorthand + longhands),
+`text-transform`, `text-indent`, `text-shadow`,
 `text-overflow`, `letter-spacing`, `word-spacing`, `line-clamp` /
 `-webkit-line-clamp`, `hyphens`, `box-shadow`, `vertical-align`,
 `writing-mode`, `unicode-bidi`, `visibility`, `cursor`, `user-select`,
 `list-style*`, `filter`, `mix-blend-mode`, `backdrop-filter`, `clip-path`,
-`mask*`, `image-rendering`, `border-collapse`, `border-spacing`,
+`mask*`, `image-rendering`, `border-style` (see B5's dependency note),
+`border-collapse`, `border-spacing`,
 `caption-side`, `empty-cells`, `table-layout`, `column-count`, `columns`,
-`column-rule`, `orphans`, `widows`, `animation*` (declaration names).
+`column-rule`, `orphans`, `widows`, `animation*`,
+and the unadmitted VALUE-FUNCTION family (each fails the value grammar,
+dropped+counted): `url()` (e.g. `background-image: url(x.png)`),
+`linear-gradient()` / `radial-gradient()`, `attr()`, `env()`, `counter()`,
+and the `content` / `quotes` / `counter-reset` / `counter-increment`
+properties.
 
 **B11 scope and changes.**
 
@@ -878,8 +1031,13 @@ Every scenario asserts the defined outcome AND returns without panic.
   `rules_inserted == 10_000` and one match against the last rule (no hang —
   keep the assertion outcome-only, no wall-clock pins); one rule with 200
   declarations asserts the report counts and a sampled computed value; a
-  64-compound descendant selector over a 64-deep div nest matches the leaf
-  (the parent-chain scan must not blow the stack).
+  64-compound descendant selector over a 64-deep div nest matches the leaf.
+  **Framing (honesty):** the 64-compound row is a TRIPWIRE, not a
+  discrimination proof — the load-bearing invariant is that the
+  parent-chain scan is iterative by construction (`selector_matches_node`,
+  `style/mod.rs`), and the row exists to catch a regression to recursion,
+  not to prove a depth limit (64 frames discriminates nothing). State the
+  invariant in the pin header.
 - **Block-structure abuse:** the fatal load `Err` outcomes are the defined
   behavior — pin them (they overlap B8's adjudicated rows deliberately; the
   robustness file pins the no-crash side, B8 pins the class).
@@ -895,7 +1053,9 @@ Every scenario asserts the defined outcome AND returns without panic.
 - **Typed-writer abuse:** extends `style_mut.rs`'s existing error-path
   tests into the proof suite (empty name/value, removed-node key →
   `InvalidNodeKey`, non-element targets → `InvalidAttributeTarget`,
-  `set_all` with 200 declarations → bounded report).
+  `set_all` with 200 declarations → `Ok(report)` with
+  `report.applied + report.dropped == 200` exactly and the call completing —
+  the "bounded report" assertion).
 - **Crash-hardening rule (reiterated):** any panic discovered is a
   boundary-policy bug — the fix lands in the same change (typed error or
   drop) with the pin asserting the hardened behavior, and this document
