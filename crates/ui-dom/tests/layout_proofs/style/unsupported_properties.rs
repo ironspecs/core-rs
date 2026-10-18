@@ -49,8 +49,8 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    DisplayKw, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, ImgIntrinsic, PositionKw,
-    RootDom, StylesheetLoadReport,
+    BoxLength, DisplayKw, DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, ImgIntrinsic,
+    PositionKw, RootDom, StylesheetLoadReport,
 };
 
 use crate::layout_proofs::support::{
@@ -568,6 +568,144 @@ fn unsupported_layout_hint_properties_drop() {
     assert!(
         !take_staged_layer_paint_plans(&root).is_empty(),
         "update should stage a paint plan",
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Grid 2 §§5–8 — the grid property family
+//   (`grid-template-columns`/`-rows`/`-areas`/`grid-template`,
+//   `grid-auto-flow`/`grid-auto-columns`/`grid-auto-rows`, `grid-column`/
+//   `grid-row`/`grid-column-start`/`grid-area`, the `grid` shorthand, and the
+//   alignment longhands `justify-items`/`justify-self`).
+//   <https://drafts.csswg.org/css-grid-2/#grid-properties>
+// - CURRENT (asserted): every grid property name drops + counts at name lookup
+//   (the names are absent from the `property_shape` table in `decl_parse.rs`),
+//   no crash, and the block-layout baseline is unchanged — the `display: grid`
+//   value gate (`unsupported_display_values_drop_to_initial`) already covers the
+//   display side; these NAMES are a separate family. CONTROL: the admitted
+//   `width: 80px` applies (applied == 1, dropped == 0).
+// - SPEC-CORRECT: a grid solver owns these names; admission per the D6 policy.
+fn unsupported_grid_property_names_drop() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "grid_template_columns",
+            body: "grid-template-columns: 100px 1fr",
+        },
+        Case {
+            name: "grid_template_rows",
+            body: "grid-template-rows: 100px 1fr",
+        },
+        Case {
+            name: "grid_template_areas",
+            body: "grid-template-areas: \"a b\"",
+        },
+        Case {
+            name: "grid_template",
+            body: "grid-template: \"a b\" 1fr / 1fr 1fr",
+        },
+        Case {
+            name: "grid_auto_flow",
+            body: "grid-auto-flow: row dense",
+        },
+        Case {
+            name: "grid_auto_columns",
+            body: "grid-auto-columns: 100px",
+        },
+        Case {
+            name: "grid_auto_rows",
+            body: "grid-auto-rows: 100px",
+        },
+        Case {
+            name: "grid_column",
+            body: "grid-column: 1 / 2",
+        },
+        Case {
+            name: "grid_row",
+            body: "grid-row: 1 / 2",
+        },
+        Case {
+            name: "grid_column_start",
+            body: "grid-column-start: 1",
+        },
+        Case {
+            name: "grid_area",
+            body: "grid-area: 1 / 1 / 2 / 2",
+        },
+        Case {
+            name: "grid_shorthand",
+            body: "grid: \"a b\" 1fr / 1fr 1fr",
+        },
+        Case {
+            name: "justify_items",
+            body: "justify-items: center",
+        },
+        Case {
+            name: "justify_self",
+            body: "justify-self: center",
+        },
+    ];
+
+    for case in &cases {
+        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+
+    // No crash: a combined sheet with every grid name drops and the update
+    // completes, leaving the target on the block-layout baseline.
+    let combined = ".x { grid-template-columns: 100px 1fr; grid-template-rows: 100px 1fr; \
+                    grid-template-areas: \"a b\"; grid-auto-flow: row dense; \
+                    grid-auto-columns: 100px; grid-auto-rows: 100px; grid-column: 1 / 2; \
+                    grid-row: 1 / 2; grid-column-start: 1; grid-area: 1 / 1 / 2 / 2; \
+                    justify-items: center; justify-self: center }";
+    let (mut world, mut root, target, report) = styled_target_load(combined);
+    assert_eq!(
+        report.declarations_dropped, 12,
+        "all grid names should drop"
+    );
+    assert_eq!(report.declarations_applied, 0, "no grid name should apply");
+    assert_style_set(&mut root, target, "width", "80px");
+    assert_style_set(&mut root, target, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_box()
+            .display,
+        DisplayKw::Block,
+        "a div with dropped grid properties stays on the Block display initial",
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans.len(), 1, "one document-root layer plan");
+    assert_eq!(
+        plans[0].rects.len(),
+        1,
+        "one block rect (block-layout baseline)"
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[0],
+        0.0,
+        0.0,
+        80.0,
+        40.0,
+        "grid-name-dropped block div",
+    );
+
+    // CONTROL: an admitted property still applies alongside a dropped grid name.
+    let (mut world, mut root, target, report) =
+        styled_target_load(".x { grid-template-columns: 100px; width: 80px }");
+    assert_eq!(report.declarations_applied, 1, "the width control applies");
+    assert_eq!(report.declarations_dropped, 1, "the grid name drops");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().width,
+        BoxLength::Px(80.0),
+        "width: 80px control should resolve",
     );
 }
 
