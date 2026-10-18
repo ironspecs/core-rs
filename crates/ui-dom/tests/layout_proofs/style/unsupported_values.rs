@@ -25,10 +25,12 @@
 //! `unsupported_*` rows are unimplemented (D6 admission-gated drop-and-continue
 //! — the value or grammar form is not admitted); `robustness_*` rows assert
 //! no-panic plus the defined outcome; `line_height_zero_floors_at_one_px` is a
-//! deliberate crate-owned render floor (see its per-test header). The only
-//! remaining off-spec row in this file is `off_spec_opacity_out_of_range_rejected`
-//! (opacity is still rejected at parse rather than clamped at computed time; it
-//! moves on-spec through the D6 admission policy, NOT the B1 sign-rule fix).
+//! deliberate crate-owned render floor (see its per-test header). The off-spec
+//! rows in this file are `off_spec_opacity_out_of_range_rejected` (opacity is
+//! still rejected at parse rather than clamped at computed time; it moves
+//! on-spec through the D6 admission policy, NOT the B1 sign-rule fix) and
+//! `off_spec_row_gap_normal_rejected` (the gap longhands reject `normal`; it
+//! flips on-spec in review F4).
 
 use bevy::prelude::World;
 use ui_dom::{
@@ -344,6 +346,49 @@ fn off_spec_opacity_out_of_range_rejected() {
 
     for case in cases {
         assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
+    }
+}
+
+#[test]
+// OFF-SPEC (divergent): CSS Box Alignment 3 §8.2 admits `normal |
+// <length-percentage>` on the gap longhands — and our own `gap` shorthand maps
+// `normal` to `0px` — but the `row-gap`/`column-gap` longhands reject
+// `normal` outright.
+// CURRENT (asserted below): `row-gap: normal` and `column-gap: normal` drop.
+// SPEC-CORRECT: `normal` resolves to `0px` on the longhands exactly as it does
+// through the shorthand.
+// ROOT CAUSE: the gap longhands' grammar is `NonNegativeLength`
+// (`presentation_property.rs` METADATA), which has no `normal` arm.
+// RECLASSIFY: if this proof fails, the divergence moved — see the off-spec
+// registry in tests/layout_proofs/README.md.
+fn off_spec_row_gap_normal_rejected() {
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "row_gap_normal",
+            body: "row-gap: normal",
+        },
+        Case {
+            name: "column_gap_normal",
+            body: "column-gap: normal",
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".x {{ {} }}", case.body), 0, 1);
+        let (mut world, mut root, target, _report) =
+            styled_target_load(&format!(".x {{ {} }}", case.body));
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target).expect("target").as_flex().gap,
+            [0.0, 0.0],
+            "{} should stay at the [0.0, 0.0] initial",
+            case.name,
+        );
     }
 }
 
