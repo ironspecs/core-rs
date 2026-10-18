@@ -2,6 +2,7 @@
 
 mod admitted_gaps;
 mod cascade;
+mod cascade_tiers;
 mod computed_projection;
 mod unsupported_colors;
 mod unsupported_properties;

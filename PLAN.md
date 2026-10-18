@@ -1296,7 +1296,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B8 — selectors & at-rules (+F1 fix) | **done** (a — pins; b — F1 atomicity fix + pin flip) |
 | B8 (a) — pins of the non-F1 rows + the F1 off-spec pin (`style/unsupported_selectors.rs`) | done |
 | B8 (b) — F1 atomicity fix (buffer-then-commit) + pin flip (`stylesheet_load_failure_is_atomic`) | done |
-| B9 — cascade tiers | not started |
+| B9 — cascade tiers | **done** (pins; all rows verified — `!important` drops the declaration while the rule survives (stylesheet and `style`-attribute routes), `@layer` fails the whole load with `InvalidSelector`, `--brand`/`var()` drop at name lookup and value grammar respectively, `animation` drops, and the UA-sheet workaround is on-spec; see `style/cascade_tiers.rs`) |
 | B10 — other shorthands & overflow axes | not started |
 | B11 — text/effects property tail | not started |
 | B12 — robustness | not started |
