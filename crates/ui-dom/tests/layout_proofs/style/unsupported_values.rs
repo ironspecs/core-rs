@@ -29,9 +29,10 @@ use ui_dom::{
 };
 
 use crate::layout_proofs::support::{
-    assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_decl_drop,
-    assert_root_dom_update, assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
-    take_staged_layer_paint_plans, theme_stylesheet_origin,
+    assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_append_textarea_to,
+    assert_decl_drop, assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    theme_stylesheet_origin,
 };
 
 /// Returns `(world, root, target, report)`: a fresh root with a single
@@ -673,5 +674,35 @@ fn robustness_zero_font_size_renders_nothing() {
     assert_eq!(
         intrinsic.font_size_px, 0.0,
         "zero font size with line-height should keep font size 0",
+    );
+}
+
+#[test]
+// ROBUSTNESS: a focused multi-line `textarea` with `font-size: 0` must not
+// panic (the caret path builds a wrapped buffer with width_px set, which
+// reaches cosmic-text's set_metrics_and_size assert without the guard).
+// Relates to the zero-size guard family; the multi-line caret path was the
+// last uncovered cosmic call site (single-line inputs never reach the assert).
+fn robustness_zero_font_size_textarea_caret_does_not_crash() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let textarea = assert_append_textarea_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, textarea, "value", "line one\nline two");
+    assert_style_set(&mut root, textarea, "width", "120px");
+    assert_style_set(&mut root, textarea, "height", "40px");
+    assert_style_set(&mut root, textarea, "font-size", "0px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // Focus installs a collapsed text selection for the textarea, which is what
+    // the caret paint op keys on. The following update rebuilds the paint plan
+    // and drives `text_caret_layout` for the focused multi-line control.
+    root.focus(textarea).expect("textarea should focus");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    assert!(
+        !plans.is_empty(),
+        "focused textarea should stage a paint plan",
     );
 }

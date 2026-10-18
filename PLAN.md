@@ -1173,12 +1173,17 @@ Every scenario asserts the defined outcome AND returns without panic.
    enforced at RESOLVE time (`project.rs:137`), not only render time, and
    is load-bearing against cosmic's `line_height != 0` assert
    (`buffer.rs:254`) — reclassified deliberate-with-crash-reason.
-   **Open follow-up (tracked):** the caret/editing path is still crashable
-   at zero size — `layout_text_caret` on a multi-line `textarea` with
-   `font-size: 0` panics via `set_metrics_and_size` when `width_px` is set
-   (single-line inputs do not reach the assert). Fix + pin is queued as
-   the next small task (same guard class: zero-width caret layout, no
-   cosmic call).
+   **Follow-up landed (B1b-4):** the caret/editing path is now guarded too —
+   `layout_text_caret` (caret at origin, effective line height),
+   `layout_text_caret_map` (one zero-width line per source line via
+   `zero_size_caret_map`), `layout_text_caret_stop_byte_index_at_point`
+   (byte 0), and — surfaced by the pin's own scenario during landing —
+   `layout_wrapped_text` (one zero-width line at the effective line height;
+   the multi-line textarea value-text-run height path, a sibling cosmic call
+   the caret-only guard did not cover). Every production caller of
+   `build_text_buffer` / `build_wrapped_text_buffer` /
+   `build_wrapped_text_buffer_and_byte_map` is now zero-guarded. Pin:
+   `robustness_zero_font_size_textarea_caret_does_not_crash`.
 
 **B12 data structures and algorithms.** No Phase 2 — this bundle is the
 permanent safety net, not an admission track. The scenarios stress the

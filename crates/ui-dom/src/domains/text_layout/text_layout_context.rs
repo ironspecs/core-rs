@@ -14,12 +14,15 @@
 
 use cosmic_text::FontSystem;
 
+use crate::numeric::usize_to_f32;
+
 use super::text_render;
 use super::{
-    TextCaretLayout, TextCaretMap, TextIntrinsicMetrics, TextLayoutConfig, TextLayoutRequest,
-    WrappedTextLayout, build_text_buffer, build_wrapped_text_buffer,
-    build_wrapped_text_buffer_and_byte_map, effective_line_height_px, install_text_font_catalog,
-    text_caret_layout_from_buffer, text_caret_map_from_buffer, text_caret_stop_byte_index_from_map,
+    CaretStop, TextCaretLayout, TextCaretLine, TextCaretMap, TextIntrinsicMetrics,
+    TextLayoutConfig, TextLayoutRequest, WrappedTextLayout, WrappedTextLineLayout,
+    build_text_buffer, build_wrapped_text_buffer, build_wrapped_text_buffer_and_byte_map,
+    effective_line_height_px, install_text_font_catalog, text_caret_layout_from_buffer,
+    text_caret_map_from_buffer, text_caret_stop_byte_index_from_map,
     wrapped_text_height_from_buffer, wrapped_text_layout_from_buffer,
 };
 
@@ -87,6 +90,20 @@ impl TextLayoutContext {
         &mut self,
         request: &TextLayoutRequest<'_>,
     ) -> WrappedTextLayout {
+        if request.font_size_px == 0.0 {
+            // Same zero guard: zero-width text occupies exactly one line.
+            let line_height_px = effective_line_height_px(&mut self.font_system, request);
+            return WrappedTextLayout {
+                width_px: 0.0,
+                height_px: line_height_px,
+                line_count: 1,
+                lines: vec![WrappedTextLineLayout {
+                    width_px: 0.0,
+                    baseline_y_px: 0.0,
+                    height_px: line_height_px,
+                }],
+            };
+        }
         wrapped_text_layout_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
     }
 
@@ -105,6 +122,15 @@ impl TextLayoutContext {
         request: &TextLayoutRequest<'_>,
         scalar_offset: usize,
     ) -> TextCaretLayout {
+        if request.font_size_px == 0.0 {
+            // Zero-size text (CSS Fonts 4 §3.5): every caret position coincides at
+            // the origin; cosmic-text asserts a non-zero font size.
+            return TextCaretLayout {
+                x_px: 0.0,
+                y_px: 0.0,
+                height_px: effective_line_height_px(&mut self.font_system, request),
+            };
+        }
         let (buffer, transformed_text, transformed_to_original_byte) =
             build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
         text_caret_layout_from_buffer(
@@ -122,6 +148,12 @@ impl TextLayoutContext {
         &mut self,
         request: &TextLayoutRequest<'_>,
     ) -> TextCaretMap {
+        if request.font_size_px == 0.0 {
+            return zero_size_caret_map(
+                request,
+                effective_line_height_px(&mut self.font_system, request),
+            );
+        }
         let (buffer, transformed_text, transformed_to_original_byte) =
             build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
         text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer)
@@ -135,12 +167,36 @@ impl TextLayoutContext {
         x_px: f32,
         y_px: f32,
     ) -> usize {
+        if request.font_size_px == 0.0 {
+            // Zero-size text: every position coincides; the only honest byte index
+            // without glyph data is the text start.
+            return 0;
+        }
         let (buffer, transformed_text, transformed_to_original_byte) =
             build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
         let caret_map =
             text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer);
         text_caret_stop_byte_index_from_map(&caret_map, x_px, y_px)
     }
+}
+
+/// The caret map for zero-size text: one line per source line, every stop
+/// at x = 0 (positions coincide without glyph data; cosmic-text asserts a
+/// non-zero font size, so the map is built without it).
+fn zero_size_caret_map(request: &TextLayoutRequest<'_>, line_height_px: f32) -> TextCaretMap {
+    let lines = super::line_start_byte_indices(request.text)
+        .iter()
+        .enumerate()
+        .map(|(index, &byte_index)| TextCaretLine {
+            top_px: usize_to_f32(index) * line_height_px,
+            height_px: line_height_px,
+            stops: vec![CaretStop {
+                byte_index,
+                x_px: 0.0,
+            }],
+        })
+        .collect();
+    TextCaretMap { lines }
 }
 
 #[cfg(test)]
@@ -541,5 +597,74 @@ mod tests {
             context.measure_wrapped_text_height(&without_line_height),
             1.0
         );
+    }
+
+    #[test]
+    fn layout_wrapped_text_zero_font_size_is_one_zero_width_line() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            ..TextLayoutRequest::for_text("hello", 0.0)
+        };
+
+        let wrapped_text = context.layout_wrapped_text(&request);
+
+        assert_eq!(wrapped_text.line_count, 1);
+        assert_eq!(wrapped_text.width_px, 0.0);
+        assert_eq!(wrapped_text.height_px, 20.0);
+        assert_eq!(wrapped_text.lines.len(), 1);
+    }
+
+    #[test]
+    fn layout_text_caret_zero_font_size_is_origin() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            ..TextLayoutRequest::for_text("hello", 0.0)
+        };
+
+        let caret = context.layout_text_caret(&request, 3);
+
+        assert_eq!(caret.x_px, 0.0);
+        assert_eq!(caret.y_px, 0.0);
+        assert_eq!(caret.height_px, 20.0);
+    }
+
+    #[test]
+    fn layout_text_caret_map_zero_font_size_has_one_line_per_source_line() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            ..TextLayoutRequest::for_text("a\nb", 0.0)
+        };
+
+        let caret_map = context.layout_text_caret_map(&request);
+
+        assert_eq!(caret_map.lines.len(), 2);
+        assert_eq!(caret_map.lines[0].top_px, 0.0);
+        assert_eq!(caret_map.lines[1].top_px, 20.0);
+        for line in &caret_map.lines {
+            assert_eq!(line.stops.len(), 1);
+            assert_eq!(line.stops[0].x_px, 0.0);
+        }
+        assert_eq!(caret_map.lines[0].stops[0].byte_index, 0);
+        assert_eq!(caret_map.lines[1].stops[0].byte_index, 2);
+    }
+
+    #[test]
+    fn caret_stop_index_zero_font_size_is_text_start() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            ..TextLayoutRequest::for_text("hello", 0.0)
+        };
+
+        let byte_index = context.layout_text_caret_stop_byte_index_at_point(&request, 50.0, 30.0);
+
+        assert_eq!(byte_index, 0);
     }
 }
