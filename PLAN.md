@@ -217,10 +217,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-396 layout proofs (388 in
+397 layout proofs (389 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
 cross-cutting `robustness.rs`; updated 2026-10-19 post-PR-1 review);
-the off-spec registry (7 divergent proofs in 6 rows, 5 deliberate,
+the off-spec registry (8 divergent proofs in 7 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -716,22 +716,25 @@ an f32 basis.
   landing-note commit count (17, not 13), item 3's branch citation
   (`content_box_size_px`, `domains/layout/flow.rs`), the item 2 spillover
   pin's descendant wording, and the MIGRATION.md flex auto-margin note.
-  (d) **the weak-pin backlog** — named here, owned by the arc's coverage
-  effort; it does NOT block PR 2's debate: the
-  `transition_completion_removes_the_overlay` assertion gap (the pin is
-  invariant under a stuck-overlay fault — assert the `TransitionEnd`
-  counter like its re-targeting sibling); a 3+-declaration
-  mixed-importance middle-removal pin for the `DeclBlock` bit-vector; a
-  malformed-`!important` block-parse counted-drop pin; canonical-snapshot
-  serializer round-trips for the keyword/number/integer/text value kinds
-  (only length and color pinned today); a 3-value `padding` shorthand
-  case and padding through the style-attribute route; box-sizing's border
-  contribution, height-axis subtraction, and zero-clamp pins; end-to-end
-  percentage rows for padding×4, min/max-width, and left/right; a
-  non-finite-opacity robustness row (unit-only today); and `min`/`max`
-  sizes under `box-sizing: border-box` (CSS UI 4 §3.1 applies box-sizing
-  to the min/max properties; the current clamps use raw specified values
-  — wants a pin and a registry row when admitted or gated).
+  (d) **the weak-pin backlog** — the four items the review classed as
+  owed (not optional) were closed the same day in `d7b6cd9`: the
+  `transition_completion_removes_the_overlay` discrimination gap (now
+  asserts the `TransitionEnd`-event counter 0-before / 1-at completion);
+  the malformed-`!important` block-parse counted-drop pin; the
+  canonical-snapshot `!important` round-trips for the
+  keyword/number/integer/text value kinds (the text kind round-trips
+  stably — the literal-quotes caveat is now pinned, not just recorded);
+  and the `min`/`max`-under-`box-sizing` registration
+  (`off_spec_box_sizing_min_max_sizes_clamp_in_content_box_terms`,
+  divergent: 120px pinned current vs 100px spec-correct, admission
+  deferred per D6). The remaining set is hardening the plan never
+  promised, owned by the arc's coverage effort and not blocking PR 2's
+  debate: a 3+-declaration mixed-importance middle-removal pin for the
+  `DeclBlock` bit-vector; a 3-value `padding` shorthand case and padding
+  through the style-attribute route; box-sizing's border contribution,
+  height-axis subtraction, and zero-clamp pins; end-to-end percentage
+  rows for padding×4, min/max-width, and left/right; and a
+  non-finite-opacity robustness row (unit-only today).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
