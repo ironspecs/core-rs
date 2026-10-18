@@ -783,3 +783,226 @@ fn normal_layer_paints_spillover_escape_hatch() {
         "negative-margin child paints at its negative offset",
     );
 }
+
+#[test]
+// CSS 2.1 §8.3.1 (collapsing margins) — OFF-SPEC divergent pin. Closest WPT:
+// the CSS21 margin-collapse suite (css/CSS2/normal-flow/margin-collapse-*.xht);
+// no single WPT covers the parent-child NEGATIVE-margin boundary shape, so this
+// pins the exact current divergence against the spec's three-branch rule.
+// Gecko: layout/generic/nsBlockFrame.cpp margin-collapse path. Blink:
+// third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc /
+// third_party/blink/renderer/core/layout/block_layout_algorithm.cc.
+//
+// SPEC: a first in-flow child's top margin (last in-flow child's bottom margin)
+// adjoins the parent's and collapses by the SAME three-branch rule as siblings
+// — a negative child margin passes through the boundary (parent 0 + child −20
+// → −20), so the child pulls the parent's boundary up by the collapsed value.
+//
+// CURRENT (pinned): `collapsed_parent_top_margin_px` /
+// `collapsed_parent_bottom_margin_px` (src/domains/layout/flow.rs) clamp the
+// child margin with `.max(0.0)`, and
+// `propagated_empty_intermediary_block_margin_height_px` clamps the
+// intermediary's own and child boundary margins the same way — a negative
+// margin is treated as 0 and the boundary does not move.
+//
+// Spec-correct per row: (a) parent top −20 (child flush at −20); (b) parent
+// border-box height 11 (content 10); (c) outer border-box height 11 (content
+// 10). The proof asserts the CURRENT values, so it fails if behavior moves in
+// EITHER direction.
+fn off_spec_parent_boundary_negative_margins_clamp() {
+    // (a) first child negative top margin: the adjoined pair should collapse to
+    // the negative value and pull the parent's top boundary up by 20 — instead
+    // the clamp keeps the parent at top 0 and the child overflows above it.
+    let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "height", "40px");
+    assert_style_set(&mut root, child, "width", "180px");
+    assert_style_set(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, child, "margin-top", "-20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = parent, rects[2] = child.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        180.0,
+        40.0,
+        "(a) parent stays at top 0",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        -20.0,
+        180.0,
+        10.0,
+        "(a) child overflows above the un-moved parent boundary",
+    );
+
+    // (b) last child negative bottom margin: the adjoined pair should collapse
+    // to −20 and pull the parent's bottom boundary up (auto height 10 + border
+    // 1 = 11) — instead the clamp keeps the parent height at just its border.
+    let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-top", "1px");
+    assert_style_set(&mut root, child, "width", "180px");
+    assert_style_set(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, child, "margin-bottom", "-20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let parent_layout = assert_node_layout(&root, parent);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = parent, rects[2] = child.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        180.0,
+        1.0,
+        "(b) parent collapses to its border",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        1.0,
+        180.0,
+        10.0,
+        "(b) child overflows below the un-moved parent bottom boundary",
+    );
+    assert_close(
+        parent_layout.height_px,
+        1.0,
+        "(b) parent border-box height after the bottom-boundary clamp",
+    );
+
+    // (c) negative margin propagated through an empty intermediary: the
+    // grandchild's −20 bottom margin should propagate through the empty middle
+    // to the outer's bottom boundary (outer auto height 10 + border 1 = 11) —
+    // instead `propagated_empty_intermediary_block_margin_height_px` clamps the
+    // propagated bottom margin with `.max(0.0)`.
+    let (mut world, mut root, container, outer, middle) = nested_parent_child_setup();
+    let grandchild = assert_append_div_to(&mut root, middle);
+    assert_style_set(&mut root, container, "width", "180px");
+    assert_style_set(&mut root, outer, "width", "180px");
+    assert_style_set(&mut root, outer, "border-top", "1px");
+    assert_style_set(&mut root, middle, "width", "180px");
+    assert_style_set(&mut root, grandchild, "width", "180px");
+    assert_style_set(&mut root, grandchild, "height", "10px");
+    assert_style_set(&mut root, grandchild, "margin-bottom", "-20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let outer_layout = assert_node_layout(&root, outer);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = outer, rects[2] = grandchild (the empty
+    // middle is zero-height and emits no rect).
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        180.0,
+        1.0,
+        "(c) outer collapses to its border",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        1.0,
+        180.0,
+        10.0,
+        "(c) grandchild overflows below the un-moved outer boundary",
+    );
+    assert_close(
+        outer_layout.height_px,
+        1.0,
+        "(c) outer border-box height after the empty-intermediary clamp",
+    );
+}
+
+#[test]
+// CSS 2.1 §8.3.1 (collapsing margins) — OFF-SPEC divergent pin. Closest WPT:
+// the CSS21 margin-collapse suite (css/CSS2/normal-flow/margin-collapse-*.xht);
+// no single WPT covers an empty block whose own margins are BOTH negative, so
+// this pins the exact current divergence against the spec's three-branch rule.
+// Gecko: layout/generic/nsBlockFrame.cpp margin-collapse path. Blink:
+// third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc.
+//
+// SPEC: an empty block's own adjoining top and bottom margins collapse by the
+// same three-branch rule — two negative margins collapse to the MOST NEGATIVE
+// (−10, −5 → −10), and a mixed pair sums (10, −5 → 5).
+//
+// CURRENT (pinned): the empty-block self-collapse in `layout_flow_size`
+// (src/domains/layout/flow.rs) predates PR 1 item 2's three-branch rule and
+// uses plain `max` — (−10, −5 → −5) and (10, −5 → 10).
+//
+// The proof asserts the CURRENT values, so it fails if behavior moves in EITHER
+// direction.
+fn off_spec_empty_block_negative_margins_collapse_to_max_not_most_negative() {
+    // (both_negative) empty block `margin: -10px 0 -5px`: current `max` flow
+    // height −5 pulls the following sibling up by 5 (top −4) and leaves the
+    // parent content at 5 (border box 7); spec −10 would pull it to −9 and
+    // leave content 0 (border box 2).
+    let (mut world, mut root) =
+        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let parent = assert_append_div_to(&mut root, document_root);
+    let empty = assert_append_div_to(&mut root, parent);
+    let after = assert_append_div_to(&mut root, parent);
+
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-top", "1px");
+    assert_style_set(&mut root, parent, "border-bottom", "1px");
+    assert_style_set(&mut root, empty, "width", "180px");
+    assert_style_set(&mut root, empty, "margin-top", "-10px");
+    assert_style_set(&mut root, empty, "margin-bottom", "-5px");
+    assert_style_set(&mut root, after, "width", "180px");
+    assert_style_set(&mut root, after, "height", "10px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let parent_layout = assert_node_layout(&root, parent);
+    let after_box = node_box(&root, after).expect("after block should expose a box model");
+    assert_close(
+        parent_layout.height_px,
+        7.0,
+        "(both_negative) parent border-box height after `max` self-collapse",
+    );
+    assert_close(
+        after_box.border_box.top_px,
+        -4.0,
+        "(both_negative) following sibling pulled up by the −5 `max` flow height",
+    );
+
+    // (mixed_sign_control) empty block `margin: 10px 0 -5px`: current `max`
+    // flow height 10 (parent content 10, border box 12); spec mixed-sign sum 5
+    // (content 5, border box 7).
+    let (mut world, mut root) =
+        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let parent = assert_append_div_to(&mut root, document_root);
+    let empty = assert_append_div_to(&mut root, parent);
+
+    assert_style_set(&mut root, parent, "width", "180px");
+    assert_style_set(&mut root, parent, "border-top", "1px");
+    assert_style_set(&mut root, parent, "border-bottom", "1px");
+    assert_style_set(&mut root, empty, "width", "180px");
+    assert_style_set(&mut root, empty, "margin-top", "10px");
+    assert_style_set(&mut root, empty, "margin-bottom", "-5px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let parent_layout = assert_node_layout(&root, parent);
+    assert_close(
+        parent_layout.height_px,
+        12.0,
+        "(mixed_sign_control) parent border-box height after `max` self-collapse",
+    );
+}

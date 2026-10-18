@@ -28,7 +28,7 @@
 
 use std::fmt::Write as _;
 
-use ui_dom::{DomError, DomPointerUpdate, StylesheetLoadReport};
+use ui_dom::{DomError, DomPointerUpdate, RootDomMetricName, StylesheetLoadReport};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_text_to, assert_decl_drop, assert_root_dom_update,
@@ -580,4 +580,35 @@ fn robustness_encoding() {
 
     // (c) NUL byte in a declaration value drops + counts, no crash.
     assert_decl_drop(".x { width: 10\u{0}px }", 0, 1);
+}
+
+#[test]
+// ROBUSTNESS (encoding; class: on-spec drop-and-continue):
+// A non-ASCII tail after `!` (`width: 10px !ééééé`) hits
+// `strip_importance_marker` (`src/domains/style/decl_parse.rs:165-179`), which
+// now uses `str::get` optional slicing (395c97e) so a non-boundary byte index
+// is "not a marker" instead of a panic. The malformed `width` declaration
+// drops + counts on the public metric, `height: 5px` survives (drop-and-continue),
+// and the write returns without panicking.
+fn robustness_non_ascii_importance_marker_drops_without_panic() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+
+    // The non-ASCII-tailed importance marker routes through the PUBLIC
+    // inline-style attribute path, never a panic.
+    root.set_attr_str(target, "style", "width: 10px !ééééé; height: 5px")
+        .expect("non-ASCII importance-marker tail should route without panic");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        root.count(RootDomMetricName::StyleDeclarationDropped),
+        1,
+        "non-ASCII importance-marker tail should count one dropped declaration",
+    );
+    assert_eq!(
+        root.computed_style(target).expect("target").as_box().height,
+        box_px(5.0),
+        "height: 5px should still apply after the dropped width declaration",
+    );
 }

@@ -1765,11 +1765,19 @@ fn resolve_node_content_width(
 /// margins compute to zero per the same section.
 ///
 /// Flex-item auto margins are a DIFFERENT algorithm (Flexbox §8.1) and are
-/// deferred (PR 1 item 7 scope boundary): a flex item's `margin: auto` computes
-/// to 0 for now. The flex placement context gives the item's own resolved
-/// content size as `available_width_px`, so the free space here is
-/// `item_content − item_border_box ≤ 0` and this solver naturally leaves the
-/// 0.0 placeholder — see `flex_item_auto_margin_computes_to_zero_for_now`.
+/// deferred for the MAIN axis (PR 1 item 7 scope boundary): a flex item's
+/// main-axis `margin: auto` computes to 0 for now. The flex placement context
+/// gives the item's own resolved content size as `available_width_px`, so the
+/// main-axis free space here is `item_content − item_border_box ≤ 0` and this
+/// solver naturally leaves the 0.0 placeholder — see
+/// `flex_item_auto_margin_computes_to_zero_for_now`. The registered cross-axis
+/// exception is a block-level item in a COLUMN container: it reaches this
+/// solver through the flex placed-child context's Vertical branch (which leaves
+/// `available_width_px` as the container's content width), so its cross-axis
+/// auto margins DO absorb free space — accidental but §8.1-aligned, pinned by
+/// `column_flex_block_item_cross_auto_margins_absorb_free_space`. Full §8.1
+/// semantics (auto margins vs align-self, main-axis absorption) await the named
+/// D6 admission.
 fn resolve_block_auto_margins(
     style: &mut NodeStyle,
     cb_width_px: Option<f32>,

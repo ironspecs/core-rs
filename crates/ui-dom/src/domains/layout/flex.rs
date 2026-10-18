@@ -2722,11 +2722,16 @@ fn cross_axis_margin_size_px(sides: BoxSides, main_axis: FlexAxis) -> f32 {
 }
 
 fn main_axis_start_margin(style: NodeStyle, main_axis: FlexAxis) -> f32 {
-    // Flexbox §8.1 auto-margin free-space absorption is deferred (PR 1 item 7
-    // scope boundary, `flex_item_auto_margin_computes_to_zero_for_now`): a flex
-    // item's `margin: auto` computes to 0 here. `node_style` already resolves
-    // an auto margin edge to a 0.0 placeholder, and this solver reads that
-    // resolved edge without distributing free space.
+    // Flexbox §8.1 auto-margin free-space absorption is deferred for the MAIN
+    // axis (PR 1 item 7 scope boundary,
+    // `flex_item_auto_margin_computes_to_zero_for_now`): a flex item's main-axis
+    // `margin: auto` computes to 0 here. `node_style` already resolves an auto
+    // margin edge to a 0.0 placeholder, and this solver reads that resolved
+    // edge without distributing free space. The cross-axis block-item case in a
+    // COLUMN container absorbs through the block §10.3.3 solver (accidental,
+    // §8.1-aligned; pinned by
+    // `column_flex_block_item_cross_auto_margins_absorb_free_space`). Full §8.1
+    // semantics await the named D6 admission.
     main_axis_start_margin_from_sides(style.sides, main_axis)
 }
 

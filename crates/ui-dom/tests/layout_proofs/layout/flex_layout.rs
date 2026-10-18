@@ -5716,6 +5716,75 @@ fn nested_flex_auto_basis_block_children_participate_in_flex_layout() {
     );
 }
 
+#[test]
+// CSS Flexbox 1 §8.1 (aligning with auto margins) — on-spec for the pinned
+// case, held by an ACCIDENTAL solver path. Spec: a flex item's `margin: auto`
+// absorbs free space in its axis. In a COLUMN container the cross axis is the
+// inline axis, so `margin-left: auto; margin-right: auto` on a fixed-width
+// block item should center it in the container's cross size.
+//
+// HOW THIS WORKS TODAY (accidental, §8.1-aligned for this simple case): a
+// block-level item in a COLUMN container gets its cross-axis auto margins
+// absorbed through the BLOCK §10.3.3 solver — `resolve_block_auto_margins`
+// (`src/domains/layout/flow.rs`) is reached via the Vertical branch of the
+// flex placed-child context (`src/domains/layout/flex.rs`), which leaves
+// `available_width_px` as the container's content width, so the free space is
+// non-zero and the pair splits it. Full §8.1 semantics (auto margins vs
+// `align-self`, and MAIN-axis absorption — which still computes to 0, pinned by
+// `flex_item_auto_margin_computes_to_zero_for_now`) await the named D6
+// admission. This pin exists so the accidental cross-axis behavior cannot drift
+// silently: it is NOT `off_spec_`-named because it is not divergent.
+fn column_flex_block_item_cross_auto_margins_absorb_free_space() {
+    // Primary: a 20px-wide block item with both cross-axis margins auto in a
+    // 60px column container centers at left (60 − 20) / 2 = 20.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_column_container_size(&mut root, container, "60px", "40px");
+    assert_set_inflexible_column_item(&mut root, item, "10px", "20px");
+    assert_style_set(&mut root, item, "margin-left", "auto");
+    assert_style_set(&mut root, item, "margin-right", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item.
+    assert_rect_op_geometry(
+        &rects[1],
+        20.0,
+        0.0,
+        20.0,
+        10.0,
+        "column item centered by cross-axis auto margins",
+    );
+
+    // Control: `margin-left: 0` (right auto) leaves the left edge at the
+    // cross-axis start, proving the pair — not the stretch/alignment path —
+    // produced the centered placement above.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_column_container_size(&mut root, container, "60px", "40px");
+    assert_set_inflexible_column_item(&mut root, item, "10px", "20px");
+    assert_style_set(&mut root, item, "margin-left", "0");
+    assert_style_set(&mut root, item, "margin-right", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        20.0,
+        10.0,
+        "column item left edge stays at cross-start without the auto left margin",
+    );
+}
+
 fn flex_row_container_setup() -> (bevy::prelude::World, RootDom, DomNodeSlotKey) {
     let (world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
