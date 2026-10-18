@@ -563,7 +563,8 @@ quirky downstream. Verify each at pin time.
 | `font-weight` / `font-style` computed but ignored | rendered regular/upright | consume weight/style | divergent (same family) — pin |
 | `text-align: justify`/`justified` consumption | **consumed** — `TextAlign::Justified → cosmic_text::Align::Justified` (`text_render.rs:104-106`) | justified text | on-spec (pin to keep) |
 | `font-style: oblique` | dropped+counted (closed set normal/italic) | oblique admitted in CSS | unimplemented |
-| `white-space: pre` / `pre-line` / `break-spaces` consumption | admitted keywords; verify real text-layout modes | full white-space modes | verify per keyword; pin actual |
+| `white-space: pre-line` consumption | **verified**: `collapse_spaces_preserving_segment_breaks` (`white_space.rs:147-180`) collapses spaces/tabs and preserves newlines | full white-space modes | on-spec (pin to keep) |
+| `white-space: break-spaces` consumption | **verified**: folds into `pre-wrap`'s `preserve_space_run_advances` (`white_space.rs:255-277`); repeated trailing spaces wrap via NBSP substitution but a lone trailing space is not preserved | a distinct break-spaces policy (preserve every trailing space) | **divergent (approximated as `pre-wrap`)** — pin |
 | `transform` transitions (`transition: transform 100ms`) | **no transition schedules** — the transform value jumps at the next update (its `DeclValue` is interned text, which the scheduler cannot interpolate; the typed `[f32; 2]` pair is the admission shape; v0.5 had a delayed step) | transform interpolates | **divergent (documented, MIGRATION.md)** — pin |
 | range control + authored `border-radius: 0px` | falls to pill default (flattened presence) | authored wins over control default | **divergent (documented)** — pin; fix is the behavior-sheet tier (F) |
 | `dir` content attr vs `direction` property | `direction` wins (documented) | HTML/CSS interaction | on-spec (pin to keep) |
@@ -1277,7 +1278,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | B1 (a) — pins of current behavior (`style/unsupported_values.rs`) | done |
 | B2 — units & sizing keywords | **done** (pins; all rows verified; the stale `font-size: unset` row was resolved by B1b and is marked above) |
 | B3 — box shorthands | done (pins; all rows verified dropped+counted + group-initial) |
-| B4 — text consumption & admitted quirks | not started |
+| B4 — text consumption & admitted quirks | done (pins; all rows verified; break-spaces classed divergent as a pre-wrap fold; see `style/admitted_gaps.rs`) |
 | B5 — preserved candidates | not started |
 | B6 — layout-impact properties | not started |
 | B7 — color grammar | not started |
