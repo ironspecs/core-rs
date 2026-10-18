@@ -1246,7 +1246,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | Plan: phases + data structures/algorithms (`6fa0a75`, `2d5b951`) | done |
 | Plan: adversarial review adjudication (`85de600`) | done |
 | Plan: compaction-survival pass (decision log, evidence registry, playbook) | done |
-| Batch 0 — suite reorganization | not started |
+| Batch 0 — suite reorganization | done |
 | B1 — sign rules & numeric edges | not started |
 | B2 — units & sizing keywords | not started |
 | B3 — box shorthands | not started |

@@ -70,17 +70,17 @@ sections only; **crate-owned** = pins crate invariants by design.
 
 | Spec area | Pinning modules | Provenance |
 |---|---|---|
-| CSS 2.1 §8 box model, §8.3.1 margin collapsing | `normal_flow.rs`, `content_height.rs` | partial (impl files in `normal_flow.rs`) |
-| CSS 2.1 §9.2–9.4 block/inline formatting, §10.3/10.6 width and height | `block_inline.rs`, `content_height.rs`, `text_auto_size.rs` | full in `block_inline.rs`; partial elsewhere; `text_auto_size.rs` carries per-test Blink/Gecko notes |
-| CSS 2.1 §9.3 positioning, §10.3.7/10.6.4 absolutely positioned | `fixed_layers.rs`, `normal_flow.rs`, `transitions.rs` | partial |
-| CSS 2.1 §10.3.2/10.6.2 replaced elements, CSS Images 3 §5.3 | `replaced_elements.rs` | full, with a declared deliberate divergence (see registry) |
-| CSS 2.1 §10.7 min/max sizes, §11.1.1 overflow; CSS 2.2 §10.6.6/10.6.7 | `popup_menus.rs`, `popup_text_rows.rs` | partial in `popup_text_rows.rs`; `popup_menus.rs` is crate-owned |
-| CSS Flexbox 1 | `flex_layout.rs` | full; unadmitted subsets gated in `src/domains/layout/flex.rs` |
-| CSS Text 4 `white-space`; CSS Text 3 wrapping and word-break | `white_space.rs`, `text_auto_size.rs` | full in `white_space.rs` |
-| CSS Forms 1 `field-sizing`, HTML rendering widgets, CSS Sizing 3 | `form_control_auto_size.rs` | full |
-| CSS Transitions 1 | `transitions.rs` | partial |
-| HTML Standard "update the rendering" (pipeline ordering) | `stylesheet_lifecycle.rs` | full (explicit no-single-WPT statement) |
-| CSS Cascading and Inheritance: cascade order, specificity, inheritance transmission; CSS 2.1 §4.1.7 + css-style-attr §3 declaration error handling; CSS Fonts 4 §3.1–3.3 font-property inheritance | `cascade.rs` | full (module-header + per-family provenance; no divergences) |
+| CSS 2.1 §8 box model, §8.3.1 margin collapsing | `layout/normal_flow.rs`, `layout/content_height.rs` | partial (impl files in `layout/normal_flow.rs`) |
+| CSS 2.1 §9.2–9.4 block/inline formatting, §10.3/10.6 width and height | `layout/block_inline.rs`, `layout/content_height.rs`, `text/text_auto_size.rs` | full in `layout/block_inline.rs`; partial elsewhere; `text/text_auto_size.rs` carries per-test Blink/Gecko notes |
+| CSS 2.1 §9.3 positioning, §10.3.7/10.6.4 absolutely positioned | `layout/fixed_layers.rs`, `layout/normal_flow.rs`, `pipeline/transitions.rs` | partial |
+| CSS 2.1 §10.3.2/10.6.2 replaced elements, CSS Images 3 §5.3 | `layout/replaced_elements.rs` | full, with a declared deliberate divergence (see registry) |
+| CSS 2.1 §10.7 min/max sizes, §11.1.1 overflow; CSS 2.2 §10.6.6/10.6.7 | `widgets/popup_menus.rs`, `widgets/popup_text_rows.rs` | partial in `widgets/popup_text_rows.rs`; `widgets/popup_menus.rs` is crate-owned |
+| CSS Flexbox 1 | `layout/flex_layout.rs` | full; unadmitted subsets gated in `src/domains/layout/flex.rs` |
+| CSS Text 4 `white-space`; CSS Text 3 wrapping and word-break | `text/white_space.rs`, `text/text_auto_size.rs` | full in `text/white_space.rs` |
+| CSS Forms 1 `field-sizing`, HTML rendering widgets, CSS Sizing 3 | `layout/form_control_auto_size.rs` | full |
+| CSS Transitions 1 | `pipeline/transitions.rs` | partial |
+| HTML Standard "update the rendering" (pipeline ordering) | `pipeline/stylesheet_lifecycle.rs` | full (explicit no-single-WPT statement) |
+| CSS Cascading and Inheritance: cascade order, specificity, inheritance transmission; CSS 2.1 §4.1.7 + css-style-attr §3 declaration error handling; CSS Fonts 4 §3.1–3.3 font-property inheritance | `style/cascade.rs` | full (module-header + per-family provenance; no divergences) |
 
 ## Known off-spec registry
 
@@ -104,22 +104,22 @@ relabels the proof on-spec.
 
 | Proof or gate | Class | Spec claim | Current (pinned) vs spec-correct | Root cause |
 |---|---|---|---|---|
-| `off_spec_adjacent_negative_block_margins_collapse_to_most_negative` (`normal_flow.rs`) | divergent | CSS 2.1 §8.3.1 final paragraph: adjoining negative margins collapse to the most negative | sums −10px and −5px to −15px; spec: −10px | `collapsed_sibling_margin_overlap_px` clamps the collapse overlap to ≥ 0 in `src/domains/layout/flow.rs` |
-| 16:9 placeholder intrinsic ratio (`replaced_elements.rs`, declared in module header) | deliberate | CSS Images 3 §5.3 default object size 300×150 applies to images with no intrinsic dimensions | unloaded `img` seeds a 16:9 placeholder ratio; the §10.3.2/10.6.2 transfer math stays on-spec | crate-owned placeholder policy for never-loaded images |
+| `off_spec_adjacent_negative_block_margins_collapse_to_most_negative` (`layout/normal_flow.rs`) | divergent | CSS 2.1 §8.3.1 final paragraph: adjoining negative margins collapse to the most negative | sums −10px and −5px to −15px; spec: −10px | `collapsed_sibling_margin_overlap_px` clamps the collapse overlap to ≥ 0 in `src/domains/layout/flow.rs` |
+| 16:9 placeholder intrinsic ratio (`layout/replaced_elements.rs`, declared in module header) | deliberate | CSS Images 3 §5.3 default object size 300×150 applies to images with no intrinsic dimensions | unloaded `img` seeds a 16:9 placeholder ratio; the §10.3.2/10.6.2 transfer math stays on-spec | crate-owned placeholder policy for never-loaded images |
 | Flex subsets beyond batches 3–7 | unimplemented | CSS Flexbox 1 areas the active solver does not admit | admission gated by `active_flex_gate_*` unit tests in `src/domains/layout/flex.rs`; fallback is the placeholder solver | active solver subset; see flex coverage map |
-| Cascade model: no `!important`, no built-in UA stylesheet, no cascade layers | unimplemented | CSS Cascade 5 §6: important declarations, origin layers | precedence is exactly `(origin.priority, specificity, order)`, pinned by `cascade.rs` families 1–3 | `domains/style` precedence model; the present model is pinned, the absent features await a redesign decision |
+| Cascade model: no `!important`, no built-in UA stylesheet, no cascade layers | unimplemented | CSS Cascade 5 §6: important declarations, origin layers | precedence is exactly `{ origin_priority, inline, specificity, order }` (the `inline` flag sorts above any selector per css-style-attr §4), pinned by `style/cascade.rs` families 1–3 | `domains/style` precedence model; the present model is pinned, the absent features await a redesign decision |
 
 Popup coverage map:
 
-- `popup_menus.rs`: synthetic fixed-row popup clamp math.
-- `popup_text_rows.rs`: browser-style text-row popup retained layout for below-max,
+- `widgets/popup_menus.rs`: synthetic fixed-row popup clamp math.
+- `widgets/popup_text_rows.rs`: browser-style text-row popup retained layout for below-max,
   over-max, live growth, `absolute` positioning, wrapped rows, partial-shrink,
   and empty-shrink behavior.
-- `text_auto_size.rs`: row-level text auto sizing and wrapped-text growth.
+- `text/text_auto_size.rs`: row-level text auto sizing and wrapped-text growth.
 
 Flex coverage map:
 
-- `flex_layout.rs`: spec-backed browser flex proofs grouped by staged solver
+- `layout/flex_layout.rs`: spec-backed browser flex proofs grouped by staged solver
   batches.
 - Batch 3: positive free space distribution and negative free space
   distribution. These proofs are active.
@@ -135,18 +135,18 @@ Flex coverage map:
 
 Normal-flow coverage map:
 
-- `block_inline.rs`: block stacking, inline line building, block-after-inline
+- `layout/block_inline.rs`: block stacking, inline line building, block-after-inline
   line breaks, content-box origins under padding, inline shrink-wrap, inline
   sibling participation, and inline-block text chip shrink-wrap.
-- `content_height.rs`: auto-height accumulation, empty collapse, child removal,
+- `layout/content_height.rs`: auto-height accumulation, empty collapse, child removal,
   and flow participation rules.
-- `fixed_layers.rs`: the same block/inline invariants when the containing block
+- `layout/fixed_layers.rs`: the same block/inline invariants when the containing block
   comes from a fixed-position layer root.
-- `normal_flow.rs`: positioning-scheme participation and scroll-content-height
+- `layout/normal_flow.rs`: positioning-scheme participation and scroll-content-height
   invariants.
-- `white_space.rs`: CSS Text-backed `white-space` collapse, preservation, and
+- `text/white_space.rs`: CSS Text-backed `white-space` collapse, preservation, and
   wrapping behavior.
-- `stylesheet_lifecycle.rs`: stylesheet load/attach/append/import orderings
+- `pipeline/stylesheet_lifecycle.rs`: stylesheet load/attach/append/import orderings
   must all present styled content on the first update, and unloaded
   stylesheets must stay unapplied.
 

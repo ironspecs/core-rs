@@ -159,7 +159,8 @@ fold), or the computed read surface (`RootDom::computed_style`).
   retained state. This is a scoped, adjudicated exception to the repo's
   fail-fast rule for boundary data (see AGENTS.md); single-declaration APIs
   stay strict.
-- The precedence model is exactly `(origin.priority, specificity, order)`.
+- The precedence model is exactly `{ origin_priority, inline, specificity,
+  order }` (the `inline` flag sorts above any selector per css-style-attr §4).
   There is no `!important`, no built-in UA stylesheet (consumers may model one
   as a low-priority origin), and no cascade layers. These are known
   divergences from CSS Cascading and are pinned as labeled off-spec proofs in

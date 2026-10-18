@@ -18,9 +18,11 @@
 
 #![allow(clippy::float_cmp)]
 
-#[allow(dead_code)]
-#[path = "layout_proofs/support.rs"]
-mod support;
+use crate::layout_proofs::support::{
+    assert_append_div_to, assert_append_input_to, assert_load_root_stylesheet,
+    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    attached_gpu_root_dom_default_viewport_setup,
+};
 
 use bevy::prelude::World;
 use ui_dom::{
@@ -34,16 +36,16 @@ fn theme_origin() -> StyleRuleOrigin {
 }
 
 fn update(world: &mut World, root: &mut RootDom) {
-    support::assert_root_dom_update(world, root, 0.0, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(world, root, 0.0, DomPointerUpdate::Unchanged);
 }
 
 /// Returns `(world, root, container)` with a single styled (style-armed) div
 /// under the document root.
 fn armed_div_setup() -> (World, RootDom, DomNodeSlotKey) {
-    let (world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
+    let (world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
-    let container = support::assert_append_div_to(&mut root, document_root);
-    support::assert_set_attr_str(&mut root, container, "class", "panel");
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, container, "class", "panel");
     (world, root, container)
 }
 
@@ -52,7 +54,7 @@ fn armed_div_setup() -> (World, RootDom, DomNodeSlotKey) {
 #[test]
 fn box_group_agrees_with_stylesheet_lengths_and_unset() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".panel { width: 120px; height: 40px; min-width: 20px; }",
@@ -66,7 +68,7 @@ fn box_group_agrees_with_stylesheet_lengths_and_unset() {
     assert_eq!(box_.min_height, None);
 
     // `unset` width removes the longhand, so the group field is `None`.
-    support::assert_load_root_stylesheet(
+    assert_load_root_stylesheet(
         &root,
         StyleRuleOrigin::new("late", 1),
         ".panel { width: unset; }",
@@ -84,7 +86,7 @@ fn box_group_agrees_with_stylesheet_lengths_and_unset() {
 #[test]
 fn box_group_agrees_with_margin_edges_and_negative_margins() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".panel { margin-top: 4px; margin-right: 6px; margin-bottom: -10px; margin-left: 2px; }",
@@ -101,8 +103,8 @@ fn box_group_agrees_with_margin_edges_and_negative_margins() {
 #[test]
 fn flex_group_agrees_with_direct_gap_shorthand() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "display", "flex");
-    support::assert_style_set(&mut root, container, "gap", "12px");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "gap", "12px");
     update(&mut world, &mut root);
 
     assert_eq!(
@@ -117,8 +119,8 @@ fn flex_group_agrees_with_direct_gap_shorthand() {
 #[test]
 fn flex_group_gap_two_value_shorthand_and_longhand_precedence() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "display", "flex");
-    support::assert_style_set(&mut root, container, "gap", "4px 8px");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "gap", "4px 8px");
     update(&mut world, &mut root);
     assert_eq!(
         root.computed_style(container)
@@ -132,9 +134,9 @@ fn flex_group_gap_two_value_shorthand_and_longhand_precedence() {
     // for its axis only (shorthands expand to longhands at parse time, so the
     // later declaration wins by cascade order).
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "display", "flex");
-    support::assert_style_set(&mut root, container, "gap", "4px 8px");
-    support::assert_style_set(&mut root, container, "row-gap", "2px");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "gap", "4px 8px");
+    assert_style_set(&mut root, container, "row-gap", "2px");
     update(&mut world, &mut root);
     assert_eq!(
         root.computed_style(container)
@@ -148,9 +150,9 @@ fn flex_group_gap_two_value_shorthand_and_longhand_precedence() {
 #[test]
 fn flex_group_agrees_with_direct_flex_and_flex_flow_shorthands() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "display", "flex");
-    support::assert_style_set(&mut root, container, "flex", "1 0 auto");
-    support::assert_style_set(&mut root, container, "flex-flow", "column wrap");
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex", "1 0 auto");
+    assert_style_set(&mut root, container, "flex-flow", "column wrap");
     update(&mut world, &mut root);
 
     let flex = root.computed_style(container).expect("container").as_flex();
@@ -166,11 +168,7 @@ fn flex_group_agrees_with_direct_flex_and_flex_flow_shorthands() {
 #[test]
 fn visual_group_agrees_with_stylesheet_radius_expansion() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(
-        &root,
-        theme_origin(),
-        ".panel { border-radius: 3px 4px; }",
-    );
+    assert_load_root_stylesheet(&root, theme_origin(), ".panel { border-radius: 3px 4px; }");
     update(&mut world, &mut root);
 
     assert_eq!(
@@ -185,7 +183,7 @@ fn visual_group_agrees_with_stylesheet_radius_expansion() {
 #[test]
 fn visual_group_agrees_with_direct_border_radius_shorthand_fallback() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "border-radius", "1px 2px 3px 4px");
+    assert_style_set(&mut root, container, "border-radius", "1px 2px 3px 4px");
     update(&mut world, &mut root);
 
     assert_eq!(
@@ -200,7 +198,7 @@ fn visual_group_agrees_with_direct_border_radius_shorthand_fallback() {
 #[test]
 fn visual_and_color_groups_agree_with_stylesheet_colors() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".panel { background-color: #112233; color: #abcdef; }",
@@ -221,7 +219,7 @@ fn visual_and_color_groups_agree_with_stylesheet_colors() {
 #[test]
 fn visual_group_agrees_with_direct_border_color_fallback() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "border-color", "#112233");
+    assert_style_set(&mut root, container, "border-color", "#112233");
     update(&mut world, &mut root);
 
     let rgba = parse_css_color_rgba("#112233").expect("border color");
@@ -239,11 +237,11 @@ fn visual_group_agrees_with_direct_border_color_fallback() {
 #[test]
 fn font_group_resolves_em_chain_and_line_height() {
     let (mut world, mut root, container) = armed_div_setup();
-    let parent = support::assert_append_div_to(&mut root, container);
-    let child = support::assert_append_div_to(&mut root, parent);
-    support::assert_set_attr_str(&mut root, parent, "class", "base");
-    support::assert_set_attr_str(&mut root, child, "class", "scaled");
-    support::assert_load_root_stylesheet(
+    let parent = assert_append_div_to(&mut root, container);
+    let child = assert_append_div_to(&mut root, parent);
+    assert_set_attr_str(&mut root, parent, "class", "base");
+    assert_set_attr_str(&mut root, child, "class", "scaled");
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".base { font-size: 10px; } .scaled { font-size: 1.5em; line-height: 1.5; }",
@@ -258,7 +256,7 @@ fn font_group_resolves_em_chain_and_line_height() {
 #[test]
 fn font_group_line_height_normal_is_none() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(&root, theme_origin(), ".panel { line-height: normal; }");
+    assert_load_root_stylesheet(&root, theme_origin(), ".panel { line-height: normal; }");
     update(&mut world, &mut root);
 
     assert_eq!(
@@ -274,7 +272,7 @@ fn font_group_line_height_normal_is_none() {
 fn font_group_resolves_weight_keywords_and_bolder_chain() {
     // bold → 700, 600 → 600.
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(&root, theme_origin(), ".panel { font-weight: bold; }");
+    assert_load_root_stylesheet(&root, theme_origin(), ".panel { font-weight: bold; }");
     update(&mut world, &mut root);
     assert_eq!(
         root.computed_style(container)
@@ -285,7 +283,7 @@ fn font_group_resolves_weight_keywords_and_bolder_chain() {
     );
 
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(&root, theme_origin(), ".panel { font-weight: 600; }");
+    assert_load_root_stylesheet(&root, theme_origin(), ".panel { font-weight: 600; }");
     update(&mut world, &mut root);
     assert_eq!(
         root.computed_style(container)
@@ -297,10 +295,10 @@ fn font_group_resolves_weight_keywords_and_bolder_chain() {
 
     // Parent 400 (default), child bolder → 700 (CSS Fonts 4 relative table).
     let (mut world, mut root, container) = armed_div_setup();
-    let parent = support::assert_append_div_to(&mut root, container);
-    let child = support::assert_append_div_to(&mut root, parent);
-    support::assert_set_attr_str(&mut root, child, "class", "bolder");
-    support::assert_load_root_stylesheet(&root, theme_origin(), ".bolder { font-weight: bolder; }");
+    let parent = assert_append_div_to(&mut root, container);
+    let child = assert_append_div_to(&mut root, parent);
+    assert_set_attr_str(&mut root, child, "class", "bolder");
+    assert_load_root_stylesheet(&root, theme_origin(), ".bolder { font-weight: bolder; }");
     update(&mut world, &mut root);
     assert_eq!(
         root.computed_style(child).expect("child").as_font().weight,
@@ -313,9 +311,9 @@ fn font_group_resolves_weight_keywords_and_bolder_chain() {
 #[test]
 fn text_group_carries_materialized_text_align_and_direction() {
     let (mut world, mut root, container) = armed_div_setup();
-    let child = support::assert_append_div_to(&mut root, container);
-    support::assert_set_attr_str(&mut root, child, "class", "leaf");
-    support::assert_load_root_stylesheet(
+    let child = assert_append_div_to(&mut root, container);
+    assert_set_attr_str(&mut root, child, "class", "leaf");
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".panel { text-align: center; direction: rtl; }",
@@ -333,9 +331,9 @@ fn font_family_inherits_the_future_correct_group_value() {
     // pins non-inheritance at the ATTRIBUTE level; the group projects the
     // CSS-correct inherited family (3.3g behavior arriving early in group-land).
     let (mut world, mut root, container) = armed_div_setup();
-    let child = support::assert_append_div_to(&mut root, container);
-    support::assert_set_attr_str(&mut root, child, "class", "leaf");
-    support::assert_load_root_stylesheet(
+    let child = assert_append_div_to(&mut root, container);
+    assert_set_attr_str(&mut root, child, "class", "leaf");
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".panel { font-family: ui-sans, sans-serif; }",
@@ -353,7 +351,7 @@ fn font_family_inherits_the_future_correct_group_value() {
 #[test]
 fn transform_group_agrees_with_direct_translate_and_none() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "transform", "translateX(10px)");
+    assert_style_set(&mut root, container, "transform", "translateX(10px)");
     update(&mut world, &mut root);
     let transform = root
         .computed_style(container)
@@ -363,7 +361,7 @@ fn transform_group_agrees_with_direct_translate_and_none() {
     assert!(transform.has_transform);
 
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "transform", "none");
+    assert_style_set(&mut root, container, "transform", "none");
     update(&mut world, &mut root);
     let transform = root
         .computed_style(container)
@@ -378,7 +376,7 @@ fn transform_group_agrees_with_direct_translate_and_none() {
 #[test]
 fn transition_slot_agrees_with_stylesheet_shorthand_expansion() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".panel { transition: left 180ms ease-out, width 1s; }",
@@ -416,7 +414,7 @@ fn transition_slot_rejects_over_capacity_duration_list_strictly() {
     update(&mut world, &mut root);
 
     // A capacity-sized list is admitted and fills the slot in order.
-    support::assert_style_set(
+    assert_style_set(
         &mut root,
         container,
         "transition-duration",
@@ -433,9 +431,9 @@ fn transition_slot_rejects_over_capacity_duration_list_strictly() {
 
 #[test]
 fn visual_group_agrees_with_focus_behavior_outline() {
-    let (mut world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
-    let input = support::assert_append_input_to(&mut root, document_root);
+    let input = assert_append_input_to(&mut root, document_root);
     root.focus(input).expect("input should focus");
     update(&mut world, &mut root);
 
@@ -453,7 +451,7 @@ fn visual_group_agrees_with_focus_behavior_outline() {
 #[test]
 fn direct_width_write_applies_on_the_next_pass() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_load_root_stylesheet(
+    assert_load_root_stylesheet(
         &root,
         theme_origin(),
         ".panel { width: 20px; height: 40px; }",
@@ -467,7 +465,7 @@ fn direct_width_write_applies_on_the_next_pass() {
         Some(20.0)
     );
 
-    support::assert_style_set(&mut root, container, "width", "10px");
+    assert_style_set(&mut root, container, "width", "10px");
 
     // D2 one-timing: a `style_mut` write marks style-dirty only; the pass
     // resolves the inline declaration on the next update, not synchronously.
@@ -492,10 +490,10 @@ fn direct_width_write_applies_on_the_next_pass() {
 #[test]
 fn direct_gap_shorthand_write_applies_on_the_next_pass() {
     let (mut world, mut root, container) = armed_div_setup();
-    support::assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "display", "flex");
     update(&mut world, &mut root);
 
-    support::assert_style_set(&mut root, container, "gap", "12px");
+    assert_style_set(&mut root, container, "gap", "12px");
 
     // D2 one-timing: the gap write is not reflected until the next pass.
     assert_eq!(
@@ -518,22 +516,22 @@ fn direct_gap_shorthand_write_applies_on_the_next_pass() {
 
 #[test]
 fn transition_overlay_merges_mid_flight_left_into_computed_box() {
-    let (mut world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
-    let panel = support::assert_append_div_to(&mut root, document_root);
-    support::assert_style_set(&mut root, panel, "position", "fixed");
-    support::assert_style_set(&mut root, panel, "top", "0px");
-    support::assert_style_set(&mut root, panel, "width", "120px");
-    support::assert_style_set(&mut root, panel, "height", "120px");
-    support::assert_style_set(&mut root, panel, "left", "-100px");
-    support::assert_style_set(&mut root, panel, "transition", "left 180ms ease-out");
+    let panel = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, panel, "position", "fixed");
+    assert_style_set(&mut root, panel, "top", "0px");
+    assert_style_set(&mut root, panel, "width", "120px");
+    assert_style_set(&mut root, panel, "height", "120px");
+    assert_style_set(&mut root, panel, "left", "-100px");
+    assert_style_set(&mut root, panel, "transition", "left 180ms ease-out");
 
-    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    support::assert_style_set(&mut root, panel, "left", "0px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_style_set(&mut root, panel, "left", "0px");
     // Pass-driven scheduling (D2 one-timing): the first update detects the
     // change and starts the transition; the second advances it to the mid-time.
-    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    support::assert_root_dom_update(&mut world, &mut root, 0.09, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(&mut world, &mut root, 0.09, DomPointerUpdate::Unchanged);
 
     let left = root.computed_style(panel).expect("panel").as_box().left;
     let Some(left) = left else {
@@ -567,23 +565,23 @@ fn transition_overlay_merges_mid_flight_left_into_computed_box() {
 
 #[test]
 fn transition_overlay_merges_mid_flight_color_into_computed_visual() {
-    let (mut world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
-    let panel = support::assert_append_div_to(&mut root, document_root);
-    support::assert_style_set(&mut root, panel, "background-color", "#000000");
-    support::assert_style_set(
+    let panel = assert_append_div_to(&mut root, document_root);
+    assert_style_set(&mut root, panel, "background-color", "#000000");
+    assert_style_set(
         &mut root,
         panel,
         "transition",
         "background-color 180ms linear",
     );
 
-    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    support::assert_style_set(&mut root, panel, "background-color", "#ffffff");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_style_set(&mut root, panel, "background-color", "#ffffff");
     // Pass-driven scheduling (D2 one-timing): the first update detects the
     // change and starts the transition; the second advances it to the mid-time.
-    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    support::assert_root_dom_update(&mut world, &mut root, 0.09, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_root_dom_update(&mut world, &mut root, 0.09, DomPointerUpdate::Unchanged);
 
     let background = root
         .computed_style(panel)

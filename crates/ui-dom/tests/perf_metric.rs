@@ -209,7 +209,7 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
 /// root's style phase, so the update pays one full style recompute for the
 /// two styled chips (one tracked-attribute set per styled element) before
 /// layout and paint, matching the browser pipeline order (style before
-/// layout) that `layout_proofs/stylesheet_lifecycle.rs` proves
+/// layout) that `layout_proofs/pipeline/stylesheet_lifecycle.rs` proves
 /// behaviorally. The pre-fix pin had no `StyleUpdated` and no tracked-set
 /// allocations on this path; that absence was the first-render bug.
 #[test]
@@ -533,7 +533,7 @@ fn text_rewrap_metric_deltas_stay_pinned() {
 }
 
 // The four `root_node_store_metrics_*` tests below were relocated from
-// `layout_proofs/normal_flow.rs`: they pin node-store instrumentation, not
+// `layout_proofs/layout/normal_flow.rs`: they pin node-store instrumentation, not
 // layout, and the layout_proofs module policy asserts layout results only.
 
 fn node_store_metric_history_names(root: &RootDom) -> Vec<RootDomNodesMetricName> {
@@ -650,7 +650,7 @@ fn root_node_store_metrics_reset_clears_previous_accesses() {
 
 /// A relayout of an already-built fixed-layer tree must not insert or remove
 /// node slots: the node store is the retained DOM, not a per-frame structure.
-/// Relocated from `layout_proofs/fixed_layers.rs`, where this invariant was
+/// Relocated from `layout_proofs/layout/fixed_layers.rs`, where this invariant was
 /// embedded inside two layout proofs.
 #[test]
 fn fixed_layer_relayout_does_not_churn_node_store() {

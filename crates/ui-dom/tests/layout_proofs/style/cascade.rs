@@ -56,7 +56,7 @@
 //!   drop-and-continue with a counted, observable report (CSS 2.1 §4.1.7,
 //!   css-style-attr §3); this module has no off-spec proofs (see the registry
 //!   in `layout_proofs/README.md` for the one remaining divergence, in
-//!   `normal_flow.rs`)
+//!   `layout/normal_flow.rs`)
 
 use bevy::prelude::World;
 use ui_dom::{
