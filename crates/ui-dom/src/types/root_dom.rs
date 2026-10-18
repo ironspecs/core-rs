@@ -6022,6 +6022,161 @@ mod tests {
     }
 
     #[test]
+    fn canonical_style_snapshot_preserves_importance_for_keyword_values_and_replays() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let node = root.create_element(DomTag::Div).expect("div");
+
+        // `position` uses the closed `Keywords(POSITION_KEYWORDS)` grammar
+        // (presentation_property.rs); `absolute` parses to
+        // `DeclValue::Keyword(Keyword::Absolute)` and serializes to its
+        // canonical name with the ` !important` suffix.
+        root.style_mut(node)
+            .set("position", "absolute !important")
+            .expect("important position");
+        let snapshot = root.canonical_style_snapshot(node);
+        assert_eq!(
+            snapshot.styles,
+            vec![(
+                "position".to_string(),
+                DomAttributeValue::String("absolute !important".to_string())
+            )]
+        );
+
+        // Replaying through the style-attribute route round-trips to the same
+        // snapshot (the keyword re-parses through the closed POSITION_KEYWORDS
+        // set).
+        let replayed = snapshot
+            .styles
+            .iter()
+            .map(|(name, value)| {
+                let DomAttributeValue::String(text) = value else {
+                    panic!("important declarations serialize to string values only");
+                };
+                format!("{name}: {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        root.set_attr_str(node, "style", &replayed)
+            .expect("style round-trip");
+        assert_eq!(root.canonical_style_snapshot(node), snapshot);
+    }
+
+    #[test]
+    fn canonical_style_snapshot_preserves_importance_for_number_values_and_replays() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let node = root.create_element(DomTag::Div).expect("div");
+
+        // `opacity` uses the `Opacity` grammar (presentation_property.rs), which
+        // clamps any finite f32 to [0, 1] and yields `DeclValue::Number`; 0.5
+        // serializes to "0.5" with the ` !important` suffix.
+        root.style_mut(node)
+            .set("opacity", "0.5 !important")
+            .expect("important opacity");
+        let snapshot = root.canonical_style_snapshot(node);
+        assert_eq!(
+            snapshot.styles,
+            vec![(
+                "opacity".to_string(),
+                DomAttributeValue::String("0.5 !important".to_string())
+            )]
+        );
+
+        // Replaying through the style-attribute route round-trips to the same
+        // snapshot (the number re-parses through the `Opacity` grammar).
+        let replayed = snapshot
+            .styles
+            .iter()
+            .map(|(name, value)| {
+                let DomAttributeValue::String(text) = value else {
+                    panic!("important declarations serialize to string values only");
+                };
+                format!("{name}: {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        root.set_attr_str(node, "style", &replayed)
+            .expect("style round-trip");
+        assert_eq!(root.canonical_style_snapshot(node), snapshot);
+    }
+
+    #[test]
+    fn canonical_style_snapshot_preserves_importance_for_integer_values_and_replays() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let node = root.create_element(DomTag::Div).expect("div");
+
+        // `font-weight` uses the `FontWeight` grammar (presentation_property.rs);
+        // the numeric arm (100..=900 step 100) yields `DeclValue::Integer`, so
+        // 700 serializes to "700" with the ` !important` suffix.
+        root.style_mut(node)
+            .set("font-weight", "700 !important")
+            .expect("important font-weight");
+        let snapshot = root.canonical_style_snapshot(node);
+        assert_eq!(
+            snapshot.styles,
+            vec![(
+                "font-weight".to_string(),
+                DomAttributeValue::String("700 !important".to_string())
+            )]
+        );
+
+        // Replaying through the style-attribute route round-trips to the same
+        // snapshot (the integer re-parses through the `FontWeight` numeric arm).
+        let replayed = snapshot
+            .styles
+            .iter()
+            .map(|(name, value)| {
+                let DomAttributeValue::String(text) = value else {
+                    panic!("important declarations serialize to string values only");
+                };
+                format!("{name}: {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        root.set_attr_str(node, "style", &replayed)
+            .expect("style round-trip");
+        assert_eq!(root.canonical_style_snapshot(node), snapshot);
+    }
+
+    #[test]
+    fn canonical_style_snapshot_preserves_importance_for_text_values_and_replays() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let node = root.create_element(DomTag::Div).expect("div");
+
+        // `font-family` uses the `Text` grammar (presentation_property.rs),
+        // which interns the trimmed value VERBATIM: a quoted family name keeps
+        // its literal quotes (no re-encoding), so the ` !important` suffix
+        // round-trips through the style-attribute route unchanged.
+        root.style_mut(node)
+            .set("font-family", "\"My Font\", sans-serif !important")
+            .expect("important font-family");
+        let snapshot = root.canonical_style_snapshot(node);
+        assert_eq!(
+            snapshot.styles,
+            vec![(
+                "font-family".to_string(),
+                DomAttributeValue::String("\"My Font\", sans-serif !important".to_string())
+            )]
+        );
+
+        // Replaying through the style-attribute route round-trips to the same
+        // snapshot (the quoted family name re-interns verbatim).
+        let replayed = snapshot
+            .styles
+            .iter()
+            .map(|(name, value)| {
+                let DomAttributeValue::String(text) = value else {
+                    panic!("important declarations serialize to string values only");
+                };
+                format!("{name}: {text}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        root.set_attr_str(node, "style", &replayed)
+            .expect("style round-trip");
+        assert_eq!(root.canonical_style_snapshot(node), snapshot);
+    }
+
+    #[test]
     fn non_bubbling_dispatch_returns_none_when_target_has_no_exact_listener() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let target = root.create_element(DomTag::Button).expect("target create");

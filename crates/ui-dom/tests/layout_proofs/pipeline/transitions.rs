@@ -675,6 +675,13 @@ fn transition_lists_repeat_to_the_longest() {
 // further update still reads the target, and a later change schedules a fresh
 // transition that completes cleanly.
 // <https://drafts.csswg.org/css-transitions-1/#completed>
+//
+// The discriminating public signal is the `TransitionEnd` event: it is emitted
+// only for `finished_properties` (counted by `TransitionEventPathAllocation`),
+// so the counter stays 0 mid-flight and moves to 1 at the finishing update. A
+// stuck overlay that never removes the finished transition emits no event, so
+// the counter pin below fails where the presented-value/counter coincidences
+// would otherwise still pass.
 fn transition_completion_removes_the_overlay() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
@@ -696,6 +703,11 @@ fn transition_completion_removes_the_overlay() {
         50.0,
         "the transition should be at its 50px midpoint",
     );
+    assert_eq!(
+        root.count(RootDomMetricName::TransitionEventPathAllocation),
+        0,
+        "no TransitionEnd event may fire before the finishing update",
+    );
 
     // Past the duration: the overlay is removed and the target is presented.
     assert_root_dom_update(&mut world, &mut root, 0.2, DomPointerUpdate::Unchanged);
@@ -706,6 +718,11 @@ fn transition_completion_removes_the_overlay() {
         ),
         100.0,
         "after the finishing update the overlay is removed and the target is presented exactly",
+    );
+    assert_eq!(
+        root.count(RootDomMetricName::TransitionEventPathAllocation),
+        1,
+        "the finishing update should dispatch exactly one TransitionEnd event for the finished left transition",
     );
 
     // A further update still reads the stored target (no residual overlay).

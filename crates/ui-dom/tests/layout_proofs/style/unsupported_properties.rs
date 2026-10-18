@@ -330,6 +330,55 @@ fn box_sizing_border_box_subtracts_insets() {
     );
 }
 
+#[test]
+// OFF-SPEC (divergent — registered in the layout_proofs off-spec registry):
+// - SPEC: CSS UI 4 §3.1 — `box-sizing` applies to `min-width`/`max-width`/
+//   `min-height`/`max-height` as well as `width`/`height`. Under `border-box`,
+//   `min-width: 100px` determines a minimum BORDER box width of 100px; with a
+//   specified `width: 100px` (also border box) the min does not bite, so the
+//   border box stays 100px and the content box is 100 − padding − border.
+//   <https://drafts.csswg.org/css-ui-4/#box-sizing>
+// - CLOSEST WPT ORACLE: none available — the ui-dom solver does not run a
+//   browser. Gecko projects box-sizing at the computed-style level
+//   (servo/components/style/properties + `nsStylePosition` min/max fields);
+//   Blink applies it in `ComputedStyle` + `LayoutBox::ComputeMinMaxSizes`.
+// - CURRENT (asserted): the sizing clamps read the specified min/max directly
+//   — `resolved_content_size_px` (`layout/flow.rs`) calls
+//   `clamp_length(..., style.min_width_px, style.max_width_px)` at
+//   `flow.rs:1525-1526` / `1540-1541` — interpreting min/max in CONTENT-box
+//   terms regardless of `box-sizing`. So `box-sizing: border-box; width: 100px;
+//   min-width: 100px` with 10px left + 10px right padding clamps the content
+//   box (80px) up to 100px and then adds the 20px insets back: the staged
+//   border box is 120px.
+// - SPEC-CORRECT: 100px (min-width == the specified border-box width, so it
+//   does not bite; content = 80px).
+// - This pin fails if the behavior moves EITHER way: a spec-correct fix drops
+//   the staged width to 100px (relabel on-spec); an accidental change that
+//   stops the min clamp from biting (content stays 80px without the border-box
+//   min projection) also moves the pin.
+fn off_spec_box_sizing_min_max_sizes_clamp_in_content_box_terms() {
+    assert_eq!(
+        sized_target_border_box_width(
+            ".x { box-sizing: border-box; width: 100px; min-width: 100px; \
+             padding-left: 10px; padding-right: 10px }",
+        ),
+        120.0,
+        "the min-width clamp reads the specified value in content-box terms and adds the insets back",
+    );
+
+    // CONTROL: the same box-sizing border-box width WITHOUT the min-width is
+    // 100px (the on-spec relationship pinned by
+    // `box_sizing_border_box_subtracts_insets`) — the min-width is what pushes
+    // it to 120px under the current content-box clamp.
+    assert_eq!(
+        sized_target_border_box_width(
+            ".x { box-sizing: border-box; width: 100px; padding-left: 10px; padding-right: 10px }",
+        ),
+        100.0,
+        "the same border-box width without min-width stays 100px",
+    );
+}
+
 /// Loads `css` on a fresh root with a class-"x" div target, gives the target an
 /// inline 40px height so a rect stages, runs one update, and returns the staged
 /// rect's border-box width (`size_px[0]`).

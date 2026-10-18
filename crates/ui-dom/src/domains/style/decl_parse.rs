@@ -2509,6 +2509,22 @@ mod tests {
         assert_eq!(report.dropped, 1);
     }
 
+    #[test]
+    fn block_parse_drops_malformed_importance_mid_value_and_continues() {
+        // The G rule (counted drop, parsing continues) for the malformed
+        // mid-value `!important` shape specifically: `10px !important 5px` is
+        // not a trailing marker (the `!important` head is valid but the tail
+        // `5px` is non-empty), so the whole `width` declaration drops + counts,
+        // and the following `height: 5px` still applies — no panic.
+        let (block, report, _) = parse_block("width: 10px !important 5px; height: 5px");
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.dropped, 1);
+        assert_eq!(
+            value(&block, PresentationProperty::Height),
+            DeclValue::Length(DeclLength::Px(5.0))
+        );
+    }
+
     // — longhands_for_name — //
 
     #[test]
