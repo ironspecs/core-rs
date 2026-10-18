@@ -181,7 +181,10 @@ Flex coverage map:
   `off_spec_anonymous_inline_runs_are_not_merged` (§4 anonymous items),
   `off_spec_abspos_and_display_none_children_occupy_flex_slots` (§4.1/§9.2),
   `off_spec_inflexible_items_skip_hypothetical_clamps` (§9.7 step 3),
-  `off_spec_hypothetical_main_size_not_floored_by_auto_min` (§4.5/§9.2).
+  `off_spec_hypothetical_main_size_not_floored_by_auto_min` (§4.5/§9.2);
+  one suspected divergence resolved on-spec (no registry row):
+  `cross_axis_min_max_clamps_apply_via_block_measure_and_relayout` (§8.3/§9.2/§9.4,
+  F6 false positive).
 
 Normal-flow coverage map:
 

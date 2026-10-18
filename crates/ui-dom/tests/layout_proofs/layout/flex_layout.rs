@@ -6329,6 +6329,155 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
     f32::from(value_u16)
 }
 
+// CSS Flexbox 1 §8.3/§9.2/§9.4: a flex item's cross size is clamped by its
+// min/max cross size (min/max-height for a row container) both in the
+// hypothetical cross size that determines the line's cross size and in the
+// final aligned/stretched cross size. Closest WPT oracle:
+// `css/css-flexbox/flex-minimum-size-*` and the cross-size family; Gecko
+// (`FlexItem` cross sizing, `nsFlexContainerFrame.cpp`) and Blink
+// (`flex_layout_algorithm.cc` cross-axis step) both clamp.
+//
+// NOT OFF-SPEC (Run A F6 false positive): the coverage matrix suspected that
+// `stretched_flex_item_content_cross_size_px` (`flex.rs:2600`) and the
+// line-cross accumulation (`flex.rs:1589`) never clamp by item min/max cross.
+// The pinned behavior shows the clamps DO apply — the block measure
+// (`resolved_content_size_px`, `flow.rs`) clamps the measured cross size that
+// feeds line-cross accumulation, and the block relayout clamps the stretch
+// override — so stretch is capped by max-height and floored by min-height, and
+// a wrapped line's cross size reflects the item's clamped cross. Pinned
+// on-spec, so no `off_spec_` name and no registry row.
+#[test]
+fn cross_axis_min_max_clamps_apply_via_block_measure_and_relayout() {
+    let rows: [CrossClampRow; 4] = [
+        (
+            "stretch_capped_by_max_height",
+            assert_stretch_capped_by_max_height,
+        ),
+        (
+            "stretch_floored_by_min_height",
+            assert_stretch_floored_by_min_height,
+        ),
+        (
+            "max_height_item_sets_wrapped_line_cross_size",
+            assert_max_height_item_sets_wrapped_line_cross_size,
+        ),
+        (
+            "min_height_item_sets_wrapped_line_cross_size",
+            assert_min_height_item_sets_wrapped_line_cross_size,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named cross-axis min/max clamp probe: row name plus a runner.
+type CrossClampRow = (&'static str, fn(&str));
+
+fn assert_stretch_capped_by_max_height(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, container, "align-items", "stretch");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "30px");
+    assert_style_set(&mut root, item, "max-height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // On-spec: stretch to the 100px line cross is capped by max-height 20px.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 20.0, &format!("{name}: item"));
+}
+
+fn assert_stretch_floored_by_min_height(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "align-items", "stretch");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "30px");
+    assert_style_set(&mut root, item, "min-height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // On-spec: stretch to the 10px line cross is floored by min-height 20px.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 20.0, &format!("{name}: item"));
+}
+
+fn assert_max_height_item_sets_wrapped_line_cross_size(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "50px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "flex-start");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "30px");
+    assert_style_set(&mut root, first, "height", "40px");
+    assert_style_set(&mut root, first, "max-height", "20px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "30px");
+    assert_style_set(&mut root, second, "height", "10px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // On-spec: the first item's max-height 20px sets line 1's cross size, so
+    // the wrapped second item sits at top 20px.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        30.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        20.0,
+        30.0,
+        10.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_min_height_item_sets_wrapped_line_cross_size(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "50px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "align-content", "flex-start");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "30px");
+    assert_style_set(&mut root, first, "height", "5px");
+    assert_style_set(&mut root, first, "min-height", "20px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "30px");
+    assert_style_set(&mut root, second, "height", "10px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // On-spec: the first item's min-height 20px sets line 1's cross size, so
+    // the wrapped second item sits at top 20px.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        30.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        20.0,
+        30.0,
+        10.0,
+        &format!("{name}: second item"),
+    );
+}
+
 // CSS Flexbox 1 §9.2 (line length determination) and §4.5 (automatic minimum
 // size): a flex item's hypothetical main size is its flex base clamped by
 // min/max AND floored by the used automatic minimum size (content-based for
