@@ -13,7 +13,10 @@
 //!   shared `DEFAULT_TEXT_FONT_SIZE_PX` (14.0) so the computed default matches
 //!   today's absent-`font-size` paint/layout default
 //! - `line_height_px == None` means `normal` (no explicit line box); a resolved
-//!   length is floored at 1px by the resolver, not here
+//!   length is floored at 1px by the resolver, not here. The floor is
+//!   deliberate: cosmic-text asserts `line_height != 0.0` (`buffer.rs:254`),
+//!   so a zero line height cannot reach the shaper — an engine-dependency
+//!   constraint, not a grammar choice (see the off-spec registry)
 //! - `family == None` means the engine default (`UiSans` today); `Some(TextKey)`
 //!   keys resolve against the document's computed-text interner (arrives with
 //!   the node record in step 3.3a)

@@ -311,6 +311,9 @@ pub(crate) fn measured_text_width_px(text: &str, font_size_px: f32) -> f32 {
     if text.is_empty() {
         return 0.0;
     }
+    if font_size_px == 0.0 {
+        return 0.0;
+    }
     measure_text_intrinsic_with_font_size(text, font_size_px).max_content_width_px
 }
 
@@ -385,4 +388,16 @@ fn replace_intrinsic_if_changed(node: &mut DomNode, next_intrinsic: DomIntrinsic
     }
     node.set_intrinsic_for_store(next_intrinsic);
     true
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_font_size_measures_zero_width() {
+        assert_eq!(measured_text_width_px("abc", 0.0), 0.0);
+        assert!(measured_text_width_px("abc", 12.0) > 0.0);
+    }
 }

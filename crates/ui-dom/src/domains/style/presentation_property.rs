@@ -116,10 +116,11 @@ pub enum PresentationGroup {
 /// Per-property declaration grammar (the admission table's grammar column).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeclGrammar {
-    /// `unset | 0 | <px> | <em>`.
+    /// `unset | 0 | <px> | <em>` (signed: margins, offsets, outline-offset).
     Length,
-    /// `0 | <px> | <em>` (font-size: no unset).
-    LengthNoUnset,
+    /// `unset | 0 | <non-negative px> | <non-negative em>` (padding, box sizes,
+    /// border widths, radii, gaps, outline-width, font-size).
+    NonNegativeLength,
     /// `normal | <unitless >= 0> | <px> | <em>` (no percentages, no negatives).
     LineHeight,
     /// `transparent | #rrggbb | #rrggbbaa | rgb()/rgba() | white|black|red|green|blue`.
@@ -268,7 +269,7 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
     (
         "font-size",
         PresentationGroup::Font,
-        DeclGrammar::LengthNoUnset,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "line-height",
@@ -332,12 +333,36 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
         PresentationGroup::Box,
         DeclGrammar::Keywords(ISOLATE_KEYWORDS),
     ),
-    ("width", PresentationGroup::Box, DeclGrammar::Length),
-    ("height", PresentationGroup::Box, DeclGrammar::Length),
-    ("min-width", PresentationGroup::Box, DeclGrammar::Length),
-    ("min-height", PresentationGroup::Box, DeclGrammar::Length),
-    ("max-width", PresentationGroup::Box, DeclGrammar::Length),
-    ("max-height", PresentationGroup::Box, DeclGrammar::Length),
+    (
+        "width",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
+    (
+        "height",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
+    (
+        "min-width",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
+    (
+        "min-height",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
+    (
+        "max-width",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
+    (
+        "max-height",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
     ("top", PresentationGroup::Box, DeclGrammar::Length),
     ("left", PresentationGroup::Box, DeclGrammar::Length),
     ("right", PresentationGroup::Box, DeclGrammar::Length),
@@ -346,33 +371,45 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
     ("margin-right", PresentationGroup::Box, DeclGrammar::Length),
     ("margin-bottom", PresentationGroup::Box, DeclGrammar::Length),
     ("margin-left", PresentationGroup::Box, DeclGrammar::Length),
-    ("padding-top", PresentationGroup::Box, DeclGrammar::Length),
-    ("padding-right", PresentationGroup::Box, DeclGrammar::Length),
+    (
+        "padding-top",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
+    (
+        "padding-right",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
     (
         "padding-bottom",
         PresentationGroup::Box,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
-    ("padding-left", PresentationGroup::Box, DeclGrammar::Length),
+    (
+        "padding-left",
+        PresentationGroup::Box,
+        DeclGrammar::NonNegativeLength,
+    ),
     (
         "border-top-width",
         PresentationGroup::Box,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "border-right-width",
         PresentationGroup::Box,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "border-bottom-width",
         PresentationGroup::Box,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "border-left-width",
         PresentationGroup::Box,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "flex-direction",
@@ -420,8 +457,16 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
         PresentationGroup::Flex,
         DeclGrammar::Keywords(ALIGN_CONTENT_KEYWORDS),
     ),
-    ("row-gap", PresentationGroup::Flex, DeclGrammar::Length),
-    ("column-gap", PresentationGroup::Flex, DeclGrammar::Length),
+    (
+        "row-gap",
+        PresentationGroup::Flex,
+        DeclGrammar::NonNegativeLength,
+    ),
+    (
+        "column-gap",
+        PresentationGroup::Flex,
+        DeclGrammar::NonNegativeLength,
+    ),
     ("opacity", PresentationGroup::Visual, DeclGrammar::Opacity),
     (
         "background-color",
@@ -456,7 +501,7 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
     (
         "outline-width",
         PresentationGroup::Visual,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "outline-offset",
@@ -467,22 +512,22 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
     (
         "border-top-left-radius",
         PresentationGroup::Visual,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "border-top-right-radius",
         PresentationGroup::Visual,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "border-bottom-right-radius",
         PresentationGroup::Visual,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "border-bottom-left-radius",
         PresentationGroup::Visual,
-        DeclGrammar::Length,
+        DeclGrammar::NonNegativeLength,
     ),
     (
         "transform",
@@ -746,7 +791,7 @@ mod tests {
     fn grammar_spot_checks() {
         assert_eq!(
             PresentationProperty::FontSize.grammar(),
-            DeclGrammar::LengthNoUnset
+            DeclGrammar::NonNegativeLength
         );
         assert_eq!(PresentationProperty::Color.grammar(), DeclGrammar::Color);
 

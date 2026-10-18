@@ -4,26 +4,23 @@
 // computed-group comparisons in this module are deliberate exact checks.
 #![allow(clippy::float_cmp)]
 
-//! Sign-rule and numeric-edge pins for the style system (PLAN.md B1, landing a).
+//! Sign-rule and numeric-edge pins for the style system (PLAN.md B1, landing b).
 //!
-//! Purpose: pin the CURRENT observable behavior of the admitted length grammar
-//! at its sign-rule and numeric edges — the divergent rows (negative lengths
-//! admitted through the longhand and shorthand paths), the on-spec keeps
-//! (legal negatives, the already-rejected illegal ones, and the unitless-zero
-//! normalization), and the crash-resistance robustness pins over adversarial
-//! numeric inputs.
+//! Purpose: pin the observable behavior of the admitted length grammar at its
+//! sign-rule and numeric edges — the on-spec rejects (negative lengths dropped
+//! through both the longhand and shorthand paths), the on-spec keeps (legal
+//! negatives, the already-rejected illegal ones, `font-size: unset`
+//! inheritance, and the unitless-zero normalization), the deliberate
+//! `line-height: 0` render floor, and the crash-resistance robustness pins over
+//! adversarial numeric inputs.
 //!
-//! Class notes: divergent rows are named `off_spec_*` and pinned at their
-//! current accepted behavior; the `negative_*`, `width_zero_*`, and
-//! `fractional_*` rows are on-spec keeps; `robustness_*` rows assert no-panic
-//! plus the defined outcome. Two `off_spec_*` rows — `opacity` out-of-range and
-//! the `line-height: 0` floor — are reject-side/render-floor divergences that
-//! do NOT flip in landing (b) (see their per-test headers).
-//!
-//! Pointer: the admit-side divergent rows (negative padding/box sizes/border
-//! widths/shorthand lengths/font-size, and `font-size: unset`) flip on-spec in
-//! the immediately following landing (b), which lands the grammar fix; those
-//! `off_spec_*` proof names then relabel on-spec and the registry updates.
+//! Class notes: the `negative_*`, `width_zero_*`, `fractional_*`, and
+//! `font_size_unset_*` rows are on-spec keeps; `robustness_*` rows assert
+//! no-panic plus the defined outcome; `line_height_zero_floors_at_one_px` is a
+//! deliberate crate-owned render floor (see its per-test header). The only
+//! remaining off-spec row in this file is `off_spec_opacity_out_of_range_rejected`
+//! (opacity is still rejected at parse rather than clamped at computed time; it
+//! moves on-spec through the D6 admission policy, NOT the B1 sign-rule fix).
 
 use bevy::prelude::World;
 use ui_dom::{
@@ -32,8 +29,8 @@ use ui_dom::{
 };
 
 use crate::layout_proofs::support::{
-    assert_append_div_to, assert_append_text_to, assert_decl_drop, assert_root_dom_update,
-    assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
+    assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_decl_drop,
+    assert_root_dom_update, assert_set_attr_str, attached_gpu_root_dom_default_viewport_setup,
     take_staged_layer_paint_plans, theme_stylesheet_origin,
 };
 
@@ -60,54 +57,36 @@ fn text_intrinsic(root: &RootDom, key: DomNodeSlotKey) -> TextIntrinsic {
     }
 }
 
-// — Divergent: negative lengths admitted (flip in landing b) — //
+// — On-spec sign-rule rejects: negative lengths dropped (flipped in B1 landing b) — //
 
 #[test]
-// OFF-SPEC (divergent):
+// ON-SPEC (flipped in B1 landing b):
 // - SPEC: CSS Box 3 §4.4 `padding-*` takes `<length [0,∞]>`; a negative
 //   length is invalid. <https://drafts.csswg.org/css-box-3/#padding-physical>
-// - CURRENT (asserted): `.x { padding-left: -10px }` loads with
-//   `declarations_dropped == 0` and computed `padding[3] == -10.0`.
-// - SPEC-CORRECT: the declaration drops and is counted; `padding-left`
-//   stays at its `0.0` initial.
-// - ROOT CAUSE: `parse_length` (`decl_parse.rs:319-321`) is sign-agnostic;
-//   the `Length` grammar admits negative scalars for all four padding sides.
-// - RECLASSIFY: flips on-spec in landing (b) when the `NonNegativeLength`
-//   grammar arm lands for padding.
-fn off_spec_negative_padding_accepted() {
-    let (mut world, mut root, target, report) = styled_target_load(".x { padding-left: -10px }");
-    assert_eq!(report.declarations_applied, 1, "padding-left should apply");
-    assert_eq!(
-        report.declarations_dropped, 0,
-        "padding-left should not drop"
-    );
+// - Relabeled from `off_spec_negative_padding_accepted` in B1 landing (b) after
+//   the sign-rule grammar fix.
+fn negative_padding_rejected() {
+    assert_decl_drop(".x { padding-left: -10px }", 0, 1);
+    let (mut world, mut root, target, _report) = styled_target_load(".x { padding-left: -10px }");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target)
             .expect("target")
             .as_box()
             .padding[3],
-        -10.0,
-        "negative padding-left should reach the box group",
+        0.0,
+        "negative padding-left should stay at its 0.0 initial",
     );
 }
 
 #[test]
-// OFF-SPEC (divergent):
+// ON-SPEC (flipped in B1 landing b):
 // - SPEC: CSS Sizing 3 §3.1 `width`/`height` and §3.3/§3.4 `min-*`/`max-*`
 //   take `<length-percentage [0,∞] | auto | …>`; negative lengths are
 //   invalid. <https://drafts.csswg.org/css-sizing-3/#preferred-size-properties>
-// - CURRENT (asserted): each of `width`/`height`/`min-width`/`max-width`/
-//   `min-height`/`max-height` at `-1px` loads with `declarations_dropped == 0`
-//   and a computed `Some(-1.0)`.
-// - SPEC-CORRECT: each declaration drops and is counted; the field stays at
-//   its initial (`None`).
-// - ROOT CAUSE: the six box-size longhands all share the sign-agnostic
-//   `Length` grammar (`presentation_property.rs` METADATA), resolved verbatim
-//   by `write_optional_length`.
-// - RECLASSIFY: flips on-spec in landing (b) when the `NonNegativeLength`
-//   grammar arm lands for box sizes.
-fn off_spec_negative_box_sizes_accepted() {
+// - Relabeled from `off_spec_negative_box_sizes_accepted` in B1 landing (b)
+//   after the sign-rule grammar fix.
+fn negative_box_sizes_rejected() {
     enum BoxField {
         Width,
         Height,
@@ -119,52 +98,47 @@ fn off_spec_negative_box_sizes_accepted() {
 
     struct Case {
         name: &'static str,
-        declaration: &'static str,
+        property: &'static str,
         field: BoxField,
     }
 
     let cases = [
         Case {
             name: "width",
-            declaration: "width: -1px",
+            property: "width",
             field: BoxField::Width,
         },
         Case {
             name: "height",
-            declaration: "height: -1px",
+            property: "height",
             field: BoxField::Height,
         },
         Case {
             name: "min_width",
-            declaration: "min-width: -1px",
+            property: "min-width",
             field: BoxField::MinWidth,
         },
         Case {
             name: "max_width",
-            declaration: "max-width: -1px",
+            property: "max-width",
             field: BoxField::MaxWidth,
         },
         Case {
             name: "min_height",
-            declaration: "min-height: -1px",
+            property: "min-height",
             field: BoxField::MinHeight,
         },
         Case {
             name: "max_height",
-            declaration: "max-height: -1px",
+            property: "max-height",
             field: BoxField::MaxHeight,
         },
     ];
 
     for case in cases {
-        let (mut world, mut root, target, report) =
-            styled_target_load(&format!(".x {{ {} }}", case.declaration));
-        assert_eq!(report.declarations_applied, 1, "{} should apply", case.name);
-        assert_eq!(
-            report.declarations_dropped, 0,
-            "{} should not drop",
-            case.name
-        );
+        let css = format!(".x {{ {}: -1px }}", case.property);
+        assert_decl_drop(&css, 0, 1);
+        let (mut world, mut root, target, _report) = styled_target_load(&css);
         assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
         let box_ = root.computed_style(target).expect("target").as_box();
         let computed = match case.field {
@@ -175,59 +149,48 @@ fn off_spec_negative_box_sizes_accepted() {
             BoxField::MinHeight => box_.min_height,
             BoxField::MaxHeight => box_.max_height,
         };
-        assert_eq!(computed, Some(-1.0), "{} computed value", case.name);
+        assert_eq!(
+            computed, None,
+            "{} should stay at its initial None",
+            case.name
+        );
     }
 }
 
 #[test]
-// OFF-SPEC (divergent):
+// ON-SPEC (flipped in B1 landing b):
 // - SPEC: CSS Backgrounds 3 §4.3 `border-width` and CSS UI 4 §4.3
 //   `outline-width` take `<line-width>` (non-negative); a negative width is
 //   invalid. <https://drafts.csswg.org/css-backgrounds-3/#the-border-width>
-// - CURRENT (asserted): `border-top-width: -2px` and `outline-width: -2px`
-//   both load with `declarations_dropped == 0`; computed `border_width[0]` and
-//   `outline_width` are `-2.0`.
-// - SPEC-CORRECT: both drop and are counted; the fields stay at their `0.0`
-//   initial.
-// - ROOT CAUSE: both longhands use the sign-agnostic `Length` grammar.
-// - RECLASSIFY: flips on-spec in landing (b) when the `NonNegativeLength`
-//   grammar arm lands for border/outline widths.
-fn off_spec_negative_border_and_outline_widths_accepted() {
-    let (mut world, mut root, target, report) =
+// - Relabeled from `off_spec_negative_border_and_outline_widths_accepted` in
+//   B1 landing (b) after the sign-rule grammar fix.
+fn negative_border_and_outline_widths_rejected() {
+    assert_decl_drop(".x { border-top-width: -2px; outline-width: -2px }", 0, 2);
+    let (mut world, mut root, target, _report) =
         styled_target_load(".x { border-top-width: -2px; outline-width: -2px }");
-    assert_eq!(report.declarations_applied, 2, "both widths should apply");
-    assert_eq!(report.declarations_dropped, 0, "neither width should drop");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let view = root.computed_style(target).expect("target");
     assert_eq!(
         view.as_box().border_width[0],
-        -2.0,
-        "negative border-top-width should reach the box group",
+        0.0,
+        "negative border-top-width should stay at its 0.0 initial",
     );
     assert_eq!(
         view.as_visual().outline_width,
-        -2.0,
-        "negative outline-width should reach the visual group",
+        0.0,
+        "negative outline-width should stay at its 0.0 initial",
     );
 }
 
 #[test]
-// OFF-SPEC (divergent):
+// ON-SPEC (flipped in B1 landing b):
 // - SPEC: CSS Backgrounds 3 §5.1 `border-radius` and CSS Box Alignment 3 §4.4
 //   `gap` take non-negative `<length-percentage>`; `border-top` (border-width
 //   via the side shorthand) is `<line-width>` — all non-negative.
-// - CURRENT (asserted): `border-radius: -4px`, `gap: -4px`, and
-//   `border-top: -2px` all load with `declarations_dropped == 0`; the computed
-//   groups carry the negative values.
-// - SPEC-CORRECT: each shorthand drops and is counted; the longhands stay at
-//   their initial values.
-// - ROOT CAUSE: the expansion helpers bypass the grammar layer — F2 in
-//   PLAN.md: `expand_border_radius` (`decl_parse.rs:660`), `expand_gap` (:703),
-//   and `expand_border_side` (:930) call the sign-agnostic `parse_length`
-//   directly and construct declarations by hand.
-// - RECLASSIFY: flips on-spec in landing (b) when expansion applies the
-//   per-longhand grammar.
-fn off_spec_negative_shorthand_lengths_accepted() {
+// - Relabeled from `off_spec_negative_shorthand_lengths_accepted` in B1
+//   landing (b) after the sign-rule grammar fix (expansion now routes through
+//   the per-longhand grammar).
+fn negative_shorthand_lengths_rejected() {
     enum Shorthand {
         BorderRadius,
         Gap,
@@ -259,31 +222,27 @@ fn off_spec_negative_shorthand_lengths_accepted() {
     ];
 
     for case in cases {
-        let (mut world, mut root, target, report) = styled_target_load(case.css);
-        assert_eq!(
-            report.declarations_dropped, 0,
-            "{} should not drop",
-            case.name
-        );
+        assert_decl_drop(case.css, 0, 1);
+        let (mut world, mut root, target, _report) = styled_target_load(case.css);
         assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
         let view = root.computed_style(target).expect("target");
         match case.shorthand {
             Shorthand::BorderRadius => assert_eq!(
                 view.as_visual().radius,
-                [-4.0; 4],
-                "{} radius expansion",
+                [0.0; 4],
+                "{} radius should stay at its 0.0 initial",
                 case.name
             ),
             Shorthand::Gap => assert_eq!(
                 view.as_flex().gap,
-                [-4.0, -4.0],
-                "{} gap expansion",
+                [0.0, 0.0],
+                "{} gap should stay at its 0.0 initial",
                 case.name
             ),
             Shorthand::BorderTop => assert_eq!(
                 view.as_box().border_width[0],
-                -2.0,
-                "{} border-top expansion",
+                0.0,
+                "{} border-top should stay at its 0.0 initial",
                 case.name
             ),
         }
@@ -291,50 +250,57 @@ fn off_spec_negative_shorthand_lengths_accepted() {
 }
 
 #[test]
-// OFF-SPEC (divergent, crash-adjacent):
+// ON-SPEC (flipped in B1 landing b):
 // - SPEC: CSS Fonts 4 §3.5 `font-size` takes `<absolute-size> |
 //   <relative-size> | <length-percentage [0,∞]> | math`; negative is invalid.
 //   <https://drafts.csswg.org/css-fonts-4/#font-size-prop>
-// - CURRENT (asserted): `font-size: -10px` loads with `declarations_dropped
-//   == 0` and computed `size_px == -10.0` — a negative font size flowing into
-//   text layout (crash-adjacent, same family as `font-size: 0`).
-// - SPEC-CORRECT: the declaration drops and is counted; `size_px` stays at the
-//   inherited seed.
-// - ROOT CAUSE: `font-size`'s grammar is `LengthNoUnset`
-//   (`presentation_property.rs`), sign-agnostic; `resolve_own_font_size_px`
-//   (`winners_fold.rs:324`) stores the px verbatim with no clamp.
-// - RECLASSIFY: flips on-spec in landing (b) when `font-size` gains a
-//   non-negative grammar and admits `unset` to the seed.
-fn off_spec_negative_font_size_accepted() {
-    let (mut world, mut root, target, report) = styled_target_load(".x { font-size: -10px }");
-    assert_eq!(report.declarations_applied, 1, "font-size should apply");
-    assert_eq!(report.declarations_dropped, 0, "font-size should not drop");
+// - Relabeled from `off_spec_negative_font_size_accepted` in B1 landing (b)
+//   after the sign-rule grammar fix.
+fn negative_font_size_rejected() {
+    assert_decl_drop(".x { font-size: -10px }", 0, 1);
+    let (mut world, mut root, target, _report) = styled_target_load(".x { font-size: -10px }");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target)
             .expect("target")
             .as_font()
             .size_px,
-        -10.0,
-        "negative font-size should reach the font group",
+        14.0,
+        "negative font-size should stay at the inherited 14px seed",
     );
 }
 
 #[test]
-// OFF-SPEC (divergent):
+// ON-SPEC (flipped in B1 landing b):
 // - SPEC: CSS Cascade 5 §4.3 — `unset` is a CSS-wide keyword; on an inherited
 //   property (font-size is inherited, CSS Fonts 4 §3.5 "Inherited: yes") it
 //   resolves to inherit. <https://drafts.csswg.org/css-cascade-5/#defaulting-keywords>
-// - CURRENT (asserted): `font-size: unset` is dropped + counted
-//   (`declarations_dropped == 1`) — the grammar is `LengthNoUnset`, which
-//   rejects `unset`.
-// - SPEC-CORRECT: `unset` is admitted and resolves to the inherited seed (≈
-//   inherit, the winners fold's seed path).
-// - ROOT CAUSE: `parse_length_no_unset` (`decl_parse.rs:323-328`) returns
-//   `None` for `AuthoredLength::Unset`.
-// - RECLASSIFY: flips on-spec in landing (b) when `font-size` admits `unset`.
-fn off_spec_font_size_unset_rejected() {
-    assert_decl_drop(".x { font-size: unset }", 0, 1);
+// - Relabeled from `off_spec_font_size_unset_rejected` in B1 landing (b) after
+//   the sign-rule grammar fix (font-size now admits `unset`).
+fn font_size_unset_resolves_to_inherited_seed() {
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, container, "class", "p");
+    let span = assert_append_span_to(&mut root, container);
+    assert_set_attr_str(&mut root, span, "class", "x");
+    let report = root
+        .context()
+        .load_stylesheet(
+            theme_stylesheet_origin(),
+            ".p { font-size: 20px } .x { font-size: unset }",
+        )
+        .expect("font-size: unset should admit");
+    assert_eq!(
+        report.declarations_dropped, 0,
+        "font-size: unset should be admitted",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(span).expect("span").as_font().size_px,
+        20.0,
+        "font-size: unset should resolve to the inherited 20px seed",
+    );
 }
 
 #[test]
@@ -373,23 +339,17 @@ fn off_spec_opacity_out_of_range_rejected() {
 }
 
 #[test]
-// OFF-SPEC (divergent, render-floor — does NOT flip in landing b):
-// - SPEC: CSS Inline Layout 3 / CSS 2.1 §10.8 `line-height` takes
-//   `<number> | <length> | <percentage> | normal`; `0` is legal and produces
-//   zero-height lines. <https://www.w3.org/TR/CSS21/visudet.html#propdef-line-height>
-// - CURRENT (asserted): `line-height: 0` is admitted (dropped == 0), but the
-//   rendered line height is floored to 1px — the resolver floors at
-//   `project.rs:137` and the render side floors at `text_layout/mod.rs:719-722`;
+// DELIBERATE (crate-owned render floor — does NOT flip):
+// - CURRENT: `line-height: 0` is admitted and floored to 1px at RESOLVE time
+//   (`project.rs:137`) with a render backstop (`text_layout/mod.rs:719-722`);
 //   the text node's intrinsic `line_height_px == 1.0`.
-// - SPEC-CORRECT: zero-height lines render (nothing), no floor.
-// - ROOT CAUSE: `line_height.max(1.0)` in `resolve_font_field`
-//   (`project.rs:137`) and `effective_line_height_px` (`text_layout/mod.rs:720`);
-//   the floor is load-bearing against cosmic-text's `line_height != 0` assert
-//   (see the B1 landing note) — its adjudication path is pending.
-// - RECLASSIFY: stays divergent; adjudication (remove the floor if cosmic
-//   tolerates zero-height lines, else deliberate-with-crash-reason) is a
-//   separate call, NOT landing (b).
-fn off_spec_line_height_zero_floored_at_one_px() {
+// - SPEC-CORRECT: CSS 2.1 §10.8 admits `line-height: 0` (zero-height lines).
+//   <https://www.w3.org/TR/CSS21/visudet.html#propdef-line-height>
+// - RATIONALE (deliberate): the floor is load-bearing against cosmic-text's
+//   `line_height != 0` assertion (`cosmic-text-0.18.2/src/buffer.rs:254`) — an
+//   engine-dependency constraint, pinned permanently and re-reviewed if the
+//   dependency changes.
+fn line_height_zero_floors_at_one_px() {
     let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let container = assert_append_div_to(&mut root, document_root);
@@ -642,33 +602,76 @@ fn robustness_order_beyond_i64_dropped() {
 }
 
 #[test]
-#[should_panic(expected = "font size cannot be 0")]
-// OFF-SPEC (divergent): `font-size: 0` is CSS-legal (CSS Fonts 4 §3.5 admits
-// zero font sizes; zero-size text simply has zero-size glyphs) and the
-// declaration is admitted by our grammar — but measuring or shaping the text
-// then PANICS inside cosmic-text (`assert_ne!(font_size, 0.0)`,
-// cosmic-text-0.18.2/src/buffer.rs:688, reached via `CosmicMetrics::new` from
-// `text_layout/mod.rs`). Boundary data must never panic (AGENTS.md "Panic and
-// boundary policy"), so this is a boundary-policy violation, pinned here as
-// the current behavior via `should_panic`.
-// SPEC-CORRECT: `font-size: 0` measures zero-width text and renders nothing —
-// no panic.
-// ROOT CAUSE: the zero value flows verbatim from the font group into
-// `CosmicMetrics::new` with no zero guard at the text-layout boundary.
-// RECLASSIFY: the crash-hardening fix in landing (b) relabels this as
-// `robustness_zero_font_size_renders_nothing` — see the off-spec registry.
-fn off_spec_font_size_zero_panics() {
+// ROBUSTNESS (flipped in B1 landing b):
+// - SPEC: CSS Fonts 4 §3.5 — `font-size: 0` is legal; zero-size text has
+//   zero-size glyphs and renders nothing.
+//   <https://drafts.csswg.org/css-fonts-4/#font-size-prop>
+// - Relabeled from `off_spec_font_size_zero_panics` in B1 landing (b) after
+//   the zero-size guard.
+fn robustness_zero_font_size_renders_nothing() {
     for body in ["font-size: 0", "font-size: 0px"] {
         let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
         let document_root = root.document_node().0;
         let container = assert_append_div_to(&mut root, document_root);
         assert_set_attr_str(&mut root, container, "class", "x");
-        let _text = assert_append_text_to(&mut root, container, "zero-size text");
+        let text = assert_append_text_to(&mut root, container, "zero-size text");
         let report = root
             .context()
             .load_stylesheet(theme_stylesheet_origin(), &format!(".x {{ {body} }}"))
             .expect("font-size: 0 should admit");
         assert_eq!(report.declarations_dropped, 0, "{body} should be admitted");
         assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        let intrinsic = text_intrinsic(&root, text);
+        assert_eq!(
+            intrinsic.min_content_width_px, 0.0,
+            "{body} min content width should be 0",
+        );
+        assert_eq!(
+            intrinsic.max_content_width_px, 0.0,
+            "{body} max content width should be 0",
+        );
+        assert_eq!(intrinsic.font_size_px, 0.0, "{body} font size should be 0");
+        let plans = take_staged_layer_paint_plans(&root);
+        assert!(
+            plans.iter().all(|plan| plan.text_runs.is_empty()),
+            "{body} should stage no text runs",
+        );
     }
+
+    // Companion: a zero font size with an explicit line height still resolves
+    // the line height, with zero-width content.
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, container, "class", "x");
+    let text = assert_append_text_to(&mut root, container, "zero-size text");
+    let report = root
+        .context()
+        .load_stylesheet(
+            theme_stylesheet_origin(),
+            ".x { font-size: 0; line-height: 20px }",
+        )
+        .expect("font-size: 0 with line-height should admit");
+    assert_eq!(
+        report.declarations_dropped, 0,
+        "font-size: 0 with line-height should be admitted",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let intrinsic = text_intrinsic(&root, text);
+    assert_eq!(
+        intrinsic.line_height_px, 20.0,
+        "line-height: 20px should resolve with a zero font size",
+    );
+    assert_eq!(
+        intrinsic.min_content_width_px, 0.0,
+        "zero font size with line-height should have zero min content width",
+    );
+    assert_eq!(
+        intrinsic.max_content_width_px, 0.0,
+        "zero font size with line-height should have zero max content width",
+    );
+    assert_eq!(
+        intrinsic.font_size_px, 0.0,
+        "zero font size with line-height should keep font size 0",
+    );
 }

@@ -1157,19 +1157,28 @@ Every scenario asserts the defined outcome AND returns without panic.
 
 ### Hardening fixes landed (running record)
 
-1. **`font-size: 0` crash (found by B1a, fix queued into B1b).** The probe
+1. **`font-size: 0` crash (found by B1a, fixed in B1b).** The probe
    `robustness_zero_font_size_does_not_crash` panicked inside cosmic-text
    (`assert_ne!(font_size, 0.0)`, `cosmic-text-0.18.2/src/buffer.rs:688`,
    reached via `CosmicMetrics::new` from `text_layout/mod.rs`). CSS Fonts 4
    §3.5 admits zero font sizes, so this is a boundary-policy violation, not
    a grammar rejection candidate. Pinned as `off_spec_font_size_zero_panics`
-   (`should_panic`, divergent) in B1a; the B1b hardening (zero guard at the
-   text-layout boundary: zero-width measure, no text op — never a 1px
-   clamp) flips it to `robustness_zero_font_size_renders_nothing`.
+   (`should_panic`, divergent) in B1a; the B1b guard flipped it to
+   `robustness_zero_font_size_renders_nothing`: zero-size text measures
+   zero-width (`measure_intrinsic`, `measure_wrapped_text_height`,
+   `measured_text_width_px` early-returns) and stages no text op
+   (`paint/mod.rs` text-node staging, `element_behaviors/paint.rs` control
+   staging) — never a 1px clamp.
    Related finding (B1a investigation): the `line-height` 1px floor is
    enforced at RESOLVE time (`project.rs:137`), not only render time, and
    is load-bearing against cosmic's `line_height != 0` assert
    (`buffer.rs:254`) — reclassified deliberate-with-crash-reason.
+   **Open follow-up (tracked):** the caret/editing path is still crashable
+   at zero size — `layout_text_caret` on a multi-line `textarea` with
+   `font-size: 0` panics via `set_metrics_and_size` when `width_px` is set
+   (single-line inputs do not reach the assert). Fix + pin is queued as
+   the next small task (same guard class: zero-width caret layout, no
+   cosmic call).
 
 **B12 data structures and algorithms.** No Phase 2 — this bundle is the
 permanent safety net, not an admission track. The scenarios stress the
@@ -1259,7 +1268,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | Plan: adversarial review adjudication (`85de600`) | done |
 | Plan: compaction-survival pass (decision log, evidence registry, playbook) | done |
 | Batch 0 — suite reorganization | done |
-| B1 — sign rules & numeric edges | not started |
+| B1 — sign rules & numeric edges | **done** (a `4cb6acd` pins; b — fix + flips, incl. the font-size: 0 guard; caret-path follow-up queued below) |
 | B1 (a) — pins of current behavior (`style/unsupported_values.rs`) | done |
 | B2 — units & sizing keywords | not started |
 | B3 — box shorthands | not started |

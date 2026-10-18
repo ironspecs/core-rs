@@ -175,16 +175,20 @@ fn append_select_text_run(context: &mut ElementPaintContext<'_>, value: &str) {
     let text_run_id = context
         .layer_pool
         .resolve_text_run_id_from_hint(&TextRunSignature::from_text(Arc::<str>::from(value)), None);
-    context.plan.text_runs.push(TextRunPaintOp {
-        text_run_id,
-        position_px: [paint_box.origin_left, origin_top],
-        size_px: [paint_box.content_width, text_height_px],
-        font_size_px,
-        line_height_px,
-        wrap_mode: request.wrap_mode,
-        alignment: request.alignment,
-        color_rgba: context.node.computed_color().color_rgba,
-    });
+    // Zero-size text renders nothing (CSS Fonts 4 §3.5); cosmic-text asserts a
+    // non-zero font size, so skip the run rather than reaching cosmic.
+    if font_size_px != 0.0 {
+        context.plan.text_runs.push(TextRunPaintOp {
+            text_run_id,
+            position_px: [paint_box.origin_left, origin_top],
+            size_px: [paint_box.content_width, text_height_px],
+            font_size_px,
+            line_height_px,
+            wrap_mode: request.wrap_mode,
+            alignment: request.alignment,
+            color_rgba: context.node.computed_color().color_rgba,
+        });
+    }
 }
 
 fn append_text_entry_value_text_run(
@@ -225,16 +229,20 @@ fn append_control_text_run(
     let text_run_id = context
         .layer_pool
         .resolve_text_run_id_from_hint(&TextRunSignature::from_text(Arc::<str>::from(value)), None);
-    context.plan.text_runs.push(TextRunPaintOp {
-        text_run_id,
-        position_px: [paint_box.origin_left, paint_box.origin_top],
-        size_px: [paint_box.content_width, text_height_px],
-        font_size_px,
-        line_height_px: request.line_height_px.unwrap_or(font_size_px),
-        wrap_mode: request.wrap_mode,
-        alignment: request.alignment,
-        color_rgba: context.node.computed_color().color_rgba,
-    });
+    // Zero-size text renders nothing (CSS Fonts 4 §3.5); cosmic-text asserts a
+    // non-zero font size, so skip the run rather than reaching cosmic.
+    if font_size_px != 0.0 {
+        context.plan.text_runs.push(TextRunPaintOp {
+            text_run_id,
+            position_px: [paint_box.origin_left, paint_box.origin_top],
+            size_px: [paint_box.content_width, text_height_px],
+            font_size_px,
+            line_height_px: request.line_height_px.unwrap_or(font_size_px),
+            wrap_mode: request.wrap_mode,
+            alignment: request.alignment,
+            color_rgba: context.node.computed_color().color_rgba,
+        });
+    }
 }
 
 fn append_text_entry_caret_rect(

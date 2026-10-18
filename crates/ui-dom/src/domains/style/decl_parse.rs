@@ -18,6 +18,8 @@
 //! - every grammar family is a small helper (<20 complexity); the
 //!   `DeclGrammar` match only dispatches, it never parses
 //! - numeric parsing always rejects non-finite values (`NaN`, `inf`, `-inf`)
+//! - expansion helpers parse each produced token through the target longhand's
+//!   grammar (the sign policy cannot be bypassed via a shorthand)
 
 // `parse_declaration_block` is wired into the stylesheet load path (spine
 // step 2); `parse_declaration_strict` is wired into the `style_mut` single
@@ -288,7 +290,9 @@ fn parse_value(
 ) -> Option<DeclValue> {
     match grammar {
         DeclGrammar::Length => parse_length(value).map(DeclValue::Length),
-        DeclGrammar::LengthNoUnset => parse_length_no_unset(value).map(DeclValue::Length),
+        DeclGrammar::NonNegativeLength => {
+            parse_non_negative_length_or_unset(value).map(DeclValue::Length)
+        }
         DeclGrammar::LineHeight => parse_line_height(value),
         DeclGrammar::Color => parse_color(value),
         DeclGrammar::Opacity => parse_opacity(value),
@@ -320,10 +324,14 @@ fn parse_length(value: &str) -> Option<DeclLength> {
     parse_authored_length(value).map(decl_length_from_authored)
 }
 
-fn parse_length_no_unset(value: &str) -> Option<DeclLength> {
+/// `unset | 0 | <non-negative px> | <non-negative em>` — the sign policy for
+/// non-negative length properties (CSS rejects negatives here).
+fn parse_non_negative_length_or_unset(value: &str) -> Option<DeclLength> {
     match parse_authored_length(value)? {
-        AuthoredLength::Unset => None,
-        other => Some(decl_length_from_authored(other)),
+        AuthoredLength::Unset => Some(DeclLength::Unset),
+        AuthoredLength::Px(px) if px >= 0.0 => Some(DeclLength::Px(px)),
+        AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
+        _ => None,
     }
 }
 
@@ -415,9 +423,9 @@ fn parse_flex_basis_value(value: &str) -> Option<DeclValue> {
 
 fn parse_flex_basis_length(value: &str) -> Option<DeclLength> {
     match parse_authored_length(value)? {
-        AuthoredLength::Px(px) => Some(DeclLength::Px(px)),
-        AuthoredLength::Em(em) => Some(DeclLength::Em(em)),
-        AuthoredLength::Unset => None,
+        AuthoredLength::Px(px) if px >= 0.0 => Some(DeclLength::Px(px)),
+        AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
+        _ => None,
     }
 }
 
@@ -655,10 +663,24 @@ fn parse_token_list<T>(value: &str, parse: impl Fn(&str) -> Option<T>) -> Option
         .collect()
 }
 
+/// Parses one expanded token through the target longhand's grammar, so the
+/// sign policy (and any future grammar rule) cannot be bypassed via a
+/// shorthand. All four radius corners share one grammar, as do both gaps;
+/// the representative property is named for readability only.
+fn parse_length_for(property: PresentationProperty, value: &str) -> Option<DeclLength> {
+    let mut scratch = TextInterner::default();
+    match parse_value(property.grammar(), value, &mut scratch)? {
+        DeclValue::Length(length) => Some(length),
+        _ => None,
+    }
+}
+
 // — Shorthand expansions — //
 
 fn expand_border_radius(value: &str) -> Option<Vec<Declaration>> {
-    let lengths = parse_token_list(value, parse_length)?;
+    let lengths = parse_token_list(value, |token| {
+        parse_length_for(PresentationProperty::BorderTopLeftRadius, token)
+    })?;
     let (tl, tr, br, bl) = corner_quad(&lengths)?;
     Some(vec![
         declaration(
@@ -719,10 +741,7 @@ fn parse_gap_length(value: &str) -> Option<DeclLength> {
     if value == "normal" {
         return Some(DeclLength::Px(0.0));
     }
-    match parse_authored_length(value)? {
-        AuthoredLength::Unset => None,
-        other => Some(decl_length_from_authored(other)),
-    }
+    parse_length_for(PresentationProperty::RowGap, value)
 }
 
 fn expand_flex(value: &str) -> Option<Vec<Declaration>> {
@@ -928,17 +947,17 @@ fn transition_string(value: &DomAttributeValue) -> Option<&str> {
 }
 
 fn expand_border_side(side: BorderSide, value: &str) -> Option<Vec<Declaration>> {
-    let tokens = split_ws_paren_aware(value);
-    let [token] = tokens.as_slice() else {
-        return None;
-    };
-    let length = parse_length(token)?;
     let property = match side {
         BorderSide::Top => PresentationProperty::BorderTopWidth,
         BorderSide::Right => PresentationProperty::BorderRightWidth,
         BorderSide::Bottom => PresentationProperty::BorderBottomWidth,
         BorderSide::Left => PresentationProperty::BorderLeftWidth,
     };
+    let tokens = split_ws_paren_aware(value);
+    let [token] = tokens.as_slice() else {
+        return None;
+    };
+    let length = parse_length_for(property, token)?;
     Some(vec![declaration(property, DeclValue::Length(length))])
 }
 
@@ -1010,20 +1029,31 @@ mod tests {
     }
 
     #[test]
-    fn length_no_unset_rejects_unset_only() {
+    fn non_negative_length_grammar() {
         let mut interner = TextInterner::default();
         assert_eq!(
-            parse_value(DeclGrammar::LengthNoUnset, "14px", &mut interner),
-            Some(DeclValue::Length(DeclLength::Px(14.0)))
+            parse_value(DeclGrammar::NonNegativeLength, "unset", &mut interner),
+            Some(DeclValue::Length(DeclLength::Unset))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LengthNoUnset, "0", &mut interner),
+            parse_value(DeclGrammar::NonNegativeLength, "0", &mut interner),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LengthNoUnset, "unset", &mut interner),
-            None
+            parse_value(DeclGrammar::NonNegativeLength, "10px", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(10.0)))
         );
+        assert_eq!(
+            parse_value(DeclGrammar::NonNegativeLength, "1.5em", &mut interner),
+            Some(DeclValue::Length(DeclLength::Em(1.5)))
+        );
+        for invalid in ["-1px", "-0.5em"] {
+            assert_eq!(
+                parse_value(DeclGrammar::NonNegativeLength, invalid, &mut interner),
+                None,
+                "{invalid:?} should fail the NonNegativeLength grammar"
+            );
+        }
     }
 
     #[test]
@@ -1189,6 +1219,21 @@ mod tests {
             parse_value(DeclGrammar::FlexBasis, "unset", &mut interner),
             None
         );
+    }
+
+    #[test]
+    fn flex_basis_rejects_negative_lengths() {
+        let mut interner = TextInterner::default();
+        assert_eq!(
+            parse_value(DeclGrammar::FlexBasis, "-10px", &mut interner),
+            None
+        );
+        for accepted in ["10px", "auto", "content", "0"] {
+            assert!(
+                parse_value(DeclGrammar::FlexBasis, accepted, &mut interner).is_some(),
+                "{accepted:?} should parse"
+            );
+        }
     }
 
     #[test]
@@ -1461,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn gap_expands_one_or_two_tokens_and_rejects_unset() {
+    fn gap_expands_one_or_two_tokens_and_accepts_unset() {
         let (block, _, _) = parse_block("gap: 12px");
         assert_eq!(
             value(&block, PresentationProperty::RowGap),
@@ -1488,8 +1533,16 @@ mod tests {
             DeclValue::Length(DeclLength::Px(0.0))
         );
 
-        let (_, report, _) = parse_block("gap: unset");
-        assert_eq!(report.dropped, 1);
+        let (block, report, _) = parse_block("gap: unset");
+        assert_eq!(report.applied, 1);
+        assert_eq!(
+            value(&block, PresentationProperty::RowGap),
+            DeclValue::Length(DeclLength::Unset)
+        );
+        assert_eq!(
+            value(&block, PresentationProperty::ColumnGap),
+            DeclValue::Length(DeclLength::Unset)
+        );
     }
 
     #[test]
@@ -1699,6 +1752,26 @@ mod tests {
         assert_eq!(report.dropped, 1);
     }
 
+    #[test]
+    fn shorthand_expansion_rejects_negative_lengths() {
+        for (css, name) in [
+            ("border-radius: -4px", "border-radius"),
+            ("gap: -4px", "gap"),
+            ("border-top: -2px", "border-top"),
+        ] {
+            let (_, report, _) = parse_block(css);
+            assert_eq!(report.dropped, 1, "{name} negative should drop");
+            assert_eq!(report.applied, 0, "{name} negative should not apply");
+        }
+
+        let (block, report, _) = parse_block("border-radius: 4px");
+        assert_eq!(report.applied, 1);
+        assert_eq!(
+            value(&block, PresentationProperty::BorderTopLeftRadius),
+            DeclValue::Length(DeclLength::Px(4.0))
+        );
+    }
+
     // — Block-parse mechanics — //
 
     #[test]
@@ -1780,6 +1853,16 @@ mod tests {
             declarations[0].value,
             DeclValue::Length(DeclLength::Px(10.0))
         );
+    }
+
+    #[test]
+    fn font_size_unset_is_admitted() {
+        let mut interner = TextInterner::default();
+        let declarations = parse_declaration_strict("font-size", "unset", &mut interner)
+            .expect("font-size: unset should parse");
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].property, PresentationProperty::FontSize);
+        assert_eq!(declarations[0].value, DeclValue::Length(DeclLength::Unset));
     }
 
     #[test]

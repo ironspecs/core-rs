@@ -52,6 +52,15 @@ impl TextLayoutContext {
         request: &TextLayoutRequest<'_>,
     ) -> TextIntrinsicMetrics {
         let line_height_px = effective_line_height_px(&mut self.font_system, request);
+        if request.font_size_px == 0.0 {
+            // Zero-size text is CSS-legal (CSS Fonts 4 §3.5); cosmic-text asserts a
+            // non-zero font size, so measure without it: zero-width glyphs.
+            return TextIntrinsicMetrics {
+                min_content_width_px: 0.0,
+                max_content_width_px: 0.0,
+                line_height_px,
+            };
+        }
         let max_content_width_px =
             build_text_buffer(&mut self.font_system, request, line_height_px, None, None)
                 .layout_runs()
@@ -83,6 +92,10 @@ impl TextLayoutContext {
 
     #[must_use]
     pub(crate) fn measure_wrapped_text_height(&mut self, request: &TextLayoutRequest<'_>) -> f32 {
+        if request.font_size_px == 0.0 {
+            // Same zero guard: zero-width text occupies exactly one line.
+            return effective_line_height_px(&mut self.font_system, request);
+        }
         wrapped_text_height_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
     }
 
@@ -495,5 +508,38 @@ mod tests {
         );
 
         assert_eq!(byte_index, target_stop.byte_index);
+    }
+
+    #[test]
+    fn measure_intrinsic_zero_font_size_returns_zero_widths() {
+        let mut context = default_context();
+        let request = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            ..TextLayoutRequest::for_text("hello", 0.0)
+        };
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        assert_eq!(intrinsic.min_content_width_px, 0.0);
+        assert_eq!(intrinsic.max_content_width_px, 0.0);
+        assert_eq!(intrinsic.line_height_px, 20.0);
+    }
+
+    #[test]
+    fn measure_wrapped_text_height_zero_font_size_is_one_line() {
+        let mut context = default_context();
+        let with_line_height = TextLayoutRequest {
+            font_size_px: 0.0,
+            line_height_px: Some(20.0),
+            ..TextLayoutRequest::for_text("hello", 0.0)
+        };
+        let without_line_height = TextLayoutRequest::for_text("hello", 0.0);
+
+        assert_eq!(context.measure_wrapped_text_height(&with_line_height), 20.0);
+        assert_eq!(
+            context.measure_wrapped_text_height(&without_line_height),
+            1.0
+        );
     }
 }

@@ -382,7 +382,7 @@ fn add_node_paint_ops(
             text_run_id_hint: None,
         }),
         DomNode::Text(_) => {
-            let DomIntrinsic::Text(_) = node.intrinsic() else {
+            let DomIntrinsic::Text(text_intrinsic) = node.intrinsic() else {
                 panic!("text node should keep text intrinsic state");
             };
             let rect = box_model.border_box;
@@ -401,18 +401,13 @@ fn add_node_paint_ops(
                 crate::domains::layer_ops::TextRunSignature::from_text(text_run_text);
             let text_run_id = layer_pool
                 .resolve_text_run_id_from_hint(&text_run_signature, text_node.text_run_id_hint());
+            let font_size_px = text_intrinsic.font_size_px;
             let text_run = TextRunPaintOp {
                 text_run_id,
                 position_px: [rect.left_px, rect.top_px],
                 size_px: [rect.width_px, rect.height_px],
-                font_size_px: match node.intrinsic() {
-                    DomIntrinsic::Text(intrinsic) => intrinsic.font_size_px,
-                    _ => unreachable!(),
-                },
-                line_height_px: match node.intrinsic() {
-                    DomIntrinsic::Text(intrinsic) => intrinsic.line_height_px,
-                    _ => unreachable!(),
-                },
+                font_size_px,
+                line_height_px: text_intrinsic.line_height_px,
                 wrap_mode: text_wrap_mode_for_css_layout(
                     white_space,
                     inherited_style.effective_overflow_wrap(),
@@ -424,7 +419,12 @@ fn add_node_paint_ops(
                 ),
                 color_rgba: inherited_text_color_rgba(inherited_style),
             };
-            plan.text_runs.push(text_run);
+            // Zero-size text renders nothing (CSS Fonts 4 §3.5); cosmic-text
+            // asserts a non-zero font size, so skip the run rather than reaching
+            // cosmic. The hint still returns the id for cheap reuse.
+            if font_size_px != 0.0 {
+                plan.text_runs.push(text_run);
+            }
             Ok(AddNodePaintOpsResult {
                 text_run_id_hint: Some(text_run_id),
             })
@@ -1178,6 +1178,40 @@ mod tests {
 
         assert_eq!(text_runs.len(), 1);
         assert_eq!(text_runs[0].alignment, TextAlign::Center);
+    }
+
+    #[test]
+    fn zero_font_size_text_node_stages_no_text_run() {
+        let mut root = RootDom::new(RootDomContext::new_gpu());
+        let document_key = root.root;
+        let layer_root = append_node_with_attrs(
+            &mut root,
+            document_key,
+            DomTag::Div,
+            &[
+                ("position", "fixed"),
+                ("width", "160px"),
+                ("height", "80px"),
+                ("font-size", "0"),
+            ],
+        );
+        let text_parent = append_node_with_attrs(
+            &mut root,
+            layer_root,
+            DomTag::Div,
+            &[("display", "block"), ("width", "160px")],
+        );
+        append_text_node(&mut root, text_parent, "zero-size text");
+
+        layout_layer_tree(&mut root, layer_root, (160.0, 80.0));
+        let mut layer_pool = x1_layer_pool();
+        let plan = build_plan(&mut root, &mut layer_pool, layer_root, (160.0, 80.0));
+
+        assert_eq!(
+            text_ops(&plan).len(),
+            0,
+            "zero-size text should stage no text run",
+        );
     }
 
     #[test]

@@ -4770,7 +4770,9 @@ fn transition_longhand_property(property: PresentationProperty) -> bool {
 /// are enforced at parse time, not here.
 fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue) -> bool {
     match property.grammar() {
-        DeclGrammar::Length | DeclGrammar::LengthNoUnset => matches!(value, DeclValue::Length(_)),
+        DeclGrammar::Length | DeclGrammar::NonNegativeLength => {
+            matches!(value, DeclValue::Length(_))
+        }
         DeclGrammar::LineHeight => matches!(
             value,
             DeclValue::Keyword(Keyword::Normal) | DeclValue::Number(_) | DeclValue::Length(_)
