@@ -43,7 +43,9 @@
 //! (`flex.rs:1361`) rejects any visible-overflow auto-min measurement outside
 //! that subset. There is no placeholder solver fallback.
 
-use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, node_box};
+use ui_dom::{
+    DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, node_box,
+};
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
@@ -8202,5 +8204,215 @@ fn assert_column_reverse_wrap_column_gap(name: &str) {
         50.0,
         40.0,
         &format!("{name}: item 3"),
+    );
+}
+
+// CSS Overflow 3 §3 (overflow clip/scroll) + CSS Flexbox 1 §4.2/§9.2 (item
+// border/padding in the outer hypothetical main size) + CSS Box 3 §content
+// edges: a flex container with `overflow: scroll`/`hidden` retains the
+// overflowing wrapped content as scroll geometry and clips it at its border
+// box via the composite `clip_world` (the deliberate layer-clip registry
+// decision — NOT re-registered here); an item's `border-*-width` is part of
+// its border box and therefore its outer hypothetical main size, so line
+// breaking accounts for it; the container's border + padding shift the
+// content-box origin for item placement. Gecko applies border/padding in
+// `FlexItem` construction (`nsFlexContainerFrame.cpp`) and Blink in
+// `ConstructAndAppendFlexItems` (`flex_layout_algorithm.cc`). Closest WPT
+// oracle: `css/css-flexbox/flexbox-overflow-horiz-001.html` (overflow) and
+// `css/css-flexbox/flexbox-width-overflow.html` (item sizing).
+// ON-SPEC: all four rows land at the spec geometry.
+#[test]
+fn flex_container_overflow_and_borders() {
+    let rows: [OverflowBorderRow; 4] = [
+        (
+            "overflow_scroll_clips_with_scroll_geometry",
+            assert_overflow_scroll_scroll_geometry,
+        ),
+        (
+            "overflow_hidden_clips_at_border_box",
+            assert_overflow_hidden_border_box_clip,
+        ),
+        (
+            "item_border_width_participates_in_line_breaking",
+            assert_item_border_width_line_breaking,
+        ),
+        (
+            "container_border_padding_origin_for_justify",
+            assert_container_border_padding_origin,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named overflow/border probe: the row name plus a runner.
+type OverflowBorderRow = (&'static str, fn(&str));
+
+fn assert_overflow_scroll_scroll_geometry(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "100px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "overflow", "scroll");
+    assert_style_set(&mut root, container, "align-content", "flex-start");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "40px");
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let layout = assert_node_layout(&root, container);
+    assert_eq!(
+        layout.layer_kind,
+        DomLayerKind::Clipped,
+        "{name}: clipped layer"
+    );
+    assert_close(layout.width_px, 100.0, &format!("{name}: container width"));
+    assert_close(layout.height_px, 60.0, &format!("{name}: container height"));
+    // Two wrapped 40px lines overflow the 60px box: the retained scroll
+    // geometry keeps the full 80px content extent (clipping is composite).
+    assert_close(
+        layout.content_height_px,
+        80.0,
+        &format!("{name}: scroll content height"),
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 4, "{name}: container + three items");
+    assert_rect_op_geometry(
+        &plans[0].rects[3],
+        0.0,
+        40.0,
+        40.0,
+        40.0,
+        &format!("{name}: overflowing item"),
+    );
+}
+
+fn assert_overflow_hidden_border_box_clip(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "100px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "overflow", "hidden");
+    assert_style_set(&mut root, container, "align-content", "flex-start");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "40px");
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let layout = assert_node_layout(&root, container);
+    assert_eq!(
+        layout.layer_kind,
+        DomLayerKind::Clipped,
+        "{name}: clipped layer"
+    );
+    assert_close(layout.width_px, 100.0, &format!("{name}: container width"));
+    assert_close(layout.height_px, 60.0, &format!("{name}: container height"));
+    // The clip is at the container border box (100x60); the retained content
+    // extent (80px) is what the composite clip_world cuts off.
+    assert_close(
+        layout.content_height_px,
+        80.0,
+        &format!("{name}: clipped content extent"),
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_rect_op_geometry(
+        &plans[0].rects[0],
+        0.0,
+        0.0,
+        100.0,
+        60.0,
+        &format!("{name}: clip box"),
+    );
+}
+
+fn assert_item_border_width_line_breaking(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "width", "100px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "align-content", "flex-start");
+    for _ in 0..2 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "40px");
+        assert_style_set(&mut root, item, "height", "20px");
+        assert_style_set(&mut root, item, "border-right-width", "15px");
+        assert_style_set(&mut root, item, "border-left-width", "0px");
+        assert_style_set(&mut root, item, "flex-shrink", "0");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 3, "{name}: container + two items");
+    // Each item's border box is 40 + 15 = 55px, so two items (110px) exceed
+    // the 100px line and the second wraps onto its own line (y = 20). Without
+    // the border, both 40px items would share the first line.
+    assert_rect_op_geometry(
+        &plans[0].rects[1],
+        0.0,
+        0.0,
+        55.0,
+        20.0,
+        &format!("{name}: item 1"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[2],
+        0.0,
+        20.0,
+        55.0,
+        20.0,
+        &format!("{name}: item 2"),
+    );
+}
+
+fn assert_container_border_padding_origin(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "row");
+    assert_style_set(&mut root, container, "width", "100px");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "border-left-width", "5px");
+    assert_style_set(&mut root, container, "border-top-width", "7px");
+    assert_style_set(&mut root, container, "padding-left", "3px");
+    assert_style_set(&mut root, container, "padding-top", "2px");
+    assert_style_set(&mut root, container, "justify-content", "flex-start");
+    for _ in 0..2 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "20px");
+        assert_style_set(&mut root, item, "height", "10px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_eq!(plans[0].rects.len(), 3, "{name}: container + two items");
+    // The border (5,7) + padding (3,2) shift the content-box origin to
+    // (8, 9); the container border box is 108 x 49, and the items start at
+    // the content edge.
+    assert_rect_op_geometry(
+        &plans[0].rects[0],
+        0.0,
+        0.0,
+        108.0,
+        49.0,
+        &format!("{name}: container"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[1],
+        8.0,
+        9.0,
+        20.0,
+        10.0,
+        &format!("{name}: item 1"),
+    );
+    assert_rect_op_geometry(
+        &plans[0].rects[2],
+        28.0,
+        9.0,
+        20.0,
+        10.0,
+        &format!("{name}: item 2"),
     );
 }
