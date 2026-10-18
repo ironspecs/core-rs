@@ -192,13 +192,15 @@ accounting found two crash sites the hard way.
 
 `resolve_active_flex_container` (`flex.rs:1586`): staged measure → line
 collection → resolution phases over `MeasuredFlexItem`/`FlexLine`/
-`FlexContainerStyle`. Coverage: batches 3–7 pinned (~109 proofs in
+`FlexContainerStyle`. Coverage: batches 3–7 pinned (110 proofs in
 `layout/flex_layout.rs`, ~50 solver unit tests including the
-`measured_item_record_*` family). One explicit support gate:
-`flex_container_content_based_auto_min_is_supported` (`flex.rs:1402` —
-content-based auto-min only for horizontal, non-reversed, no-wrap
-containers). The unadmitted remainder is gated by the closed grammar and
-this one gate; there is no placeholder fallback (the old one died in the
+`measured_item_record_*` family). Two GRACEFUL support gates (landed
+2026-10-19, replacing the former fail-fast asserts — see the decision
+log): outside the supported content-based auto-min subset (horizontal,
+non-reversed, no-wrap containers; non-growing walk children) the
+auto-min degrades to the item's measured main size, registered
+divergent. The unadmitted remainder is gated by the closed grammar and
+these gates; there is no placeholder fallback (the old one died in the
 typed-group migration). The file is 4,986 lines and its data structures do
 not map to Blink's `FlexLine`/`FlexItem` or Gecko's equivalents.
 
@@ -217,10 +219,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-397 layout proofs (389 in
+414 layout proofs (406 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 post-PR-1 review);
-the off-spec registry (8 divergent proofs in 7 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after the flex/grid
+spec-surface enumeration); the off-spec registry (19 divergent proofs
+in 18 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -815,6 +818,34 @@ an f32 basis.
   counted), which also sizes grid admission for the
   flex-first/grid-first/both-tracks decision empirically. This is
   evidence-gathering for PR 3's debate, not implementation.
+
+- **2026-10-19 — the flex/grid spec-surface enumeration is COMPLETE;
+  the complaint list exists.** Every cell of the 135-cell flex matrix
+  and the 18-cell grid vocabulary is PROVED, registered, or gated (the
+  condensed matrix lives in the layout_proofs README as the audit
+  artifact). The complaint list for PR 3's debate is the new divergent
+  set, ordered by product criticality against the client signal:
+  anonymous inline runs not merged (§4 — hits every text-in-flex
+  design), the auto-min/clamp families (inflexible items skipping
+  hypothetical clamps; hypothetical size not floored by auto-min;
+  container min/max bypassed; percentage margins/padding resolving
+  against the item instead of the container — the literal "elements are
+  not moving where they should"), abs-pos/`display:none` children
+  occupying item slots (§4.1 — conditional-rendering patterns), mixed
+  violation freeze ordering (§9.7), space-evenly negative-free-space
+  fallback (§8.2/§8.4), paint ignoring order-modified sequence
+  (§5.4.1), and the two auto-min graceful-gate rows (§4.5). Two
+  suspected divergences correctly landed ON-SPEC (cross-axis min/max;
+  basis `content`) — the empirical discipline's false-positive filter
+  working. Grid: 14 property-name gates plus the `display: grid` value
+  gate make the admission scope enumerable. **Three authored-input
+  panics were found and fixed in this round** (non-ASCII importance
+  marker, nested `inline-flex` blockification per CSS Display 3 §2.7,
+  and the two auto-min asserts converted to measured-size graceful
+  fallbacks): the assert-shaped fail-fast gate is retired as a pattern
+  for boundary data — gates on authored input are graceful, registered,
+  and pinned. PR 3's mapping-document debate now has its evidence base:
+  the target list is these rows.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
