@@ -658,7 +658,27 @@ moves begin).
   delays, mid-flight re-targeting, list-repeat, completion/overlay
   removal, `from == to` skip. It slots into PR 1's branch as an
   uncontroversial companion bundle (`pipeline/transitions.rs` rows) unless
-  a better home is named.
+  a better home is named. **LANDED in PR 1** (the seven-test family).
+
+- **2026-10-18 — the percentage-semantics table and the resolution-semantics
+  rule (process correction).** After two review-blocking defects in item 7's
+  percentage work (silent f32-path no-op; indefinite-basis height collapse),
+  the rule for the rest of the arc is: **any feature touching resolution
+  semantics gets its full semantics table written here BEFORE
+  implementation.** The percentage table as fixed:
+  width/min/max-width/margin×4/padding×4/left/right resolve against the
+  containing-block width (always definite via the viewport chain, CSS 2.1
+  §10.1); font-size/line-height against parent/own font size (always
+  definite); **height** against the cb height with Percent+indefinite →
+  **auto** (§10.5); **max-height** → **none** (§10.7); **min-height** →
+  **0** (§10.7, and `Auto` → 0 per CSS Sizing 3); top/bottom percentages
+  resolve at offset-application time against the laid-out containing block
+  (deferred, pinned `relative_top_percentage_defers_to_offset_time`);
+  border/outline widths, outline-offset, radius (elliptical gate), gap, and
+  flex-basis percentages are rejected at admission and pinned. The domain
+  of percentage resolution is `Option<basis>` plus a per-field rule, never
+  an f32 basis.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
