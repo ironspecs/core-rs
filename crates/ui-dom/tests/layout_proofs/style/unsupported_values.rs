@@ -380,7 +380,7 @@ fn gap_unset_resolves_to_zero() {
 //   (`declarations_dropped == 1`) — range enforced at parse, not computed time.
 // - SPEC-CORRECT: admit and clamp at computed time (reject-side divergence of
 //   an admitted property's semantics — moves through the D6 admission policy).
-// - ROOT CAUSE: `parse_opacity` (`decl_parse.rs:360-367`) rejects the 0.0..=1.0
+// - ROOT CAUSE: `parse_opacity` (`decl_parse.rs:368-375`) rejects the 0.0..=1.0
 //   range rather than clamping.
 // - RECLASSIFY: stays divergent (reject-side); moves on-spec through admission,
 //   NOT through the B1 sign-rule fix.
@@ -563,7 +563,7 @@ fn fractional_order_rejected() {
 
 #[test]
 // ROBUSTNESS: non-finite length scalars are rejected by
-// `parse_finite_length_scalar` (`dom_attr_parse.rs:339-344`), so each of
+// `parse_finite_length_scalar` (`dom_attr_parse.rs:342-347`), so each of
 // `1e400px` (overflow → inf), `NaNpx`, `infpx`, `-infpx` drops + counts with
 // no crash. Finite-f32 is a computed-group field invariant (PLAN.md B1 data
 // structures).

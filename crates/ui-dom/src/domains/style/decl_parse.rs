@@ -19,7 +19,14 @@
 //!   `DeclGrammar` match only dispatches, it never parses
 //! - numeric parsing always rejects non-finite values (`NaN`, `inf`, `-inf`)
 //! - expansion helpers parse each produced token through the target longhand's
-//!   grammar (the sign policy cannot be bypassed via a shorthand)
+//!   grammar (the sign policy cannot be bypassed via a shorthand). Two helpers
+//!   are equivalent-by-construction rather than literally routed:
+//!   `expand_border_color` calls the same leaf the `Color` grammar wraps, and
+//!   `expand_flex` calls the `FlexBasis`/`NonNegativeNumber` dispatch targets
+//!   directly — behaviorally identical today, noted so a future grammar
+//!   re-point is applied at those leaves too. The radius corners route through
+//!   `BorderTopLeftRadius` and the gaps through `RowGap` as representatives of
+//!   their (currently identical) longhand grammars
 
 // `parse_declaration_block` is wired into the stylesheet load path (spine
 // step 2); `parse_declaration_strict` is wired into the `style_mut` single

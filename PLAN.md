@@ -559,7 +559,7 @@ quirky downstream. Verify each at pin time.
 
 | Behavior | Expected current (verify) | Spec-correct | Class |
 | --- | --- | --- | --- |
-| `font-family` computed but ignored by text layout (hardcoded UiSans) | text renders UiSans regardless | consume the computed family | **divergent (step-5 follower)** — pin |
+| `font-family` computed but ignored by text layout (hardcoded UiSans) | text renders UiSans regardless | consume the computed family | **divergent (step-5 follower)** — pin. Caveat for the follower (review find): the `Text` grammar interns the value verbatim, so a QUOTED family name keeps its literal quotes (`font-family: "X"` computes `"X"` with quotes — CSS string tokens must be unquoted at parse or the catalog won't match); pin uses the unquoted form |
 | `font-weight` / `font-style` computed but ignored | rendered regular/upright | consume weight/style | divergent (same family) — pin |
 | `text-align: justify`/`justified` consumption | **consumed** — `TextAlign::Justified → cosmic_text::Align::Justified` (`text_render.rs:104-106`) | justified text | on-spec (pin to keep) |
 | `font-style: oblique` | dropped+counted (closed set normal/italic) | oblique admitted in CSS | unimplemented |
@@ -1230,6 +1230,29 @@ Resolved this session: the `pointer-events` channel (content-side
 
 ## Decision log (dated; consolidated so nothing is re-litigated)
 
+- **2026-10-18 — Phase-1 review adjudication (two independent adversarial
+  sweeps + architect verification).** Accepted and fixed: the transform
+  pin's third act was vacuous at progress 1.0 (retimed to 180ms/0.09s);
+  the font-family pin was vacuous on a serif-less catalog (switched to
+  Source Han Sans); the break-spaces divergent half was census-invisible
+  and coincident with spec output (split, off_spec-named, lone-trailing-
+  space case added — census now 8); the flex registry row cited dead
+  `active_flex_gate_*` tests and a dead placeholder-solver (rewritten to
+  the real gate: closed grammar + `flex_container_content_based_auto_min_
+  is_supported`); the robustness row's file attribution corrected; nine
+  stale file:line citations corrected (incl. a +3-line drift introduced by
+  the B7 doc-comment edit itself); `row-gap`/`column-gap: normal` admitted
+  via a new `DeclGrammar::Gap` variant (review F4, commits `41d3ba2` +
+  `f378718`); `gap: unset` and the competing-cascade `font-size: unset`
+  rows pinned; the support.rs float invariant rewritten to admit exact
+  typed-value assertions. Noted and recorded without action: the radius/
+  gap representative-property routing and the two equivalent-by-construction
+  expansion helpers (documented in `decl_parse.rs`'s header); the opacity
+  double-pin (the robustness row adds the f32-rounding observation);
+  quoted `font-family` values keep literal quotes (a string-token decoding
+  gap — belongs to the font-family consumption follower, recorded in B4's
+  row).
+
 - **2026-10-18 — B5 adjudications.** near-white initial `color` →
   **deliberate** (dark-theme design-system default; permanent).
   `line-height: normal` → `1.0 × font-size` → **divergent** (browsers ~1.2;
@@ -1286,7 +1309,7 @@ Registry baseline before the accounting: 1 divergent (negative margins,
 | Plan: adversarial review adjudication (`85de600`) | done |
 | Plan: compaction-survival pass (decision log, evidence registry, playbook) | done |
 | Batch 0 — suite reorganization | done |
-| B1 — sign rules & numeric edges | **done** (a `4cb6acd` pins; b — fix + flips, incl. the font-size: 0 guard; caret-path follow-up queued below) |
+| B1 — sign rules & numeric edges | **done** (a `4cb6acd` pins; b `489ebca` fix + flips incl. the font-size: 0 guard; b-4 `4bac39d` caret/editing-path guard) |
 | B1 (a) — pins of current behavior (`style/unsupported_values.rs`) | done |
 | B2 — units & sizing keywords | **done** (pins; all rows verified; the stale `font-size: unset` row was resolved by B1b and is marked above) |
 | B3 — box shorthands | done (pins; all rows verified dropped+counted + group-initial) |

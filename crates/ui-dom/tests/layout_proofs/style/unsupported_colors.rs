@@ -44,7 +44,7 @@ use crate::layout_proofs::support::{
 const NEAR_WHITE: [f32; 4] = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0, 1.0];
 
 /// The admitted named color `blue` (`parse_named_color_rgba`,
-/// `dom_attr_parse.rs:166-168`).
+/// `dom_attr_parse.rs:169-171`).
 const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// Returns `(world, root, target, report)`: a fresh root with a single
@@ -82,7 +82,7 @@ fn computed_color_after_load(declaration: &str) -> [f32; 4] {
 //   <https://drafts.csswg.org/css-color-4/#hex-notation>
 // - CURRENT (asserted): `color: #abc` and `color: #abcd` each drop + count
 //   (`declarations_dropped == 1`) — `parse_hex_color_rgba` (`dom_attr_parse.rs:
-//   242-258`) admits only `hex.len() == 6` or `8`, so 3/4-digit hex returns
+//   245-261`) admits only `hex.len() == 6` or `8`, so 3/4-digit hex returns
 //   `Err`; after the load the computed `color` stays at its near-white group
 //   initial.
 // - SPEC-CORRECT: admit 3/4-digit hex by digit-doubling (one branch in
@@ -123,9 +123,9 @@ fn unsupported_short_hex_colors_drop() {
 //   `rebeccapurple`, `gray`, `teal`, `orange`).
 //   <https://drafts.csswg.org/css-color-4/#named-colors>
 // - CURRENT (asserted): `rebeccapurple`, `gray`, `teal`, and `orange` each drop
-//   + count — `parse_named_color_rgba` (`dom_attr_parse.rs:153-170`) admits
+//   + count — `parse_named_color_rgba` (`dom_attr_parse.rs:156-173`) admits
 //   exactly `white`/`black`/`red`/`green`/`blue` (plus `transparent`, handled
-//   before the named table at `dom_attr_parse.rs:138-140`); every other name
+//   before the named table at `dom_attr_parse.rs:141-143`); every other name
 //   returns `None`. After the load the computed `color` stays near-white.
 // - CONTROL (asserted): `color: blue` applies (`declarations_applied == 1`,
 //   `declarations_dropped == 0`) and computes `[0, 0, 1, 1]`, proving the pin
@@ -221,13 +221,13 @@ fn unsupported_current_color_drops() {
 //   a slash-separated alpha (`rgb(255 0 0 / 50%)`, `rgb(100% 0% 0%)`); the
 //   legacy comma form (`rgb(255, 0, 0)`, `rgba(255, 0, 0, 0.5)`) is also
 //   admitted. <https://drafts.csswg.org/css-color-4/#rgb-functions>
-// - VERIFIED ACTUAL (per `parse_css_color_rgba`, `dom_attr_parse.rs:136-151`):
-//   the channel splitter `rgb_function_tokens` (`dom_attr_parse.rs:199-204`)
+// - VERIFIED ACTUAL (per `parse_css_color_rgba`, `dom_attr_parse.rs:139-154`):
+//   the channel splitter `rgb_function_tokens` (`dom_attr_parse.rs:202-207`)
 //   splits on commas OR whitespace, but it has no slash handling — the `/`
 //   becomes an extra token, so `parse_rgb_function_args` (`dom_attr_parse.rs:
-//   181-197`) rejects the token count (`tokens.len() != required_len`,
-//   `dom_attr_parse.rs:184`). Percent channels are admitted through
-//   `parse_percent_channel` (`dom_attr_parse.rs:232-240`). The accept/drop map
+//   184-200`) rejects the token count (`tokens.len() != required_len`,
+//   `dom_attr_parse.rs:187`). Percent channels are admitted through
+//   `parse_percent_channel` (`dom_attr_parse.rs:235-243`). The accept/drop map
 //   pinned below:
 //     accepted  `rgb(255 0 0)`        → [1, 0, 0, 1]   (space-separated)
 //     accepted  `rgb(255, 0, 0)`      → [1, 0, 0, 1]   (legacy comma)

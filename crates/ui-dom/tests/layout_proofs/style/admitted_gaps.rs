@@ -185,7 +185,7 @@ fn layout_for_white_space(text: &str, white_space: &str, width_px: f32) -> White
 // ROOT CAUSE: `TextFontFamilyId::UiSans` one-variant enum
 // (`text_layout/mod.rs:36-39`), hardcoded in `TextLayoutRequest::for_text`
 // (`text_layout_request.rs:33-48`) and resolved by `preferred_repo_font_family`
-// (`text_render.rs:23-63`).
+// (`text_render.rs:45-63`).
 // RECLASSIFY: consumption is the named step-5 follower; this pin flips on-spec
 // when the resolved family reaches text layout.
 fn off_spec_font_family_computed_but_unconsumed() {

@@ -19,8 +19,11 @@
 //!   asserted update via `take_staged_layer_paint_plans`; the document root
 //!   layer is entry zero, and layer-local geometry equals screen geometry in
 //!   single-layer proofs
-//! - all float assertions go through `assert_close` (1e-3 tolerance); proofs
-//!   never compare `f32` directly
+//! - layout and geometry float assertions go through `assert_close` (1e-3
+//!   tolerance). Typed computed-value assertions (computed group fields,
+//!   intrinsic metrics, counters) compare exactly under a per-file
+//!   `#![allow(clippy::float_cmp)]` with a stated rationale — the values are
+//!   deterministic typed projections, so exactness is the honest check
 //! - this file is test-only support: it owns no product behavior and asserts
 //!   nothing itself beyond the `assert_*` contract
 
