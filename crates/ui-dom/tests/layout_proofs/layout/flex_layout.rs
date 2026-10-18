@@ -6329,6 +6329,209 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
     f32::from(value_u16)
 }
 
+// CSS Flexbox 1 §9.7 step 3 (Resolve Flexible Lengths): an inflexible item
+// (zero flex factor, or base size on the "wrong" side of its hypothetical)
+// freezes at its HYPOTHETICAL main size — the flex base clamped by min/max and
+// floored by the used automatic minimum size (§4.5). No single WPT oracle
+// pairs the downstream mis-positioning, so this is cited from §9.7 directly;
+// Gecko (`FlexLine::ResolveFlexibleLengths`, `nsFlexContainerFrame.cpp`) and
+// Blink (`LineFlexer::ResolveFlexibleLengths`, `line_flexer.cc`) both freeze
+// inflexible items at the clamped base before the free-space loop.
+//
+// OFF-SPEC: `initial_flex_line_item_resolution_states` (`flex.rs:2082`) seeds
+// `resolved_main_size_px = flex_base_size_px` (the unclamped base), and the
+// all-frozen early return (`flex.rs:2040`) exits before
+// `freeze_flex_line_main_size_violations` (`flex.rs:2185`) can clamp. The
+// item's own painted size is then clamped by the block relayout, but later
+// items are positioned from the unclamped flex-level base, so a 10px-base /
+// 20px-min-width inflexible item paints 20px wide yet pushes the next item to
+// 10px (spec: 20px). Row (b) is the automatic-minimum interaction with C5.
+#[test]
+fn off_spec_inflexible_items_skip_hypothetical_clamps() {
+    let rows: [InflexibleRow; 5] = [
+        (
+            "min_width_clamp_mispositions_next_item",
+            assert_min_width_clamp_mispositions_next_item,
+        ),
+        (
+            "visible_content_auto_min_not_applied_to_inflexible_item",
+            assert_auto_min_not_applied_to_inflexible_item,
+        ),
+        (
+            "max_width_clamp_mispositions_next_item",
+            assert_max_width_clamp_mispositions_next_item,
+        ),
+        (
+            "column_min_height_clamp_mispositions_next_item",
+            assert_column_min_height_clamp_mispositions_next_item,
+        ),
+        (
+            "no_clamp_control_freezes_at_base",
+            assert_no_clamp_control_freezes_at_base,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named inflexible-item clamp probe: row name plus a runner.
+type InflexibleRow = (&'static str, fn(&str));
+
+fn assert_min_width_clamp_mispositions_next_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "min-width", "20px");
+    assert_style_set(&mut root, first, "height", "20px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "30px");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // The first item paints at its clamped 20px, but the flex-level resolved
+    // size stays 10px, so the second item overlaps it at 10px (spec: 20px).
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        20.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        0.0,
+        30.0,
+        20.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_auto_min_not_applied_to_inflexible_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "10px");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_style_set(&mut root, item, "height", "20px");
+    let _text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // Divergent: the content-based automatic minimum (> 10px for this text)
+    // is skipped, so the inflexible visible item stays at its 10px base.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, &format!("{name}: item"));
+}
+
+fn assert_max_width_clamp_mispositions_next_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "50px");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "max-width", "20px");
+    assert_style_set(&mut root, first, "height", "20px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "30px");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // The first item paints at its clamped 20px, but the flex-level resolved
+    // size stays 50px, so the second item sits at 50px (spec: 20px).
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        20.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        50.0,
+        0.0,
+        30.0,
+        20.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_column_min_height_clamp_mispositions_next_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_column_container_size(&mut root, container, "200px", "200px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "flex-grow", "0");
+    assert_style_set(&mut root, first, "min-height", "20px");
+    assert_style_set(&mut root, first, "width", "20px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "30px");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "flex-grow", "0");
+    assert_style_set(&mut root, second, "width", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // Column-axis mirror: the first item paints at its clamped 20px height,
+    // but the second item sits at 10px top (spec: 20px).
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        20.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        10.0,
+        20.0,
+        30.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_no_clamp_control_freezes_at_base(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "30px");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // On-spec control: with no min/max/auto-min constraints, the inflexible
+    // item freezes at its base size.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 20.0, &format!("{name}: item"));
+}
+
 // CSS Flexbox 1 §4.1: an absolutely-positioned child of a flex container is
 // not a flex item and does not participate in flex layout (its only flex
 // involvement is the reordering step and its static-position rectangle);
