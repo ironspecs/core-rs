@@ -119,11 +119,27 @@ pub enum PresentationGroup {
 /// Per-property declaration grammar (the admission table's grammar column).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeclGrammar {
-    /// `unset | 0 | <px> | <em>` (signed: margins, offsets, outline-offset).
+    /// `unset | 0 | <px> | <em> | <%>` (signed: margins and position insets;
+    /// percentages admitted and resolved per PR 1 item 7).
     Length,
-    /// `unset | 0 | <non-negative px> | <non-negative em>` (padding, box sizes,
-    /// border widths, radii, outline-width, font-size).
+    /// `unset | 0 | <non-negative px> | <non-negative em> | <non-negative %>`
+    /// (padding, box sizes, font-size).
     NonNegativeLength,
+    /// `unset | 0 | <non-negative px> | <non-negative em>` — the CSS
+    /// `<line-width>` grammar (CSS Backgrounds 3 §4.3, CSS UI 4 §4.1), which
+    /// admits NO percentages. Used by the four border widths, outline-width,
+    /// and the four border-radius longhands. For the radius corners CSS
+    /// Backgrounds 3 §5.1 admits `<length-percentage>`, but the
+    /// circular-corner model (`radius: [f32; 4]`, one radius per corner) cannot
+    /// represent the elliptical resolution CSS requires (50% on a non-square
+    /// border box computes different horizontal and vertical radii per corner),
+    /// so the percentage is rejected at admission exactly like `gap` (see
+    /// `parse_gap_longhand`) — admission-gated on a corner-pair (elliptical)
+    /// model, never silently resolved.
+    LineWidth,
+    /// `unset | 0 | <px> | <em>` (signed, NO percentages) — outline-offset
+    /// (CSS UI 4 §4.3: a signed CSS `<length>` with no percentage form).
+    SignedLineWidth,
     /// `normal | unset | 0 | <non-negative px> | <non-negative em>` (CSS Box
     /// Alignment 3 §8.2; `normal` computes to zero, matching the shorthand).
     Gap,
@@ -408,22 +424,22 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
     (
         "border-top-width",
         PresentationGroup::Box,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "border-right-width",
         PresentationGroup::Box,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "border-bottom-width",
         PresentationGroup::Box,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "border-left-width",
         PresentationGroup::Box,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "flex-direction",
@@ -507,33 +523,41 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
     (
         "outline-width",
         PresentationGroup::Visual,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "outline-offset",
         PresentationGroup::Visual,
-        DeclGrammar::Length,
+        DeclGrammar::SignedLineWidth,
     ),
     ("caret-color", PresentationGroup::Visual, DeclGrammar::Color),
+    // The four radius longhands use `LineWidth` (no percentages), not
+    // `NonNegativeLength`: CSS Backgrounds 3 §5.1 admits `<length-percentage>`,
+    // but the circular-corner model (`radius: [f32; 4]`, one radius per corner)
+    // cannot represent the elliptical resolution CSS requires (50% on a
+    // non-square border box computes different horizontal and vertical radii
+    // per corner). Percentages are rejected at admission exactly like `gap`
+    // (see `parse_gap_longhand` in `decl_parse.rs`); admission is gated on a
+    // corner-pair (elliptical) model — never silently resolved.
     (
         "border-top-left-radius",
         PresentationGroup::Visual,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "border-top-right-radius",
         PresentationGroup::Visual,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "border-bottom-right-radius",
         PresentationGroup::Visual,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "border-bottom-left-radius",
         PresentationGroup::Visual,
-        DeclGrammar::NonNegativeLength,
+        DeclGrammar::LineWidth,
     ),
     (
         "transform",
@@ -804,6 +828,22 @@ mod tests {
         assert_eq!(PresentationProperty::Color.grammar(), DeclGrammar::Color);
         assert_eq!(PresentationProperty::RowGap.grammar(), DeclGrammar::Gap);
         assert_eq!(PresentationProperty::ColumnGap.grammar(), DeclGrammar::Gap);
+        assert_eq!(
+            PresentationProperty::BorderTopWidth.grammar(),
+            DeclGrammar::LineWidth
+        );
+        assert_eq!(
+            PresentationProperty::OutlineWidth.grammar(),
+            DeclGrammar::LineWidth
+        );
+        assert_eq!(
+            PresentationProperty::OutlineOffset.grammar(),
+            DeclGrammar::SignedLineWidth
+        );
+        assert_eq!(
+            PresentationProperty::BorderTopLeftRadius.grammar(),
+            DeclGrammar::LineWidth
+        );
 
         let DeclGrammar::Keywords(align_self_keywords) = PresentationProperty::AlignSelf.grammar()
         else {

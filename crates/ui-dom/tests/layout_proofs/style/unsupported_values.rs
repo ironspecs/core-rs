@@ -1329,6 +1329,157 @@ fn unsupported_gap_percentages_drop() {
 }
 
 #[test]
+// UNSUPPORTED (class: unimplemented — the grammar form is closed; the drop is
+// spec-correct):
+// - SPEC: CSS Backgrounds 3 §4.3 `border-*-width` and CSS UI 4 §4.1
+//   `outline-width` take `<line-width>` (a `<length>` only, NO percentages);
+//   CSS UI 4 §4.3 `outline-offset` takes `<length>` (signed, NO percentages).
+//   <https://drafts.csswg.org/css-backgrounds-3/#the-border-width>
+//   <https://drafts.csswg.org/css-ui-4/#outline-width>
+// - CURRENT (asserted): each percentage drops + counts and the computed field
+//   stays at its group initial — the width longhands use the `LineWidth`
+//   grammar and outline-offset the `SignedLineWidth` grammar, neither of which
+//   admits a percentage arm. The drop IS the spec-correct outcome for these
+//   families (no `<length-percentage>` in the grammar); the row is classed
+//   unimplemented only in that the percentage form stays unadmitted, not
+//   because the drop diverges from spec.
+// - SPEC-CORRECT: already spec-correct — `<line-width>`/`<length>` never admit
+//   a percentage.
+fn unsupported_line_width_percentages_drop() {
+    enum TargetField {
+        BorderTopWidth,
+        OutlineWidth,
+        OutlineOffset,
+    }
+
+    struct Case {
+        name: &'static str,
+        body: &'static str,
+        field: TargetField,
+    }
+
+    let cases = [
+        Case {
+            name: "border_top_width_percent",
+            body: "border-top-width: 10%",
+            field: TargetField::BorderTopWidth,
+        },
+        Case {
+            name: "outline_width_percent",
+            body: "outline-width: 10%",
+            field: TargetField::OutlineWidth,
+        },
+        Case {
+            name: "outline_offset_percent",
+            body: "outline-offset: 10%",
+            field: TargetField::OutlineOffset,
+        },
+    ];
+
+    for case in cases {
+        assert_decl_drop(&format!(".x {{ {} }}", case.body), 0, 1);
+        let (mut world, mut root, target, _report) =
+            styled_target_load(&format!(".x {{ {} }}", case.body));
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        let view = root.computed_style(target).expect("target");
+        match case.field {
+            TargetField::BorderTopWidth => assert_eq!(
+                view.as_box().border_width[0],
+                0.0,
+                "{} should keep border_width[0] at its 0.0 initial",
+                case.name
+            ),
+            TargetField::OutlineWidth => assert_eq!(
+                view.as_visual().outline_width,
+                0.0,
+                "{} should keep outline_width at its 0.0 initial",
+                case.name
+            ),
+            TargetField::OutlineOffset => assert_eq!(
+                view.as_visual().outline_offset,
+                0.0,
+                "{} should keep outline_offset at its 0.0 initial",
+                case.name
+            ),
+        }
+    }
+
+    // Positive controls: the same properties with px lengths apply.
+    let (mut world, mut root, target, report) =
+        styled_target_load(".x { border-top-width: 2px; outline-width: 2px; outline-offset: 1px }");
+    assert_eq!(
+        report.declarations_dropped, 0,
+        "px line widths and offset should not drop",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let view = root.computed_style(target).expect("target");
+    assert_eq!(
+        view.as_box().border_width[0],
+        2.0,
+        "border-top-width: 2px should apply",
+    );
+    assert_eq!(
+        view.as_visual().outline_width,
+        2.0,
+        "outline-width: 2px should apply",
+    );
+    assert_eq!(
+        view.as_visual().outline_offset,
+        1.0,
+        "outline-offset: 1px should apply",
+    );
+}
+
+#[test]
+// UNSUPPORTED (class: unimplemented — D6 admission-gated):
+// - SPEC: CSS Backgrounds 3 §5.1 `border-*-radius` takes `<length-percentage>`,
+//   so `border-radius: 50%` is valid and resolves per-corner to the elliptical
+//   horizontal/vertical radii.
+//   <https://drafts.csswg.org/css-backgrounds-3/#the-border-radius>
+// - CURRENT (asserted): the percentage drops + counts and the radius stays
+//   `[0.0; 4]` — the radius longhands use the `LineWidth` grammar (no
+//   percentages), rejected at admission exactly like `gap` percentages
+//   (`parse_gap_longhand`). The circular-corner model (`radius: [f32; 4]`, one
+//   radius per corner) cannot represent the elliptical resolution CSS requires
+//   (50% on a non-square border box computes different horizontal and vertical
+//   radii per corner), so admitting the value would be a silent no-op.
+// - SPEC-CORRECT: admit `<length-percentage>` and resolve against the border
+//   box per corner pair.
+// - D6: admission-gated on a corner-pair (elliptical) model.
+fn unsupported_border_radius_percentage_drops() {
+    for body in ["border-radius: 50%", "border-top-left-radius: 50%"] {
+        assert_decl_drop(&format!(".x {{ {body} }}"), 0, 1);
+        let (mut world, mut root, target, _report) =
+            styled_target_load(&format!(".x {{ {body} }}"));
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_eq!(
+            root.computed_style(target)
+                .expect("target")
+                .as_visual()
+                .radius,
+            [0.0; 4],
+            "{body} should drop and keep the [0.0; 4] initial",
+        );
+    }
+
+    // Positive control: a px radius applies to all four corners.
+    let (mut world, mut root, target, report) = styled_target_load(".x { border-radius: 8px }");
+    assert_eq!(
+        report.declarations_dropped, 0,
+        "border-radius: 8px should not drop",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target)
+            .expect("target")
+            .as_visual()
+            .radius,
+        [8.0; 4],
+        "border-radius: 8px should compute to [8.0; 4]",
+    );
+}
+
+#[test]
 // ON-SPEC: CSS Values 4 §4.1.1 — a non-zero `<length>` requires a unit;
 // `width: 10` is invalid. The grammar's `0` arm admits only the literal zero,
 // so `10` drops + counts. Pin to keep (a unitless non-zero length must never

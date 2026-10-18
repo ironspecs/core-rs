@@ -23,9 +23,14 @@
 //!   the set fall through to their grammar, which rejects `auto` (e.g.
 //!   `padding: auto`, `border-top-width: auto`, `font-size: auto` all drop)
 //! - `<percentage>` lengths parse to `DeclLength::Percent`; signed `Length`
-//!   admits negative percentages, `NonNegativeLength` rejects them, and `Gap`
-//!   rejects all percentages (the flex gap field is `[f32; 2]` and percentage
-//!   resolution is out of scope for PR 1 item 7)
+//!   admits negative percentages and `NonNegativeLength` rejects them, while
+//!   the grammars whose fields have no percentage resolution target reject ALL
+//!   percentages at admission (a counted drop, never admit-and-be-wrong):
+//!   `Gap` (the flex gap field is `[f32; 2]`), `LineWidth` (border widths —
+//!   spec-closed `<line-width>` — and the four radius corners, whose
+//!   `radius: [f32; 4]` circular-corner model cannot represent the elliptical
+//!   `<length-percentage>` resolution), and `SignedLineWidth` (outline-offset,
+//!   spec-closed `<length>`)
 //! - expansion helpers parse each produced token through the target longhand's
 //!   grammar (the sign policy cannot be bypassed via a shorthand). Two helpers
 //!   are equivalent-by-construction rather than literally routed:
@@ -408,6 +413,8 @@ fn parse_value(
         DeclGrammar::NonNegativeLength => {
             parse_non_negative_length_or_unset(value).map(DeclValue::Length)
         }
+        DeclGrammar::LineWidth => parse_line_width(value).map(DeclValue::Length),
+        DeclGrammar::SignedLineWidth => parse_signed_line_width(value).map(DeclValue::Length),
         DeclGrammar::Gap => parse_gap_longhand(value).map(DeclValue::Length),
         DeclGrammar::LineHeight => parse_line_height(value),
         DeclGrammar::Color => parse_color(value),
@@ -428,11 +435,17 @@ fn parse_value(
 
 // — Length family — //
 
-fn decl_length_from_authored(value: AuthoredLength) -> DeclLength {
-    match value {
-        AuthoredLength::Unset => DeclLength::Unset,
-        AuthoredLength::Px(px) => DeclLength::Px(px),
-        AuthoredLength::Em(em) => DeclLength::Em(em),
+/// The `unset | 0 | <px> | <em>` unit core shared by every length grammar:
+/// `non_negative` applies the sign rule to the px/em arms. Percentages are NOT
+/// parsed here — each grammar admits or rejects the `<f32>%` arm separately
+/// (see `parse_length`/`parse_non_negative_length_or_unset` for the admitting
+/// grammars; `parse_line_width`/`parse_signed_line_width` reject it).
+fn parse_unit_length(value: &str, non_negative: bool) -> Option<DeclLength> {
+    match parse_authored_length(value)? {
+        AuthoredLength::Unset => Some(DeclLength::Unset),
+        AuthoredLength::Px(px) if !non_negative || px >= 0.0 => Some(DeclLength::Px(px)),
+        AuthoredLength::Em(em) if !non_negative || em >= 0.0 => Some(DeclLength::Em(em)),
+        _ => None,
     }
 }
 
@@ -444,37 +457,52 @@ fn parse_percentage(value: &str) -> Option<f32> {
     parsed.is_finite().then_some(parsed)
 }
 
+/// `unset | 0 | <px> | <em> | <%>` — the signed length grammar (margins,
+/// insets): negative px/em and negative percentages are admitted.
 fn parse_length(value: &str) -> Option<DeclLength> {
-    parse_authored_length(value)
-        .map(decl_length_from_authored)
-        .or_else(|| parse_percentage(value).map(DeclLength::Percent))
+    parse_unit_length(value, false).or_else(|| parse_percentage(value).map(DeclLength::Percent))
 }
 
 /// `unset | 0 | <non-negative px> | <non-negative em> | <non-negative %>` —
-/// the sign policy for non-negative length properties (CSS rejects negatives
-/// here, including negative percentages).
+/// the sign policy for non-negative length properties (padding, box sizes,
+/// font-size; CSS rejects negatives here, including negative percentages).
 fn parse_non_negative_length_or_unset(value: &str) -> Option<DeclLength> {
-    if let Some(authored) = parse_authored_length(value) {
-        return match authored {
-            AuthoredLength::Unset => Some(DeclLength::Unset),
-            AuthoredLength::Px(px) if px >= 0.0 => Some(DeclLength::Px(px)),
-            AuthoredLength::Em(em) if em >= 0.0 => Some(DeclLength::Em(em)),
-            _ => None,
-        };
-    }
-    let percentage = parse_percentage(value)?;
-    (percentage >= 0.0).then_some(DeclLength::Percent(percentage))
+    parse_unit_length(value, true).or_else(|| {
+        let percentage = parse_percentage(value)?;
+        (percentage >= 0.0).then_some(DeclLength::Percent(percentage))
+    })
+}
+
+/// `unset | 0 | <non-negative px> | <non-negative em>` — the CSS `<line-width>`
+/// grammar (CSS Backgrounds 3 §4.3, CSS UI 4 §4.1), which admits NO
+/// percentages. Used by the four border widths, outline-width, and the four
+/// border-radius longhands. For the radius corners, CSS Backgrounds 3 §5.1
+/// admits `<length-percentage>`, but the circular-corner model
+/// (`radius: [f32; 4]`, one radius per corner) cannot represent the elliptical
+/// resolution CSS requires (50% on a non-square border box computes different
+/// horizontal and vertical radii per corner): the percentage is rejected at
+/// admission exactly like `gap` (see `parse_gap_longhand`), admission-gated on
+/// a corner-pair (elliptical) model — never silently resolved.
+fn parse_line_width(value: &str) -> Option<DeclLength> {
+    parse_unit_length(value, true)
+}
+
+/// `unset | 0 | <px> | <em>` — outline-offset (CSS UI 4 §4.3): a signed CSS
+/// `<length>` with NO percentages.
+fn parse_signed_line_width(value: &str) -> Option<DeclLength> {
+    parse_unit_length(value, false)
 }
 
 /// `normal | unset | 0 | <non-negative px> | <non-negative em>` (CSS Box
 /// Alignment 3 §8.2: `normal` computes to zero, matching the shorthand).
 ///
 /// Percentages are deliberately NOT admitted here even though
-/// `parse_non_negative_length_or_unset` (which this delegates to) admits them:
-/// the flex gap field is `[f32; 2]` and gap percentage resolution against the
-/// flex container's content box is out of scope for PR 1 item 7 — admitting the
-/// value without a resolution target would be a silent no-op, so the percentage
-/// form keeps dropping + counting instead.
+/// `parse_non_negative_length_or_unset` (which this delegates to) admits them.
+/// This is the shared reject-at-admission rule (see the file header): a grammar
+/// whose field has no percentage resolution target drops + counts the
+/// percentage rather than admit-and-be-wrong. For gap specifically, the flex
+/// gap field is `[f32; 2]` and gap percentage resolution against the flex
+/// container's content box is out of scope for PR 1 item 7.
 fn parse_gap_longhand(value: &str) -> Option<DeclLength> {
     if value == "normal" {
         return Some(DeclLength::Px(0.0));
@@ -1277,6 +1305,62 @@ mod tests {
                 parse_value(DeclGrammar::NonNegativeLength, invalid, &mut interner),
                 None,
                 "{invalid:?} should fail the NonNegativeLength grammar"
+            );
+        }
+    }
+
+    #[test]
+    fn line_width_grammar_rejects_percentages() {
+        let mut interner = TextInterner::default();
+        assert_eq!(
+            parse_value(DeclGrammar::LineWidth, "unset", &mut interner),
+            Some(DeclValue::Length(DeclLength::Unset))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::LineWidth, "0", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(0.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::LineWidth, "10px", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(10.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::LineWidth, "1.5em", &mut interner),
+            Some(DeclValue::Length(DeclLength::Em(1.5)))
+        );
+        for invalid in ["10%", "-10%", "-1px", "-0.5em"] {
+            assert_eq!(
+                parse_value(DeclGrammar::LineWidth, invalid, &mut interner),
+                None,
+                "{invalid:?} should fail the LineWidth grammar"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_line_width_grammar_rejects_percentages() {
+        let mut interner = TextInterner::default();
+        assert_eq!(
+            parse_value(DeclGrammar::SignedLineWidth, "unset", &mut interner),
+            Some(DeclValue::Length(DeclLength::Unset))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::SignedLineWidth, "0", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(0.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::SignedLineWidth, "-10px", &mut interner),
+            Some(DeclValue::Length(DeclLength::Px(-10.0)))
+        );
+        assert_eq!(
+            parse_value(DeclGrammar::SignedLineWidth, "-0.5em", &mut interner),
+            Some(DeclValue::Length(DeclLength::Em(-0.5)))
+        );
+        for invalid in ["10%", "-10%", "50%"] {
+            assert_eq!(
+                parse_value(DeclGrammar::SignedLineWidth, invalid, &mut interner),
+                None,
+                "{invalid:?} should fail the SignedLineWidth grammar"
             );
         }
     }
