@@ -167,9 +167,11 @@ fn strip_importance_marker(value: &str) -> (&str, bool) {
         return (value, false);
     };
     let after = value[exclaim + 1..].trim_start();
-    if after.len() >= "important".len()
-        && after[.."important".len()].eq_ignore_ascii_case("important")
-        && after["important".len()..].trim().is_empty()
+    if let (Some(head), Some(tail)) = (
+        after.get(.."important".len()),
+        after.get("important".len()..),
+    ) && head.eq_ignore_ascii_case("important")
+        && tail.trim().is_empty()
     {
         return (value[..exclaim].trim_end(), true);
     }
@@ -2459,6 +2461,52 @@ mod tests {
             DeclValue::Length(DeclLength::Px(5.0))
         );
         assert_eq!(block.importance(), &[true, false]);
+    }
+
+    #[test]
+    fn importance_marker_strict_non_char_boundary_tail_is_typed_error() {
+        // A post-`!` tail where byte index 9 is NOT a char boundary (multi-byte
+        // UTF-8) is not a marker; the strict path must return a typed error,
+        // never panic on `after[..9]`/`after[9..]`.
+        let mut interner = TextInterner::default();
+        for authored in ["10px !ééééé", "10px !😀😀😀"] {
+            assert_eq!(
+                parse_declaration_strict("width", authored, &mut interner),
+                Err(DomError::InvalidAttributeValue),
+                "{authored:?} should be a typed error, not a panic"
+            );
+        }
+    }
+
+    #[test]
+    fn importance_marker_block_non_char_boundary_tail_drops_and_continues() {
+        // The block path must drop the malformed declaration and keep parsing:
+        // `height: 5px` survives, no panic on the non-boundary byte index.
+        let (block, report, _) = parse_block("width: 10px !ééééé; height: 5px");
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.dropped, 1);
+        assert_eq!(
+            value(&block, PresentationProperty::Height),
+            DeclValue::Length(DeclLength::Px(5.0))
+        );
+    }
+
+    #[test]
+    fn importance_marker_block_trailing_non_ascii_after_valid_head_drops() {
+        // Byte 9 IS a char boundary here (valid `important` head), but the
+        // tail `é` is non-empty — not a marker, so the grammar rejects.
+        let (_, report, _) = parse_block("width: 10px !importanté");
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.dropped, 1);
+    }
+
+    #[test]
+    fn importance_marker_block_char_boundary_on_boundary_is_not_a_marker() {
+        // Byte 9 lands exactly ON a char boundary (`ééé` + `imp`), so `get`
+        // succeeds and returns a non-`important` head — not a marker, drop.
+        let (_, report, _) = parse_block("width: 10px !éééimportant");
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.dropped, 1);
     }
 
     // — longhands_for_name — //
