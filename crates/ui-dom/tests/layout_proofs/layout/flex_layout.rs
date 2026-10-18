@@ -6329,6 +6329,128 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
     f32::from(value_u16)
 }
 
+// CSS Flexbox 1 §9.2 (line length determination) and §4.5 (automatic minimum
+// size): a flex item's hypothetical main size is its flex base clamped by
+// min/max AND floored by the used automatic minimum size (content-based for
+// visible overflow), and line breaking consumes that floored size. Gecko
+// (`FlexItem::GetFlexBaseSize`/`FlexLine` construction in
+// `nsFlexContainerFrame.cpp`) and Blink (`FlexItem` sizing in
+// `flex_layout_algorithm.cc`) both floor the hypothetical before line
+// collection. Closest WPT oracle: `flexbox-min-width-auto-001.html` (the
+// automatic-minimum floor); no single WPT pairs the line-break interaction,
+// cited from §9.2 directly.
+//
+// OFF-SPEC: `clamp_main_axis_size` (`flex.rs:1473`) clamps the flex base by
+// min/max only — `hypothetical_main_size_px` (`flex.rs:487`) never floors it
+// by `automatic_min_main_size_px`, so a visible item with a small explicit
+// base keeps its base as the hypothetical: line breaking uses the unfloored
+// base (row a), and an inflexible visible item stays at its base rather than
+// its content-based minimum (row b — the same root cause as the C4 family's
+// inflexible-item row, noted here as the §9.2-side interaction). Spec-correct
+// for the pinned "UnbreakableFlexLabel" text: ~140.5px (the content-based
+// automatic minimum). Row (c) shows the overflow shape when that minimum
+// exceeds the container.
+#[test]
+fn off_spec_hypothetical_main_size_not_floored_by_auto_min() {
+    let rows: [AutoMinFloorRow; 3] = [
+        (
+            "wrapping_line_break_uses_unfloored_base",
+            assert_wrapping_line_break_uses_unfloored_base,
+        ),
+        (
+            "inflexible_visible_item_stays_at_base",
+            assert_inflexible_visible_item_stays_at_base,
+        ),
+        (
+            "content_min_exceeding_container_overflows_from_base",
+            assert_content_min_exceeding_container_overflows_from_base,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named automatic-minimum-floor probe: row name plus a runner.
+type AutoMinFloorRow = (&'static str, fn(&str));
+
+fn assert_wrapping_line_break_uses_unfloored_base(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "height", "60px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "overflow", "visible");
+    assert_style_set(&mut root, first, "height", "20px");
+    let _text = assert_append_text_to(&mut root, first, "UnbreakableFlexLabel");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // Divergent: the first item's hypothetical is its 10px base (not its
+    // ~140.5px automatic minimum), so both items share one line; spec floors
+    // the first to ~140.5px, which exceeds the 100px container and breaks.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        10.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        10.0,
+        0.0,
+        10.0,
+        20.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_inflexible_visible_item_stays_at_base(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "10px");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_style_set(&mut root, item, "height", "20px");
+    let _text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // Divergent (C4 interaction): the inflexible visible item stays at its
+    // 10px base instead of its ~140.5px automatic minimum.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, &format!("{name}: item"));
+}
+
+fn assert_content_min_exceeding_container_overflows_from_base(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "10px");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_style_set(&mut root, item, "height", "20px");
+    let _text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item");
+    // Divergent: with content-min (~140.5px) exceeding the 100px container,
+    // the item stays at its 10px base and its text overflows, instead of the
+    // item itself flooring to ~140.5px and overflowing the container.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, &format!("{name}: item"));
+}
+
 // CSS Flexbox 1 §9.7 step 3 (Resolve Flexible Lengths): an inflexible item
 // (zero flex factor, or base size on the "wrong" side of its hypothetical)
 // freezes at its HYPOTHETICAL main size — the flex base clamped by min/max and
