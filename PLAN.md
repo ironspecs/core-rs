@@ -792,6 +792,30 @@ an f32 basis.
   is a NEW layout algorithm, not a migration. Whether grid enters the
   arc, and where, is a named decision owed before PR 3's debate closes.
 
+- **2026-10-19 — the complaint list is produced by SPEC-SURFACE
+  enumeration. (Scenario accounting was proposed and rejected — for the
+  second time; a previous scenario-based effort became a boundless black
+  hole and still missed cases. The lesson, recorded so it is not
+  re-proposed: design-pattern space is unbounded and its coverage is
+  unauditable; the spec's own structure is the only enumerable test
+  space.)** Clients cannot write spec-shaped complaints ("elements are
+  not moving where they should" is the honest ceiling of consumer
+  reporting), so verbal intake is out. Instead: systematically enumerate
+  the Flexbox 1 behavior surface (axes establishment, line breaking,
+  flex factors, min/max clamping, violation accumulation, alignment,
+  §8.1 auto margins, item interactions — margins/padding/percentages/
+  nesting/abs-pos children) and the grid vocabulary, map every cell to
+  an existing proof, a registered boundary, or an UNCOVERED gap, and
+  fill the gaps with table-driven proof families keyed by spec section
+  (the README's table conventions make coverage enumerable in review —
+  the enumeration matrix IS the thoroughness proof). The divergent +
+  unimplemented rows ARE the complaint list — spec-shaped, with repros —
+  ordered by product criticality against the named client signal.
+  Grid's thoroughness is a complete gate enumeration (fail-closed,
+  counted), which also sizes grid admission for the
+  flex-first/grid-first/both-tracks decision empirically. This is
+  evidence-gathering for PR 3's debate, not implementation.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
