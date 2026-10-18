@@ -7649,3 +7649,153 @@ fn assert_display_none_only_child_empty(name: &str) {
         &format!("{name}: container keeps its explicit height"),
     );
 }
+
+// CSS Flexbox 1 §9.7 (#resolve-flexible-lengths) "Freeze over-flexed items":
+// each pass freezes exactly ONE violation class, chosen by the total
+// violation's sign — min-violations when the total is ≥ 0, max-violations
+// when it is negative — then re-iterates. Gecko mirrors this in
+// `FlexLine::ResolveFlexibleLengths` (`nsFlexContainerFrame.cpp`) and Blink in
+// `LineFlexer::ResolveFlexibleLengths`/`FreezeItems` (`line_flexer.cc`). No
+// single WPT oracle pairs the mixed-violation freeze ORDER with the final
+// distribution; the expectation is cited from §9.7 directly (the two
+// implementation files confirm the one-class-at-a-time shape).
+//
+// OFF-SPEC: `freeze_flex_line_main_size_violations` (`flex.rs:2185`) freezes
+// BOTH classes at once — every item whose clamped size differs from its
+// resolved size is frozen in the same pass. That is usually equivalent, but
+// not when one pass carries a min-violation AND a max-violation: the spec
+// leaves the minority class unfrozen to re-absorb the redistributed free
+// space, while the solver locks it at its clamp. Three rows observe the
+// divergent distribution; each also names the spec-correct result.
+#[test]
+fn off_spec_mixed_violation_freeze_ordering() {
+    let rows: [FreezeOrderRow; 3] = [
+        (
+            "grow_mixed_violations",
+            assert_grow_mixed_violation_freeze_order,
+        ),
+        (
+            "shrink_mixed_violations",
+            assert_shrink_mixed_violation_freeze_order,
+        ),
+        ("chained_refreeze", assert_chained_refreeze_freeze_order),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named freeze-order probe: the row name plus a runner.
+type FreezeOrderRow = (&'static str, fn(&str));
+
+fn assert_grow_mixed_violation_freeze_order(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "300px");
+    assert_style_set(&mut root, container, "height", "20px");
+    for (basis, grow, min, max) in [("100px", "1", "", "110px"), ("100px", "1", "160px", "")] {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "flex-basis", basis);
+        assert_style_set(&mut root, item, "flex-grow", grow);
+        if !min.is_empty() {
+            assert_style_set(&mut root, item, "min-width", min);
+        }
+        if !max.is_empty() {
+            assert_style_set(&mut root, item, "max-width", max);
+        }
+        assert_style_set(&mut root, item, "height", "20px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // Divergent: the total violation is −30 (A −40 max + B +10 min), so the
+    // spec freezes only A (max) and lets B re-absorb the 90px freed up, ending
+    // at 190px; the solver freezes B at its 160px min in the same pass.
+    assert_close(rects[1].size_px[0], 110.0, &format!("{name}: A width"));
+    assert_close(
+        rects[2].size_px[0],
+        160.0,
+        &format!("{name}: B width (spec-correct 190)"),
+    );
+    assert_close(
+        rects[2].position_px[0],
+        110.0,
+        &format!("{name}: B left (spec-correct 110)"),
+    );
+}
+
+fn assert_shrink_mixed_violation_freeze_order(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "140px");
+    assert_style_set(&mut root, container, "height", "20px");
+    for (basis, shrink, min, max) in [("100px", "1", "", "80px"), ("100px", "3", "70px", "")] {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "flex-basis", basis);
+        assert_style_set(&mut root, item, "flex-shrink", shrink);
+        if !min.is_empty() {
+            assert_style_set(&mut root, item, "min-width", min);
+        }
+        if !max.is_empty() {
+            assert_style_set(&mut root, item, "max-width", max);
+        }
+        assert_style_set(&mut root, item, "height", "20px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // Divergent: the total violation is +10 (A −5 max + B +15 min), so the
+    // spec freezes only B (min) and lets A re-absorb the −30px freed up,
+    // ending at 70px; the solver freezes A at its 80px max in the same pass.
+    assert_close(
+        rects[1].size_px[0],
+        80.0,
+        &format!("{name}: A width (spec-correct 70)"),
+    );
+    assert_close(rects[2].size_px[0], 70.0, &format!("{name}: B width"));
+    assert_close(
+        rects[2].position_px[0],
+        80.0,
+        &format!("{name}: B left (spec-correct 70)"),
+    );
+}
+
+fn assert_chained_refreeze_freeze_order(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "300px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let a = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, a, "flex-basis", "50px");
+    assert_style_set(&mut root, a, "flex-grow", "1");
+    assert_style_set(&mut root, a, "max-width", "60px");
+    assert_style_set(&mut root, a, "height", "20px");
+    let b = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, b, "flex-basis", "50px");
+    assert_style_set(&mut root, b, "flex-grow", "1");
+    assert_style_set(&mut root, b, "min-width", "120px");
+    assert_style_set(&mut root, b, "height", "20px");
+    let c = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, c, "flex-basis", "100px");
+    assert_style_set(&mut root, c, "flex-grow", "0");
+    assert_style_set(&mut root, c, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 4, "{name}: container + three items");
+    // Divergent: the total violation is −20 (A −40 max + B +20 min), so the
+    // spec freezes A (max) then re-distributes the freed 90px to B (still
+    // unfrozen, ending at 140px); the solver freezes B at its 120px min in the
+    // same first pass, leaving the inflexible C at its 100px basis either way.
+    assert_close(rects[1].size_px[0], 60.0, &format!("{name}: A width"));
+    assert_close(
+        rects[2].size_px[0],
+        120.0,
+        &format!("{name}: B width (spec-correct 140)"),
+    );
+    assert_close(rects[3].size_px[0], 100.0, &format!("{name}: C width"));
+    assert_close(
+        rects[3].position_px[0],
+        180.0,
+        &format!("{name}: C left (spec-correct 200)"),
+    );
+}
