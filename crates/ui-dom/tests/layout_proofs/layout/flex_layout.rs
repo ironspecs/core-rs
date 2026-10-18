@@ -47,7 +47,7 @@ use ui_dom::{DomIntrinsic, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, n
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
-    assert_load_root_stylesheet, assert_node_layout, assert_rect_op_geometry,
+    assert_load_root_stylesheet, assert_node_layout, assert_rect_op_fill, assert_rect_op_geometry,
     assert_root_dom_update, assert_set_attr_str, assert_style_set,
     attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
     theme_stylesheet_origin,
@@ -6327,6 +6327,198 @@ fn assert_widths_close(actual_widths_px: &[f32], expected_widths_px: &[f32], lab
 fn non_negative_f32_from_usize(value: usize) -> f32 {
     let value_u16 = u16::try_from(value).expect("titlebar flex proof counts should fit within u16");
     f32::from(value_u16)
+}
+
+// CSS Flexbox 1 §5.4 (`order`) and §5.4.1 (order-modified painting): flex
+// items are laid out and painted in order-modified document order — ascending
+// `order` (negatives first), then source order for ties. Closest WPT oracle:
+// `css/css-flexbox/order-*` / `flex-order.html` (order-modified layout) and the
+// stacking/paint cases of §5.4.1; Gecko and Blink both apply the order-modified
+// sequence to painting.
+//
+// Rows (a)–(c) pin the order-modified layout edge cases on-spec:
+// `order_modified_measured_items` (`flex.rs:1520`) uses a stable
+// `sort_by_key(|item| item.order)`, so negative orders lead, equal orders keep
+// DOM order, and line membership follows the order-modified sequence.
+//
+// OFF-SPEC (row d only): the paint pass walks the DOM tree (source order) and
+// ignores the order-modified sequence, so overlapping items (negative margins)
+// paint in DOM order rather than §5.4.1's order-modified order. Spec-correct:
+// the lower-order overlapping item paints first (on top) and the higher-order
+// item paints last (on top of it).
+#[test]
+fn off_spec_flex_paint_ignores_order_modified_sequence() {
+    let rows: [OrderPaintRow; 4] = [
+        (
+            "negative_order_values_lead",
+            assert_negative_order_values_lead,
+        ),
+        (
+            "equal_orders_keep_dom_stability",
+            assert_equal_orders_keep_dom_stability,
+        ),
+        (
+            "order_wrap_line_membership_follows_order_modified_sequence",
+            assert_order_wrap_line_membership_follows_order_modified_sequence,
+        ),
+        (
+            "overlapping_items_paint_in_dom_order_not_order_modified",
+            assert_overlapping_items_paint_in_dom_order,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named order-edge-case probe: row name plus a runner.
+type OrderPaintRow = (&'static str, fn(&str));
+
+fn assert_negative_order_values_lead(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "50px");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "height", "20px");
+    assert_style_set(&mut root, first, "order", "-1");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "50px");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_style_set(&mut root, second, "order", "0");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // On-spec: the −1-order first item leads the 0-order second item.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        50.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        50.0,
+        0.0,
+        50.0,
+        20.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_equal_orders_keep_dom_stability(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    for basis in ["50px", "50px"] {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "flex-basis", basis);
+        assert_style_set(&mut root, item, "flex-shrink", "0");
+        assert_style_set(&mut root, item, "height", "20px");
+        assert_style_set(&mut root, item, "order", "1");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // On-spec: equal orders keep DOM (source) order via the stable sort.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        50.0,
+        20.0,
+        &format!("{name}: first item"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        50.0,
+        0.0,
+        50.0,
+        20.0,
+        &format!("{name}: second item"),
+    );
+}
+
+fn assert_order_wrap_line_membership_follows_order_modified_sequence(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "60px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "height", "40px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "40px");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "height", "20px");
+    assert_style_set(&mut root, first, "order", "1");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "40px");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_style_set(&mut root, second, "order", "0");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // On-spec: the 0-order second item takes line 1 and the 1-order first item
+    // wraps to line 2, because line membership follows the order-modified
+    // sequence (0-order first, then 1-order).
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        0.0,
+        40.0,
+        20.0,
+        &format!("{name}: 0-order item line 1"),
+    );
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        20.0,
+        40.0,
+        20.0,
+        &format!("{name}: 1-order item line 2"),
+    );
+}
+
+fn assert_overlapping_items_paint_in_dom_order(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "50px");
+    assert_style_set(&mut root, first, "flex-shrink", "0");
+    assert_style_set(&mut root, first, "height", "20px");
+    assert_style_set(&mut root, first, "order", "2");
+    assert_style_set(&mut root, first, "background-color", "#ff0000");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "50px");
+    assert_style_set(&mut root, second, "flex-shrink", "0");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_style_set(&mut root, second, "order", "1");
+    assert_style_set(&mut root, second, "margin-left", "-20px");
+    assert_style_set(&mut root, second, "background-color", "#00ff00");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two overlapping items");
+    // Divergent: the DOM-first red item (order 2) paints at index 1 and the
+    // green item (order 1) at index 2 — DOM paint order — instead of the
+    // order-modified sequence (green order-1 first, red order-2 last).
+    assert_rect_op_fill(
+        &rects[1],
+        [1.0, 0.0, 0.0, 1.0],
+        &format!("{name}: first painted item"),
+    );
+    assert_rect_op_fill(
+        &rects[2],
+        [0.0, 1.0, 0.0, 1.0],
+        &format!("{name}: second painted item"),
+    );
 }
 
 // CSS Flexbox 1 §7.3.3 (flex-basis): `content` indicates automatic sizing
