@@ -10099,3 +10099,229 @@ fn assert_subtree_percent_against_content_basis(name: &str) {
         &format!("{name}: grandchild 50% of item content width (after insets)"),
     );
 }
+
+// CSS Display 3 §2.7 (blockification of flex items) composed with CSS Flexbox
+// 1 §4 (flex items): when a box becomes a flex item, its inline-level outer
+// display blockifies — `inline` → `block`, `inline-block` → `block`,
+// `inline-flex` → `flex`. Every flex item is therefore block-level, which is
+// what makes `align-items`/`align-self: stretch` (and the `normal` initial
+// value, which behaves as `stretch` per CSS Align 3 §5.1.3) apply to the item's
+// auto cross size. Gecko blockifies at tree/build time in
+// `CreateNeededAnonFlexOrGridItems` + frame construction
+// (`nsCSSFrameConstructor.cpp`); Blink blockifies in `LayoutBlock::AddChild`
+// before flex item construction (`GenerateFlexItemForChild` /
+// `ConstructAndAppendFlexItems`). No single WPT oracle pairs `display:
+// inline`/`inline-block` flex items with cross-axis stretch, so this is cited
+// from §2.7/§4 directly; closest family is `css/css-flexbox/flex-item-blockify-*`.
+//
+// OFF-SPEC (rows a/c): `blockified_flex_item_style` (`flex.rs:522`) rewrites
+// only `InlineFlex → Flex`, leaving `LayoutDisplay::Inline` routed to
+// `measure_inline_node_without_layout_write` at measure time
+// (`measure_tree_walker_node_without_layout_write`, `flex.rs:559`) and to the
+// inline solver at final relayout (`solver_kind_for_display`, `flow.rs:1706`).
+// The inline solver ignores the cross-size stretch override (inline boxes
+// ignore authored height), so a `display: inline` item keeps its line-height
+// cross size under `align-items: stretch` instead of stretching to the line
+// cross size like its blockified `block`/`inline-block` siblings. The MAIN-size
+// concern in the review does NOT manifest: both measure paths shrink-wrap a
+// single text child to the text max-content, so the main size matches the block
+// control in every row.
+#[test]
+fn off_spec_flex_item_inline_level_display_blockification() {
+    let rows: [InlineLevelDisplayBlockificationRow; 4] = [
+        (
+            "a_inline_item_shrink_wraps_and_keeps_line_height",
+            assert_inline_item_shrink_wraps_and_keeps_line_height,
+        ),
+        (
+            "b_inline_block_item_block_measures_and_stretches",
+            assert_inline_block_item_block_measures_and_stretches,
+        ),
+        (
+            "c_inline_item_under_stretch_keeps_line_height_vs_block_control",
+            assert_inline_item_under_stretch_vs_block_control,
+        ),
+        (
+            "d_block_control_shrink_wraps_and_stretches",
+            assert_block_control_shrink_wraps_and_stretches,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named inline-level display blockification probe: the row name plus a runner.
+type InlineLevelDisplayBlockificationRow = (&'static str, fn(&str));
+
+/// Row (a): a `display: inline` item with short text in a definite row. The
+/// main size shrink-wraps to the text max-content (identical to the block
+/// control — the review's "block fill" concern does not manifest), but the
+/// cross size stays at the text line height instead of stretching to the 20px
+/// line cross size (divergent).
+fn assert_inline_item_shrink_wraps_and_keeps_line_height(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "inline");
+    let text = assert_append_text_to(&mut root, item, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let item_layout = assert_node_layout(&root, item);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item; the text child emits a text run.
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_close(
+        item_layout.width_px,
+        text_intrinsic.max_content_width_px,
+        &format!("{name}: inline item main size shrink-wraps to text"),
+    );
+    // Divergent cross size: keeps the text line height (14px) instead of the
+    // 20px line cross size.
+    assert_close(
+        item_layout.height_px,
+        text_intrinsic.line_height_px,
+        &format!("{name}: inline item cross size stays at line height"),
+    );
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        text_intrinsic.line_height_px,
+        &format!("{name}: inline item geometry"),
+    );
+}
+
+/// Row (b): a `display: inline-block` item, same shape. Confirms the review's
+/// claim that `inline-block` already routes to block measure: it stretches its
+/// cross size to the line cross size exactly like the block control, and is
+/// identical in kind to the block control rather than to the `inline` item.
+fn assert_inline_block_item_block_measures_and_stretches(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "inline-block");
+    let text = assert_append_text_to(&mut root, item, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let item_layout = assert_node_layout(&root, item);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_close(
+        item_layout.width_px,
+        text_intrinsic.max_content_width_px,
+        &format!("{name}: inline-block item main size shrink-wraps to text"),
+    );
+    assert_close(
+        item_layout.height_px,
+        20.0,
+        &format!("{name}: inline-block item stretches to the line cross size"),
+    );
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        20.0,
+        &format!("{name}: inline-block item geometry"),
+    );
+}
+
+/// Row (c): a `display: inline` item under explicit `align-items: stretch` next
+/// to a `display: block` control. The inline item keeps its line-height cross
+/// size (14px) while the block control stretches to the 50px line cross size —
+/// the observable consequence of not blockifying `inline` → `block`.
+fn assert_inline_item_under_stretch_vs_block_control(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "50px");
+    assert_style_set(&mut root, container, "align-items", "stretch");
+    let inline_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, inline_item, "display", "inline");
+    let inline_text = assert_append_text_to(&mut root, inline_item, "Hi");
+    let block_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, block_item, "display", "block");
+    let _block_text = assert_append_text_to(&mut root, block_item, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, inline_text);
+    let inline_layout = assert_node_layout(&root, inline_item);
+    let block_layout = assert_node_layout(&root, block_item);
+    // Divergent: the inline item keeps its line-height cross size.
+    assert_close(
+        inline_layout.height_px,
+        text_intrinsic.line_height_px,
+        &format!("{name}: inline item keeps line-height cross size under stretch"),
+    );
+    // Spec-correct control: a block item stretches to the 50px line cross size.
+    assert_close(
+        block_layout.height_px,
+        50.0,
+        &format!("{name}: block control stretches to the line cross size"),
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = inline item, rects[2] = block control.
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        text_intrinsic.line_height_px,
+        &format!("{name}: inline item rect"),
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        text_intrinsic.max_content_width_px,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        50.0,
+        &format!("{name}: block control rect"),
+    );
+}
+
+/// Row (d): a `display: block` control item, the known-good reference geometry.
+/// It shrink-wraps its main size to the text and stretches its cross size to
+/// the line cross size — the §2.7 blockified expectation every inline-level
+/// item should match.
+fn assert_block_control_shrink_wraps_and_stretches(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "display", "block");
+    let text = assert_append_text_to(&mut root, item, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let item_layout = assert_node_layout(&root, item);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_close(
+        item_layout.width_px,
+        text_intrinsic.max_content_width_px,
+        &format!("{name}: block item main size shrink-wraps to text"),
+    );
+    assert_close(
+        item_layout.height_px,
+        20.0,
+        &format!("{name}: block item stretches to the line cross size"),
+    );
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        20.0,
+        &format!("{name}: block item geometry"),
+    );
+}
