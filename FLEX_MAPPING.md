@@ -78,7 +78,7 @@ landing them with the sequence is the default.
 |---|---|---|---|
 | `off_spec_mixed_violation_freeze_ordering` | both violation classes frozen at once; spec freezes one class per iteration by sign | §9.7 freeze loop | **NO** — freeze one class per iteration by signed total; a loop change |
 | `off_spec_space_evenly_negative_free_space_does_not_fall_back_to_center` | justify-side negative fallback; target is the engine 0-clamp (see §5) | alignment | **NO** — the adjudicated 0-clamp (§5) |
-| `off_spec_flex_paint_ignores_order_modified_sequence` | paint walks DOM order, not order-modified | paint walker | **NO** — paint consumes the order-modified sequence the solver already computes (§2.2 MATCHES); the lane makes it canonical, not possible |
+| `off_spec_flex_paint_ignores_order_modified_sequence` | paint walks DOM order, not order-modified | paint walker | **PARTIAL** (reclassified per the obligation-(c) probe, 2026-10-19) — the sequence IS computed today (`line_collection_items`), but the solve is CONSUMED at exit (`relayout_active_flex_node` → `exit_active_flex_container`, `flex.rs:270-335`): the sequence dies with the solve, so paint cannot consume it today; retention is the structural half, and an in-place retention would add exactly the per-container allocation the doctrine forbids — the honest landing is step 2's lanes (a pull-forward is priced: a retained `Vec` per flex container) |
 | `off_spec_flex_item_subtree_first_child_margin_containment` | first-child margin swallowed at the item's formatting-context boundary (item-at-0 half on-spec) | item block subtree | **NO** — flow.rs BFC containment, non-flex structure |
 | `off_spec_parent_boundary_negative_margins_clamp` (normal flow, companion) | parent-boundary negative margins clamp to 0 | flow.rs (non-flex) | **NO** — flow.rs, item 2's shape |
 | `off_spec_empty_block_negative_margins_collapse_to_max_not_most_negative` (normal flow, companion) | empty-block self-collapse uses plain max | flow.rs (non-flex) | **NO** — flow.rs, item 2's shape |
@@ -276,6 +276,18 @@ pin cites the WPT `flexbox-whitespace-handling-*` family per the
 per-claim provenance rule; the third party verifies the engine reading
 (obligation b, §8).
 
+**Implementation surface note (folded per obligation (b), 2026-10-19).**
+The current text intrinsic API (`measure_intrinsic` →
+`TextIntrinsicMetrics { min_content, max_content, line_height }`) is
+whole-node: it cannot expose leading/trailing unbreakable fragment
+widths or boundary wrap-opportunity flags, which cursor (ii)'s
+cross-boundary fragment joining requires. The fold therefore owes a
+fragment-level intrinsic API (per-edge unbreakable widths, edge
+wrap-opportunity flags, per-fragment line-height maxima; heterogeneous
+fonts are width-additive across a boundary — no shared metrics beyond
+widths and the line-height max). Lands with step 3(a); the cursor
+semantics are unchanged.
+
 **abs-pos static position (model pinned per review).** The child is
 excluded from item slots, then positioned as if it were a 0×0 flex item
 inserted at its ORDER-MODIFIED position — participating in line
@@ -336,12 +348,16 @@ here).
   caching (Gecko `CachedFlexItemData`), which the no-speculative-caches
   doctrine rejects. The honest bound: pin a text-heavy flex scenario in
   `perf_metric`/`perf_allocation` with the structural step; the
-  construction guarantees total intrinsic measurements per dirty update
-  ≤ 2× the up-fold count (each subtree refolds at most once per level);
-  the refold fraction is exposed by level accessor. The budget number —
-  the flagged-refold fraction ceiling in the pinned text-heavy scenario
-  (starting position: ≤ 50% of measured flex nodes) — is ratified by
-  the debate. **The fallback is designed NOW, not improvised later:** a
+  construction guarantees each subtree refolds at most once per nesting
+  level — total intrinsic measurements per dirty update ≤
+  (flagged_depth + 1)× the up-fold count (the honest bound for NESTED
+  flags, sharpened per obligation (b): the single-level special case is
+  ≤2×; typical text-UI depth ≤ 3). The budget's subject is the refold
+  FRACTION (share of measured flex nodes that refold, exposed by level
+  accessor) — distinct from the measurement multiplier. The budget
+  number — the refold-fraction ceiling in the pinned text-heavy
+  scenario (starting position: ≤ 50%) — is ratified by the debate.
+  **The fallback is designed NOW, not improvised later:** a
   WITHIN-UPDATE memo (context-owned, keyed by `(node, resolved width)`,
   reset per update) — not a cross-update cache, so the doctrine is
   untouched. Exceeding the budget triggers the memo's own landing with

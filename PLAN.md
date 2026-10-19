@@ -1152,12 +1152,72 @@ an f32 basis.
   names which before they execute, recorded here; (a), (b), (d) are
   conflict-free. (2) output 5's deferral closed (baseline alignment,
   `visibility: collapse` explicitly deferred to the same re-check).
-  (3) the two stale `(a)–(e)` references corrected. (4) the license
+  (3) the two stale `(a)–(e)` references corrected.   (4) the license
   rationale corrected in the manifest, this log, and the brief — the
   gitignored-corpus decision stands on repo policy (hygiene, scope,
   reproducibility), not a misstated legal bar. State: the debate
   package is executable; obligations (a), (b), (d1) may start today;
   (c), (e), (f) await the owner's named execution rule.
+
+- **2026-10-19 — the debate executes and CLOSES: obligations (a)–(f)
+  verdicted, outputs recorded, PR 3 implementation UNLOCKED.** Execution
+  rule (named by the product owner per the round-3 requirement): no
+  fresh seat exists; the architect executes; the owner co-signs by
+  blanket approval (2026-10-19) — any verdict reopenable by naming it;
+  (d1) is the owner's ratification. **Verdicts.** (a) all five §2.1
+  skeleton claims CONFIRMED: claim 1 (Blink `layout_block.cc:147-171` +
+  `flex_child_iterator.cc:18-24` — whose `needs_sort` lazy sort
+  independently corroborates the order lane's adaptive insertion; Gecko
+  `CreateNeededAnonFlexOrGridItems:8137` with the whitespace drop at
+  :8156-8182, read firsthand); claim 2 (`flex_item.h:47-48`, firsthand);
+  claim 3 (`line_flexer.cc` in full: ctor freeze at hypothetical
+  :26-43, fractional factor-sum clamp :99-104, reverse running-share
+  with its rounding rationale :117-139, one-class freeze by signed
+  total :165-178); claim 4 (Gecko `CanMainSizeInfluenceCrossSize:2546`,
+  used at :5412, firsthand; Blink cross-post-flex per the round-2
+  sampling); claim 5 (`ClampNegativeToZero:1678/1684`, firsthand;
+  Gecko safe-collapse per round 2). (b) NO counterexample found against
+  the run-aggregation semantics or the refold bound; two findings
+  folded: (i) cursor (ii)'s cross-boundary fragment joining needs a
+  fragment-level text-intrinsic API the current whole-node
+  `TextIntrinsicMetrics` cannot expose — surface note owed at step 3a,
+  folded into FLEX_MAPPING §3.2; (ii) the ≤2× refold bound covers only
+  single-level nesting — the honest bound is (flagged_depth + 1)×,
+  folded into §3.4 and the brief's (d1). (c) every §1 NO/PARTIAL row
+  holds EXCEPT paint-order, reclassified NO → PARTIAL: the probe found
+  the solve is consumed at exit (`relayout_active_flex_node` →
+  `exit_active_flex_container`, `flex.rs:270-335`), so the
+  order-modified sequence dies with it and paint cannot consume it
+  today; retention is the structural half, and an in-place retention
+  would add exactly the per-container allocation the doctrine forbids
+  (lands with step 2's lanes; pull-forward priced at a retained `Vec`
+  per flex container). (d1) RATIFIED by the owner with the sharpened
+  bound: metric definitions, the (flagged_depth + 1)× construction
+  bound, the memo fallback's doctrine compliance, the ≤50%
+  refold-fraction ceiling on the pinned scenario, and the scenario
+  definition (240px wrapping row, 12 text items + 4 nested text-bearing
+  flex items, one text mutation per update). (e) the kill criterion
+  does NOT fire: branch (a) has no reversing measurement (the doctrine
+  evidence is local — the recursion/allocation inventory, verified
+  firsthand in round 2); branch (b) has no refuted claim (all five
+  CONFIRMED); the per-claim consequence list is empty. (f) holds with
+  the explicit phase-family enumeration: item-formation, order,
+  measurement/hypothetical, line-breaking, container-sizing, §9.7
+  resolution, cross-sizing, line-packing, positioning, abs-pos static,
+  intrinsic contribution, paint-order; gated planes named (baseline,
+  collapse struts, fragmentation, balanced wrap) — no confirmed phase
+  unpinned. **Outputs.** 2. sequencing pulls: NONE (the paint-order
+  reclassification does not change the default — it lands with step 2's
+  lanes). 3. (d1) ratified as above; (d2) baseline recorded at step 1's
+  gate. 4. grid ADOPTED per the recorded recommendation: enters the arc
+  immediately after the fix sequence, before PR 4 (owner veto open).
+  5. step-10 default adopted: §8.1 auto margins in-arc first;
+  flex-basis %, intrinsic keywords, aspect-ratio, baseline alignment,
+  `visibility: collapse` deferred to the post-sequence consumer
+  re-check. Implementation unlocks at FLEX_MAPPING §4 step 1 (the
+  structural step: zero pin flips, full suite green, perf pins as
+  judge). Next artifact: the step-1 execution plan (the architect's
+  chained task decomposition).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

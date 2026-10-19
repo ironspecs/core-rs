@@ -101,13 +101,15 @@ reclassified with the dependency named.
 
 Ratify, against FLEX_MAPPING §3.4: (i) the metric DEFINITIONS (flex
 nodes measured, flex nodes placed, flagged refolds per level — landing
-with the structural step); (ii) the construction bound (total intrinsic
-measurements per dirty update ≤ 2× the up-fold count — each subtree
-refolds at most once per nesting level); (iii) the within-update memo
-fallback (context-owned, keyed by `(node, resolved width)`, reset per
-update) is designed rather than improvised and does not violate the
+with the structural step); (ii) the construction bound (each subtree
+refolds at most once per nesting level — total intrinsic measurements
+per dirty update ≤ (flagged_depth + 1)× the up-fold count; sharpened
+per obligation (b) from the single-level ≤2×); (iii) the within-update
+memo fallback (context-owned, keyed by `(node, resolved width)`, reset
+per update) is designed rather than improvised and does not violate the
 no-speculative-caches doctrine; (iv) the ceiling AS POLICY: ≤ 50% of
-measured flex nodes flagged-refolding in the pinned scenario, breach
+measured flex nodes flagged-refolding in the pinned scenario (the
+refold FRACTION, distinct from the measurement multiplier), breach
 landing the memo; (v) the scenario DEFINITION (the ceiling's subject —
 authored-input shape, pinned at step 1): a wrapping row container at
 240px content width holding 12 short text-bearing items plus 4 nested
