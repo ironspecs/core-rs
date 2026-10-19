@@ -273,8 +273,13 @@ staged double-layout of every child IS the pre-mechanism cost shape.
 The (d1) scenario pin (perf_metric + perf_allocation): the 240px
 wrapping row, 12 text items + 4 nested text-bearing flex items, one
 text mutation per update. Asserts: `FlexNodesMeasured`/`FlexNodesPlaced`
-exact counts for the scenario, and steady-state zero allocation after
-warmup (lanes at high-water mark).
+exact counts for the scenario, and the allocation contract per the
+FLEX_MAPPING §3.4 pass-ownership decomposition (amended 2026-10-19):
+the layout-phase window is zero for the text-free variant and carries
+ONLY the documented text-shaping count for the text scenario (the
+style/paint/mutation residuals are proposal J's, D7's, and the
+declaration parse's — out of the reflow's ownership, documented, not
+driven to zero in this arc).
 
 **The (d2) baseline at step 1's gate (recorded in PLAN.md's decision
 log):** the scenario's observed counters, the allocation window, and

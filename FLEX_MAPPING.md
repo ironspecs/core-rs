@@ -337,7 +337,24 @@ here).
 
 - Zero allocation in steady state (the `perf_allocation` window extends
   to flex scenarios: a dirty-flex update allocates nothing after
-  warmup).
+  warmup). **Pass-ownership decomposition (amended 2026-10-19 on the
+  T6/T6b evidence):** the contract binds the pass the doctrine owns —
+  the REFLOW. (i) The reflow machinery (the four lanes, the record,
+  the solve, placement) allocates NOTHING after warmup — proven by T6b
+  (lanes at high-water mark; no `Vec`/`String`/`collect` in the flex
+  solve; the text-free layout-phase window is zero). (ii) TEXT-SHAPING
+  allocations inside intrinsic measurement (cosmic buffers, ~99 per
+  measure, 20 measures in the pinned scenario) are inherited from the
+  current text pipeline and its per-pass re-measure cadence: the
+  change-detection-gated fold (step 4+) stops re-measuring CLEAN text
+  nodes, and PR 4's seam owns the buffer lifecycle; the shaping count
+  is pinned as a documented baseline, not driven to zero here.
+  (iii) Out of the reflow's ownership: the style pass's per-element
+  allocations (proposal J's named, sleeping target — the (d1) evidence
+  is ~30 of ~2000 allocations, 1.5%, and does not wake it), the paint
+  pass's per-repaint plan rebuild (D7's staged item), and the
+  mutation's declaration-parse cost (the style redesign's accepted
+  shape). None are the flex arc's to fix; none are the reflow.
 - One up visit + one down visit per dirty node; the flagged refold is
   per-flagged-subtree, once per nesting level, and counted by metric.
 - **The refold budget (added per review; debate-ratified).** Every
