@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::domains::layout::MeasurementRecord;
 use crate::domains::style::computed::NodePresentation;
 use crate::types::box_model::DomBoxModel;
 use crate::types::dom_event_name::DomEventName;
@@ -34,6 +35,10 @@ pub struct DomNodeBase {
     pub owner_document_key: DomNodeSlotKey,
     pub box_model: DomBoxModel,
     pub intrinsic: DomIntrinsic,
+    /// Per-node intrinsic measurement record written once per node per dirty
+    /// pass by the layout up fold (flex step 1). A pass OUTPUT, never a dirt
+    /// source: writes are equality-gated and mark no domain dirty.
+    pub measurement: MeasurementRecord,
     pub layout: DomLayoutState,
     pub paint: DomPaintState,
     pub style: DomStyleObject,
@@ -61,6 +66,7 @@ impl DomNodeBase {
             owner_document_key,
             box_model: DomBoxModel::zero(),
             intrinsic: DomIntrinsic::None,
+            measurement: MeasurementRecord::default(),
             layout: DomLayoutState {
                 dirty: true,
                 layer_kind: DomLayerKind::None,

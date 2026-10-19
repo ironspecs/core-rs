@@ -29,6 +29,8 @@ mod flex_wrap_mode;
 mod flow;
 mod identity_dom_layout_resolver;
 mod layout_pass_result;
+mod measurement_flags;
+mod measurement_record;
 mod style;
 mod walker;
 
@@ -43,6 +45,8 @@ pub struct DomLayoutInput<'a> {
 
 pub use dom_layout_resolver::DomLayoutResolver;
 pub use identity_dom_layout_resolver::IdentityDomLayoutResolver;
+pub use measurement_flags::MeasurementFlags;
+pub use measurement_record::MeasurementRecord;
 
 pub use walker::{node_box, node_layout_dirty, node_paint_dirty, root_key};
 
