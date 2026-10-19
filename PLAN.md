@@ -1083,7 +1083,7 @@ an f32 basis.
   retention past relayout is unverified; obligation (c)'s classification
   audit should answer it specifically. The debate package stands as
   amended; the next act is the third party executing obligations
-  (a)–(e) BY NAME.
+  (a)–(f) BY NAME.
 
 - **2026-10-19 — review round 2 adjudicated: evidence, budget, fire
   path, seats, and the work-order repairs.** Round 2 (the third-party
@@ -1093,8 +1093,11 @@ an f32 basis.
   fixed: (1) **ephemeral evidence base (critical)** — the fetched
   engine sources lived in OS temp, unmanifested and unreproducible by
   construction. The corpus now lives at `.tmp/engine-corpus/`
-  (GITIGNORED — vendoring the licensed sources into this repo is
-  illegal and impractical, per the product owner) with `MANIFEST.md`
+  (GITIGNORED — the product owner's policy, per the round-3 correction:
+  licensed third-party source stays out of this repo on hygiene, scope,
+  and reproducibility grounds, not by legal bar — both upstream
+  licenses permit vendoring under conditions this repo declines) with
+  `MANIFEST.md`
   carrying per-file upstream URLs, resolved revisions (Chromium
   `61ef1bef`, mozilla-central `0fdb388b`), fetch date, and
   revision-pinned re-fetch instructions; 15 files (13 Blink, 2 Gecko;
@@ -1127,6 +1130,34 @@ an f32 basis.
   PR 3's header and FLEX_MAPPING.md's header. (7) **sequencing note
   (minor)** — (b), (c), (e) locally executable today; (a), (f) need
   the corpus.
+
+- **2026-10-19 — review round 3: the round-2 fixes verified firsthand;
+  residual items folded; the debate may execute.** The reviewer ran the
+  gate on the adjudication claims rather than trusting the table: all
+  seven findings confirmed FIXED against the tree and the corpus
+  (`.tmp/engine-corpus/` with MANIFEST-pinned revisions; the (d1)/(d2)
+  split with the authored-input scenario; the fire-path rules including
+  the local-evidence clause; the retitled seats; obligation (f); output
+  5; the brief linked from both headers; the sequencing note). The
+  writer's provenance work is credited with catching a citation error
+  both prior rounds missed — `flex_layout_utils.cc` and `flex_item.cc`
+  never existed upstream; the original `.b64` fetch artifacts were
+  error payloads. Residual items folded in this change: (1) **the
+  assignee-conflict rule (substantive)** — the named reviewer is
+  independent of the author but not of the amendments: obligations (c),
+  (e), (f) audit reviewer-authored material (the §1 classification, the
+  restated kill criterion, the §6 verification-burden plan). Rule, in
+  the brief: those three require EITHER product-owner co-signature per
+  verdict OR a fresh seat with no review-chain context — the owner
+  names which before they execute, recorded here; (a), (b), (d) are
+  conflict-free. (2) output 5's deferral closed (baseline alignment,
+  `visibility: collapse` explicitly deferred to the same re-check).
+  (3) the two stale `(a)–(e)` references corrected. (4) the license
+  rationale corrected in the manifest, this log, and the brief — the
+  gitignored-corpus decision stands on repo policy (hygiene, scope,
+  reproducibility), not a misstated legal bar. State: the debate
+  package is executable; obligations (a), (b), (d1) may start today;
+  (c), (e), (f) await the owner's named execution rule.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

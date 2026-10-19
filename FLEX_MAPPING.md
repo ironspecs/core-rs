@@ -574,3 +574,13 @@ general assent is not agreement):**
 (e) **Kill-criterion adjudication.** Confirm the restated criterion
     (PLAN.md PR 3) is falsifiable in both directions, and adjudicate it
     against the doctrine evidence.
+(f) **Substitute-surface coverage (added per round 2).** Against the
+    CONFIRMED §2.1 claims (after (a)): confirm §6's phase-family plan
+    maps onto them with NO phase unpinned — each confirmed skeleton
+    phase has a named proof family with spec section and WPT
+    provenance. Any unpinned phase is a finding with the family owed.
+
+**The work order (FLEX_DEBATE_BRIEF.md) is the canonical execution
+form of these obligations** — the verdict forms, the fire-path rules,
+the (d1)/(d2) budget split, the independence rule for (c)/(e)/(f), and
+the required outputs live there.

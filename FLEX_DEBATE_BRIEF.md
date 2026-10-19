@@ -1,8 +1,8 @@
 # FLEX_DEBATE_BRIEF.md — the PR 3 third-party work order
 
 Status: `CONVENED 2026-10-19; amended the same day under the round-2
-review (PLAN.md decision log) — implementation unlocks when every
-obligation below returns a named verdict`. Subject: `FLEX_MAPPING.md`
+and round-3 reviews (PLAN.md decision log) — implementation unlocks
+when every obligation below returns a named verdict`. Subject: `FLEX_MAPPING.md`
 (amended), `PLAN.md` PR 3 (rewritten). This brief is the work order;
 those documents carry the substance. Rule: agreement is per obligation,
 BY NAME — a general assent is not agreement.
@@ -16,18 +16,42 @@ Chromium/Gecko sources against our tree; holds kill-criterion
 authority. Author and reviewer seats are distinguished in PLAN.md's
 decision log by title.
 
-**Evidence corpus (added per round 2, finding 1).** The fetched
-Blink/Gecko sources live at `.tmp/engine-corpus/` (GITIGNORED —
-vendoring licensed sources into this repo is both illegal and
-impractical) with `MANIFEST.md` carrying per-file upstream URLs,
+**Residual conflict and its rule (added per round 3).** The named
+reviewer authored the round-1 amendments that three obligations audit:
+(c) audits the §1 classification the reviewer demanded, (e) adjudicates
+the kill criterion the reviewer restated, (f) covers the §6
+verification-burden plan the reviewer substituted. Independence of the
+AUTHOR is structural; independence of the AMENDMENTS is not. Rule:
+obligations (c), (e), and (f) require EITHER co-signature by the
+product owner on each verdict OR execution by a fresh seat with no
+review-chain context; the owner names which before those three
+obligations execute, and the choice is recorded in PLAN.md's decision
+log. Obligations (a), (b), and (d) are conflict-free — they verify
+engine sources, enumerated scenarios, and budget mechanics. Note on
+(b): its targets (the run-aggregation cursors, the refold bound) are
+also reviewer-authored, but its verdict form is adversarial by
+construction — a failing scenario or a scoped none-found — and a false
+none-found is caught at step 1's gate when the pins materialize, so it
+carries no ratchet direction; if the owner disagrees, the same rule
+extends to it.
+
+**Evidence corpus (added per round 2, finding 1; rationale corrected
+per round 3).** The fetched Blink/Gecko sources live at
+`.tmp/engine-corpus/` (GITIGNORED — the product owner's policy:
+licensed third-party source stays out of this repo on hygiene, scope,
+and reproducibility grounds; both upstream licenses permit vendoring
+under conditions this repo declines to take on) with `MANIFEST.md`
+carrying per-file upstream URLs,
 resolved revision hashes, fetch date, and revision-pinned re-fetch
 instructions. Every file:line verdict below cites against the
 manifest's revisions; a cold reviewer re-fetches per the manifest if
 the corpus is absent.
 
-**Sequencing (round 2, finding 8).** Obligations (b), (c), (e) are
-locally executable today (our tree + the enumerated corpus). (a) and
-(f) need the engine corpus. Nothing else blocks local work.
+**Sequencing (round 2, finding 8; updated per round 3).** Obligations
+(a), (b), and (d1) are executable today — (a) needs the engine corpus,
+the rest need only our tree. Obligations (c), (e), and (f) execute once
+the product owner names the independence rule above. Nothing else
+blocks local work.
 
 ## Obligation (a) — source spot-check
 
@@ -145,11 +169,13 @@ unpinned phase is a finding with the family owed.
 4. **Grid's dated arc decision** (PLAN.md PR 3, question 6 — REQUIRED;
    the recorded recommendation: enter immediately after the fix
    sequence, before PR 4).
-5. **The step-10 admission scope** (added per round 2, finding 6):
-   which admission candidates land in-arc. Default recorded: `margin:
-   auto` §8.1 lands in-arc first; `flex-basis` percentages, intrinsic
-   size keywords, and `aspect-ratio` are deferred to a post-sequence
-   consumer re-check. Overrule with rationale; silence adopts the
+5. **The step-10 admission scope** (added per round 2, finding 6;
+   deferral closed per round 3): which admission candidates land
+   in-arc. Default recorded: `margin: auto` §8.1 lands in-arc first;
+   `flex-basis` percentages, intrinsic size keywords, and `aspect-ratio`
+   are deferred to a post-sequence consumer re-check; all remaining
+   candidates (baseline alignment, `visibility: collapse`) are deferred
+   to the same re-check. Overrule with rationale; silence adopts the
    default.
 
 Implementation unlocks at FLEX_MAPPING §4 step 1 when all five outputs
