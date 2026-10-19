@@ -415,8 +415,19 @@ default.
    `resolve_active_flex_container_*`, 19 others — the per-file split is
    a debate artifact). The new perf counters and the pinned text-heavy
    refold scenario (§3.4) land in this step.
-2. **Order-modified canonical sequence + paint-order fix.** Paint
-   consumes the order lane. Flips: paint-order row.
+2. **Order-modified canonical sequence + paint-order fix (LANDED
+   2026-10-19, `6da221d`).** MECHANISM AMENDED per the architect's
+   lifecycle analysis: the mapping said "paint consumes the order lane,"
+   but the lanes reset at `RootDom::update`, so on a paint-dirty-only
+   update (a color change, A7 group-diff color → paint, no layout) the
+   lanes are EMPTY and lane-consumption would silently reintroduce the
+   divergence on exactly that path. As landed: paint derives the
+   order-modified sequence from the children's computed `order` values
+   itself, allocation-free (fast path when orders are uniform: DOM
+   order; selection iteration only when orders differ), and the order
+   lane stays layout-internal — both derive from the same
+   `(order, dom-sequence)` stable rule. Flips: the paint-order row moved
+   on-spec; new pins for the fast path and the paint-only-update path.
 3. **Item-view formation, three landings:** (a) anonymous runs via the
    §3.2 run-aggregation fold (flips the anonymous-runs row; retires the
    dead `AnonymousInlineGroup` variant's dormancy); (b) abs-pos/none

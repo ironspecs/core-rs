@@ -226,11 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-424 layout proofs (416 in
+426 layout proofs (418 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after the
-composition-axis and review-incorporation rounds); the off-spec
-registry (23 divergent proofs in 20 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 2);
+the off-spec registry (22 divergent proofs in 18 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1257,6 +1256,24 @@ an f32 basis.
   27→29 (fold record writes when changed). The 135 flex proofs passed
   unchanged at every link. Step 1's zero-pin-flip contract is met
   (only sanctioned perf re-pins moved), and the full gate is green.
+
+- **2026-10-19 — flex arc step 2 LANDED (`6da221d`, PR #21's
+  follow-up): order-modified paint.** Paint now stages flex children in
+  order-modified document order (CSS Flexbox §5.4.1), flipping the
+  `off_spec_flex_paint_ignores_order_modified_sequence` row on-spec —
+  the first complaint-list row closed by the sequence. The mechanism
+  was amended at dispatch (recorded in FLEX_MAPPING §4): paint DERIVES
+  the sequence from computed `order` values (fast path DOM order when
+  orders are uniform; selection iteration only when they differ) rather
+  than consuming the update-scoped order lane, because a
+  paint-dirty-only update has empty lanes — the paint-only-update pin
+  proves the divergence cannot silently return on that path. One
+  documented re-pin (node-store Get 138→140: the order-detection reads).
+  Also landed since step 1's PR: `26a8ee7` (the review follow-up
+  unifying the record write gate and assembly — zero pin movement).
+  Proofs 424 → 426; divergent registry 23-in-20 → 22-in-18. Next: step
+  3 (item-view formation — anonymous runs, abs-pos/none exclusion +
+  static-position model, blockification completion), the Tier-1 rows.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
