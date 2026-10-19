@@ -228,8 +228,8 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 426 layout proofs (418 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 2);
-the off-spec registry (22 divergent proofs in 18 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 3b);
+the off-spec registry (20 divergent proofs in 16 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1274,6 +1274,55 @@ an f32 basis.
   Proofs 424 → 426; divergent registry 23-in-20 → 22-in-18. Next: step
   3 (item-view formation — anonymous runs, abs-pos/none exclusion +
   static-position model, blockification completion), the Tier-1 rows.
+
+- **2026-10-19 — flex arc step 3a LANDED (`1ac6d39`, `7dc007b`, plus
+  follow-ups `d5456fd` and `1269113`): anonymous inline-run flex
+  items.** The complaint list's Tier-1 row #1 closed: contiguous inline
+  runs form ONE virtual item (fold-local `RunAccumulator` + the
+  source-range variant — no DOM mutation, per the doctrine), with the
+  three-cursor min-content fold (widest unbreakable segment, with
+  cross-boundary fragment joining per CSS Text 3 §4), the
+  collapsibility-conditioned whitespace drop (Gecko's semantics), and
+  run-aware paint sequencing. This was the first landing under the
+  corrected task discipline: the complete design was written FIRST
+  (`FLEX_STEP3A_DESIGN.md`, every decision made, no open questions) and
+  the implementation task was transcription-only — and the discipline
+  paid immediately: the transcription disclosed three ambiguities
+  instead of improvising, and two of its escalations caught two of the
+  architect's own design errors: the `flex_shrink: 0` field (corrected
+  to the CSS initial 1, `d5456fd`) and the never-live wrapping path
+  (runs now wrap at their resolved width, `1269113`). The (d1)
+  scenario's shape changed with merging (bare-text children now form
+  runs): `FlexNodesPlaced` 20 → 9, the text layout-phase allocation
+  window 1934 → 1014 (fewer lane entries) — all re-pinned with
+  documented causes. Divergent registry 22-in-18 → 21-in-17 (the
+  anonymous-runs row moved on-spec). The D1 atom-with-block-descendants
+  edge and the span-boundary fragment approximation are named
+  boundaries in the design doc. Next: step 3b (abs-pos/`display:none`
+  exclusion + the static-position model) and step 3c (blockification
+  completion).
+
+- **2026-10-19 — flex arc step 3b LANDED (`7d1c067`): abs-pos and
+  `display:none` children are not flex items.** Exclusion at formation
+  (no slots, no gap adjacencies, no justify count — both engines' skip
+  semantics), inline runs join across excluded children, and the 0×0
+  order-modified static-position model (§4.1, Blink's `AxisEdge`
+  semantics): abs children now lay out per the real abs-pos rules at
+  their computed static position inside the container's padding box and
+  PAINT (previously zero-squashed at the origin). The registered row
+  moved on-spec with three new pins (run joins across, center static,
+  end-slot static). One documented perf re-pin (Get 142→145). Named
+  boundary (the transcription's observation, recorded): explicit
+  `left`/`top` non-auto offsets on an abs flex child take precedence
+  over the static position per CSS 2.1 §10.3.7 — currently unpinned;
+  owed a row when the offset family is next touched. Divergent
+  registry 21-in-17 → 20-in-16. Next: step 3c — re-adjudicated under
+  the run model: the lone-`display: inline` case is a length-1
+  anonymous run per both engines (the span is NOT blockified; the
+  anonymous wrapper stretches and the inline content renders at its
+  inline height inside it), so 3c is the blockification row's
+  re-adjudication plus the residual inline-block verification, not a
+  naive `inline → block` map.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
