@@ -1004,12 +1004,13 @@ fn order_changes_visual_order_without_mutating_dom_sibling_order() {
     );
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
-    // rects[0] = container; rects stay in DOM tree order, so rects[1] = dom_first
-    // (order 3), rects[2] = dom_second (order 1), rects[3] = dom_third (order 2).
-    // The positions carry the order-modified visual placement.
-    assert_rect_op_geometry(&rects[1], 20.0, 0.0, 10.0, 10.0, "order 3 item (dom_first)");
-    assert_rect_op_geometry(&rects[2], 0.0, 0.0, 10.0, 10.0, "order 1 item (dom_second)");
-    assert_rect_op_geometry(&rects[3], 10.0, 0.0, 10.0, 10.0, "order 2 item (dom_third)");
+    // rects[0] = container; rects stage in order-modified order (flex arc step 2
+    // paint-order fix), so rects[1] = dom_second (order 1), rects[2] = dom_third
+    // (order 2), rects[3] = dom_first (order 3). The positions carry the same
+    // order-modified visual placement.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 10.0, "order 1 item (dom_second)");
+    assert_rect_op_geometry(&rects[2], 10.0, 0.0, 10.0, 10.0, "order 2 item (dom_third)");
+    assert_rect_op_geometry(&rects[3], 20.0, 0.0, 10.0, 10.0, "order 3 item (dom_first)");
 }
 
 #[test]
@@ -6344,18 +6345,21 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
 // stacking/paint cases of §5.4.1; Gecko and Blink both apply the order-modified
 // sequence to painting.
 //
+// Relabeled from `off_spec_flex_paint_ignores_order_modified_sequence` in PR 3
+// step 2: the paint pass now derives the order-modified sequence itself (the
+// `order_modified_children` paint helper) instead of walking the DOM tree, so
+// every row below is on-spec.
+//
 // Rows (a)–(c) pin the order-modified layout edge cases on-spec:
 // `order_modified_measured_items` (`flex.rs:1520`) uses a stable
 // `sort_by_key(|item| item.order)`, so negative orders lead, equal orders keep
 // DOM order, and line membership follows the order-modified sequence.
 //
-// OFF-SPEC (row d only): the paint pass walks the DOM tree (source order) and
-// ignores the order-modified sequence, so overlapping items (negative margins)
-// paint in DOM order rather than §5.4.1's order-modified order. Spec-correct:
-// the lower-order overlapping item paints first (on top) and the higher-order
-// item paints last (on top of it).
+// Row (d) pins the paint side: overlapping items (negative margins) stage in
+// order-modified order — the lower-order item paints first and the
+// higher-order item paints last (on top of it).
 #[test]
-fn off_spec_flex_paint_ignores_order_modified_sequence() {
+fn flex_paint_and_layout_follow_order_modified_sequence() {
     let rows: [OrderPaintRow; 4] = [
         (
             "negative_order_values_lead",
@@ -6370,8 +6374,8 @@ fn off_spec_flex_paint_ignores_order_modified_sequence() {
             assert_order_wrap_line_membership_follows_order_modified_sequence,
         ),
         (
-            "overlapping_items_paint_in_dom_order_not_order_modified",
-            assert_overlapping_items_paint_in_dom_order,
+            "overlapping_items_paint_in_order_modified_sequence",
+            assert_overlapping_items_paint_in_order_modified_sequence,
         ),
     ];
     for (name, run) in rows {
@@ -6474,9 +6478,10 @@ fn assert_order_wrap_line_membership_follows_order_modified_sequence(name: &str)
     assert_eq!(rects.len(), 3, "{name}: container + two items");
     // On-spec: the 0-order second item takes line 1 and the 1-order first item
     // wraps to line 2, because line membership follows the order-modified
-    // sequence (0-order first, then 1-order).
+    // sequence (0-order first, then 1-order). The paint walk now stages in the
+    // same order-modified sequence, so the 0-order item paints first.
     assert_rect_op_geometry(
-        &rects[2],
+        &rects[1],
         0.0,
         0.0,
         40.0,
@@ -6484,7 +6489,7 @@ fn assert_order_wrap_line_membership_follows_order_modified_sequence(name: &str)
         &format!("{name}: 0-order item line 1"),
     );
     assert_rect_op_geometry(
-        &rects[1],
+        &rects[2],
         0.0,
         20.0,
         40.0,
@@ -6493,7 +6498,7 @@ fn assert_order_wrap_line_membership_follows_order_modified_sequence(name: &str)
     );
 }
 
-fn assert_overlapping_items_paint_in_dom_order(name: &str) {
+fn assert_overlapping_items_paint_in_order_modified_sequence(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "100px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -6514,19 +6519,121 @@ fn assert_overlapping_items_paint_in_dom_order(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two overlapping items");
-    // Divergent: the DOM-first red item (order 2) paints at index 1 and the
-    // green item (order 1) at index 2 — DOM paint order — instead of the
-    // order-modified sequence (green order-1 first, red order-2 last).
+    // On-spec: the order-modified sequence stages the green order-1 item
+    // (DOM-second) first and the red order-2 item (DOM-first) last, so the
+    // higher-order item paints on top.
+    assert_rect_op_fill(
+        &rects[1],
+        [0.0, 1.0, 0.0, 1.0],
+        &format!("{name}: green order-1 item paints first"),
+    );
+    assert_rect_op_fill(
+        &rects[2],
+        [1.0, 0.0, 0.0, 1.0],
+        &format!("{name}: red order-2 item paints last"),
+    );
+}
+
+// CSS Flexbox 1 §5.4.1 fast path (flex arc step 2): when every flex item
+// shares the default `order: 0`, the order-modified sequence IS DOM order and
+// the paint walk must not reorder. Pinned so the `order_modified_children`
+// fast path (equal orders → DOM order) cannot silently break into the slow
+// path or an order permutation.
+#[test]
+fn flex_paint_all_default_orders_stage_in_dom_order() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_set_inflexible_row_item(&mut root, first, "50px", "20px");
+    assert_style_set(&mut root, first, "background-color", "#ff0000");
+    let second = assert_append_div_to(&mut root, container);
+    assert_set_inflexible_row_item(&mut root, second, "50px", "20px");
+    assert_style_set(&mut root, second, "background-color", "#00ff00");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "container + two default-order items");
+    // On-spec: equal (default) orders keep DOM order.
     assert_rect_op_fill(
         &rects[1],
         [1.0, 0.0, 0.0, 1.0],
-        &format!("{name}: first painted item"),
+        "DOM-first default-order item",
     );
     assert_rect_op_fill(
         &rects[2],
         [0.0, 1.0, 0.0, 1.0],
-        &format!("{name}: second painted item"),
+        "DOM-second default-order item",
     );
+}
+
+// CSS Flexbox 1 §5.4.1 layout-clean path (flex arc step 2 amendment): paint
+// derives the order-modified sequence from the children's computed `order`
+// values itself, NOT from the update-scoped order lane. The lane resets at
+// `RootDom::update`, so a paint-dirty-only update (a color change that moves no
+// layout) has an EMPTY lane — if paint consumed the lane, the staged sequence
+// would revert to DOM order on exactly this path. This proof mutates only a
+// paint-affecting property (background-color) on an order-bearing container and
+// asserts the staged op sequence stays order-modified.
+#[test]
+fn flex_paint_keeps_order_modified_sequence_on_paint_only_update() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_set_inflexible_row_item(&mut root, first, "50px", "20px");
+    assert_style_set(&mut root, first, "order", "2");
+    assert_style_set(&mut root, first, "background-color", "#ff0000");
+    let second = assert_append_div_to(&mut root, container);
+    assert_set_inflexible_row_item(&mut root, second, "50px", "20px");
+    assert_style_set(&mut root, second, "order", "1");
+    assert_style_set(&mut root, second, "margin-left", "-20px");
+    assert_style_set(&mut root, second, "background-color", "#00ff00");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    {
+        let plans = take_staged_layer_paint_plans(&root);
+        let rects = &plans[0].rects;
+        assert_eq!(
+            rects.len(),
+            3,
+            "first update: container + two overlapping items"
+        );
+        assert_rect_op_fill(
+            &rects[1],
+            [0.0, 1.0, 0.0, 1.0],
+            "first update: green order-1 first",
+        );
+        assert_rect_op_fill(
+            &rects[2],
+            [1.0, 0.0, 0.0, 1.0],
+            "first update: red order-2 last",
+        );
+    }
+
+    // Paint-affecting-only mutation: the background-color write moves the
+    // visual group (A7 group-diff color → paint) without arming layout.
+    assert_style_set(&mut root, first, "background-color", "#0000ff");
+    assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
+    {
+        let plans = take_staged_layer_paint_plans(&root);
+        let rects = &plans[0].rects;
+        assert_eq!(
+            rects.len(),
+            3,
+            "paint-only update: container + two overlapping items",
+        );
+        assert_rect_op_fill(
+            &rects[1],
+            [0.0, 1.0, 0.0, 1.0],
+            "paint-only update: green order-1 still first",
+        );
+        assert_rect_op_fill(
+            &rects[2],
+            [0.0, 0.0, 1.0, 1.0],
+            "paint-only update: red order-2 (now blue) still last",
+        );
+    }
 }
 
 // CSS Flexbox 1 §7.3.3 (flex-basis): `content` indicates automatic sizing

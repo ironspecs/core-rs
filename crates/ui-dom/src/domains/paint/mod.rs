@@ -12,12 +12,15 @@
 //! carried inherited context (`inherited_text_color_rgba`).
 
 mod mark_dirty;
+mod order_modified_children;
 
 use bevy::prelude::World;
 
 use crate::domains::layer_pool::{LayerPool, LayerPoolMetricName};
 use crate::domains::layout::{node_box_from_ref, relative_offset_for_node};
+use crate::domains::paint::order_modified_children::visit_order_modified_children;
 use crate::domains::render_ops::{StageOutcome, StagedLayerApply};
+use crate::domains::style::computed::DisplayKw;
 use crate::domains::text_layout::{
     DEFAULT_TEXT_FONT_SIZE_PX, TextIntrinsicMetrics, TextLanguageId, TextLayoutRequest,
     text_align_for_css_value, text_layout_input_for_wrap_policy, text_wrap_mode_for_css_intrinsic,
@@ -248,12 +251,35 @@ fn derive_child_paint_ops_into_plan(
     child_style: &InheritedStyleContext,
     plan: &mut LayerPaintPlan,
 ) -> Result<(), DomError> {
-    let parent_is_select = node_is_select_element(root_dom.node(parent_key));
-    let select_popup_shell_key = if parent_is_select {
-        root_dom.presented_options_popup_shell_key(parent_key)
-    } else {
-        None
+    let (parent_is_select, select_popup_shell_key, parent_is_flex) = {
+        let parent_node = root_dom.node(parent_key).ok_or(DomError::InvalidNodeKey)?;
+        let parent_is_select = node_is_select_element(Some(parent_node));
+        let select_popup_shell_key = if parent_is_select {
+            root_dom.presented_options_popup_shell_key(parent_key)
+        } else {
+            None
+        };
+        let parent_is_flex = node_is_flex_container(Some(parent_node));
+        (parent_is_select, select_popup_shell_key, parent_is_flex)
     };
+    if parent_is_flex {
+        // Flex containers paint their children in order-modified document
+        // order (CSS Flexbox §5.4.1); non-flex parents keep the DOM walk.
+        visit_order_modified_children(root_dom, parent_key, |root, current_key| {
+            if parent_is_select && Some(current_key) != select_popup_shell_key {
+                return Ok(());
+            }
+            derive_paint_ops_into_plan(
+                root,
+                layer_pool,
+                layer_root_key,
+                current_key,
+                child_style,
+                plan,
+            )
+        })?;
+        return Ok(());
+    }
     let mut child_key = root_dom
         .node(parent_key)
         .ok_or(DomError::InvalidNodeKey)?
@@ -279,6 +305,22 @@ fn derive_child_paint_ops_into_plan(
 fn node_is_select_element(node: Option<&DomNode>) -> bool {
     node.and_then(DomNode::as_element)
         .is_some_and(|element| element.tag == DomTag::Select)
+}
+
+/// Returns `true` when `node` is a flex container (`display: flex` or
+/// `display: inline-flex`). Reads the computed box group's `display` keyword
+/// (`DomNode::computed_box().display`, `types/dom_node.rs`), the same computed
+/// projection the layout solver's `presented_display` maps to `LayoutDisplay`
+/// (`domains/layout/style.rs`), but through the public computed surface the
+/// paint walk already holds — no extra store read beyond the parent fetch the
+/// walk performs anyway.
+fn node_is_flex_container(node: Option<&DomNode>) -> bool {
+    node.is_some_and(|node| {
+        matches!(
+            node.computed_box().display,
+            DisplayKw::Flex | DisplayKw::InlineFlex
+        )
+    })
 }
 
 fn clear_subtree_paint_repaint_state(

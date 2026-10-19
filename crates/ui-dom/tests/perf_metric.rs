@@ -496,7 +496,15 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // `order_index` back-reference, so the per-item key lookups that backed the
     // former HashMap re-join are gone. Documented cause: the lane read path
     // replaces the DOM walk; FLEX_STEP1_EXECUTION.md §4 (four-lane design).
-    assert_node_counts(&root, 138, 29, 0, "flex relayout");
+    // flex step 2 paint order (+2 Get from 138/29/0): the paint walk now detects
+    // the flex container and derives the order-modified child sequence via the
+    // `order_modified_children` fast path, whose one detection pass reads each
+    // of the two children's `computed_flex().order` (+1 Get each). Documented
+    // cause: paint derives the order-modified sequence itself — the order lane
+    // is update-scoped and empty on paint-dirty-only updates, so paint cannot
+    // consume it (the architect's amendment to FLEX_MAPPING §4 step 2, pin
+    // `off_spec_flex_paint_ignores_order_modified_sequence` relabeled on-spec).
+    assert_node_counts(&root, 140, 29, 0, "flex relayout");
 }
 
 /// Builds the (d1) scenario (`FLEX_DEBATE_BRIEF.md` (d1)(v), ratified): a
