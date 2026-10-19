@@ -2945,6 +2945,37 @@ fn node_measurement_mut(node: &mut DomNode) -> &mut MeasurementRecord {
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
+    // --- flex step 1, T5: the solver unit-test migration split (formal) ---
+    //
+    // The 66 tests in this module are the FORMAL migration of the 59
+    // pre-step-1 solver unit tests plus T4a's 7 item-view identity tests,
+    // classified per the test-migration policy (AGENTS.md). Every survivor
+    // asserts through a sanctioned surface: the record (`node_record`, i.e.
+    // `dom_node_base.measurement`), the item view (`FlexItemView`), the four
+    // lanes via `LayoutScratch` accessors, or node layout/box state — never
+    // through a removed type.
+    //
+    // Split: 26 re-home, 40 re-express, 0 die.
+    //
+    // re-home (26) — genuine unit assertions on the record + item-view unit
+    //   surface: measured_item_record_* (17) pin the measurement fold's
+    //   per-kind `FlexItemView` production (basis/hypothetical/auto-min and
+    //   the graceful degradation gates); item_view_* (7) pin each kind's
+    //   record identity plus the view's derivation from the record; the two
+    //   staged_measurement_solve_* purity pins carry the §5 doc-comment line
+    //   naming records as the sanctioned measurement output.
+    // re-express (40) — solve internals asserted through the lane accessors
+    //   (resolved_items_in_order_modified_order, built_lines,
+    //   item_views_in_*_order, resolved_line_cross_sizes): line collection,
+    //   order, blockification, packing/distribution/clamps/gaps, cross-axis
+    //   helpers, reversal mapping, single-line axis mapping, measured
+    //   container.
+    // die (0) — T4a/T4b's mechanical re-pointing already removed every
+    //   shape-pinning assertion (the 20-field MeasuredFlexItem layout, the
+    //   Vec<FlexLine> shape, the HashMap re-join mechanics, the
+    //   FlexLineItemResolutionState shape, the two dead main_axis/cross_axis
+    //   fields); nothing remains whose only content was the bespoke
+    //   structures' shape, and no replacement test is manufactured.
     use super::*;
 
     fn test_keys(count: usize) -> Vec<DomNodeSlotKey> {
