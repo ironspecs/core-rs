@@ -49,7 +49,8 @@
 //! divergence deferred to the engine-mapped admission (PR 3).
 
 use ui_dom::{
-    DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, node_box,
+    DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, TextAlign,
+    node_box,
 };
 
 use crate::layout_proofs::support::{
@@ -8806,4 +8807,334 @@ fn assert_single_line_align_content_inert(name: &str, align_content: &str) {
     // cross-start and the item follows align-items (flex-start), so the
     // align-content keyword has no effect.
     assert_rect_op_geometry(&plans[0].rects[1], 0.0, 0.0, 30.0, 20.0, name);
+}
+
+// CSS Text 3 §7.1 (`text-align`) composed with CSS Flexbox 1 §9 (flex item
+// sizing/placement): `text-align` inherits through the item subtree, and the
+// question is whether the inherited alignment composes with the item's
+// resolved main size. Closest WPT oracles:
+// `css/css-text/text-align/text-align-center-001.html`,
+// `text-align-end-001.html`, `text-align-justify-*`. Gecko resolves the
+// physical alignment in `nsTextFrame`/`nsLineLayout` after the flex item's
+// used size is fixed (`nsFlexContainerFrame.cpp`); Blink in
+// `NGInlineLayoutAlgorithm` line alignment over the fragment's resolved inline
+// size (`flex_layout_algorithm.cc`).
+//
+// ON-SPEC: item SIZING never reads `text-align`, so an auto-width item still
+// shrink-wraps to its text; the text run then fills the item's RESOLVED
+// content width (the text box is the block's line box, stretched to the
+// content box), and `text-align` is carried as the run's `alignment` field for
+// cosmic-text to center/end/justify the glyphs within that full-width box. The
+// staged-op contract therefore encodes the composition as `{ size_px = resolved
+// content width, position_px = content-box start, alignment = inherited }`.
+// Row (c) pins the watched case: the grown item centers text in its GROWN
+// width (the text run size is the resolved 200px, not the measured width).
+#[test]
+fn flex_item_text_alignment_stacking() {
+    let rows: [TextAlignStackingRow; 7] = [
+        (
+            "a_auto_width_center_short_text_shrink_wraps",
+            assert_text_align_auto_width_center,
+        ),
+        (
+            "b_definite_width_center_fills_content_box",
+            assert_text_align_definite_width_center,
+        ),
+        (
+            "b_definite_width_end_fills_content_box",
+            assert_text_align_definite_width_end,
+        ),
+        (
+            "c_grown_item_center_uses_resolved_width",
+            assert_text_align_grown_center,
+        ),
+        (
+            "d_container_center_inherited_by_item_text",
+            assert_text_align_container_inherited,
+        ),
+        (
+            "e_auto_width_justify_shrink_context",
+            assert_text_align_justify_auto_width,
+        ),
+        (
+            "f_column_definite_width_end_fills_content_box",
+            assert_text_align_column_definite_end,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named text-align-in-flex probe: the row name plus a runner.
+type TextAlignStackingRow = (&'static str, fn(&str));
+
+/// Row (a): an auto-width item with `text-align: center` and a short text
+/// child shrink-wraps in the main axis (text fills the shrunk box), so the
+/// alignment is inert for geometry; the inherited alignment field is still
+/// center.
+fn assert_text_align_auto_width_center(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "text-align", "center");
+    let text = assert_append_text_to(&mut root, item, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    // rects[0] = container, rects[1] = item; the text child emits a text run.
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_eq!(text_runs.len(), 1, "{name}: one text run");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        20.0,
+        &format!("{name}: item shrink-wraps to text"),
+    );
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Center,
+        "{name}: alignment"
+    );
+    assert_close(
+        text_runs[0].position_px[0],
+        0.0,
+        &format!("{name}: text left"),
+    );
+}
+
+/// Row (b, center): a definite-width item centers its text in the content box.
+/// The text run fills the 120px content box and carries the center alignment.
+fn assert_text_align_definite_width_center(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "120px");
+    assert_style_set(&mut root, item, "text-align", "center");
+    let _text = assert_append_text_to(&mut root, item, "Mid");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        120.0,
+        20.0,
+        &format!("{name}: definite-width item"),
+    );
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Center,
+        "{name}: alignment"
+    );
+    assert_close(
+        text_runs[0].size_px[0],
+        120.0,
+        &format!("{name}: text run fills the content box"),
+    );
+    assert_close(
+        text_runs[0].position_px[0],
+        0.0,
+        &format!("{name}: text left"),
+    );
+}
+
+/// Row (b, end): the `end` keyword resolves to the physical right in LTR; the
+/// text run fills the 120px content box and carries the right alignment.
+fn assert_text_align_definite_width_end(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "120px");
+    assert_style_set(&mut root, item, "text-align", "end");
+    let _text = assert_append_text_to(&mut root, item, "Mid");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        120.0,
+        20.0,
+        &format!("{name}: definite-width item"),
+    );
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Right,
+        "{name}: alignment"
+    );
+    assert_close(
+        text_runs[0].size_px[0],
+        120.0,
+        &format!("{name}: text run fills the content box"),
+    );
+    assert_close(
+        text_runs[0].position_px[0],
+        0.0,
+        &format!("{name}: text left"),
+    );
+}
+
+/// Row (c): a grown item centers text in the RESOLVED (grown) width, not the
+/// measured width. A single `flex-grow: 1` item fills the 200px container and
+/// the text run fills that grown width (the watched composition case).
+fn assert_text_align_grown_center(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "20px");
+    assert_style_set(&mut root, item, "flex-grow", "1");
+    assert_style_set(&mut root, item, "text-align", "center");
+    let _text = assert_append_text_to(&mut root, item, "Mid");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        200.0,
+        20.0,
+        &format!("{name}: grown item fills the container"),
+    );
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Center,
+        "{name}: alignment"
+    );
+    assert_close(
+        text_runs[0].size_px[0],
+        200.0,
+        &format!("{name}: text run fills the grown width"),
+    );
+    assert_close(
+        text_runs[0].position_px[0],
+        0.0,
+        &format!("{name}: text left"),
+    );
+}
+
+/// Row (d): `text-align: center` authored on the CONTAINER inherits into the
+/// item's text child.
+fn assert_text_align_container_inherited(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "text-align", "center");
+    let item = assert_append_div_to(&mut root, container);
+    let text = assert_append_text_to(&mut root, item, "Inherit");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        20.0,
+        &format!("{name}: item shrink-wraps"),
+    );
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Center,
+        "{name}: inherited alignment"
+    );
+}
+
+/// Row (e): `text-align: justify` on an auto-width item keeps shrink-wrap
+/// sizing; the justify alignment is carried on the run and inert for a single
+/// unbroken line.
+fn assert_text_align_justify_auto_width(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "text-align", "justify");
+    let text = assert_append_text_to(&mut root, item, "Justify me");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        20.0,
+        &format!("{name}: item shrink-wraps"),
+    );
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Justified,
+        "{name}: alignment"
+    );
+}
+
+/// Row (f): a column container with a definite-width item and `text-align:
+/// end` resolves the alignment to the physical right; the text run fills the
+/// 120px content box and carries the right alignment.
+fn assert_text_align_column_definite_end(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_column_container_size(&mut root, container, "200px", "80px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "120px");
+    assert_style_set(&mut root, item, "height", "20px");
+    assert_style_set(&mut root, item, "text-align", "end");
+    let _text = assert_append_text_to(&mut root, item, "End me");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        120.0,
+        20.0,
+        &format!("{name}: definite-width column item"),
+    );
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Right,
+        "{name}: alignment"
+    );
+    assert_close(
+        text_runs[0].size_px[0],
+        120.0,
+        &format!("{name}: text run fills the content box"),
+    );
+    assert_close(
+        text_runs[0].position_px[0],
+        0.0,
+        &format!("{name}: text left"),
+    );
 }
