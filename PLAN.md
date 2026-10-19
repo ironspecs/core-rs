@@ -219,11 +219,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-414 layout proofs (406 in
+423 layout proofs (415 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after the flex/grid
-spec-surface enumeration); the off-spec registry (19 divergent proofs
-in 18 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after the flex
+composition-axis enumeration); the off-spec registry (22 divergent
+proofs in 19 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -846,6 +846,23 @@ an f32 basis.
   for boundary data — gates on authored input are graceful, registered,
   and pinned. PR 3's mapping-document debate now has its evidence base:
   the target list is these rows.
+
+- **2026-10-19 — the composition axis (Run C): deep hierarchies and
+  stacked features.** The spec-surface matrix proved branches on FLAT
+  trees; Run C enumerated the composition space (content kind × stacked
+  feature × host shape, 33 row-scenarios, no cell skipped) and found
+  three more divergences: `align-items: stretch` distorts replaced
+  images (two rows — the most visible one for real card/media designs),
+  `white-space: nowrap` text floors its auto-min at the widest word
+  instead of the full run (§4.5), and first-child margins are lost at
+  the flex-item subtree boundary (§8.3.1 in composition). The negative
+  results matter as much for the debate: text-align composition is
+  clean (alignment uses RESOLVED widths), deep mixed hierarchies
+  measure correctly through two flex levels with no panics, subtree
+  percentages resolve against the item's content box (the item-level
+  wrong-basis divergence does not propagate), and break-spaces needed
+  only a citation extension. The complaint list now has two axes —
+  spec-surface and composition — both exhausted.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
