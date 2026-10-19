@@ -481,7 +481,14 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // pass (+2 GetMut) alongside its read (+2 Get). Documented cause: record
     // writes in the flex measure fold; the T4a ruling, FLEX_STEP1_EXECUTION.md
     // §10; PLAN.md PR 3 permits re-pin with documented cause.
-    assert_node_counts(&root, 141, 29, 0, "flex relayout");
+    // lane-based flex solve (T4b, −3 Get from 141/29/0): placement no longer
+    // walks the DOM children through `first_child_key`/`next_sibling_key` (one
+    // Get per call over the two-item container) — it iterates the item lane's
+    // DOM-ordered range directly and reads each child's resolution via its
+    // `order_index` back-reference, so the per-item key lookups that backed the
+    // former HashMap re-join are gone. Documented cause: the lane read path
+    // replaces the DOM walk; FLEX_STEP1_EXECUTION.md §4 (four-lane design).
+    assert_node_counts(&root, 138, 29, 0, "flex relayout");
 }
 
 #[test]

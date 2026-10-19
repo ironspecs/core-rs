@@ -24,6 +24,7 @@ use crate::types::{DomBoxModel, DomNode, DomNodeSlotKey};
 
 mod dom_layout_resolver;
 mod flex;
+mod flex_item_lane;
 mod flex_item_source;
 mod flex_line_lane;
 mod flex_order_lane;
@@ -51,6 +52,12 @@ pub use identity_dom_layout_resolver::IdentityDomLayoutResolver;
 pub use measurement_flags::MeasurementFlags;
 pub use measurement_record::MeasurementRecord;
 
+#[allow(unused_imports)]
+pub(crate) use flex::FlexItemView;
+#[allow(unused_imports)]
+pub(crate) use flex_item_lane::{FlexItemLane, FlexItemLaneEntry};
+#[allow(unused_imports)]
+pub(crate) use flex_item_source::FlexItemSource;
 #[allow(unused_imports)]
 pub(crate) use flex_line_lane::{FlexLineEntry, FlexLineLane};
 #[allow(unused_imports)]

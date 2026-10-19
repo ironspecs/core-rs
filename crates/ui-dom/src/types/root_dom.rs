@@ -259,11 +259,13 @@ pub struct RootDom {
     metrics: RootDomMetricTally,
     clock_s: f64,
     style_runtime_revision: u64,
-    /// Per-document, per-update flex layout scratch: the order/line/resolution
-    /// lanes, cleared at the start of each update's layout phase (see
-    /// `LayoutScratch::reset_for_update`). Capacity is kept at the high-water
-    /// mark so the flex solve reaches steady state with zero allocation.
-    layout_scratch: LayoutScratch,
+    /// Per-document, per-update flex layout scratch: the item/order/line/
+    /// resolution lanes, cleared at the start of each update's layout phase
+    /// (see `LayoutScratch::reset_for_update`). Capacity is kept at the
+    /// high-water mark so the flex solve reaches steady state with zero
+    /// allocation. `pub(crate)` because the flex solve (in `domains::layout`)
+    /// reads and writes the lanes during its measurement fold and solve.
+    pub(crate) layout_scratch: LayoutScratch,
 }
 
 impl RootDom {

@@ -11,14 +11,14 @@
 use crate::types::DomNodeSlotKey;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub(super) enum FlexItemSource {
+pub(crate) enum FlexItemSource {
     BlockItem(DomNodeSlotKey),
     #[allow(dead_code)]
     AnonymousInlineGroup(DomNodeSlotKey),
 }
 
 impl FlexItemSource {
-    pub(super) fn key(self) -> DomNodeSlotKey {
+    pub(crate) fn key(self) -> DomNodeSlotKey {
         match self {
             Self::BlockItem(key) | Self::AnonymousInlineGroup(key) => key,
         }

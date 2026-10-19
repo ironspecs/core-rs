@@ -22,8 +22,6 @@
 //!   item generation for inline-level children per CSS Flexbox §4
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs
 
-use std::collections::HashMap;
-
 use crate::domains::style::computed::{
     AlignContentKw, AlignItemsKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw, JustifyContentKw,
     OverflowKw,
@@ -32,12 +30,16 @@ use crate::domains::visitor::inherited_style::InheritedStyleContext;
 use crate::types::dom_node::measure_text_intrinsic_from_content_and_font_size;
 use crate::types::{
     DomBoxModel, DomError, DomIntrinsic, DomNode, DomNodeSlotKey, DomRect, DomTextDirection,
-    RootDom,
+    LaneRange, LayoutScratch, RootDom,
 };
 
 use super::DomLayoutResolver;
 use super::MeasurementRecord;
+use super::flex_item_lane::FlexItemLane;
 use super::flex_item_source::FlexItemSource;
+use super::flex_line_lane::{FlexLineEntry, FlexLineLane};
+use super::flex_order_lane::FlexOrderLaneEntry;
+use super::flex_resolution_lane::FlexResolutionEntry;
 use super::flex_wrap_mode::FlexWrapMode;
 use super::flow::{
     EnteredNodeLayout, FlowSize, InlineFlowState, LayoutContext, auto_content_width_for_exit,
@@ -66,13 +68,13 @@ use crate::types::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FlexAxis {
+pub(crate) enum FlexAxis {
     Horizontal,
     Vertical,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FlexMainAxisAlignment {
+pub(crate) enum FlexMainAxisAlignment {
     Start,
     End,
     FlexStart,
@@ -84,7 +86,7 @@ enum FlexMainAxisAlignment {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FlexCrossAxisAlignment {
+pub(crate) enum FlexCrossAxisAlignment {
     Start,
     End,
     FlexStart,
@@ -144,34 +146,31 @@ struct FlexContainerStyle {
 /// `main_axis`/`cross_axis` died here (dead in production: the container style
 /// answers both axes).
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct FlexItemView {
-    source: FlexItemSource,
-    order: i32,
-    align_self: Option<FlexCrossAxisAlignment>,
-    flex_grow_factor: f32,
-    flex_shrink_factor: f32,
-    flex_base_size_px: f32,
-    hypothetical_main_size_px: f32,
-    automatic_min_main_size_px: f32,
-    min_main_size_px: Option<f32>,
-    max_main_size_px: Option<f32>,
-    main_axis_border_padding_px: f32,
-    outer_hypothetical_main_size_px: f32,
-    measured_cross_size_input_px: f32,
-    margin_main_start_px: f32,
-    margin_main_end_px: f32,
-    margin_cross_start_px: f32,
-    margin_cross_end_px: f32,
+pub(crate) struct FlexItemView {
+    pub(crate) source: FlexItemSource,
+    pub(crate) order: i32,
+    pub(crate) align_self: Option<FlexCrossAxisAlignment>,
+    pub(crate) flex_grow_factor: f32,
+    pub(crate) flex_shrink_factor: f32,
+    pub(crate) flex_base_size_px: f32,
+    pub(crate) hypothetical_main_size_px: f32,
+    pub(crate) automatic_min_main_size_px: f32,
+    pub(crate) min_main_size_px: Option<f32>,
+    pub(crate) max_main_size_px: Option<f32>,
+    pub(crate) main_axis_border_padding_px: f32,
+    pub(crate) outer_hypothetical_main_size_px: f32,
+    pub(crate) measured_cross_size_input_px: f32,
+    pub(crate) margin_main_start_px: f32,
+    pub(crate) margin_main_end_px: f32,
+    pub(crate) margin_cross_start_px: f32,
+    pub(crate) margin_cross_end_px: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct FlexLine {
-    item_sources: Vec<FlexItemSource>,
-    outer_hypothetical_main_size_px: f32,
-    cross_size_px: f32,
-}
-
-#[allow(dead_code)]
+/// The transient resolved-item bundle placement assembles per child from the
+/// lanes (view + resolution + packing offsets). It carries more than a pure
+/// view+resolution join — `main_offset_px` and `cross_offset_px` are the
+/// line/axis packing results the resolve phase computed — so it survives as a
+/// small `Copy` bundle rather than being replaced by bare accessors.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ResolvedFlexItem {
     source: FlexItemSource,
@@ -183,28 +182,26 @@ struct ResolvedFlexItem {
     cross_offset_px: f32,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
+/// The lane-based flex solve for one container: the four lane ranges plus the
+/// container's resolved main/cross sizes. After the measurement fold the sizes
+/// are the measured-container intrinsic sizes (widest line main size, summed
+/// line cross size); `resolve_active_flex_container` overwrites them with the
+/// resolved container sizes.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct FlexContainerSolve {
-    measured_items_in_dom_order: Vec<FlexItemView>,
-    line_collection_items: Vec<FlexItemView>,
-    lines: Vec<FlexLine>,
-    line_cross_sizes_px: Vec<f32>,
-    resolved_items: Vec<ResolvedFlexItem>,
+    item_range: LaneRange,
+    order_range: LaneRange,
+    line_range: LaneRange,
+    resolution_range: LaneRange,
     main_size_px: f32,
     cross_size_px: f32,
 }
 
+/// The placement result: the container's resolved cross size. The former
+/// `resolved_items` vector was dead after placement (written back into the
+/// solve and never read), so it dies here.
 #[derive(Clone, Copy, Debug)]
-struct FlexLineItemResolutionState {
-    measured_item: FlexItemView,
-    resolved_main_size_px: f32,
-    is_frozen: bool,
-}
-
-#[derive(Clone, Debug)]
 struct PlacedFlexChildren {
-    resolved_items: Vec<ResolvedFlexItem>,
     container_cross_size_px: f32,
 }
 
@@ -213,7 +210,6 @@ struct StagedMeasurementRequest {
     child_context: LayoutContext,
     container_style: FlexContainerStyle,
     container_main_size_px: Option<f32>,
-    use_order_modified_sequence: bool,
 }
 
 struct ActiveFlexExitRequest {
@@ -226,13 +222,10 @@ struct ActiveFlexExitRequest {
 }
 
 struct ActiveFlexPlacementRequest<'a> {
-    key: DomNodeSlotKey,
     child_context: &'a LayoutContext,
     container_style: FlexContainerStyle,
-    lines: &'a [FlexLine],
-    line_cross_sizes_px: &'a [f32],
     container_main_size_px: f32,
-    resolved_items: &'a [ResolvedFlexItem],
+    solve: FlexContainerSolve,
 }
 
 struct ActiveFlexChildRelayoutRequest<'a> {
@@ -314,13 +307,13 @@ where
             child_context: child_context.clone(),
             container_style,
             container_main_size_px,
-            use_order_modified_sequence: true,
         },
         resolver,
     )?;
     let resolved_container_main_size_px =
         container_main_size_px.unwrap_or(measured_solve.main_size_px);
     let resolved_solve = resolve_active_flex_container(
+        &mut root_dom.layout_scratch,
         measured_solve,
         container_style,
         resolved_container_main_size_px,
@@ -375,7 +368,6 @@ where
             child_context,
             container_style,
             container_main_size_px,
-            use_order_modified_sequence: true,
         },
         resolver,
     )
@@ -390,45 +382,14 @@ fn build_staged_measurement_solve_from_container<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    let measured_items_in_dom_order = collect_measured_flex_items_in_dom_order(
-        root_dom,
-        tree_size,
-        request.key,
-        &request.child_context,
-        request.container_style,
-        resolver,
-    )?;
-    let line_collection_items = if request.use_order_modified_sequence {
-        order_modified_measured_items(&measured_items_in_dom_order)
-    } else {
-        measured_items_in_dom_order.clone()
-    };
-    let lines = build_measured_flex_lines(
-        &line_collection_items,
-        request.container_style.wrap_mode,
-        request.container_main_size_px,
-        request.container_style.gap_sizes.between_items_px,
-    );
-    Ok(resolve_measured_flex_container(
-        measured_items_in_dom_order,
-        line_collection_items,
-        lines,
-    ))
-}
-
-fn collect_measured_flex_items_in_dom_order<R>(
-    root_dom: &mut RootDom,
-    tree_size: (f32, f32),
-    key: DomNodeSlotKey,
-    child_context: &LayoutContext,
-    container_style: FlexContainerStyle,
-    resolver: &mut R,
-) -> Result<Vec<FlexItemView>, DomError>
-where
-    R: DomLayoutResolver + ?Sized,
-{
-    let mut items = Vec::new();
-    let mut child_key = first_child_key(root_dom, key)?;
+    // The fold claims disjoint item-lane and order-lane ranges for this
+    // container, pushes each child in DOM order (measure → item lane → order
+    // lane → back-fill), then builds lines over the order lane. Nested
+    // containers claim their own disjoint ranges during their own measurement
+    // fold (T3-verified discipline).
+    let item_range_start = root_dom.layout_scratch.items.begin_range();
+    let order_range_start = root_dom.layout_scratch.order.begin_range();
+    let mut child_key = first_child_key(root_dom, request.key)?;
     while let Some(current_child_key) = child_key {
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
         let source = FlexItemSource::BlockItem(current_child_key);
@@ -436,14 +397,52 @@ where
             root_dom,
             tree_size,
             source,
-            child_context,
-            container_style.main_axis,
+            &request.child_context,
+            request.container_style.main_axis,
             resolver,
         )?;
-        items.push(item);
+        let dom_index = root_dom.layout_scratch.items.push(item);
+        root_dom
+            .layout_scratch
+            .order
+            .push_in_order(FlexOrderLaneEntry {
+                dom_index,
+                child_key: current_child_key,
+                order: item.order,
+            });
         child_key = next_child_key;
     }
-    Ok(items)
+    let item_range = root_dom.layout_scratch.items.finish_range(item_range_start);
+    let order_range = root_dom
+        .layout_scratch
+        .order
+        .finish_range(order_range_start);
+    backfill_order_indices(&mut root_dom.layout_scratch, order_range);
+    let line_range = build_measured_flex_lines(
+        &mut root_dom.layout_scratch,
+        order_range,
+        request.container_style.wrap_mode,
+        request.container_main_size_px,
+        request.container_style.gap_sizes.between_items_px,
+    );
+    Ok(resolve_measured_flex_container(
+        &root_dom.layout_scratch,
+        item_range,
+        order_range,
+        line_range,
+    ))
+}
+
+/// After the order lane is fully insertion-sorted, writes each item-lane
+/// entry's `order_index` back-reference to its FINAL order-lane position
+/// (insertion shifts earlier positions on later pushes, so the at-push
+/// position is not the final one).
+fn backfill_order_indices(scratch: &mut LayoutScratch, order_range: LaneRange) {
+    let entries = scratch.order.slice(order_range);
+    for (position, entry) in entries.iter().enumerate() {
+        scratch.items.get_mut(entry.dom_index).order_index = order_range.start
+            + u32::try_from(position).expect("order lane position should fit into u32");
+    }
 }
 
 fn measure_one_flex_item<R>(
@@ -622,6 +621,16 @@ where
     // then `GiveItemsFinalPositionAndSize`/`BuildSpaceForLayout` in
     // flex_layout_algorithm.cc. ui-dom uses its existing entry/exit model for
     // the measuring phase and avoids writing retained layout state here.
+    //
+    // Staged nested measurement claims transient lane ranges during its fold
+    // and resolve; those ranges are truncated back to their entry lengths
+    // after the intrinsic size is computed so the enclosing container's open
+    // item/order ranges stay contiguous (nested containers' transient entries
+    // must not interleave the enclosing container's DOM sequence).
+    let saved_item_len = root_dom.layout_scratch.items.len();
+    let saved_order_len = root_dom.layout_scratch.order.len();
+    let saved_line_len = root_dom.layout_scratch.lines.len();
+    let saved_resolution_len = root_dom.layout_scratch.resolution.len();
     let container_node = node_for_key(root_dom, key)?;
     let container_style = staged_flex_container_style(container_node);
     let entered = enter_node(
@@ -643,13 +652,13 @@ where
             child_context,
             container_style,
             container_main_size_px,
-            use_order_modified_sequence: true,
         },
         resolver,
     )?;
     let resolved_container_main_size_px =
         container_main_size_px.unwrap_or(measured_solve.main_size_px);
     let resolved_solve = resolve_active_flex_container(
+        &mut root_dom.layout_scratch,
         measured_solve,
         container_style,
         resolved_container_main_size_px,
@@ -667,7 +676,7 @@ where
         content_width_px,
         content_width_px,
     );
-    measure_exited_node_flow_size(
+    let flow = measure_exited_node_flow_size(
         root_dom,
         key,
         &entered,
@@ -678,7 +687,15 @@ where
             resolved_solve.main_size_px,
             resolved_solve.cross_size_px,
         ),
-    )
+    )?;
+    root_dom.layout_scratch.items.truncate(saved_item_len);
+    root_dom.layout_scratch.order.truncate(saved_order_len);
+    root_dom.layout_scratch.lines.truncate(saved_line_len);
+    root_dom
+        .layout_scratch
+        .resolution
+        .truncate(saved_resolution_len);
+    Ok(flow)
 }
 
 fn measure_block_node_without_layout_write<R>(
@@ -1592,35 +1609,40 @@ fn entered_container_cross_size(entered: &EnteredNodeLayout, main_axis: FlexAxis
     }
 }
 
-fn order_modified_measured_items(items: &[FlexItemView]) -> Vec<FlexItemView> {
-    let mut ordered_items = items.to_vec();
-    ordered_items.sort_by_key(|item| item.order);
-    ordered_items
-}
-
 fn build_measured_flex_lines(
-    items: &[FlexItemView],
+    scratch: &mut LayoutScratch,
+    order_range: LaneRange,
     wrap_mode: FlexWrapMode,
     container_main_size_px: Option<f32>,
     gap_between_items_px: f32,
-) -> Vec<FlexLine> {
+) -> LaneRange {
     // CSS Flexbox 9.2 (#algo-line-breaking): collect items into lines by
     // adding each item's outer hypothetical main size plus the inter-item
     // gap and breaking when the line would exceed the container's inner
     // main size. This is the same greedy line break as Blink's
     // `flex_line_breaker.cc` and Gecko's line-building loop in
     // nsFlexContainerFrame.cpp (`GenerateFlexLines`).
-    if items.is_empty() {
-        return Vec::new();
+    let order_entries = scratch.order.slice(order_range);
+    let items = &scratch.items;
+    let line_range_start = scratch.lines.begin_range();
+    if order_entries.is_empty() {
+        return scratch.lines.finish_range(line_range_start);
     }
     if !wrap_mode.is_wrapping() || container_main_size_px.is_none() {
-        return vec![build_measured_flex_line(items, gap_between_items_px)];
+        push_measured_flex_line(
+            items,
+            order_entries,
+            order_range.start,
+            gap_between_items_px,
+            &mut scratch.lines,
+        );
+        return scratch.lines.finish_range(line_range_start);
     }
     let line_break_length_px = container_main_size_px.expect("line break length should exist");
-    let mut lines = Vec::new();
     let mut line_start_index = 0usize;
-    let mut line_outer_main_size_px = 0.0;
-    for (index, item) in items.iter().enumerate() {
+    let mut line_outer_main_size_px: f32 = 0.0;
+    for (index, entry) in order_entries.iter().enumerate() {
+        let item = items.get(entry.dom_index).view;
         let gap_before_item_px = if line_outer_main_size_px == 0.0 {
             0.0
         } else {
@@ -1629,122 +1651,149 @@ fn build_measured_flex_lines(
         let next_outer_main_size_px =
             line_outer_main_size_px + gap_before_item_px + item.outer_hypothetical_main_size_px;
         if line_outer_main_size_px > 0.0 && next_outer_main_size_px > line_break_length_px {
-            lines.push(build_measured_flex_line(
-                &items[line_start_index..index],
+            push_measured_flex_line(
+                items,
+                &order_entries[line_start_index..index],
+                order_range.start
+                    + u32::try_from(line_start_index)
+                        .expect("line start index should fit into u32"),
                 gap_between_items_px,
-            ));
+                &mut scratch.lines,
+            );
             line_start_index = index;
             line_outer_main_size_px = item.outer_hypothetical_main_size_px;
             continue;
         }
         line_outer_main_size_px += gap_before_item_px + item.outer_hypothetical_main_size_px;
     }
-    lines.push(build_measured_flex_line(
-        &items[line_start_index..],
+    push_measured_flex_line(
+        items,
+        &order_entries[line_start_index..],
+        order_range.start
+            + u32::try_from(line_start_index).expect("line start index should fit into u32"),
         gap_between_items_px,
-    ));
+        &mut scratch.lines,
+    );
+    let line_range = scratch.lines.finish_range(line_range_start);
     if wrap_mode.is_cross_reversed() {
-        lines.reverse();
+        scratch.lines.reverse_range(line_range);
     }
-    lines
+    line_range
 }
 
-fn build_measured_flex_line(items: &[FlexItemView], gap_between_items_px: f32) -> FlexLine {
-    let mut line = FlexLine {
-        item_sources: Vec::with_capacity(items.len()),
-        outer_hypothetical_main_size_px: 0.0,
-        cross_size_px: 0.0,
-    };
-    for (index, item) in items.iter().enumerate() {
+fn push_measured_flex_line(
+    items: &FlexItemLane,
+    order_slice: &[FlexOrderLaneEntry],
+    first_order_index: u32,
+    gap_between_items_px: f32,
+    lines: &mut FlexLineLane,
+) {
+    let mut outer_hypothetical_main_size_px: f32 = 0.0;
+    let mut cross_size_px: f32 = 0.0;
+    for (index, entry) in order_slice.iter().enumerate() {
         if index > 0 {
-            line.outer_hypothetical_main_size_px += gap_between_items_px;
+            outer_hypothetical_main_size_px += gap_between_items_px;
         }
-        line.item_sources.push(item.source);
-        line.outer_hypothetical_main_size_px += item.outer_hypothetical_main_size_px;
-        line.cross_size_px = line.cross_size_px.max(
+        let item = items.get(entry.dom_index).view;
+        outer_hypothetical_main_size_px += item.outer_hypothetical_main_size_px;
+        cross_size_px = cross_size_px.max(
             item.measured_cross_size_input_px
                 + item.margin_cross_start_px
                 + item.margin_cross_end_px,
         );
     }
-    line
+    lines.push(FlexLineEntry {
+        first_order_index,
+        item_count: u32::try_from(order_slice.len())
+            .expect("flex line item count should fit into u32"),
+        outer_hypothetical_main_size_px,
+        cross_size_px,
+        cross_offset_px: 0.0,
+        resolved_cross_size_px: 0.0,
+    });
 }
 
 fn resolve_measured_flex_container(
-    measured_items_in_dom_order: Vec<FlexItemView>,
-    line_collection_items: Vec<FlexItemView>,
-    lines: Vec<FlexLine>,
+    scratch: &LayoutScratch,
+    item_range: LaneRange,
+    order_range: LaneRange,
+    line_range: LaneRange,
 ) -> FlexContainerSolve {
     let mut main_size_px: f32 = 0.0;
     let mut cross_size_px: f32 = 0.0;
-    for line in &lines {
+    for line in scratch.lines.slice(line_range) {
         main_size_px = main_size_px.max(line.outer_hypothetical_main_size_px);
         cross_size_px += line.cross_size_px;
     }
     FlexContainerSolve {
-        measured_items_in_dom_order,
-        line_collection_items,
-        lines,
-        line_cross_sizes_px: Vec::new(),
-        resolved_items: Vec::new(),
+        item_range,
+        order_range,
+        line_range,
+        resolution_range: LaneRange::default(),
         main_size_px,
         cross_size_px,
     }
 }
 
 fn resolve_active_flex_container(
+    scratch: &mut LayoutScratch,
     mut measured_solve: FlexContainerSolve,
     container_style: FlexContainerStyle,
     container_main_size_px: f32,
     container_cross_size_px: Option<f32>,
 ) -> FlexContainerSolve {
-    assert_eq!(
-        flex_line_item_count(&measured_solve.lines),
-        measured_solve.line_collection_items.len(),
-        "active flex lines should cover every order-modified measured item exactly once",
-    );
-    let line_cross_sizes_px = resolved_line_cross_sizes(
-        &measured_solve.lines,
+    let order_range = measured_solve.order_range;
+    let line_range = measured_solve.line_range;
+    // Claim the resolution range parallel to the order range, then resolve the
+    // line cross sizes and offsets into the line lane before the §9.7 loop.
+    let resolution_range = claim_resolution_range(scratch, order_range);
+    measured_solve.resolution_range = resolution_range;
+    resolved_line_cross_sizes(
+        scratch,
+        line_range,
         container_style,
         container_cross_size_px,
     );
-    let line_cross_offsets_px = line_cross_offsets_px(
-        &line_cross_sizes_px,
-        container_style.gap_sizes.between_lines_px,
+    line_cross_offsets_px(
+        scratch,
+        line_range,
         container_style,
         container_cross_size_px,
     );
-    let measured_items_by_child_key =
-        measured_items_by_child_key(&measured_solve.line_collection_items);
-    let mut resolved_items = Vec::with_capacity(measured_solve.line_collection_items.len());
-    for (line_index, line) in measured_solve.lines.iter().enumerate() {
-        let line_items = measured_items_for_line(line, &measured_items_by_child_key);
-        let mut resolved_line_items = resolve_flex_line_items(
-            &line_items,
-            container_main_size_px,
-            container_style,
-            container_style.gap_sizes.between_items_px,
-        );
-        for resolved_item in &mut resolved_line_items {
-            resolved_item.cross_offset_px = line_cross_offsets_px[line_index];
-        }
-        resolved_items.extend(resolved_line_items);
-    }
-    measured_solve.line_cross_sizes_px = line_cross_sizes_px;
-    measured_solve.resolved_items = resolved_items;
+    resolve_flex_lines(
+        scratch,
+        order_range,
+        resolution_range,
+        line_range,
+        container_main_size_px,
+        container_style,
+    );
     measured_solve.main_size_px = container_main_size_px;
-    measured_solve.cross_size_px = total_line_cross_size_px(
-        &measured_solve.line_cross_sizes_px,
+    measured_solve.cross_size_px = total_line_cross_size_px_from_lane(
+        scratch,
+        line_range,
         container_style.gap_sizes.between_lines_px,
     );
     measured_solve
 }
 
+fn claim_resolution_range(scratch: &mut LayoutScratch, order_range: LaneRange) -> LaneRange {
+    let start = scratch.resolution.begin_range();
+    for _ in 0..order_range.len {
+        scratch.resolution.push(FlexResolutionEntry {
+            resolved_main_size_px: 0.0,
+            is_frozen: false,
+        });
+    }
+    scratch.resolution.finish_range(start)
+}
+
 fn resolved_line_cross_sizes(
-    lines: &[FlexLine],
+    scratch: &mut LayoutScratch,
+    line_range: LaneRange,
     container_style: FlexContainerStyle,
     container_cross_size_px: Option<f32>,
-) -> Vec<f32> {
+) {
     // CSS Flexbox 9.4: single-line containers always give their one line the
     // container's inner cross size (#algo-cross-line); multi-line containers
     // with `align-content: stretch` distribute the leftover free space
@@ -1754,76 +1803,75 @@ fn resolved_line_cross_sizes(
     // flex_layout_algorithm.cc both compute
     // `content_size - sum(line cross sizes) - gap * (line count - 1)`
     // before stretching.
+    let lines = scratch.lines.slice_mut(line_range);
     if !container_style.wrap_mode.is_wrapping()
         && let Some(container_cross_size_px) = container_cross_size_px
     {
-        return lines.iter().map(|_| container_cross_size_px).collect();
+        for line in lines.iter_mut() {
+            line.resolved_cross_size_px = container_cross_size_px;
+        }
+        return;
     }
-    let mut line_cross_sizes_px = lines
-        .iter()
-        .map(|line| line.cross_size_px)
-        .collect::<Vec<_>>();
+    for line in lines.iter_mut() {
+        line.resolved_cross_size_px = line.cross_size_px;
+    }
     if !container_style.wrap_mode.is_wrapping()
         || resolved_line_cross_axis_alignment(container_style.align_content, container_style)
             != FlexLineCrossAxisAlignment::Stretch
     {
-        return line_cross_sizes_px;
+        return;
     }
     let Some(container_cross_size_px) = container_cross_size_px else {
-        return line_cross_sizes_px;
+        return;
     };
-    if line_cross_sizes_px.is_empty() {
-        return line_cross_sizes_px;
+    if lines.is_empty() {
+        return;
     }
     let remaining_cross_space_px = container_cross_size_px
-        - total_line_cross_size_px(
-            &line_cross_sizes_px,
-            container_style.gap_sizes.between_lines_px,
-        );
+        - total_line_cross_size_px(lines, container_style.gap_sizes.between_lines_px);
     if remaining_cross_space_px <= 0.0 {
-        return line_cross_sizes_px;
+        return;
     }
     let extra_cross_size_per_line_px =
-        remaining_cross_space_px / non_negative_f32_from_usize(line_cross_sizes_px.len());
-    for line_cross_size_px in &mut line_cross_sizes_px {
-        *line_cross_size_px += extra_cross_size_per_line_px;
+        remaining_cross_space_px / non_negative_f32_from_usize(lines.len());
+    for line in lines.iter_mut() {
+        line.resolved_cross_size_px += extra_cross_size_per_line_px;
     }
-    line_cross_sizes_px
 }
 
 fn line_cross_offsets_px(
-    line_cross_sizes_px: &[f32],
-    gap_between_lines_px: f32,
+    scratch: &mut LayoutScratch,
+    line_range: LaneRange,
     container_style: FlexContainerStyle,
     container_cross_size_px: Option<f32>,
-) -> Vec<f32> {
+) {
+    let lines = scratch.lines.slice_mut(line_range);
     let remaining_cross_space_px = remaining_cross_axis_line_pack_space_px(
-        line_cross_sizes_px,
-        gap_between_lines_px,
+        lines,
+        container_style.gap_sizes.between_lines_px,
         container_cross_size_px,
         container_style.wrap_mode,
     );
     let mut next_line_cross_offset_px = initial_cross_axis_line_pack_offset_px(
         container_style,
         remaining_cross_space_px,
-        line_cross_sizes_px.len(),
+        lines.len(),
     );
     let extra_space_between_lines_px = extra_cross_axis_space_between_lines_px(
         resolved_line_cross_axis_alignment(container_style.align_content, container_style),
         remaining_cross_space_px,
-        line_cross_sizes_px.len(),
+        lines.len(),
     );
-    let mut offsets_px = Vec::with_capacity(line_cross_sizes_px.len());
-    for line_cross_size_px in line_cross_sizes_px {
-        offsets_px.push(next_line_cross_offset_px);
-        next_line_cross_offset_px +=
-            line_cross_size_px + gap_between_lines_px + extra_space_between_lines_px;
+    for line in lines.iter_mut() {
+        line.cross_offset_px = next_line_cross_offset_px;
+        next_line_cross_offset_px += line.resolved_cross_size_px
+            + container_style.gap_sizes.between_lines_px
+            + extra_space_between_lines_px;
     }
-    offsets_px
 }
 
 fn remaining_cross_axis_line_pack_space_px(
-    line_cross_sizes_px: &[f32],
+    lines: &[FlexLineEntry],
     gap_between_lines_px: f32,
     container_cross_size_px: Option<f32>,
     wrap_mode: FlexWrapMode,
@@ -1834,8 +1882,7 @@ fn remaining_cross_axis_line_pack_space_px(
     let Some(container_cross_size_px) = container_cross_size_px else {
         return 0.0;
     };
-    (container_cross_size_px - total_line_cross_size_px(line_cross_sizes_px, gap_between_lines_px))
-        .max(0.0)
+    (container_cross_size_px - total_line_cross_size_px(lines, gap_between_lines_px)).max(0.0)
 }
 
 fn initial_cross_axis_line_pack_offset_px(
@@ -1921,107 +1968,119 @@ fn extra_cross_axis_space_between_lines_px(
     }
 }
 
-fn total_line_cross_size_px(line_cross_sizes_px: &[f32], gap_between_lines_px: f32) -> f32 {
-    let gap_count = flex_line_gap_count(line_cross_sizes_px.len());
+fn total_line_cross_size_px(lines: &[FlexLineEntry], gap_between_lines_px: f32) -> f32 {
+    let gap_count = flex_line_gap_count(lines.len());
     let gap_total_px = gap_between_lines_px * non_negative_f32_from_usize(gap_count);
-    non_negative_flex_axis_size_px(line_cross_sizes_px.iter().sum::<f32>() + gap_total_px)
+    non_negative_flex_axis_size_px(
+        lines
+            .iter()
+            .map(|line| line.resolved_cross_size_px)
+            .sum::<f32>()
+            + gap_total_px,
+    )
 }
 
-fn measured_items_by_child_key(
-    measured_items: &[FlexItemView],
-) -> HashMap<DomNodeSlotKey, FlexItemView> {
-    let item_map = measured_items
-        .iter()
-        .copied()
-        .map(|measured_item| (measured_item.source.key(), measured_item))
-        .collect::<HashMap<_, _>>();
-    assert_eq!(
-        item_map.len(),
-        measured_items.len(),
-        "active flex solve should keep one unique measured item per DOM child",
-    );
-    item_map
+fn total_line_cross_size_px_from_lane(
+    scratch: &LayoutScratch,
+    line_range: LaneRange,
+    gap_between_lines_px: f32,
+) -> f32 {
+    total_line_cross_size_px(scratch.lines.slice(line_range), gap_between_lines_px)
 }
 
-fn measured_items_for_line(
-    line: &FlexLine,
-    measured_items_by_child_key: &HashMap<DomNodeSlotKey, FlexItemView>,
-) -> Vec<FlexItemView> {
-    line.item_sources
-        .iter()
-        .map(|source| {
-            measured_items_by_child_key
-                .get(&source.key())
-                .copied()
-                .expect("active flex line should only reference measured child items")
-        })
-        .collect()
-}
-
-fn resolve_flex_line_items(
-    items: &[FlexItemView],
+fn resolve_flex_lines(
+    scratch: &mut LayoutScratch,
+    order_range: LaneRange,
+    resolution_range: LaneRange,
+    line_range: LaneRange,
     container_main_size_px: f32,
     container_style: FlexContainerStyle,
-    gap_between_items_px: f32,
-) -> Vec<ResolvedFlexItem> {
-    if items.is_empty() {
-        return Vec::new();
+) {
+    let order_entries = scratch.order.slice(order_range);
+    let line_entries = scratch.lines.slice(line_range);
+    let resolution_entries = scratch.resolution.slice_mut(resolution_range);
+    for (line_offset, line) in line_entries.iter().enumerate() {
+        let line_start = usize::try_from(line.first_order_index - order_range.start)
+            .expect("line first order index should fall within the container's order range");
+        let item_count =
+            usize::try_from(line.item_count).expect("line item count should fit into usize");
+        let line_order = &order_entries[line_start..line_start + item_count];
+        let line_resolution = &mut resolution_entries[line_start..line_start + item_count];
+        resolve_flex_line_item_resolution_states(
+            line_order,
+            &scratch.items,
+            line_resolution,
+            container_main_size_px,
+            container_style.gap_sizes.between_items_px,
+        );
+        assign_flex_line_main_offsets(
+            line_order,
+            &mut scratch.items,
+            line_resolution,
+            container_main_size_px,
+            container_style,
+            line_range.start + u32::try_from(line_offset).expect("line offset should fit into u32"),
+        );
     }
-    let resolution_states = resolve_flex_line_item_resolution_states(
-        items,
-        container_main_size_px,
-        gap_between_items_px,
-    );
+}
+
+fn assign_flex_line_main_offsets(
+    line_order: &[FlexOrderLaneEntry],
+    items: &mut FlexItemLane,
+    line_resolution: &[FlexResolutionEntry],
+    container_main_size_px: f32,
+    container_style: FlexContainerStyle,
+    line_index: u32,
+) {
+    if line_order.is_empty() {
+        return;
+    }
+    let gap_between_items_px = container_style.gap_sizes.between_items_px;
     let line_main_size_px =
-        resolved_flex_line_main_size_px(&resolution_states, gap_between_items_px);
+        resolved_flex_line_main_size_px(line_order, items, line_resolution, gap_between_items_px);
     let remaining_main_space_px = container_main_size_px - line_main_size_px;
     let mut main_offset_px = initial_main_axis_alignment_offset_px(
         container_style,
         remaining_main_space_px,
-        items.len(),
+        line_order.len(),
     );
     let extra_space_between_items_px = extra_main_axis_space_between_items_px(
         resolved_main_axis_alignment(container_style.justify_content, container_style),
         remaining_main_space_px,
-        items.len(),
+        line_order.len(),
     );
-    let mut resolved_items = Vec::with_capacity(resolution_states.len());
-    for (index, resolution_state) in resolution_states.into_iter().enumerate() {
-        resolved_items.push(ResolvedFlexItem {
-            source: resolution_state.measured_item.source,
-            align_self: resolution_state.measured_item.align_self,
-            resolved_main_size_px: resolution_state.resolved_main_size_px,
-            main_axis_border_padding_px: resolution_state.measured_item.main_axis_border_padding_px,
-            resolved_cross_size_px: resolution_state.measured_item.measured_cross_size_input_px,
-            main_offset_px,
-            cross_offset_px: 0.0,
-        });
-        main_offset_px += resolution_state.measured_item.margin_main_start_px
-            + resolution_state.resolved_main_size_px
-            + resolution_state.measured_item.margin_main_end_px;
-        if index + 1 < items.len() {
+    for (index, order_entry) in line_order.iter().enumerate() {
+        let view = items.get(order_entry.dom_index).view;
+        let resolved_main_size_px = line_resolution[index].resolved_main_size_px;
+        let entry = items.get_mut(order_entry.dom_index);
+        entry.main_offset_px = main_offset_px;
+        entry.line_index = line_index;
+        main_offset_px +=
+            view.margin_main_start_px + resolved_main_size_px + view.margin_main_end_px;
+        if index + 1 < line_order.len() {
             main_offset_px += gap_between_items_px + extra_space_between_items_px;
         }
     }
-    resolved_items
 }
 
 fn resolved_flex_line_main_size_px(
-    resolution_states: &[FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &[FlexResolutionEntry],
     gap_between_items_px: f32,
 ) -> f32 {
-    let gap_count = flex_line_gap_count(resolution_states.len());
-    let resolved_item_main_size_px = resolution_states
+    let gap_count = flex_line_gap_count(line_order.len());
+    let resolved_item_main_size_px = line_order
         .iter()
-        .map(flex_line_state_outer_resolved_main_size)
+        .enumerate()
+        .map(|(index, order_entry)| {
+            let view = items.get(order_entry.dom_index).view;
+            view.margin_main_start_px
+                + line_resolution[index].resolved_main_size_px
+                + view.margin_main_end_px
+        })
         .sum::<f32>();
     resolved_item_main_size_px + gap_between_items_px * non_negative_f32_from_usize(gap_count)
-}
-
-fn flex_line_state_outer_resolved_main_size(state: &FlexLineItemResolutionState) -> f32 {
-    state.measured_item.margin_main_start_px
-        + state.resolved_main_size_px
-        + state.measured_item.margin_main_end_px
 }
 
 fn initial_main_axis_alignment_offset_px(
@@ -2090,10 +2149,12 @@ fn extra_main_axis_space_between_items_px(
 }
 
 fn resolve_flex_line_item_resolution_states(
-    items: &[FlexItemView],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &mut [FlexResolutionEntry],
     container_main_size_px: f32,
     gap_between_items_px: f32,
-) -> Vec<FlexLineItemResolutionState> {
+) {
     // CSS Flexbox 9.7 (#resolve-flexible-lengths): freeze inflexible items,
     // then loop the free-space distribution (scaled by grow factors, or by
     // shrink factors times base size) with min/max/auto-min violation
@@ -2101,80 +2162,99 @@ fn resolve_flex_line_item_resolution_states(
     // in `LineFlexer::ResolveFlexibleLengths`/`FreezeItems` (line_flexer.cc)
     // and Gecko in `FlexLine::ResolveFlexibleLengths`
     // (nsFlexContainerFrame.cpp).
-    let is_using_flex_grow =
-        flex_line_uses_flex_grow(items, container_main_size_px, gap_between_items_px);
-    let mut resolution_states = initial_flex_line_item_resolution_states(items);
-    freeze_flex_line_inflexible_items(&mut resolution_states, is_using_flex_grow);
+    let is_using_flex_grow = flex_line_uses_flex_grow(
+        line_order,
+        items,
+        container_main_size_px,
+        gap_between_items_px,
+    );
+    initialize_flex_line_resolution(line_order, items, line_resolution);
+    freeze_flex_line_inflexible_items(line_order, items, line_resolution, is_using_flex_grow);
     let initial_free_space_px = remaining_flex_line_free_space(
-        &resolution_states,
+        line_order,
+        items,
+        line_resolution,
         container_main_size_px,
         gap_between_items_px,
     );
     loop {
-        freeze_flex_line_inflexible_items(&mut resolution_states, is_using_flex_grow);
-        if resolution_states.iter().all(|state| state.is_frozen) {
-            return resolution_states;
+        freeze_flex_line_inflexible_items(line_order, items, line_resolution, is_using_flex_grow);
+        if line_resolution.iter().all(|entry| entry.is_frozen) {
+            return;
         }
         let remaining_free_space_px = remaining_flex_line_free_space(
-            &resolution_states,
+            line_order,
+            items,
+            line_resolution,
             container_main_size_px,
             gap_between_items_px,
         );
         let remaining_free_space_px = remaining_flex_line_free_space_limited_by_factor_sum(
-            &resolution_states,
+            line_order,
+            items,
+            line_resolution,
             initial_free_space_px,
             remaining_free_space_px,
             is_using_flex_grow,
         );
         if !distribute_flex_line_free_space(
-            &mut resolution_states,
+            line_order,
+            items,
+            line_resolution,
             remaining_free_space_px,
             is_using_flex_grow,
         ) {
-            return resolution_states;
+            return;
         }
-        if freeze_flex_line_main_size_violations(&mut resolution_states) {
+        if freeze_flex_line_main_size_violations(line_order, items, line_resolution) {
             continue;
         }
-        freeze_flex_line_unfrozen_items(&mut resolution_states);
+        freeze_flex_line_unfrozen_items(line_resolution);
     }
 }
 
 fn flex_line_uses_flex_grow(
-    items: &[FlexItemView],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
     container_main_size_px: f32,
     gap_between_items_px: f32,
 ) -> bool {
-    let total_outer_hypothetical_main_size_px: f32 = items
+    let total_outer_hypothetical_main_size_px: f32 = line_order
         .iter()
-        .map(|item| item.outer_hypothetical_main_size_px)
+        .map(|entry| {
+            items
+                .get(entry.dom_index)
+                .view
+                .outer_hypothetical_main_size_px
+        })
         .sum();
     total_outer_hypothetical_main_size_px
-        + flex_line_gap_total_px(items.len(), gap_between_items_px)
+        + flex_line_gap_total_px(line_order.len(), gap_between_items_px)
         < container_main_size_px
 }
 
-fn initial_flex_line_item_resolution_states(
-    items: &[FlexItemView],
-) -> Vec<FlexLineItemResolutionState> {
-    items
-        .iter()
-        .copied()
-        .map(|measured_item| FlexLineItemResolutionState {
-            measured_item,
-            resolved_main_size_px: measured_item.flex_base_size_px,
-            is_frozen: false,
-        })
-        .collect()
+fn initialize_flex_line_resolution(
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &mut [FlexResolutionEntry],
+) {
+    for (entry, resolution) in line_order.iter().zip(line_resolution.iter_mut()) {
+        let item = items.get(entry.dom_index).view;
+        resolution.resolved_main_size_px = item.flex_base_size_px;
+        resolution.is_frozen = false;
+    }
 }
 
 fn freeze_flex_line_inflexible_items(
-    resolution_states: &mut [FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &mut [FlexResolutionEntry],
     is_using_flex_grow: bool,
 ) {
-    for resolution_state in resolution_states {
-        if flex_line_item_is_inflexible(resolution_state.measured_item, is_using_flex_grow) {
-            resolution_state.is_frozen = true;
+    for (entry, resolution) in line_order.iter().zip(line_resolution.iter_mut()) {
+        let item = items.get(entry.dom_index).view;
+        if flex_line_item_is_inflexible(item, is_using_flex_grow) {
+            resolution.is_frozen = true;
         }
     }
 }
@@ -2193,26 +2273,28 @@ fn flex_line_item_is_inflexible(item: FlexItemView, is_using_flex_grow: bool) ->
 }
 
 fn remaining_flex_line_free_space(
-    resolution_states: &[FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &[FlexResolutionEntry],
     container_main_size_px: f32,
     gap_between_items_px: f32,
 ) -> f32 {
-    let total_resolved_main_size_px: f32 = resolution_states
+    let total_resolved_main_size_px: f32 = line_order
         .iter()
-        .map(flex_line_state_main_size_for_free_space)
+        .zip(line_resolution.iter())
+        .map(|(entry, resolution)| {
+            let item = items.get(entry.dom_index).view;
+            let main_size_px = if resolution.is_frozen {
+                resolution.resolved_main_size_px
+            } else {
+                item.flex_base_size_px
+            };
+            main_size_px + item.margin_main_start_px + item.margin_main_end_px
+        })
         .sum();
     container_main_size_px
         - total_resolved_main_size_px
-        - flex_line_gap_total_px(resolution_states.len(), gap_between_items_px)
-}
-
-fn flex_line_state_main_size_for_free_space(state: &FlexLineItemResolutionState) -> f32 {
-    let main_size_px = if state.is_frozen {
-        state.resolved_main_size_px
-    } else {
-        state.measured_item.flex_base_size_px
-    };
-    main_size_px + state.measured_item.margin_main_start_px + state.measured_item.margin_main_end_px
+        - flex_line_gap_total_px(line_order.len(), gap_between_items_px)
 }
 
 fn flex_line_gap_total_px(item_count: usize, gap_between_items_px: f32) -> f32 {
@@ -2220,33 +2302,39 @@ fn flex_line_gap_total_px(item_count: usize, gap_between_items_px: f32) -> f32 {
 }
 
 fn distribute_flex_line_free_space(
-    resolution_states: &mut [FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &mut [FlexResolutionEntry],
     remaining_free_space_px: f32,
     is_using_flex_grow: bool,
 ) -> bool {
-    let flex_factor_sum = unfrozen_flex_line_factor_sum(resolution_states, is_using_flex_grow);
+    let flex_factor_sum =
+        unfrozen_flex_line_factor_sum(line_order, items, line_resolution, is_using_flex_grow);
     if flex_factor_sum <= 0.0 {
         return false;
     }
-    for resolution_state in resolution_states {
-        if resolution_state.is_frozen {
+    for (entry, resolution) in line_order.iter().zip(line_resolution.iter_mut()) {
+        if resolution.is_frozen {
             continue;
         }
-        let flex_factor = flex_line_flex_factor(resolution_state.measured_item, is_using_flex_grow);
+        let item = items.get(entry.dom_index).view;
+        let flex_factor = flex_line_flex_factor(item, is_using_flex_grow);
         let size_delta_px = remaining_free_space_px * (flex_factor / flex_factor_sum);
-        resolution_state.resolved_main_size_px =
-            resolution_state.measured_item.flex_base_size_px + size_delta_px;
+        resolution.resolved_main_size_px = item.flex_base_size_px + size_delta_px;
     }
     true
 }
 
 fn remaining_flex_line_free_space_limited_by_factor_sum(
-    resolution_states: &[FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &[FlexResolutionEntry],
     initial_free_space_px: f32,
     remaining_free_space_px: f32,
     is_using_flex_grow: bool,
 ) -> f32 {
-    let flex_factor_sum = unfrozen_raw_flex_line_factor_sum(resolution_states, is_using_flex_grow);
+    let flex_factor_sum =
+        unfrozen_raw_flex_line_factor_sum(line_order, items, line_resolution, is_using_flex_grow);
     if !(0.0..1.0).contains(&flex_factor_sum) {
         return remaining_free_space_px;
     }
@@ -2258,22 +2346,23 @@ fn remaining_flex_line_free_space_limited_by_factor_sum(
 }
 
 fn freeze_flex_line_main_size_violations(
-    resolution_states: &mut [FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &mut [FlexResolutionEntry],
 ) -> bool {
     let mut froze_violation = false;
-    for resolution_state in resolution_states {
-        if resolution_state.is_frozen {
+    for (entry, resolution) in line_order.iter().zip(line_resolution.iter_mut()) {
+        if resolution.is_frozen {
             continue;
         }
-        let clamped_main_size_px = clamped_main_size_after_flex_constraints(
-            resolution_state.measured_item,
-            resolution_state.resolved_main_size_px,
-        );
-        if flex_axis_sizes_match(clamped_main_size_px, resolution_state.resolved_main_size_px) {
+        let item = items.get(entry.dom_index).view;
+        let clamped_main_size_px =
+            clamped_main_size_after_flex_constraints(item, resolution.resolved_main_size_px);
+        if flex_axis_sizes_match(clamped_main_size_px, resolution.resolved_main_size_px) {
             continue;
         }
-        resolution_state.resolved_main_size_px = clamped_main_size_px;
-        resolution_state.is_frozen = true;
+        resolution.resolved_main_size_px = clamped_main_size_px;
+        resolution.is_frozen = true;
         froze_violation = true;
     }
     froze_violation
@@ -2293,24 +2382,34 @@ fn clamped_main_size_after_flex_constraints(item: FlexItemView, resolved_main_si
 }
 
 fn unfrozen_flex_line_factor_sum(
-    resolution_states: &[FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &[FlexResolutionEntry],
     is_using_flex_grow: bool,
 ) -> f32 {
-    resolution_states
+    line_order
         .iter()
-        .filter(|state| !state.is_frozen)
-        .map(|state| flex_line_flex_factor(state.measured_item, is_using_flex_grow))
+        .zip(line_resolution.iter())
+        .filter(|(_, resolution)| !resolution.is_frozen)
+        .map(|(entry, _)| {
+            flex_line_flex_factor(items.get(entry.dom_index).view, is_using_flex_grow)
+        })
         .sum()
 }
 
 fn unfrozen_raw_flex_line_factor_sum(
-    resolution_states: &[FlexLineItemResolutionState],
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &[FlexResolutionEntry],
     is_using_flex_grow: bool,
 ) -> f32 {
-    resolution_states
+    line_order
         .iter()
-        .filter(|state| !state.is_frozen)
-        .map(|state| raw_flex_line_flex_factor(state.measured_item, is_using_flex_grow))
+        .zip(line_resolution.iter())
+        .filter(|(_, resolution)| !resolution.is_frozen)
+        .map(|(entry, _)| {
+            raw_flex_line_flex_factor(items.get(entry.dom_index).view, is_using_flex_grow)
+        })
         .sum()
 }
 
@@ -2328,9 +2427,9 @@ fn flex_line_flex_factor(item: FlexItemView, is_using_flex_grow: bool) -> f32 {
     item.flex_shrink_factor * item.flex_base_size_px
 }
 
-fn freeze_flex_line_unfrozen_items(resolution_states: &mut [FlexLineItemResolutionState]) {
-    for resolution_state in resolution_states {
-        resolution_state.is_frozen = true;
+fn freeze_flex_line_unfrozen_items(line_resolution: &mut [FlexResolutionEntry]) {
+    for resolution in line_resolution {
+        resolution.is_frozen = true;
     }
 }
 
@@ -2347,13 +2446,10 @@ where
         root_dom,
         tree_size,
         &ActiveFlexPlacementRequest {
-            key: request.key,
             child_context: &request.child_context,
             container_style: request.container_style,
-            lines: &request.solve.lines,
-            line_cross_sizes_px: &request.solve.line_cross_sizes_px,
             container_main_size_px: request.solve.main_size_px,
-            resolved_items: &request.solve.resolved_items,
+            solve: request.solve,
         },
         resolver,
     )?;
@@ -2390,7 +2486,6 @@ fn flex_container_solve_with_placed_active_flex_children(
     mut solve: FlexContainerSolve,
     placed_children: PlacedFlexChildren,
 ) -> FlexContainerSolve {
-    solve.resolved_items = placed_children.resolved_items;
     solve.cross_size_px = placed_children.container_cross_size_px;
     solve
 }
@@ -2404,65 +2499,66 @@ fn place_active_flex_resolved_children<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    let resolved_items_by_child_key = resolved_items_by_child_key(request.resolved_items);
-    let line_index_by_child_key = line_index_by_child_key(request.lines);
-    let mut child_key = first_child_key(root_dom, request.key)?;
-    let mut placed_line_cross_sizes_px: Vec<f32> = vec![0.0; request.lines.len()];
+    let solve = request.solve;
+    let line_count = root_dom.layout_scratch.lines.slice(solve.line_range).len();
+    let mut placed_line_cross_sizes_px: Vec<f32> = vec![0.0; line_count];
     let mut placed_item_count = 0usize;
-    let mut placed_resolved_items = Vec::with_capacity(request.resolved_items.len());
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let resolved_item = resolved_items_by_child_key
-            .get(&current_child_key)
-            .copied()
-            .expect("active flex placement should keep one resolved item per DOM child");
-        let line_index = line_index_by_child_key
-            .get(&current_child_key)
-            .copied()
-            .expect("active flex placement should keep one line index per DOM child");
+    for dom_index in solve.item_range.start..solve.item_range.start + solve.item_range.len {
+        let item_entry = *root_dom.layout_scratch.items.get(dom_index);
+        let view = item_entry.view;
+        let resolved_main_size_px = root_dom
+            .layout_scratch
+            .resolution
+            .get(item_entry.order_index)
+            .resolved_main_size_px;
+        let line = *root_dom.layout_scratch.lines.get(item_entry.line_index);
+        let resolved_item = ResolvedFlexItem {
+            source: view.source,
+            align_self: view.align_self,
+            resolved_main_size_px,
+            main_axis_border_padding_px: view.main_axis_border_padding_px,
+            resolved_cross_size_px: view.measured_cross_size_input_px,
+            main_offset_px: item_entry.main_offset_px,
+            cross_offset_px: line.cross_offset_px,
+        };
         let aligned_resolved_item = aligned_resolved_flex_item(
             resolved_item,
             request.container_style,
-            request.line_cross_sizes_px[line_index],
+            line.resolved_cross_size_px,
         );
         let placed_resolved_item = relayout_active_flex_child(
             root_dom,
             tree_size,
             &ActiveFlexChildRelayoutRequest {
-                source: FlexItemSource::BlockItem(current_child_key),
+                source: view.source,
                 child_context: request.child_context,
                 container_style: request.container_style,
                 container_main_size_px: request.container_main_size_px,
-                line_cross_size_px: request.line_cross_sizes_px[line_index],
+                line_cross_size_px: line.resolved_cross_size_px,
                 resolved_item: aligned_resolved_item,
             },
             resolver,
         )?;
-        placed_line_cross_sizes_px[line_index] =
-            placed_line_cross_sizes_px[line_index].max(placed_resolved_item.resolved_cross_size_px);
-        placed_resolved_items.push(placed_resolved_item);
+        let line_slot = usize::try_from(item_entry.line_index - solve.line_range.start)
+            .expect("line index should fall within the container's line range");
+        placed_line_cross_sizes_px[line_slot] =
+            placed_line_cross_sizes_px[line_slot].max(placed_resolved_item.resolved_cross_size_px);
         placed_item_count += 1;
-        child_key = next_child_key;
     }
     assert_eq!(
         placed_item_count,
-        request.resolved_items.len(),
+        usize::try_from(solve.item_range.len).expect("item range length should fit into usize"),
         "active flex placement should write each resolved child exactly once",
-    );
-    assert_eq!(
-        line_index_by_child_key.len(),
-        request.resolved_items.len(),
-        "active flex placement should keep one line membership per resolved DOM child",
     );
     assert_wrapped_line_cross_sizes_match_measurement(
         request.container_style.wrap_mode,
-        request.lines,
+        root_dom.layout_scratch.lines.slice(solve.line_range),
         &placed_line_cross_sizes_px,
     );
     Ok(PlacedFlexChildren {
-        resolved_items: placed_resolved_items,
-        container_cross_size_px: total_line_cross_size_px(
-            request.line_cross_sizes_px,
+        container_cross_size_px: total_line_cross_size_px_from_lane(
+            &root_dom.layout_scratch,
+            solve.line_range,
             request.container_style.gap_sizes.between_lines_px,
         ),
     })
@@ -2510,40 +2606,6 @@ where
         resolved_cross_size_px: cross_axis_flow_size(request.container_style.main_axis, child_flow),
         ..request.resolved_item
     })
-}
-
-fn resolved_items_by_child_key(
-    resolved_items: &[ResolvedFlexItem],
-) -> HashMap<DomNodeSlotKey, ResolvedFlexItem> {
-    let item_map = resolved_items
-        .iter()
-        .copied()
-        .map(|resolved_item| (resolved_item.source.key(), resolved_item))
-        .collect::<HashMap<_, _>>();
-    assert_eq!(
-        item_map.len(),
-        resolved_items.len(),
-        "active flex placement should keep one unique resolved item per DOM child",
-    );
-    item_map
-}
-
-fn line_index_by_child_key(lines: &[FlexLine]) -> HashMap<DomNodeSlotKey, usize> {
-    let mut item_map = HashMap::new();
-    for (line_index, line) in lines.iter().enumerate() {
-        for source in &line.item_sources {
-            let previous = item_map.insert(source.key(), line_index);
-            assert!(
-                previous.is_none(),
-                "active flex lines should not place the same child in more than one line",
-            );
-        }
-    }
-    item_map
-}
-
-fn flex_line_item_count(lines: &[FlexLine]) -> usize {
-    lines.iter().map(|line| line.item_sources.len()).sum()
 }
 
 fn flex_line_gap_count(item_count: usize) -> usize {
@@ -2594,7 +2656,7 @@ fn resolved_flex_item_cross_axis_alignment(
 
 fn assert_wrapped_line_cross_sizes_match_measurement(
     wrap_mode: FlexWrapMode,
-    lines: &[FlexLine],
+    lines: &[FlexLineEntry],
     line_cross_sizes_px: &[f32],
 ) {
     if !wrap_mode.is_wrapping() {
@@ -3101,28 +3163,17 @@ mod tests {
         let mut resolver = IdentityDomLayoutResolver;
         let (style, inherited_style) =
             resolved_node_style(root, container, &context).expect("container style");
-        let container_style =
-            staged_flex_container_style(root.nodes.get(container).expect("container node"));
-        let entered = enter_node(
+        let solve = build_staged_measurement_solve(
             root,
             (320.0, 320.0),
             container,
-            context.clone(),
+            context,
             style,
             inherited_style,
             &mut resolver,
         )
-        .expect("container should enter");
-        let child_context = child_layout_context(context, entered);
-        collect_measured_flex_items_in_dom_order(
-            root,
-            (320.0, 320.0),
-            container,
-            &child_context,
-            container_style,
-            &mut resolver,
-        )
-        .expect("items should measure")
+        .expect("staged solve should build");
+        item_views_in_dom_order(&root.layout_scratch, solve)
     }
 
     fn build_solve_for_container(
@@ -3162,6 +3213,180 @@ mod tests {
 
     fn node_layout_dirty(root: &RootDom, key: DomNodeSlotKey) -> bool {
         layout_dirty_from_ref(root.node(key).expect("node should exist"))
+    }
+
+    // --- lane-read helpers (flex step 1, T4b) ---
+    //
+    // The solve's result surface is now the four lanes; these helpers read the
+    // lanes back into the Vec shapes the assertions previously read from the
+    // solve struct, so the assertion text stays on the solved values.
+
+    /// A line's summary as the tests assert it (the former `FlexLine` shape,
+    /// reconstructed from the line lane's order-lane range).
+    #[derive(Clone, Debug, PartialEq)]
+    struct TestLine {
+        item_sources: Vec<FlexItemSource>,
+        outer_hypothetical_main_size_px: f32,
+        cross_size_px: f32,
+    }
+
+    fn item_views_in_dom_order(
+        scratch: &LayoutScratch,
+        solve: FlexContainerSolve,
+    ) -> Vec<FlexItemView> {
+        scratch
+            .items
+            .slice(solve.item_range)
+            .iter()
+            .map(|entry| entry.view)
+            .collect()
+    }
+
+    fn item_views_in_order_modified_order(
+        scratch: &LayoutScratch,
+        solve: FlexContainerSolve,
+    ) -> Vec<FlexItemView> {
+        scratch
+            .order
+            .slice(solve.order_range)
+            .iter()
+            .map(|entry| scratch.items.get(entry.dom_index).view)
+            .collect()
+    }
+
+    fn resolved_items_in_order_modified_order(
+        scratch: &LayoutScratch,
+        solve: FlexContainerSolve,
+    ) -> Vec<ResolvedFlexItem> {
+        scratch
+            .order
+            .slice(solve.order_range)
+            .iter()
+            .map(|order_entry| {
+                let item_entry = scratch.items.get(order_entry.dom_index);
+                let view = item_entry.view;
+                let resolution = scratch.resolution.get(item_entry.order_index);
+                let line = scratch.lines.get(item_entry.line_index);
+                ResolvedFlexItem {
+                    source: view.source,
+                    align_self: view.align_self,
+                    resolved_main_size_px: resolution.resolved_main_size_px,
+                    main_axis_border_padding_px: view.main_axis_border_padding_px,
+                    resolved_cross_size_px: view.measured_cross_size_input_px,
+                    main_offset_px: item_entry.main_offset_px,
+                    cross_offset_px: line.cross_offset_px,
+                }
+            })
+            .collect()
+    }
+
+    fn resolved_line_cross_sizes(scratch: &LayoutScratch, solve: FlexContainerSolve) -> Vec<f32> {
+        scratch
+            .lines
+            .slice(solve.line_range)
+            .iter()
+            .map(|line| line.resolved_cross_size_px)
+            .collect()
+    }
+
+    fn built_lines(
+        scratch: &LayoutScratch,
+        order_range: LaneRange,
+        line_range: LaneRange,
+    ) -> Vec<TestLine> {
+        let order_entries = scratch.order.slice(order_range);
+        scratch
+            .lines
+            .slice(line_range)
+            .iter()
+            .map(|line| {
+                let start = usize::try_from(line.first_order_index - order_range.start)
+                    .expect("line first order index should be within the order range");
+                let item_sources = order_entries[start
+                    ..start
+                        + usize::try_from(line.item_count)
+                            .expect("line item count should fit into usize")]
+                    .iter()
+                    .map(|entry| FlexItemSource::BlockItem(entry.child_key))
+                    .collect();
+                TestLine {
+                    item_sources,
+                    outer_hypothetical_main_size_px: line.outer_hypothetical_main_size_px,
+                    cross_size_px: line.cross_size_px,
+                }
+            })
+            .collect()
+    }
+
+    /// Pushes synthetic items into the item and order lanes and returns the
+    /// resulting ranges (used by the synthetic `resolve_active_flex_container`
+    /// and line-building tests, which have no real DOM).
+    fn push_items(scratch: &mut LayoutScratch, items: &[FlexItemView]) -> (LaneRange, LaneRange) {
+        let item_start = scratch.items.begin_range();
+        let order_start = scratch.order.begin_range();
+        for item in items {
+            let dom_index = scratch.items.push(*item);
+            scratch.order.push_in_order(FlexOrderLaneEntry {
+                dom_index,
+                child_key: item.source.key(),
+                order: item.order,
+            });
+        }
+        let item_range = scratch.items.finish_range(item_start);
+        let order_range = scratch.order.finish_range(order_start);
+        backfill_order_indices(scratch, order_range);
+        (item_range, order_range)
+    }
+
+    /// Builds a lane-based `FlexContainerSolve` from synthetic items and the
+    /// lines they belong to, mirroring the former
+    /// `resolve_measured_flex_container(items, items, lines)`.
+    fn solve_from_items_and_lines(
+        scratch: &mut LayoutScratch,
+        items: &[FlexItemView],
+        lines: &[TestLine],
+    ) -> FlexContainerSolve {
+        let (item_range, order_range) = push_items(scratch, items);
+        let line_start = scratch.lines.begin_range();
+        for line in lines {
+            let order_entries = scratch.order.slice(order_range);
+            let first = order_entries
+                .iter()
+                .position(|entry| entry.child_key == line.item_sources[0].key())
+                .expect("line source should be present in the order lane");
+            scratch.lines.push(FlexLineEntry {
+                first_order_index: order_range.start
+                    + u32::try_from(first).expect("line first order index should fit into u32"),
+                item_count: u32::try_from(line.item_sources.len())
+                    .expect("line item count should fit into u32"),
+                outer_hypothetical_main_size_px: line.outer_hypothetical_main_size_px,
+                cross_size_px: line.cross_size_px,
+                cross_offset_px: 0.0,
+                resolved_cross_size_px: 0.0,
+            });
+        }
+        let line_range = scratch.lines.finish_range(line_start);
+        resolve_measured_flex_container(scratch, item_range, order_range, line_range)
+    }
+
+    /// Builds lines over synthetic items (the former
+    /// `build_measured_flex_lines(&items, ...)` test seam).
+    fn build_lines_from_items(
+        scratch: &mut LayoutScratch,
+        items: &[FlexItemView],
+        wrap_mode: FlexWrapMode,
+        container_main_size_px: Option<f32>,
+        gap_between_items_px: f32,
+    ) -> Vec<TestLine> {
+        let (_, order_range) = push_items(scratch, items);
+        let line_range = build_measured_flex_lines(
+            scratch,
+            order_range,
+            wrap_mode,
+            container_main_size_px,
+            gap_between_items_px,
+        );
+        built_lines(scratch, order_range, line_range)
     }
 
     #[test]
@@ -3926,8 +4151,9 @@ mod tests {
 
         let solve = build_solve_for_container(&mut root, container, context);
 
-        assert_eq!(solve.measured_items_in_dom_order.len(), 1);
-        assert_eq!(solve.measured_items_in_dom_order[0].flex_base_size_px, 20.0);
+        let items = item_views_in_dom_order(&root.layout_scratch, solve);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].flex_base_size_px, 20.0);
         assert_eq!(node_layout(&root, nested), nested_layout_before);
         assert_eq!(node_box(&root, nested), nested_box_before);
         assert_eq!(node_layout_dirty(&root, nested), nested_dirty_before);
@@ -4032,8 +4258,8 @@ mod tests {
 
         let solve = build_solve_for_container(&mut root, container, context);
 
-        assert_eq!(solve.measured_items_in_dom_order.len(), 1);
-        assert_eq!(solve.line_collection_items.len(), 1);
+        let items = item_views_in_dom_order(&root.layout_scratch, solve);
+        assert_eq!(items.len(), 1);
         assert_eq!(node_layout(&root, container), container_layout_before);
         assert_eq!(node_box(&root, container), container_box_before);
         assert_eq!(node_layout_dirty(&root, container), container_dirty_before);
@@ -4067,8 +4293,8 @@ mod tests {
             .set("order", "-1")
             .expect("order should set");
 
-        let items = collect_items_for_container(&mut root, container, context);
-        let ordered_items = order_modified_measured_items(&items);
+        let solve = build_solve_for_container(&mut root, container, context);
+        let ordered_items = item_views_in_order_modified_order(&root.layout_scratch, solve);
 
         assert_eq!(
             next_sibling_key(&root, first).expect("first sibling"),
@@ -4093,6 +4319,9 @@ mod tests {
         root.style_mut(container)
             .set("flex-wrap", "wrap")
             .expect("wrap should set");
+        root.style_mut(container)
+            .set("width", "50px")
+            .expect("width should set");
         let first = append_div(&mut root, container);
         let second = append_div(&mut root, container);
         let third = append_div(&mut root, container);
@@ -4115,19 +4344,18 @@ mod tests {
             .set("height", "10px")
             .expect("height should set");
 
-        let items = collect_items_for_container(&mut root, container, context);
-        let ordered_items = order_modified_measured_items(&items);
-        let lines = build_measured_flex_lines(&ordered_items, FlexWrapMode::Wrap, Some(50.0), 0.0);
+        let solve = build_solve_for_container(&mut root, container, context);
+        let lines = built_lines(&root.layout_scratch, solve.order_range, solve.line_range);
 
         assert_eq!(
             lines,
             vec![
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(first)],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(second), source(third)],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4145,17 +4373,19 @@ mod tests {
             measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
 
-        let lines = build_measured_flex_lines(&items, FlexWrapMode::Wrap, Some(25.0), 5.0);
+        let mut scratch = LayoutScratch::default();
+        let lines =
+            build_lines_from_items(&mut scratch, &items, FlexWrapMode::Wrap, Some(25.0), 5.0);
 
         assert_eq!(
             lines,
             vec![
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[0]), source(keys[1])],
                     outer_hypothetical_main_size_px: 25.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[2])],
                     outer_hypothetical_main_size_px: 10.0,
                     cross_size_px: 10.0,
@@ -4173,11 +4403,13 @@ mod tests {
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
 
-        let lines = build_measured_flex_lines(&items, FlexWrapMode::NoWrap, Some(50.0), 0.0);
+        let mut scratch = LayoutScratch::default();
+        let lines =
+            build_lines_from_items(&mut scratch, &items, FlexWrapMode::NoWrap, Some(50.0), 0.0);
 
         assert_eq!(
             lines,
-            vec![FlexLine {
+            vec![TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4198,8 +4430,22 @@ mod tests {
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
 
-        let first_lines = build_measured_flex_lines(&items, FlexWrapMode::Wrap, Some(50.0), 0.0);
-        let second_lines = build_measured_flex_lines(&items, FlexWrapMode::Wrap, Some(50.0), 0.0);
+        let mut first_scratch = LayoutScratch::default();
+        let mut second_scratch = LayoutScratch::default();
+        let first_lines = build_lines_from_items(
+            &mut first_scratch,
+            &items,
+            FlexWrapMode::Wrap,
+            Some(50.0),
+            0.0,
+        );
+        let second_lines = build_lines_from_items(
+            &mut second_scratch,
+            &items,
+            FlexWrapMode::Wrap,
+            Some(50.0),
+            0.0,
+        );
 
         assert_eq!(first_lines, second_lines);
     }
@@ -4213,17 +4459,24 @@ mod tests {
             measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
 
-        let lines = build_measured_flex_lines(&items, FlexWrapMode::WrapReverse, Some(25.0), 5.0);
+        let mut scratch = LayoutScratch::default();
+        let lines = build_lines_from_items(
+            &mut scratch,
+            &items,
+            FlexWrapMode::WrapReverse,
+            Some(25.0),
+            5.0,
+        );
 
         assert_eq!(
             lines,
             vec![
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[2])],
                     outer_hypothetical_main_size_px: 10.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[0]), source(keys[1])],
                     outer_hypothetical_main_size_px: 25.0,
                     cross_size_px: 10.0,
@@ -4279,31 +4532,31 @@ mod tests {
             next_sibling_key(&root, second).expect("second sibling"),
             Some(third),
         );
+        let dom_items = item_views_in_dom_order(&root.layout_scratch, solve);
+        let ordered_items = item_views_in_order_modified_order(&root.layout_scratch, solve);
         assert_eq!(
-            solve
-                .measured_items_in_dom_order
+            dom_items
                 .iter()
                 .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             vec![first, second, third],
         );
         assert_eq!(
-            solve
-                .line_collection_items
+            ordered_items
                 .iter()
                 .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             vec![second, third, first],
         );
         assert_eq!(
-            solve.lines,
+            built_lines(&root.layout_scratch, solve.order_range, solve.line_range),
             vec![
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(second), source(third)],
                     outer_hypothetical_main_size_px: 35.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(first)],
                     outer_hypothetical_main_size_px: 20.0,
                     cross_size_px: 10.0,
@@ -4312,7 +4565,6 @@ mod tests {
         );
         assert_eq!(solve.main_size_px, 35.0);
         assert_eq!(solve.cross_size_px, 20.0);
-        assert!(solve.resolved_items.is_empty());
     }
 
     #[test]
@@ -4323,16 +4575,17 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4341,6 +4594,7 @@ mod tests {
         );
 
         let solve = resolve_active_flex_container(
+            &mut scratch,
             measured_solve,
             wrap_row_container_style(),
             50.0,
@@ -4348,24 +4602,21 @@ mod tests {
         );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             keys,
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
             vec![0.0, 0.0, 30.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.cross_offset_px)
                 .collect::<Vec<_>>(),
@@ -4382,16 +4633,17 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4401,12 +4653,16 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::Center;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 50.0, Some(40.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            50.0,
+            Some(40.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.cross_offset_px)
                 .collect::<Vec<_>>(),
@@ -4423,16 +4679,17 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4442,12 +4699,16 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::FlexEnd;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 50.0, Some(40.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            50.0,
+            Some(40.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.cross_offset_px)
                 .collect::<Vec<_>>(),
@@ -4464,16 +4725,17 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4483,12 +4745,16 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::SpaceBetween;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 50.0, Some(40.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            50.0,
+            Some(40.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.cross_offset_px)
                 .collect::<Vec<_>>(),
@@ -4504,10 +4770,11 @@ mod tests {
             measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
             measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: vec![source(keys[0]), source(keys[1])],
                 outer_hypothetical_main_size_px: 20.0,
                 cross_size_px: 10.0,
@@ -4516,12 +4783,16 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::FlexEnd;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 60.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            60.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4537,10 +4808,11 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4554,12 +4826,16 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::SpaceBetween;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 60.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            60.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4575,10 +4851,11 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4592,12 +4869,16 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::SpaceAround;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 100.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            100.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4613,16 +4894,17 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4632,12 +4914,16 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::SpaceAround;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 50.0, Some(40.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            50.0,
+            Some(40.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.cross_offset_px)
                 .collect::<Vec<_>>(),
@@ -4653,10 +4939,11 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 10.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4670,12 +4957,16 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::SpaceEvenly;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 100.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            100.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4691,16 +4982,17 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4710,11 +5002,15 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::SpaceEvenly;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 50.0, Some(40.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            50.0,
+            Some(40.0),
+        );
 
-        let resolved_cross_offsets = solve
-            .resolved_items
+        let resolved_cross_offsets = resolved_items_in_order_modified_order(&scratch, solve)
             .iter()
             .map(|item| item.cross_offset_px)
             .collect::<Vec<_>>();
@@ -4739,16 +5035,17 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 0.0, 30.0, 10.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 30.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 50.0,
                     cross_size_px: 10.0,
@@ -4758,13 +5055,17 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::Stretch;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 50.0, Some(40.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            50.0,
+            Some(40.0),
+        );
 
-        assert_eq!(solve.line_cross_sizes_px, vec![20.0, 20.0]);
+        assert_eq!(resolved_line_cross_sizes(&scratch, solve), vec![20.0, 20.0]);
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.cross_offset_px)
                 .collect::<Vec<_>>(),
@@ -4801,10 +5102,11 @@ mod tests {
             measured_row_item(source(keys[1]), 1.0, 1.0, 10.0, 10.0),
             measured_row_item(source(keys[2]), 2.0, 1.0, 10.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4816,20 +5118,23 @@ mod tests {
             }],
         );
 
-        let solve =
-            resolve_active_flex_container(measured_solve, row_container_style(), 90.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            row_container_style(),
+            90.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
             vec![10.0, 30.0, 50.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4844,10 +5149,11 @@ mod tests {
             measured_row_item(source(keys[0]), 0.5, 1.0, 20.0, 10.0),
             measured_row_item(source(keys[1]), 0.0, 1.0, 20.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4859,20 +5165,23 @@ mod tests {
             }],
         );
 
-        let solve =
-            resolve_active_flex_container(measured_solve, row_container_style(), 100.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            row_container_style(),
+            100.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
             vec![50.0, 20.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4887,10 +5196,11 @@ mod tests {
             measured_row_item_with_limits(source(keys[0]), 1.0, 1.0, 10.0, 10.0, None, Some(20.0)),
             measured_row_item_with_limits(source(keys[1]), 1.0, 1.0, 10.0, 10.0, None, None),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4902,20 +5212,23 @@ mod tests {
             }],
         );
 
-        let solve =
-            resolve_active_flex_container(measured_solve, row_container_style(), 100.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            row_container_style(),
+            100.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
             vec![20.0, 80.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4930,10 +5243,11 @@ mod tests {
             measured_row_item_with_limits(source(keys[0]), 0.0, 1.0, 20.0, 10.0, Some(15.0), None),
             measured_row_item_with_limits(source(keys[1]), 0.0, 1.0, 20.0, 10.0, None, None),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4945,20 +5259,23 @@ mod tests {
             }],
         );
 
-        let solve =
-            resolve_active_flex_container(measured_solve, row_container_style(), 20.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            row_container_style(),
+            20.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
             vec![15.0, 5.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -4974,10 +5291,11 @@ mod tests {
             measured_row_item(source(keys[1]), 1.0, 1.0, 0.0, 18.0),
             measured_row_item(source(keys[2]), 0.0, 0.0, 16.0, 16.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -4991,20 +5309,23 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.gap_sizes.between_items_px = 2.0;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 120.0, Some(18.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            120.0,
+            Some(18.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
             vec![16.0, 84.0, 16.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -5054,17 +5375,19 @@ mod tests {
             ),
         ];
 
-        let lines = build_measured_flex_lines(&items, FlexWrapMode::Wrap, Some(45.0), 5.0);
+        let mut scratch = LayoutScratch::default();
+        let lines =
+            build_lines_from_items(&mut scratch, &items, FlexWrapMode::Wrap, Some(45.0), 5.0);
 
         assert_eq!(
             lines,
             vec![
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[0])],
                     outer_hypothetical_main_size_px: 23.0,
                     cross_size_px: 10.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[1]), source(keys[2])],
                     outer_hypothetical_main_size_px: 41.0,
                     cross_size_px: 10.0,
@@ -5102,10 +5425,11 @@ mod tests {
                 },
             ),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -5119,20 +5443,23 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.gap_sizes.between_items_px = 5.0;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 80.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            80.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
             vec![0.0, 28.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
@@ -5182,11 +5509,12 @@ mod tests {
             ),
         ];
 
-        let line = super::build_measured_flex_line(&items, 5.0);
+        let mut scratch = LayoutScratch::default();
+        let lines = build_lines_from_items(&mut scratch, &items, FlexWrapMode::NoWrap, None, 5.0);
 
         assert_eq!(
-            line,
-            FlexLine {
+            lines,
+            vec![TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -5194,7 +5522,7 @@ mod tests {
                     .collect::<Vec<_>>(),
                 outer_hypothetical_main_size_px: 40.0,
                 cross_size_px: 15.0,
-            },
+            }],
         );
     }
 
@@ -5239,16 +5567,17 @@ mod tests {
                 },
             ),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![
-                FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[
+                TestLine {
                     item_sources: vec![source(keys[0]), source(keys[1])],
                     outer_hypothetical_main_size_px: 25.0,
                     cross_size_px: 15.0,
                 },
-                FlexLine {
+                TestLine {
                     item_sources: vec![source(keys[2])],
                     outer_hypothetical_main_size_px: 10.0,
                     cross_size_px: 7.0,
@@ -5258,12 +5587,16 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.gap_sizes.between_lines_px = 5.0;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 25.0, Some(40.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            25.0,
+            Some(40.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.cross_offset_px)
                 .collect::<Vec<_>>(),
@@ -5279,10 +5612,11 @@ mod tests {
             measured_row_item(source(keys[0]), 0.0, 2.0, 40.0, 10.0),
             measured_row_item(source(keys[1]), 0.0, 3.0, 40.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -5294,20 +5628,23 @@ mod tests {
             }],
         );
 
-        let solve =
-            resolve_active_flex_container(measured_solve, row_container_style(), 50.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            row_container_style(),
+            50.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
             vec![28.0, 22.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -5322,10 +5659,11 @@ mod tests {
             measured_row_item_with_automatic_min(source(keys[0]), 0.0, 1.0, 40.0, 10.0, 40.0),
             measured_row_item_with_automatic_min(source(keys[1]), 0.0, 1.0, 40.0, 10.0, 0.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -5337,20 +5675,23 @@ mod tests {
             }],
         );
 
-        let solve =
-            resolve_active_flex_container(measured_solve, row_container_style(), 20.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            row_container_style(),
+            20.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.resolved_main_size_px)
                 .collect::<Vec<_>>(),
             vec![40.0, 0.0],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -5365,7 +5706,24 @@ mod tests {
             measured_row_item_with_automatic_min(source(keys[0]), 0.0, 1.0, 8.0, 10.0, 0.0);
         item.main_axis_border_padding_px = 8.0;
 
-        let resolved = super::resolve_flex_line_items(&[item], 4.0, row_container_style(), 0.0);
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &[item],
+            &[TestLine {
+                item_sources: vec![source(keys[0])],
+                outer_hypothetical_main_size_px: 8.0,
+                cross_size_px: 10.0,
+            }],
+        );
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            row_container_style(),
+            4.0,
+            Some(10.0),
+        );
+        let resolved = resolved_items_in_order_modified_order(&scratch, solve);
 
         assert_eq!(resolved[0].resolved_main_size_px, 8.0);
         assert_eq!(resolved[0].main_axis_border_padding_px, 8.0);
@@ -5378,10 +5736,11 @@ mod tests {
             measured_row_item(source(keys[0]), 0.0, 0.0, 10.0, 10.0),
             measured_row_item(source(keys[1]), 0.0, 0.0, 10.0, 10.0),
         ];
-        let measured_solve = resolve_measured_flex_container(
-            items.clone(),
-            items,
-            vec![FlexLine {
+        let mut scratch = LayoutScratch::default();
+        let measured_solve = solve_from_items_and_lines(
+            &mut scratch,
+            &items,
+            &[TestLine {
                 item_sources: keys
                     .iter()
                     .copied()
@@ -5395,12 +5754,16 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::Center;
 
-        let solve =
-            resolve_active_flex_container(measured_solve, container_style, 100.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut scratch,
+            measured_solve,
+            container_style,
+            100.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -5486,20 +5849,23 @@ mod tests {
             .expect("order should set");
 
         let measured_solve = build_solve_for_container(&mut root, container, context);
-        let solve =
-            resolve_active_flex_container(measured_solve, row_container_style(), 30.0, Some(10.0));
+        let solve = resolve_active_flex_container(
+            &mut root.layout_scratch,
+            measured_solve,
+            row_container_style(),
+            30.0,
+            Some(10.0),
+        );
 
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&root.layout_scratch, solve)
                 .iter()
                 .map(|item| item.source.key())
                 .collect::<Vec<_>>(),
             vec![second, third, first],
         );
         assert_eq!(
-            solve
-                .resolved_items
+            resolved_items_in_order_modified_order(&root.layout_scratch, solve)
                 .iter()
                 .map(|item| item.main_offset_px)
                 .collect::<Vec<_>>(),
@@ -5612,25 +5978,37 @@ mod tests {
             measured_row_item(source(keys[1]), 0.0, 1.0, 16.0, 18.0),
         ];
         let lines = vec![
-            FlexLine {
+            TestLine {
                 item_sources: vec![source(keys[0])],
                 outer_hypothetical_main_size_px: 10.0,
                 cross_size_px: 12.0,
             },
-            FlexLine {
+            TestLine {
                 item_sources: vec![source(keys[1])],
                 outer_hypothetical_main_size_px: 16.0,
                 cross_size_px: 18.0,
             },
         ];
 
-        let solve = resolve_measured_flex_container(items.clone(), items.clone(), lines.clone());
+        let mut scratch = LayoutScratch::default();
+        let solve = solve_from_items_and_lines(&mut scratch, &items, &lines);
 
-        assert_eq!(solve.measured_items_in_dom_order.len(), items.len());
-        assert_eq!(solve.line_collection_items, items);
-        assert_eq!(solve.lines, lines);
+        assert_eq!(
+            item_views_in_dom_order(&scratch, solve)
+                .iter()
+                .map(|item| item.source.key())
+                .collect::<Vec<_>>(),
+            items
+                .iter()
+                .map(|item| item.source.key())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            built_lines(&scratch, solve.order_range, solve.line_range),
+            lines
+        );
         assert_eq!(solve.main_size_px, 16.0);
         assert_eq!(solve.cross_size_px, 30.0);
-        assert!(solve.resolved_items.is_empty());
+        assert_eq!(solve.resolution_range, LaneRange::default());
     }
 }

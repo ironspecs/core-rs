@@ -36,9 +36,17 @@
 use crate::types::DomNodeSlotKey;
 use crate::types::LaneRange;
 
-/// One flex item's order-lane slot: the child key plus its resolved `order`.
+/// One flex item's order-lane slot: the DOM-order back-reference into the item
+/// lane (`dom_index`), the child key, and its resolved `order`.
+///
+/// `dom_index` is the item's absolute index in the item lane (the DOM
+/// sequence), so the solve reads the item's assembled view via `dom_index`
+/// without a key lookup. The sort key remains `(order, dom insertion
+/// sequence)`: children are pushed in DOM order, so equal orders stay stable
+/// and the `dom_index` tiebreaker is implicit in insertion order.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FlexOrderLaneEntry {
+    pub(crate) dom_index: u32,
     pub(crate) child_key: DomNodeSlotKey,
     pub(crate) order: i32,
 }
@@ -48,71 +56,79 @@ pub(crate) struct FlexOrderLaneEntry {
 #[derive(Debug, Default)]
 pub(crate) struct FlexOrderLane {
     entries: Vec<FlexOrderLaneEntry>,
-    /// Start index of the currently open range; `push_in_order` sorts within
-    /// `[range_start, entries.len())` so sibling containers stay disjoint.
-    range_start: usize,
+    /// Stack of open-range start cursors. `push_in_order` sorts within
+    /// `[top, entries.len())` so nested and sibling containers stay disjoint;
+    /// `finish_range` pops the matching cursor so a nested measurement returns
+    /// the enclosing container's open range to its pre-nested state.
+    range_starts: Vec<usize>,
 }
 
 impl FlexOrderLane {
     /// Opens a range at the current lane end and returns its start index.
     ///
-    /// This records the open-range cursor (`&mut self`), which `push_in_order`
-    /// needs so insertion stays scoped to the claiming container.
+    /// This pushes the open-range cursor (`&mut self`), which `push_in_order`
+    /// needs so insertion stays scoped to the claiming container. A nested
+    /// container's `begin_range`/`finish_range` pair restores the enclosing
+    /// container's cursor on `finish_range`.
     pub(crate) fn begin_range(&mut self) -> u32 {
         let start = self.entries.len();
-        self.range_start = start;
+        self.range_starts.push(start);
         u32::try_from(start).expect("order lane length should fit into u32")
     }
 
     /// Inserts `entry` sorted by `(order, dom insertion sequence)` within the
-    /// open range and returns the number of order comparisons the insertion
-    /// scan performed.
+    /// open range and returns the entry's assigned absolute lane position.
     ///
     /// Callers push children in DOM order, so equal orders stay stable and an
     /// untouched order sequence stays non-decreasing: every push then takes
     /// the append fast path (zero scan comparisons), the adaptive O(n) case.
-    /// The returned count is the scan's comparison count only — the append
-    /// fast path performs no scan comparisons and returns 0. Callers may
-    /// ignore the return value; it exists so the adaptive property is
-    /// observable.
+    /// The returned position is the index where the entry landed, which the
+    /// fold back-fills into the item lane's `order_index` cross-reference.
     pub(crate) fn push_in_order(&mut self, entry: FlexOrderLaneEntry) -> u32 {
+        let range_start = *self.range_starts.last().unwrap_or(&0);
         // Append fast path: the open range is empty, or its tail is already
         // in order relative to the new entry. The open range is always the
         // lane tail, so `entries.last()` is the open range's last entry.
-        if self.entries.len() == self.range_start
+        if self.entries.len() == range_start
             || self
                 .entries
                 .last()
                 .is_some_and(|last| last.order <= entry.order)
         {
+            let position = self.entries.len();
             self.entries.push(entry);
-            return 0;
+            return u32::try_from(position).expect("order lane length should fit into u32");
         }
         // Scrambled input within the open range: stable insertion sort from
         // the range tail. Shift strictly-greater orders down (equal orders
-        // keep DOM insertion order) and count each order comparison.
-        let mut comparisons = 0u32;
+        // keep DOM insertion order).
         let mut position = self.entries.len();
-        while position > self.range_start {
+        while position > range_start {
             let predecessor = self.entries[position - 1];
-            comparisons += 1;
             if predecessor.order <= entry.order {
                 break;
             }
             position -= 1;
         }
         self.entries.insert(position, entry);
-        comparisons
+        u32::try_from(position).expect("order lane length should fit into u32")
     }
 
     /// Closes the range opened by a matching `begin_range` call and returns
-    /// the `{start, len}` descriptor for the entries pushed since.
-    pub(crate) fn finish_range(&self, start: u32) -> LaneRange {
+    /// the `{start, len}` descriptor for the entries pushed since, popping the
+    /// open-range cursor so the enclosing container's cursor is restored.
+    pub(crate) fn finish_range(&mut self, start: u32) -> LaneRange {
         let start_usize =
             usize::try_from(start).expect("order lane range start should fit into usize");
         assert!(
             start_usize <= self.entries.len(),
             "order lane range start must not exceed lane length"
+        );
+        let popped = self.range_starts.pop();
+        assert_eq!(
+            popped,
+            Some(start_usize),
+            "order lane finish_range should pop the matching begin_range cursor"
         );
         LaneRange {
             start,
@@ -130,11 +146,19 @@ impl FlexOrderLane {
         &self.entries[start..start + len]
     }
 
+    /// Truncates the lane back to `len` entries (the staged nested-measurement
+    /// cleanup seam: a nested container's measurement discards its transient
+    /// order entries after computing its intrinsic size, keeping the enclosing
+    /// container's open range contiguous).
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.entries.truncate(len);
+    }
+
     /// Clears all entries for the next update, keeping the retained backing
     /// capacity at its high-water mark, and re-arms the open-range cursor.
     pub(crate) fn reset(&mut self) {
         self.entries.clear();
-        self.range_start = 0;
+        self.range_starts.clear();
     }
 
     /// The number of entries currently held.
@@ -159,8 +183,9 @@ mod tests {
         (0..count).map(|_| keys.insert(())).collect()
     }
 
-    fn entry(key: DomNodeSlotKey, order: i32) -> FlexOrderLaneEntry {
+    fn entry(dom_index: u32, key: DomNodeSlotKey, order: i32) -> FlexOrderLaneEntry {
         FlexOrderLaneEntry {
+            dom_index,
             child_key: key,
             order,
         }
@@ -178,24 +203,27 @@ mod tests {
     }
 
     #[test]
-    fn already_sorted_input_appends_with_zero_comparisons() {
+    fn already_sorted_input_appends_at_range_tail_with_sequential_positions() {
         let mut lane = FlexOrderLane::default();
         let keys = slot_keys(4);
         let start = lane.begin_range();
 
-        for (key, order) in keys.iter().copied().zip([0i32, 1, 2, 3]) {
+        for (dom_index, (key, order)) in keys.iter().copied().zip([0i32, 1, 2, 3]).enumerate() {
             assert_eq!(
-                lane.push_in_order(entry(key, order)),
-                0,
-                "already-sorted insert should append with zero comparisons"
+                lane.push_in_order(entry(u32::try_from(dom_index).unwrap(), key, order)),
+                u32::try_from(dom_index).unwrap(),
+                "already-sorted insert should append at the range tail (sequential positions)"
             );
         }
 
-        let slice = lane.slice(lane.finish_range(start));
+        let range = lane.finish_range(start);
+        let slice = lane.slice(range);
         let orders: Vec<i32> = slice.iter().map(|entry| entry.order).collect();
         let slice_keys: Vec<DomNodeSlotKey> = slice.iter().map(|entry| entry.child_key).collect();
+        let dom_indices: Vec<u32> = slice.iter().map(|entry| entry.dom_index).collect();
         assert_eq!(orders, vec![0, 1, 2, 3]);
         assert_eq!(slice_keys, keys);
+        assert_eq!(dom_indices, vec![0, 1, 2, 3]);
     }
 
     #[test]
@@ -204,19 +232,24 @@ mod tests {
         let keys = slot_keys(4);
         let start = lane.begin_range();
 
-        for (key, order) in keys.iter().copied().zip([3i32, 2, 1, 0]) {
-            lane.push_in_order(entry(key, order));
+        for (dom_index, (key, order)) in keys.iter().copied().zip([3i32, 2, 1, 0]).enumerate() {
+            lane.push_in_order(entry(u32::try_from(dom_index).unwrap(), key, order));
         }
 
-        let slice = lane.slice(lane.finish_range(start));
+        let range = lane.finish_range(start);
+        let slice = lane.slice(range);
         let orders: Vec<i32> = slice.iter().map(|entry| entry.order).collect();
         let slice_keys: Vec<DomNodeSlotKey> = slice.iter().map(|entry| entry.child_key).collect();
+        let dom_indices: Vec<u32> = slice.iter().map(|entry| entry.dom_index).collect();
 
         // Ascending order key, and the key sequence is the input reversed.
         assert_eq!(orders, vec![0, 1, 2, 3]);
         let mut expected_keys = keys;
         expected_keys.reverse();
         assert_eq!(slice_keys, expected_keys);
+        // The stored `dom_index` back-references follow the sorted order (the
+        // final positions the fold reads back after the sort completes).
+        assert_eq!(dom_indices, vec![3, 2, 1, 0]);
     }
 
     #[test]
@@ -227,11 +260,12 @@ mod tests {
 
         // Two ties at order 1 (keys[1] and keys[2]); keys[0] and keys[3] are
         // the extremes so the ties land in the middle of the sorted range.
-        for (key, order) in keys.iter().copied().zip([2i32, 1, 1, 0]) {
-            lane.push_in_order(entry(key, order));
+        for (dom_index, (key, order)) in keys.iter().copied().zip([2i32, 1, 1, 0]).enumerate() {
+            lane.push_in_order(entry(u32::try_from(dom_index).unwrap(), key, order));
         }
 
-        let slice = lane.slice(lane.finish_range(start));
+        let range = lane.finish_range(start);
+        let slice = lane.slice(range);
         let orders: Vec<i32> = slice.iter().map(|entry| entry.order).collect();
         assert_eq!(orders, vec![0, 1, 1, 2]);
         // Stability: the order-1 tie keeps DOM order (keys[1] before keys[2]).
@@ -247,14 +281,14 @@ mod tests {
         // Container A and container B use identical order values; a global
         // sort would interleave them, so this pins range-scoped insertion.
         let start_a = lane.begin_range();
-        for (key, order) in keys[0..3].iter().copied().zip([0i32, 1, 2]) {
-            lane.push_in_order(entry(key, order));
+        for (dom_index, (key, order)) in keys[0..3].iter().copied().zip([0i32, 1, 2]).enumerate() {
+            lane.push_in_order(entry(u32::try_from(dom_index).unwrap(), key, order));
         }
         let range_a = lane.finish_range(start_a);
 
         let start_b = lane.begin_range();
-        for (key, order) in keys[3..6].iter().copied().zip([0i32, 1, 2]) {
-            lane.push_in_order(entry(key, order));
+        for (dom_index, (key, order)) in keys[3..6].iter().copied().zip([0i32, 1, 2]).enumerate() {
+            lane.push_in_order(entry(u32::try_from(dom_index).unwrap(), key, order));
         }
         let range_b = lane.finish_range(start_b);
 
@@ -299,8 +333,8 @@ mod tests {
         let mut lane = FlexOrderLane::default();
         let keys = slot_keys(5);
         let start = lane.begin_range();
-        for (key, order) in keys.iter().copied().zip([4i32, 3, 2, 1, 0]) {
-            lane.push_in_order(entry(key, order));
+        for (dom_index, (key, order)) in keys.iter().copied().zip([4i32, 3, 2, 1, 0]).enumerate() {
+            lane.push_in_order(entry(u32::try_from(dom_index).unwrap(), key, order));
         }
         let _ = lane.finish_range(start);
 
@@ -316,6 +350,7 @@ mod tests {
         // A fresh range after reset starts at zero and reads empty.
         let new_start = lane.begin_range();
         assert_eq!(new_start, 0);
-        assert!(lane.slice(lane.finish_range(new_start)).is_empty());
+        let new_range = lane.finish_range(new_start);
+        assert!(lane.slice(new_range).is_empty());
     }
 }

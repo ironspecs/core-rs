@@ -83,6 +83,13 @@ impl FlexResolutionLane {
         &self.entries[start..start + len]
     }
 
+    /// Returns the resolution entry at the absolute `index` (the item lane's
+    /// `order_index` back-reference target, parallel to the order lane).
+    pub(crate) fn get(&self, index: u32) -> &FlexResolutionEntry {
+        let index = usize::try_from(index).expect("resolution lane index should fit into usize");
+        &self.entries[index]
+    }
+
     /// Returns the resolutions claimed by `range` for in-place mutation (the
     /// §9.7 resolve loop writes resolved sizes and the frozen flag here).
     pub(crate) fn slice_mut(&mut self, range: LaneRange) -> &mut [FlexResolutionEntry] {
@@ -97,6 +104,12 @@ impl FlexResolutionLane {
     /// capacity at its high-water mark.
     pub(crate) fn reset(&mut self) {
         self.entries.clear();
+    }
+
+    /// Truncates the lane back to `len` entries (the staged nested-measurement
+    /// cleanup seam).
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.entries.truncate(len);
     }
 
     /// The number of entries currently held.
