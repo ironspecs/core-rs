@@ -428,6 +428,14 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
             // box group moves (changed == 1).
             (StylePassNodeVisited, 3),
             (StylePassNodeChanged, 1),
+            // flex step 1 (T6): the measure/place work counters. The fold
+            // computes a record for each of the two block items (one
+            // `compute_node_measurement` each); placement relayouts each of
+            // the two children (one `relayout_active_flex_child` each). No
+            // text children and no nested flex items, so measured == placed ==
+            // item count == 2.
+            (FlexNodesMeasured, 2),
+            (FlexNodesPlaced, 2),
         ],
         "flex relayout",
     );
@@ -489,6 +497,93 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // former HashMap re-join are gone. Documented cause: the lane read path
     // replaces the DOM walk; FLEX_STEP1_EXECUTION.md §4 (four-lane design).
     assert_node_counts(&root, 138, 29, 0, "flex relayout");
+}
+
+/// Builds the (d1) scenario (`FLEX_DEBATE_BRIEF.md` (d1)(v), ratified): a
+/// wrapping row flex container at 240px content width holding 12 short text
+/// items plus 4 nested flex items each with a text child. Returns
+/// `(world, root, container, first_text)`.
+fn flex_step1_scenario_setup() -> (World, RootDom, DomNodeSlotKey, DomNodeSlotKey) {
+    let (world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = support::assert_append_div_to(&mut root, document_root);
+    support::assert_style_set(&mut root, container, "display", "flex");
+    support::assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    support::assert_style_set(&mut root, container, "width", "240px");
+    let mut first_text = None;
+    for index in 0..12 {
+        let text = support::assert_append_text_to(&mut root, container, "aa");
+        if index == 0 {
+            first_text = Some(text);
+        }
+    }
+    for _ in 0..4 {
+        let nested = support::assert_append_div_to(&mut root, container);
+        support::assert_style_set(&mut root, nested, "display", "flex");
+        support::assert_append_text_to(&mut root, nested, "bb");
+    }
+    let first_text = first_text.expect("first text item should exist");
+    (world, root, container, first_text)
+}
+
+/// The (d1) scenario pin: exact `FlexNodesMeasured`/`FlexNodesPlaced` counts
+/// per update, derived from the implementation.
+///
+/// Tree: container (flex row, wrap, 240px) with 12 bare text items plus 4
+/// nested flex items, each nested item holding one text child.
+///
+/// `FlexNodesMeasured` is one per `compute_node_measurement` on the flex
+/// measure path (`measure_exited_node_flow_size`). The measurement fold over
+/// the container's 16 children measures 12 text items (one measured node each)
+/// plus 4 nested flex items (two each: the item's text child via its inner
+/// fold, and the nested container's own record), so the fold measures 20
+/// nodes. The staged double-layout then re-measures each nested item's text
+/// child once more when placement re-enters the flex solver
+/// (`relayout_active_flex_child` → `relayout_tree_walker_node` →
+/// `relayout_flex_node`), adding 4. Total measured = 24.
+///
+/// `FlexNodesPlaced` is one per `relayout_active_flex_child`. Top-level
+/// placement relayouts all 16 children (16), and each nested item's placement
+/// relayouts its own text child (4). Total placed = 20.
+///
+/// The double-layout is the pre-mechanism cost shape: every child is relaid
+/// out during placement (the ≡100% refold analog), and the nested text child
+/// is measured twice (fold + placement) — this is the (d2) baseline the ≤50%
+/// refold-fraction ceiling later binds against.
+#[test]
+fn flex_step1_scenario_measure_place_counts_stay_pinned() {
+    let (mut world, mut root, _container, first_text) = flex_step1_scenario_setup();
+    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    root.reset_metrics();
+    root.reset_node_metrics();
+
+    root.set_text_content(first_text, "longer text")
+        .expect("text update should succeed");
+    support::assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
+
+    assert_root_counts(
+        &root,
+        &[
+            (TextIntrinsicMeasurement, 1),
+            (TextStorageAllocation, 1),
+            (LayoutUpdated, 1),
+            (PaintUpdated, 1),
+            (PaintPlanBuilt, 1),
+            (LayerPainted, 1),
+            (FlexNodesMeasured, 24),
+            (FlexNodesPlaced, 20),
+        ],
+        "flex step 1 scenario",
+    );
+    let history = history_names(&root);
+    assert!(
+        metric_index(&history, FlexNodesMeasured) < metric_index(&history, FlexNodesPlaced),
+        "flex step 1: FlexNodesMeasured before FlexNodesPlaced (fold precedes placement)"
+    );
+    assert!(
+        metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
+        "flex step 1: LayoutUpdated before PaintUpdated"
+    );
 }
 
 #[test]

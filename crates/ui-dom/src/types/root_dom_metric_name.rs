@@ -101,9 +101,19 @@ pub enum RootDomMetricName {
     /// Number of resolved elements whose computed groups changed (group diff
     /// was not NONE).
     StylePassNodeChanged,
+    /// Number of nodes whose measurement record was computed in the flex
+    /// measurement fold. This is a WORK counter: one increment per
+    /// `compute_node_measurement` call on the flex measure path (per node
+    /// whose record is computed), not one per record write — an unchanged
+    /// record still costs a compute.
+    FlexNodesMeasured,
+    /// Number of child relayouts performed during active flex placement (one
+    /// increment per `relayout_active_flex_child` call, i.e. per child the
+    /// placement walk relayouts).
+    FlexNodesPlaced,
 }
 
-pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 38] = [
+pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 40] = [
     RootDomMetricName::HoverPseudoStateSet,
     RootDomMetricName::HoverPseudoStateCleared,
     RootDomMetricName::StyleUpdated,
@@ -142,6 +152,8 @@ pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 38] = [
     RootDomMetricName::StyleDeclarationDropped,
     RootDomMetricName::StylePassNodeVisited,
     RootDomMetricName::StylePassNodeChanged,
+    RootDomMetricName::FlexNodesMeasured,
+    RootDomMetricName::FlexNodesPlaced,
 ];
 
 impl RootDomMetricName {
@@ -190,6 +202,8 @@ impl RootDomMetricName {
             Self::StyleDeclarationDropped => 35,
             Self::StylePassNodeVisited => 36,
             Self::StylePassNodeChanged => 37,
+            Self::FlexNodesMeasured => 38,
+            Self::FlexNodesPlaced => 39,
         }
     }
 }

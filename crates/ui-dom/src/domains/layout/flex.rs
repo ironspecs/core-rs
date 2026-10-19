@@ -30,7 +30,7 @@ use crate::domains::visitor::inherited_style::InheritedStyleContext;
 use crate::types::dom_node::measure_text_intrinsic_from_content_and_font_size;
 use crate::types::{
     DomBoxModel, DomError, DomIntrinsic, DomNode, DomNodeSlotKey, DomRect, DomTextDirection,
-    LaneRange, LayoutScratch, RootDom,
+    LaneRange, LayoutScratch, RootDom, RootDomMetricName,
 };
 
 use super::DomLayoutResolver;
@@ -865,6 +865,10 @@ fn measure_exited_node_flow_size(
         max_content_width_px,
         content_size.viewport_height_px,
     );
+    // FlexNodesMeasured is a work counter, so it increments per COMPUTE, not
+    // per record write: an unchanged record below still costs one compute on
+    // the flex measure path.
+    root_dom.increment_metric(RootDomMetricName::FlexNodesMeasured);
     if node_measurement_of(root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?) != next_record
     {
         node_measurement_mut(
@@ -2585,6 +2589,9 @@ fn relayout_active_flex_child<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
+    // One increment per child the placement walk relayouts (the double-layout
+    // work counter — every resolved child is relaid out once per placement).
+    root_dom.increment_metric(RootDomMetricName::FlexNodesPlaced);
     let (child_style, _) =
         resolved_node_style(root_dom, request.source.key(), request.child_context)?;
     let placed_context = active_flex_resolved_child_context(

@@ -328,4 +328,26 @@ fn allocation_windows_match_baseline_after_warmup() {
         },
         region.change(),
     );
+
+    // flex step 1, T6 — the (d1) scenario allocation window is NOT landed
+    // here: its steady-state update is NOT zero, and the contract (FLEX_MAPPING
+    // §3.4 "a dirty-flex update allocates nothing after warmup";
+    // FLEX_STEP1_EXECUTION §4/§7) is zero, so a non-zero pin is forbidden and
+    // this STOP is reported instead. Measured evidence (update-only window,
+    // lanes warmed to high-water mark): the text-bearing (d1) scenario
+    // (12 text items + 4 nested text-bearing flex items) allocates 1998 times
+    // (bytes ~269 KB allocated / ~269 KB deallocated) in one dirty-flex update;
+    // a text-free variant of the same shape (12 fixed-size items + 4 nested
+    // fixed-size items) still allocates 65 times. The allocation sources are
+    // pre-existing flex-solve code, not the lanes: (a)
+    // `place_active_flex_resolved_children` allocates a per-placement
+    // `Vec<f32>` (`vec![0.0; line_count]`, flex.rs placement path); (b)
+    // `non_negative_f32_from_usize` allocates a String per call via
+    // `usize::to_string().parse::<f32>()` (flex.rs numeric helper, called
+    // dozens of times per solve); (c) the fold re-measures every text node,
+    // each paying cosmic-text shaping (`measure_wrapped_text_height`). The
+    // lane scratch itself is zero-allocation after warmup (high-water-mark
+    // retention); the residual traffic predates T4b (both allocation sites
+    // date to the initial commit) and is out of scope for T6's counter/scenario
+    // work. This window lands with the fix that closes those sources.
 }
