@@ -58,14 +58,21 @@ Five problems, in the order this arc addresses them.
   mechanism does not exploit that fact.
 - **P3 — The flex solver is bespoke, and it is the users' biggest
   complaint.** The active solver (`resolve_active_flex_container`,
-  `src/domains/layout/flex.rs`, 4,986 lines) was intuited rather than
+  `src/domains/layout/flex.rs`, 5,356 lines) was intuited rather than
   derived from Blink/Gecko structures. It works for its admitted batches
-  (3–7, ~109 proofs in `layout/flex_layout.rs` plus ~50 unit tests), but
+  (3–7, 135 proofs in `layout/flex_layout.rs` plus 59 unit tests), but
   its data structures do not map to the engines' flex lines/items, so
   correctness arguments are hard, coverage expansion is slow, and user
   complaints about flex behavior have no shared vocabulary to resolve
-  against. The style-system redesign proved the remedy: adopt the engines'
-  data structures with a source-verified mapping, not a rewrite.
+  against. The style-system redesign proved the method — a source-verified
+  mapping to the engines, not intuition. The remedy's SHAPE shifts here,
+  and the shift is named rather than smuggled: the style redesign adopted
+  the engines' DATA STRUCTURES (field-level isomorphism with Servo,
+  auditable field-by-field); the binding layout-pass doctrine forbids
+  engine-shaped mutable structures, so this arc adopts the engines'
+  SEMANTICS on doctrine-conforming data — a weaker verification position
+  whose substitute (per-phase behavioral pins) is priced into PR 3's
+  proof obligations.
 - **P4 — Text production is the dangerous seam, and it is unsealed.** One
   hardcoded font family (`TextFontFamilyId::UiSans`, the only variant) while
   `font-family`/`font-weight`/`font-style` compute but are unconsumed (a
@@ -79,7 +86,7 @@ Five problems, in the order this arc addresses them.
   this seam risks closing doors for non-Latin, RTL, and vertical text that
   must stay open — which is why the seam proposal carries an explicit
   prove-or-abandon gate.
-- **P5 — `RootDom` is a 7,023-line god object and it is still growing.**
+- **P5 — `RootDom` is a 7,340-line god object and it is still growing.**
   `src/types/root_dom.rs` gained ~580 lines *through* a redesign that
   deleted entire subsystems from it (`apply_styles`, the ownership map, the
   attr projection). It cohabitates tree mutation, attribute writes, the
@@ -192,8 +199,8 @@ accounting found two crash sites the hard way.
 
 `resolve_active_flex_container` (`flex.rs:1586`): staged measure → line
 collection → resolution phases over `MeasuredFlexItem`/`FlexLine`/
-`FlexContainerStyle`. Coverage: batches 3–7 pinned (110 proofs in
-`layout/flex_layout.rs`, ~50 solver unit tests including the
+`FlexContainerStyle`. Coverage: batches 3–7 pinned (135 proofs in
+`layout/flex_layout.rs`, 59 solver unit tests including the
 `measured_item_record_*` family). Two GRACEFUL support gates (landed
 2026-10-19, replacing the former fail-fast asserts — see the decision
 log): outside the supported content-based auto-min subset (horizontal,
@@ -201,12 +208,12 @@ non-reversed, no-wrap containers; non-growing walk children) the
 auto-min degrades to the item's measured main size, registered
 divergent. The unadmitted remainder is gated by the closed grammar and
 these gates; there is no placeholder fallback (the old one died in the
-typed-group migration). The file is 4,986 lines and its data structures do
+typed-group migration). The file is 5,356 lines and its data structures do
 not map to Blink's `FlexLine`/`FlexItem` or Gecko's equivalents.
 
 ### 2.5 `RootDom` and `RootDomContext`
 
-`root_dom.rs` (7,023 lines, 48 public methods) cohabitates: tree mutation,
+`root_dom.rs` (7,340 lines, 48 public methods) cohabitates: tree mutation,
 attribute writes, the style-attr route, the inline declaration store, the
 transition scheduler, scroll, focus, the popup/options system
 (`PresentedOptions*`), layer queues, metrics accessors, and the computed
@@ -241,8 +248,8 @@ zero-size-line inconsistency).
 
 ### 2.7 Honest weaknesses (named before anyone else names them)
 
-1. The god objects: `root_dom.rs` (7,023) and `dom_node.rs` (2,358);
-   `flex.rs` (4,986) close behind.
+1. The god objects: `root_dom.rs` (7,340) and `dom_node.rs` (2,425);
+   `flex.rs` (5,356) close behind.
 2. `DomError` carries no payload — 16 flat variants, and
    `InvalidAttributeValue` names neither property, value, nor node.
 3. The vocabulary gap (P1) and the eight registered divergences.
@@ -495,13 +502,26 @@ concludes alternative (c) — measurement shows the lock is contention-free
 in every realistic scenario AND no consumer names a concurrent-reader
 need. A debate that can only ratify is not a debate.
 
-### PR 3 — the flex solver: source-verified migration `DEBATE — mapping document WRITTEN 2026-10-19 (FLEX_MAPPING.md); third-party agreement required before implementation`
+### PR 3 — the two-fold layout pass and the flex fix sequence `DEBATE — mapping document WRITTEN and AMENDED under adversarial review 2026-10-19 (FLEX_MAPPING.md); third-party agreement against the enumerated obligations required before implementation`
 
 **Problem.** The solver works for batches 3–7 and is the users' biggest
 complaint anyway. The complaint decomposes into: coverage gaps (the
 unadmitted subset), and confidence (no shared vocabulary with the engines
-when behavior is questioned). The file is 4,986 lines of bespoke
+when behavior is questioned). The file is 5,356 lines of bespoke
 structures.
+
+**Scope, stated honestly (rewritten per the 2026-10-19 adversarial
+review).** This PR is not a flex-solver migration in the framing this
+section originally carried. The binding layout-pass doctrine (decision
+log, 2026-10-19) mandates ONE bottom-up intrinsic fold and ONE top-down
+resolution/placement fold per update for ALL of layout — zero-allocation,
+with the recursive auto-min walk and per-container allocations dying by
+doctrine, not by this debate. PR 3 is therefore two things: (1) the
+two-fold re-architecture of the layout pass — every dirty node carries
+the measurement record, and flex is the first full consumer — and (2) the
+sequenced flex fix landings on the new structures, ordered by the
+two-axis complaint list. The debate ratifies THIS scope; the old title's
+"migration" framing is retired.
 
 **The first deliverable (before any code): the mapping document.** Blink's
 `flex_layout_algorithm.cc` + `flex_layout_utils.cc` and Gecko's flex
@@ -516,45 +536,114 @@ engine tie-break rule:** when Blink and Gecko disagree (they do — line
 balancing and violation accumulation differ structurally), WPT decides
 first and Blink second, matching the proof suite's per-claim provenance
 rule; without it every contested phase becomes its own unplanned debate.
-This document is the debate's subject.
+The document landed 2026-10-19 and was AMENDED the same day under
+adversarial review: the per-row restructure/in-place classification
+(§1), the record's basis-layering respec and the lane lifecycle (§3.1),
+the run-aggregation, whitespace, and static-position models (§3.2), the
+refold budget (§3.4), the step-1 policy split (§4), the
+verification-burden restatement (§6), and the third-party obligations
+(§8). This document is the debate's subject.
 
-**The migration (only after the debate):** behavior-preserving
-data-structure alignment, gated by the entire flex proof suite (the
-batch families, the solver unit tests, perf pins). Structural-migration
-policy: moves are byte-identical where behavior must not move; algorithm
-changes are their own commits, reviewed as performance changes.
-**Scope honesty (stated before the debate, not inside it):** a
-behavior-preserving migration moves zero coverage by construction — the
-proofs pin only admitted behavior (batches 3–7). What the migration buys
-is the shared vocabulary and the review surface that makes the missing
-batches *admissible and reviewable*; the admissions that fix the named
-bugs are subsequent, behavior-changing landings on the aligned structures,
-and they are the actual point. The migration without them is aesthetics;
-the debate must not let it become that.
+**The work (only after the debate).** (1) The two-fold re-architecture
+lands first, semantics-preserving: the up fold writes records for all
+dirty nodes, the flex measurement sites cut over to record reads where
+the values are identical by construction, and the per-container `Vec`s
+and the `HashMap` re-join die — with ZERO pin flips and the full suite
+green, because it is the algorithm change, reviewed as a performance
+change per the structural-migration policy. The recursive auto-min walk
+and the staged double-layout survive the structural step deliberately;
+their deaths are semantic and land with their pin flips in the sequence.
+(2) The semantic landings follow FLEX_MAPPING §4, each flipping its rows
+in the same change, each running the full gate. **Scope honesty,
+retargeted per review:** the pre-review warning ("a behavior-preserving
+migration moves zero coverage by construction; the migration without the
+admissions is aesthetics") applied to a framing that no longer exists.
+The equivalent failure mode in the new shape is landing the folds and
+STOPPING — architecture without the fix sequence. The complaint list,
+not the folds, is the point; the debate must not let the sequence be
+descoped after the architecture lands.
+
+**The remedy's shape and its verification burden (added per review).**
+P3's original premise cited the style redesign as proof of the remedy —
+"adopt the engines' data structures." The style redesign's correctness
+argument was STRUCTURAL ISOMORPHISM: `DeclBlock` mirrors Servo's
+`PropertyDeclarationBlock` field-for-field, so correctness could be
+audited at the field level against the source. The doctrine forbids
+engine-shaped mutable structures (in-place item mutation, persisted
+solver caches), so this PR adopts the engines' SEMANTICS on
+doctrine-conforming data — a strictly weaker verification position with
+no field-level isomorphism to audit. The substitute is behavioral
+equivalence: per-phase engine-behavior proof families keyed by spec
+section with WPT provenance, INCLUDING phases that move no registered
+row (FLEX_MAPPING §6). The per-row pin flips are necessary, not
+sufficient — the rows pin the known divergences; the phase families pin
+the skeleton the review can no longer audit structurally.
 
 **The debate must answer.**
-1. What is the actual complaint list? (The users' top flex bugs, named —
-   the subsequent admissions target them, not aesthetics.)
-2. Map-first vs admit-first: is aligning structures to Blink/Gecko
-   justified *before* admitting the missing batches, or should the missing
-   batches be admitted into the current solver first (cheaper, keeps the
-   debt)? What evidence decides?
-3. What does "done" mean: full structural alignment, or the named subset
-   that resolves the complaint list?
-4. What does the migration cost the solver's ~50 unit tests, and which of
-   them are testing bespoke internals that should die with the bespoke
-   structures (per the test-migration policy: genuine unit assertions
-   re-home; cross-module assertions re-express through the public surface)?
-5. **Kill criterion (added per the S10 review):** this PR dies if the
-   mapping document concludes the current solver is already closer to the
-   engines than feared — in which case the arc admits the named missing
-   batches into the current solver and stops.
+1. The complaint list — answered by construction (FLEX_MAPPING §1). The
+   debate's remaining product is SEQUENCING via the §1 classification:
+   which NO/PARTIAL rows, if any, pull forward as in-place pin-flip
+   landings on the current solver on client criticality (accepting double
+   work — the row flips in place, then re-pins on the new structures),
+   each pull recorded in §4.
+2. Map-first vs admit-first — re-scoped per review. The restructure
+   stands on the doctrine independently of the mapping's conclusion (the
+   recursive walk and per-container allocations die regardless). The live
+   question is the per-row classification, adjudicated row by row; the
+   debate may move any row's classification on evidence.
+3. What does "done" mean — unchanged: the named subset resolving the
+   complaint list (FLEX_MAPPING §4 steps 1–9), plus the step-10
+   admissions the debate scopes (auto margins §8.1 first). Full
+   structural alignment (baseline, collapse struts, fragmentation,
+   balanced wrap) stays gated, named.
+4. The solver's 59 unit tests (verified counts; pre-review figures were
+   stale: 17 `measured_item_record_*`, 23 `resolve_active_flex_container_*`,
+   19 others) — genuine unit assertions re-home onto the record/lane
+   unit surface; cross-module assertions re-express through the public
+   surface; bespoke-internal tests die with the bespoke structures. The
+   per-file split is a debate artifact produced at the structural step.
+5. **Kill criterion (RESTATED 2026-10-19 — the original form was
+   void).** The original — "dies if the solver is already closer to the
+   engines than feared" — failed twice over: "closer than feared" is
+   unmeasurable, and the layout-pass doctrine settled the same day
+   already mandates the restructure regardless of the mapping's
+   conclusion, so the criterion could not fire by construction (a debate
+   that can only ratify is not a debate — the rule PR 2 was killed
+   under). Restated operationally: the restructure dies only if (a) the
+   debate produces pinned-scenario measurements showing the recursive
+   walk plus per-container allocations OUTPERFORM the two-fold
+   architecture on the workloads the proof suite pins — i.e., the
+   doctrine itself is reversed on evidence — or (b) the third party
+   refutes the mapping's §2.1 skeleton claims from the engine sources.
+   Falsifiable in both directions. The in-place/admit-first question is
+   NOT killed by the restructure's survival: it lives on as the per-row
+   classification of question 1.
+6. **Grid's arc position (REQUIRED OUTPUT, added per review).** The
+   client signal names grid alongside flex; the gate enumeration (14
+   properties + display) is ready. The debate MUST output a dated
+   decision: grid enters the arc at a named step, or is explicitly out
+   of the arc with rationale. "Later, unspecified" is a non-decision and
+   does not close the question. FLEX_MAPPING §8 carries the
+   recommendation (enter immediately after the fix sequence, before
+   PR 4 — the intrinsic fold grid needs will exist, and the signal ranks
+   grid with flex); the debate may overrule it with rationale.
 
-**What the reviewer should attack:** whether this is a rewrite in mapping
-clothes; whether the complaint list is real or assumed; whether the
-current solver's proofs actually pin the behavior the migration claims to
-preserve; and the sequencing (why third, not first, if it's the biggest
-user complaint — answer recorded in the decision log, open to challenge).
+**PR 3 proof obligations (added per review — the section previously
+lacked them; PR 1's standard applied).** The structural step lands with
+ZERO pin flips and the full suite green, perf pins as judge; every
+semantic step flips its rows in the same change; the full gate per step;
+the new perf counters and the pinned text-heavy refold scenario land
+with the structural step; per-phase engine-behavior proof families per
+the verification-burden paragraph; perf pins re-pin only with a
+documented cause.
+
+**What the reviewer should attack:** whether the §1 classification hides
+structural dependencies in "in-place" rows; whether the basis-layering
+rule leaks (any basis-dependent value computed in the up fold); the
+run-aggregation cursors against heterogeneous content; the refold
+budget's number; and the sequencing (why third, not first, if it's the
+biggest user complaint — answer recorded in the decision log, open to
+challenge).
 
 ### PR 4 — the text seam, proven open (second-to-last) `SETTLED in shape, GATED on proof`
 
@@ -915,7 +1004,83 @@ an f32 basis.
   admissions (auto margins §8.1 first). Also landed under the review
   incorporation: `7946aa7` (inline blockification pin — cross-axis
   divergence registered; the review's predicted main-size divergence
-  correctly did not manifest).
+  correctly did not manifest). **Amended the same day by the
+  adversarial-review entry below** — the "DISSOLVES" headline is
+  re-scoped to the per-row classification and the kill criterion is
+  restated; the entry is kept verbatim as the record of what the review
+  attacked.
+
+- **2026-10-19 — the PR 3 adversarial review and its folded amendments.**
+  A full adversarial review of PR 3 against PLAN.md and FLEX_MAPPING.md
+  (counts re-verified against the tree: `flex.rs` 5,356 lines, 135 flex
+  proofs, 59 solver unit tests; `root_dom.rs` 7,340 lines, 48 public
+  methods; `dom_node.rs` 2,425) found the DESTINATION defensible and the
+  PROCESS not: a kill criterion that could not fire (the doctrine settled
+  the same day already mandates the restructure; "closer than feared" is
+  unmeasurable), a debate whose questions were pre-answered by its own
+  subject, a scope its title did not describe (the doctrine makes this a
+  layout-pass re-architecture, not a flex-solver migration), and a
+  flagship record that baked the resolution-time layering error it
+  existed to kill (write-time `margin_sums`/`hypothetical_main` for
+  percentage-admitting quantities whose basis is down-fold). Folded
+  amendments, rationale in place at each site: (1) **PLAN.md PR 3
+  rewritten** — honest scope and title; kill criterion restated
+  operationally against the doctrine (dies on measured reversal of the
+  doctrine, or on third-party refutation of the mapping's §2.1 skeleton
+  claims — falsifiable in both directions); grid added as REQUIRED
+  debate-output question 6; proof obligations added (they were missing;
+  PR 1's standard applied); stale counts corrected throughout. (2)
+  **FLEX_MAPPING amended** — the per-row restructure/in-place
+  classification (four Tier-1 rows strictly require the restructure; the
+  classification's product is SEQUENCING: pull-forward landings on
+  client criticality, accepting double work); the record respec'd to
+  basis-independent up-fold quantities only — which also SHRANK it to
+  four intrinsic sizes plus flags (~20 bytes/node), because authored
+  style is read from the S1 computed groups at down-fold time rather
+  than duplicated into the record; lanes made update-scoped (the
+  paint-order fix's lifecycle demands it — per-container reset could not
+  serve a later paint pass) with `u32` indices (the `u16` had no
+  overflow story) and the insertion bound named with an evidence-gated
+  merge fallback; run-aggregation, the collapsibility-conditioned
+  whitespace drop, and the 0×0 order-modified static-position model
+  specified (Tier-1 row #1 previously rested on one sentence); the
+  refold budget with a designed within-update memo fallback (text in
+  shrink contexts flags everywhere — the most common content meets the
+  most expensive measurement); step 1 split per the structural-migration
+  policy (the algorithm change with zero pin flips, semantic landings
+  after — the bundling ban cuts both ways); the verification burden
+  restated (per-phase behavioral pins substitute for the structural
+  isomorphism the style redesign enjoyed — the remedy's premise shifted
+  and is now owned); the third party's obligations enumerated (agreement
+  by name, per obligation — a general assent is not agreement). (3) The
+  review's credit list stands and is recorded so the amendments are not
+  read as a repudiation: the spec-surface methodology and its
+  false-positive filter, the pre-committed tie-break rule with exercised
+  adjudications, §7's existence and its best attack point (the refold
+  hit rate — now the budget), the kill ASSESSMENT's substance (skeleton
+  close, deltas real — matches the evidence), and the two-fold
+  destination itself.
+
+- **2026-10-19 — the architect's countersign on the PR 3 review
+  amendments.** The amendments are accepted in full; each was re-derived
+  against the tree and the corpus, and the factual claims re-verified
+  (59 solver unit tests: 17 `measured_item_record_*` + 23
+  `resolve_active_flex_container_*` + 19 others; `line_collection_items`
+  present at `flex.rs:177/388/1639`; 135 flex proofs). Named errors of
+  record in the pre-review draft: the basis-layering violation (the
+  flagship record stored down-fold quantities — the same
+  resolution-time error as `off_spec_percentage_resolution_against_flex_container`);
+  the per-container lane lifecycle (could not serve paint); the
+  unconditioned whitespace drop; the one-line abs-pos model; the
+  bundling-ban violation in step 1 (the policy's author, hoisted); the
+  void kill criterion (failed the rule PR 2 was killed under); the
+  "DISSOLVES" overstatement. One probe carried into the obligations:
+  the paint-order NO classification assumes the order-modified sequence
+  is consumable by paint TODAY — `line_collection_items` exists but its
+  retention past relayout is unverified; obligation (c)'s classification
+  audit should answer it specifically. The debate package stands as
+  amended; the next act is the third party executing obligations
+  (a)–(e) BY NAME.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
