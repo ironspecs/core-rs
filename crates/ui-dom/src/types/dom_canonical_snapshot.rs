@@ -60,6 +60,7 @@ mod tests {
                     min_content_width_px: 24.0,
                     max_content_width_px: 48.0,
                     line_height_px: 20.0,
+                    ..Default::default()
                 }),
                 available_width_px: 320.0,
                 available_height_px: 180.0,

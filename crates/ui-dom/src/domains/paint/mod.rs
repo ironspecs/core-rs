@@ -639,6 +639,11 @@ fn text_intrinsic_from_metrics(font_size_px: f32, metrics: &TextIntrinsicMetrics
         min_content_width_px: metrics.min_content_width_px,
         max_content_width_px: metrics.max_content_width_px,
         line_height_px: metrics.line_height_px,
+        leading_fragment_width_px: metrics.leading_fragment_width_px,
+        trailing_fragment_width_px: metrics.trailing_fragment_width_px,
+        starts_with_wrap_opportunity: metrics.starts_with_wrap_opportunity,
+        ends_with_wrap_opportunity: metrics.ends_with_wrap_opportunity,
+        fragment_line_height_max_px: metrics.fragment_line_height_max_px,
     }
 }
 

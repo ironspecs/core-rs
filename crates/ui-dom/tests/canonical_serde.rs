@@ -59,6 +59,14 @@ fn canonical_layout_snapshot_fixture_matches_public_wire_shape() {
             min_content_width_px: 24.0,
             max_content_width_px: 48.0,
             line_height_px: 20.0,
+            // New fragment-level measurement surface (flex arc step 3a-i):
+            // per-edge unbreakable fragment widths, boundary wrap-opportunity
+            // flags, and the per-fragment line-height maximum.
+            leading_fragment_width_px: 24.0,
+            trailing_fragment_width_px: 24.0,
+            starts_with_wrap_opportunity: false,
+            ends_with_wrap_opportunity: false,
+            fragment_line_height_max_px: 20.0,
         }),
         available_width_px: 320.0,
         available_height_px: 180.0,
@@ -98,6 +106,12 @@ fn canonical_snapshot_fixture_matches_public_wire_shape() {
                 min_content_width_px: 24.0,
                 max_content_width_px: 48.0,
                 line_height_px: 20.0,
+                // New fragment-level measurement surface (flex arc step 3a-i).
+                leading_fragment_width_px: 24.0,
+                trailing_fragment_width_px: 24.0,
+                starts_with_wrap_opportunity: false,
+                ends_with_wrap_opportunity: false,
+                fragment_line_height_max_px: 20.0,
             }),
             available_width_px: 320.0,
             available_height_px: 180.0,

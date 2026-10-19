@@ -9,6 +9,10 @@
 //!
 //! - this file owns only the `TextLayoutContext` struct and its `impl` block
 //! - every operation delegates to the parent module's buffer and caret helpers
+//! - `measure_intrinsic` derives the fragment-level intrinsic surface (leading
+//!   and trailing unbreakable-fragment widths, boundary wrap-opportunity
+//!   flags) from the same min-content buffer that supplies min-content width —
+//!   no extra cosmic measurement per node
 //! - the thread-local repo context is created once from
 //!   `TextLayoutConfig::repo_default`
 
@@ -56,6 +60,14 @@ impl TextLayoutContext {
         request: &TextLayoutRequest<'_>,
     ) -> TextIntrinsicMetrics {
         let line_height_px = effective_line_height_px(&mut self.font_system, request);
+        // Boundary wrap-opportunity flags are text-shaped, not measurement
+        // shaped: a collapsed whitespace/segment-break character at either edge
+        // is itself a soft-wrap opportunity, so it separates this node's edge
+        // fragment from a neighbor's across the boundary (CSS Text 3 §4).
+        let starts_with_wrap_opportunity = white_space_is_collapse_mode(request.white_space)
+            && text_starts_with_collapsible_boundary_whitespace(request.text);
+        let ends_with_wrap_opportunity = white_space_is_collapse_mode(request.white_space)
+            && text_ends_with_collapsible_boundary_whitespace(request.text);
         if request.font_size_px == 0.0 {
             // Zero-size text is CSS-legal (CSS Fonts 4 §3.5); cosmic-text asserts a
             // non-zero font size, so measure without it: zero-width glyphs.
@@ -63,25 +75,51 @@ impl TextLayoutContext {
                 min_content_width_px: 0.0,
                 max_content_width_px: 0.0,
                 line_height_px,
+                leading_fragment_width_px: 0.0,
+                trailing_fragment_width_px: 0.0,
+                starts_with_wrap_opportunity,
+                ends_with_wrap_opportunity,
+                fragment_line_height_max_px: line_height_px,
             };
         }
         let max_content_width_px =
             build_text_buffer(&mut self.font_system, request, line_height_px, None, None)
                 .layout_runs()
                 .fold(0.0f32, |width_px, run| width_px.max(run.line_w));
-        let min_content_width_px = build_text_buffer(
+        // The min-content pass already forces a break at every soft-wrap
+        // opportunity (width 0), so each layout run is exactly one unbreakable
+        // fragment: the first run is the leading fragment, the last run is the
+        // trailing fragment, and the fold over `LayoutRun::line_w` is the
+        // min-content width. No third buffer and no extra cosmic measurement —
+        // the same runs supply all three quantities.
+        let min_content_buffer = build_text_buffer(
             &mut self.font_system,
             request,
             line_height_px,
             Some(0.0),
             None,
-        )
-        .layout_runs()
-        .fold(0.0f32, |width_px, run| width_px.max(run.line_w));
+        );
+        let mut min_content_width_px = 0.0f32;
+        let mut leading_fragment_width_px = 0.0f32;
+        let mut trailing_fragment_width_px = 0.0f32;
+        for (run_index, run) in min_content_buffer.layout_runs().enumerate() {
+            min_content_width_px = min_content_width_px.max(run.line_w);
+            if run_index == 0 {
+                leading_fragment_width_px = run.line_w;
+            }
+            trailing_fragment_width_px = run.line_w;
+        }
         TextIntrinsicMetrics {
             min_content_width_px,
             max_content_width_px,
             line_height_px,
+            leading_fragment_width_px,
+            trailing_fragment_width_px,
+            starts_with_wrap_opportunity,
+            ends_with_wrap_opportunity,
+            // Single-style text today: every fragment shares one line height, so
+            // the fragment maximum is the node's own line height.
+            fragment_line_height_max_px: line_height_px,
         }
     }
 
@@ -235,6 +273,38 @@ fn zero_size_caret_map(request: &TextLayoutRequest<'_>, line_height_px: f32) -> 
     TextCaretMap { lines }
 }
 
+/// The collapse white-space class (`normal`/`nowrap`/`pre-line`) collapses
+/// space runs; the preserve class (`pre`/`pre-wrap`/`break-spaces`) keeps them
+/// literal. Mirrors `text_layout_input_for_white_space`'s grouping so the
+/// boundary wrap-opportunity flags agree with the shaping path.
+fn white_space_is_collapse_mode(white_space: DomWhiteSpace) -> bool {
+    matches!(
+        white_space,
+        DomWhiteSpace::Normal | DomWhiteSpace::Nowrap | DomWhiteSpace::PreLine
+    )
+}
+
+/// Collapsible whitespace and segment-break characters that become a boundary
+/// soft-wrap opportunity (or forced break) under a collapse white-space mode.
+/// Matches `white_space::is_collapsible_ascii_whitespace`'s set; a segment
+/// break at either edge is a break even in `pre-line`, where it is preserved
+/// rather than collapsed.
+fn is_collapsible_boundary_whitespace(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\n' | '\r' | '\u{000c}')
+}
+
+fn text_starts_with_collapsible_boundary_whitespace(text: &str) -> bool {
+    text.chars()
+        .next()
+        .is_some_and(is_collapsible_boundary_whitespace)
+}
+
+fn text_ends_with_collapsible_boundary_whitespace(text: &str) -> bool {
+    text.chars()
+        .next_back()
+        .is_some_and(is_collapsible_boundary_whitespace)
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
@@ -249,6 +319,17 @@ mod tests {
         for line in &caret_map.lines {
             assert!(!line.stops.is_empty());
         }
+    }
+
+    /// The standalone measured width of a single word (max-content equals
+    /// min-content for a word, since a word is one unbreakable fragment).
+    fn measure_word_width(context: &mut TextLayoutContext, word: &str) -> f32 {
+        context
+            .measure_intrinsic(&TextLayoutRequest::for_text(
+                word,
+                DEFAULT_TEXT_FONT_SIZE_PX,
+            ))
+            .max_content_width_px
     }
 
     #[test]
@@ -600,6 +681,126 @@ mod tests {
         );
 
         assert_eq!(byte_index, target_stop.byte_index);
+    }
+
+    #[test]
+    fn single_word_intrinsic_is_a_single_fragment() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text("hello", DEFAULT_TEXT_FONT_SIZE_PX);
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        assert_eq!(
+            intrinsic.leading_fragment_width_px, intrinsic.min_content_width_px,
+            "a single word has one fragment, so leading equals min-content"
+        );
+        assert_eq!(
+            intrinsic.trailing_fragment_width_px, intrinsic.min_content_width_px,
+            "a single word has one fragment, so trailing equals min-content"
+        );
+        assert_eq!(
+            intrinsic.min_content_width_px, intrinsic.max_content_width_px,
+            "a single word never wraps, so min-content equals max-content"
+        );
+    }
+
+    #[test]
+    fn multi_word_intrinsic_splits_fragments_at_soft_wrap_opportunities() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text("aa bbb cc", DEFAULT_TEXT_FONT_SIZE_PX);
+
+        let intrinsic = context.measure_intrinsic(&request);
+        let aa_width = measure_word_width(&mut context, "aa");
+        let bbb_width = measure_word_width(&mut context, "bbb");
+        let cc_width = measure_word_width(&mut context, "cc");
+
+        assert_eq!(
+            intrinsic.leading_fragment_width_px, aa_width,
+            "the leading fragment is the first word"
+        );
+        assert_eq!(
+            intrinsic.trailing_fragment_width_px, cc_width,
+            "the trailing fragment is the last word"
+        );
+        assert_eq!(
+            intrinsic.min_content_width_px, bbb_width,
+            "min-content is the widest fragment (the middle word)"
+        );
+    }
+
+    #[test]
+    fn collapse_mode_flags_boundary_wrap_opportunities_for_surrounding_spaces() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text_with_white_space(
+            " aa ",
+            DEFAULT_TEXT_FONT_SIZE_PX,
+            DomWhiteSpace::Normal,
+        );
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        assert!(
+            intrinsic.starts_with_wrap_opportunity,
+            "a collapsed leading space is a boundary wrap opportunity"
+        );
+        assert!(
+            intrinsic.ends_with_wrap_opportunity,
+            "a collapsed trailing space is a boundary wrap opportunity"
+        );
+    }
+
+    #[test]
+    fn preserve_mode_does_not_flag_boundary_wrap_opportunities_for_surrounding_spaces() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text_with_white_space(
+            " aa ",
+            DEFAULT_TEXT_FONT_SIZE_PX,
+            DomWhiteSpace::PreWrap,
+        );
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        assert!(
+            !intrinsic.starts_with_wrap_opportunity,
+            "pre-wrap preserves the leading space, so the boundary is not a collapse break"
+        );
+        assert!(
+            !intrinsic.ends_with_wrap_opportunity,
+            "pre-wrap preserves the trailing space, so the boundary is not a collapse break"
+        );
+    }
+
+    #[test]
+    fn nowrap_mode_is_a_single_fragment_with_no_internal_wrap_opportunities() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text_with_white_space(
+            "aa bbb cc",
+            DEFAULT_TEXT_FONT_SIZE_PX,
+            DomWhiteSpace::Nowrap,
+        );
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        assert_eq!(
+            intrinsic.leading_fragment_width_px, intrinsic.max_content_width_px,
+            "nowrap suppresses wrapping, so the whole run is one fragment"
+        );
+        assert_eq!(
+            intrinsic.trailing_fragment_width_px, intrinsic.max_content_width_px,
+            "nowrap suppresses wrapping, so the whole run is one fragment"
+        );
+        assert_eq!(
+            intrinsic.min_content_width_px, intrinsic.max_content_width_px,
+            "nowrap exposes no internal wrap opportunities"
+        );
+        assert!(
+            !intrinsic.starts_with_wrap_opportunity,
+            "no boundary whitespace, so no boundary wrap opportunity"
+        );
+        assert!(
+            !intrinsic.ends_with_wrap_opportunity,
+            "no boundary whitespace, so no boundary wrap opportunity"
+        );
     }
 
     #[test]

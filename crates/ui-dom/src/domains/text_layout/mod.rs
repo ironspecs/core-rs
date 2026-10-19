@@ -91,6 +91,23 @@ pub(crate) struct TextIntrinsicMetrics {
     pub(crate) min_content_width_px: f32,
     pub(crate) max_content_width_px: f32,
     pub(crate) line_height_px: f32,
+    /// Width of the first unbreakable fragment (up to the first soft-wrap
+    /// opportunity); equals min-content when the text is a single fragment.
+    pub(crate) leading_fragment_width_px: f32,
+    /// Width of the last unbreakable fragment.
+    pub(crate) trailing_fragment_width_px: f32,
+    /// The text begins with a collapsible whitespace/segment-break character
+    /// in a collapse white-space mode, so a preceding run's trailing fragment
+    /// does not join across this boundary (the boundary itself is a break).
+    pub(crate) starts_with_wrap_opportunity: bool,
+    /// The text ends with a collapsible whitespace/segment-break character in
+    /// a collapse white-space mode (a following run's leading fragment does
+    /// not join across this boundary).
+    pub(crate) ends_with_wrap_opportunity: bool,
+    /// Maximum line-height over the text's fragments (the run's strut cross
+    /// size). Equals `line_height_px` for today's single-style text; kept as a
+    /// forward-compatible shape for heterogeneous-font runs.
+    pub(crate) fragment_line_height_max_px: f32,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
