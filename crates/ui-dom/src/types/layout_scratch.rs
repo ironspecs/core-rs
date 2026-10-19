@@ -169,6 +169,7 @@ mod tests {
             cross_size_px: 40.0,
             cross_offset_px: 0.0,
             resolved_cross_size_px: 0.0,
+            placed_cross_size_px: 0.0,
         });
         let _ = scratch.lines.finish_range(lines_start);
 

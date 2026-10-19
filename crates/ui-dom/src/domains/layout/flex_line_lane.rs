@@ -22,6 +22,12 @@
 //!   the former side-carried `line_cross_offsets_px` vector and the solve's
 //!   `line_cross_sizes_px` field); `cross_size_px` stays the measured line
 //!   cross size for the wrapped-placement invariant
+//! - `placed_cross_size_px` is the per-line running maximum of placed item
+//!   cross sizes, written in place by the placement pass via `slice_mut`
+//!   (replacing the former per-placement `vec![0.0; line_count]` transient
+//!   accumulator); the wrapped-placement invariant reads it back against
+//!   `cross_size_px`. It is re-zeroed on every push, so it never carries
+//!   state across a solve.
 //! - ranges are invalidated by `reset()`; ranges never span two updates
 //! - update-scoped: `reset()` clears entries, keeping the retained backing
 //!   capacity at its high-water mark so steady state is zero-allocation
@@ -51,6 +57,10 @@ pub(crate) struct FlexLineEntry {
     /// measured size plus `align-content: stretch`), written by the resolve
     /// phase.
     pub(crate) resolved_cross_size_px: f32,
+    /// The per-line running maximum of placed item cross sizes, written in
+    /// place by the placement pass (replacing the former per-placement
+    /// `vec![0.0; line_count]` accumulator); re-zeroed on every push.
+    pub(crate) placed_cross_size_px: f32,
 }
 
 /// Vec-backed storage for per-line summaries, sliced per container via
@@ -157,6 +167,7 @@ mod tests {
             cross_size_px: 0.0,
             cross_offset_px: 0.0,
             resolved_cross_size_px: 0.0,
+            placed_cross_size_px: 0.0,
         }
     }
 
@@ -215,6 +226,33 @@ mod tests {
         assert_eq!(slice[1].resolved_cross_size_px, 40.0);
         // The measured cross size is untouched by the packing write.
         assert_eq!(slice[0].cross_size_px, 0.0);
+    }
+
+    #[test]
+    fn placement_writes_placed_cross_size_as_running_max_in_place() {
+        let mut lane = FlexLineLane::default();
+        let start = lane.begin_range();
+        lane.push(line(0, 2));
+        lane.push(line(2, 3));
+        let range = lane.finish_range(start);
+
+        // The placement pass writes, per line, the running maximum of placed
+        // item cross sizes through `slice_mut` (indexed by line offset).
+        for (line_offset, placed_cross_size_px) in
+            [10.0f32, 8.0, 12.0, 14.0, 11.0].iter().enumerate()
+        {
+            let slot = line_offset % usize::try_from(range.len).expect("line count fits usize");
+            let entry = &mut lane.slice_mut(range)[slot];
+            entry.placed_cross_size_px = entry.placed_cross_size_px.max(*placed_cross_size_px);
+        }
+
+        let slice = lane.slice(range);
+        assert_eq!(slice[0].placed_cross_size_px, 12.0);
+        assert_eq!(slice[1].placed_cross_size_px, 14.0);
+        // The placement write is independent of the resolve-phase packing
+        // fields and the measured cross size.
+        assert_eq!(slice[0].cross_size_px, 0.0);
+        assert_eq!(slice[0].resolved_cross_size_px, 0.0);
     }
 
     #[test]

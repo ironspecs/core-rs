@@ -27,6 +27,7 @@ use crate::domains::style::computed::{
     OverflowKw,
 };
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
+use crate::numeric::usize_to_f32;
 use crate::types::dom_node::measure_text_intrinsic_from_content_and_font_size;
 use crate::types::{
     DomBoxModel, DomError, DomIntrinsic, DomNode, DomNodeSlotKey, DomRect, DomTextDirection,
@@ -1714,6 +1715,7 @@ fn push_measured_flex_line(
         cross_size_px,
         cross_offset_px: 0.0,
         resolved_cross_size_px: 0.0,
+        placed_cross_size_px: 0.0,
     });
 }
 
@@ -2504,8 +2506,6 @@ where
     R: DomLayoutResolver + ?Sized,
 {
     let solve = request.solve;
-    let line_count = root_dom.layout_scratch.lines.slice(solve.line_range).len();
-    let mut placed_line_cross_sizes_px: Vec<f32> = vec![0.0; line_count];
     let mut placed_item_count = 0usize;
     for dom_index in solve.item_range.start..solve.item_range.start + solve.item_range.len {
         let item_entry = *root_dom.layout_scratch.items.get(dom_index);
@@ -2545,8 +2545,11 @@ where
         )?;
         let line_slot = usize::try_from(item_entry.line_index - solve.line_range.start)
             .expect("line index should fall within the container's line range");
-        placed_line_cross_sizes_px[line_slot] =
-            placed_line_cross_sizes_px[line_slot].max(placed_resolved_item.resolved_cross_size_px);
+        let line_entries = root_dom.layout_scratch.lines.slice_mut(solve.line_range);
+        let line_entry = &mut line_entries[line_slot];
+        line_entry.placed_cross_size_px = line_entry
+            .placed_cross_size_px
+            .max(placed_resolved_item.resolved_cross_size_px);
         placed_item_count += 1;
     }
     assert_eq!(
@@ -2557,7 +2560,6 @@ where
     assert_wrapped_line_cross_sizes_match_measurement(
         request.container_style.wrap_mode,
         root_dom.layout_scratch.lines.slice(solve.line_range),
-        &placed_line_cross_sizes_px,
     );
     Ok(PlacedFlexChildren {
         container_cross_size_px: total_line_cross_size_px_from_lane(
@@ -2664,19 +2666,13 @@ fn resolved_flex_item_cross_axis_alignment(
 fn assert_wrapped_line_cross_sizes_match_measurement(
     wrap_mode: FlexWrapMode,
     lines: &[FlexLineEntry],
-    line_cross_sizes_px: &[f32],
 ) {
     if !wrap_mode.is_wrapping() {
         return;
     }
-    assert_eq!(
-        lines.len(),
-        line_cross_sizes_px.len(),
-        "wrapped active flex placement should track one cross size per line",
-    );
-    for (line, line_cross_size_px) in lines.iter().zip(line_cross_sizes_px.iter().copied()) {
+    for line in lines {
         assert!(
-            flex_axis_sizes_match(line.cross_size_px, line_cross_size_px),
+            flex_axis_sizes_match(line.cross_size_px, line.placed_cross_size_px),
             "wrapped active flex placement should preserve measured line cross sizes",
         );
     }
@@ -2686,11 +2682,17 @@ fn flex_axis_sizes_match(left_px: f32, right_px: f32) -> bool {
     (left_px - right_px).abs() <= f32::EPSILON
 }
 
+/// Converts a flex count (`usize`, non-negative by construction) to `f32`.
+///
+/// The former implementation round-tripped through a decimal `String`
+/// (`to_string().parse::<f32>()`), allocating once per call on the hot solve
+/// path. Both forms round the exact integer to the nearest `f32` (the
+/// correctly-rounded value), so `usize_to_f32` — the crate's clippy-clean
+/// `usize as f32` cast under `forbid(clippy::cast_precision_loss)` — is
+/// bit-for-bit equivalent and allocation-free. Pinned by
+/// `non_negative_f32_from_usize_matches_as_cast_bit_for_bit`.
 fn non_negative_f32_from_usize(value: usize) -> f32 {
-    value
-        .to_string()
-        .parse::<f32>()
-        .expect("usize-backed flex count should parse as f32")
+    usize_to_f32(value)
 }
 
 fn active_flex_resolved_child_context(
@@ -3401,6 +3403,7 @@ mod tests {
                 cross_size_px: line.cross_size_px,
                 cross_offset_px: 0.0,
                 resolved_cross_size_px: 0.0,
+                placed_cross_size_px: 0.0,
             });
         }
         let line_range = scratch.lines.finish_range(line_start);
@@ -6048,5 +6051,45 @@ mod tests {
         assert_eq!(solve.main_size_px, 16.0);
         assert_eq!(solve.cross_size_px, 30.0);
         assert_eq!(solve.resolution_range, LaneRange::default());
+    }
+
+    #[test]
+    fn non_negative_f32_from_usize_matches_as_cast_bit_for_bit() {
+        // The former `to_string().parse::<f32>()` implementation rounded the
+        // exact decimal representation to nearest; the new `usize as f32`
+        // conversion rounds the exact integer to nearest. Both are
+        // correctly-rounded conversions of the same exact value, so they must
+        // agree bit-for-bit across the domain — including values around 2^24
+        // (the first non-representable integer in f32) and `usize::MAX`.
+        fn old_behavior(value: usize) -> f32 {
+            value
+                .to_string()
+                .parse::<f32>()
+                .expect("usize-backed flex count should parse as f32")
+        }
+        for value in [
+            0usize,
+            1,
+            2,
+            3,
+            16,
+            1_000,
+            8_388_607,  // 2^23 - 1
+            8_388_608,  // 2^23
+            16_777_215, // 2^24 - 1
+            16_777_216, // 2^24
+            16_777_217, // 2^24 + 1
+            1_000_000_000,
+            usize::MAX / 4 + 1,
+            usize::MAX / 2,
+            usize::MAX - 1,
+            usize::MAX,
+        ] {
+            assert_eq!(
+                non_negative_f32_from_usize(value).to_bits(),
+                old_behavior(value).to_bits(),
+                "non_negative_f32_from_usize({value}) should round to the same f32 bits as the decimal-string parse",
+            );
+        }
     }
 }
