@@ -9565,3 +9565,206 @@ fn assert_img_text_sibling_gap(name: &str) {
         "{name}: label keeps its measured width",
     );
 }
+
+// CSS Flexbox 1 §9.9 (intrinsic sizes) and §9.7 (flexible length resolution)
+// composed across a NESTED flex boundary with real content: an inner flex
+// container whose items carry text/images is measured for its content, then
+// resolved through the outer line. This is the measurement-recursion path the
+// two graceful gates (`flex_container_content_based_auto_min_is_supported` and
+// the grow-factor boundary in `horizontal_flex_container_content_based_auto_min_content_width_px`,
+// both `flex.rs`) guard. Gecko (`GenerateFlexItemForChild` →
+// `FlexLine::ResolveFlexibleLengths` → final reflow, `nsFlexContainerFrame.cpp`)
+// and Blink (`ConstructAndAppendFlexItems` → `LineFlexer::ResolveFlexibleLengths`
+// → `BuildSpaceForLayout`, `flex_layout_algorithm.cc`) measure the inner
+// container from its content before resolving the outer line.
+#[test]
+fn nested_flex_with_content() {
+    let rows: [NestedFlexContentRow; 5] = [
+        (
+            "a_inner_row_text_items_with_gap",
+            assert_nested_row_text_items_gap,
+        ),
+        (
+            "b_inner_column_text_items_measured_size",
+            assert_nested_column_text_items_measured,
+        ),
+        (
+            "c_inner_row_img_text_auto_min",
+            assert_nested_row_img_text_auto_min,
+        ),
+        (
+            "d_inner_justify_center_uses_outer_grown_width",
+            assert_nested_justify_center_grown,
+        ),
+        (
+            "e_inner_item_text_align_center",
+            assert_nested_item_text_align_center,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named nested-flex-with-content probe: the row name plus a runner.
+type NestedFlexContentRow = (&'static str, fn(&str));
+
+/// Row (a): outer row → inner row (no width) → two text items with column-gap.
+/// A block-level inner flex container stretches to the outer's content width
+/// (200px) rather than shrink-wrapping; the two text items keep the gap between
+/// them (the anonymous-runs per-child model keeps the two text nodes as two
+/// items — see `off_spec_anonymous_inline_runs_are_not_merged`).
+fn assert_nested_row_text_items_gap(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, outer, "align-items", "flex-start");
+    let inner = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, inner, "display", "flex");
+    assert_style_set(&mut root, inner, "column-gap", "10px");
+    let left_text = assert_append_text_to(&mut root, inner, "Left");
+    let _right_text = assert_append_text_to(&mut root, inner, "Right");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let left_width = assert_node_layout(&root, left_text).width_px;
+    let inner_width = assert_node_layout(&root, inner).width_px;
+    assert_close(
+        inner_width,
+        200.0,
+        &format!("{name}: inner stretches to outer content width"),
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    assert_close(
+        text_runs[1].position_px[0],
+        left_width + 10.0,
+        &format!("{name}: second text item after gap"),
+    );
+}
+
+/// Row (b): outer row → inner COLUMN (no width) → text items. The column shape
+/// falls outside the supported content-based auto-min subset, so the inner
+/// keeps its measured main size (the graceful value, same root cause as
+/// `off_spec_flex_auto_min_unsupported_shapes_use_measured_size`) rather than
+/// its widest-text content width.
+fn assert_nested_column_text_items_measured(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let inner = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, inner, "display", "flex");
+    assert_style_set(&mut root, inner, "flex-direction", "column");
+    let first = assert_append_div_to(&mut root, inner);
+    let _first_text = assert_append_text_to(&mut root, first, "Alpha");
+    let second = assert_append_div_to(&mut root, inner);
+    let _second_text = assert_append_text_to(&mut root, second, "Beta");
+    let sibling = assert_append_div_to(&mut root, outer);
+    assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let inner_width = assert_node_layout(&root, inner).width_px;
+    assert_close(
+        inner_width,
+        200.0,
+        &format!("{name}: inner column keeps measured width"),
+    );
+    let sibling_box = node_box(&root, sibling).expect("sibling role should expose a box model");
+    assert_close(
+        sibling_box.border_box.left_px,
+        200.0,
+        &format!("{name}: sibling after measured inner"),
+    );
+}
+
+/// Row (c): outer row shrink context → inner row with img + text items. The
+/// content-based auto-min walk over mixed replaced + text content sums the img
+/// intrinsic width and the text min-content.
+fn assert_nested_row_img_text_auto_min(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "50px");
+    assert_style_set(&mut root, outer, "height", "100px");
+    assert_style_set(&mut root, outer, "align-items", "flex-start");
+    let inner = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, inner, "display", "flex");
+    assert_style_set(&mut root, inner, "flex-basis", "300px");
+    assert_style_set(&mut root, inner, "flex-shrink", "1");
+    let img = assert_append_img_to(&mut root, inner);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    let text = assert_append_text_to(&mut root, inner, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let inner_width = assert_node_layout(&root, inner).width_px;
+    let expected_floor = IMG_PLACEHOLDER_WIDTH_PX + text_intrinsic.min_content_width_px;
+    assert_close(
+        inner_width,
+        expected_floor,
+        &format!("{name}: inner auto-min = img + text min-content"),
+    );
+}
+
+/// Row (d): inner row with `justify-content: center` and a text item, the
+/// inner grown by the outer flex-grow. The inner justify must use the
+/// OUTER-resolved (grown) width, centering the text item in the grown box.
+fn assert_nested_justify_center_grown(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let inner = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, inner, "display", "flex");
+    assert_style_set(&mut root, inner, "justify-content", "center");
+    assert_style_set(&mut root, inner, "height", "20px");
+    assert_style_set(&mut root, inner, "flex-basis", "20px");
+    assert_style_set(&mut root, inner, "flex-grow", "1");
+    assert_style_set(&mut root, inner, "flex-shrink", "1");
+    let text = assert_append_text_to(&mut root, inner, "Mid");
+    let sibling = assert_append_div_to(&mut root, outer);
+    assert_set_inflexible_row_item(&mut root, sibling, "20px", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_width = assert_node_layout(&root, text).width_px;
+    // Inner grew to 200 − 20 (sibling) = 180; the text item centers at
+    // (180 − text_width) / 2.
+    let inner_grown = 180.0;
+    assert_close(
+        assert_node_layout(&root, inner).width_px,
+        inner_grown,
+        &format!("{name}: inner grown width"),
+    );
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    assert_close(
+        text_runs[0].position_px[0],
+        (inner_grown - text_width) / 2.0,
+        &format!("{name}: text centered in grown inner"),
+    );
+}
+
+/// Row (e): a nested item with `text-align: center` composes the C1 alignment
+/// into the nested structure — the text run fills the item's content box and
+/// carries the center alignment.
+fn assert_nested_item_text_align_center(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let inner = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, inner, "display", "flex");
+    let item = assert_append_div_to(&mut root, inner);
+    assert_style_set(&mut root, item, "width", "120px");
+    assert_style_set(&mut root, item, "text-align", "center");
+    let _text = assert_append_text_to(&mut root, item, "Mid");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(
+        text_runs[0].alignment,
+        TextAlign::Center,
+        "{name}: alignment"
+    );
+    assert_close(
+        text_runs[0].size_px[0],
+        120.0,
+        &format!("{name}: text run fills the item content box"),
+    );
+}
