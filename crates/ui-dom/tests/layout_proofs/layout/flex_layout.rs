@@ -54,9 +54,9 @@ use ui_dom::{
 };
 
 use crate::layout_proofs::support::{
-    assert_append_div_to, assert_append_span_to, assert_append_text_to, assert_close,
-    assert_load_root_stylesheet, assert_node_layout, assert_rect_op_fill, assert_rect_op_geometry,
-    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    assert_append_div_to, assert_append_img_to, assert_append_span_to, assert_append_text_to,
+    assert_close, assert_load_root_stylesheet, assert_node_layout, assert_rect_op_fill,
+    assert_rect_op_geometry, assert_root_dom_update, assert_set_attr_str, assert_style_set,
     attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
     theme_stylesheet_origin,
 };
@@ -9355,5 +9355,213 @@ fn off_spec_flex_auto_min_nowrap_text_floors_at_widest_word() {
         nowrap_width,
         normal_width,
         "nowrap floor equals normal's widest-word floor",
+    );
+}
+
+// CSS 2.1 §10.3.2/§10.6.2 (replaced-element width/height transfer through the
+// intrinsic ratio) composed with CSS Flexbox 1 §4.5 (automatic minimum): an
+// `img` is a replaced flex item whose main-axis base is its intrinsic width and
+// whose used cross size follows the intrinsic ratio. The 16:9 placeholder is
+// the crate-owned policy (see `layout/replaced_elements.rs` and the registry);
+// the transfer math is the browser-backed subset (CSS 2.1 §10.3.2/§10.6.2).
+// Gecko (`nsImageFrame::GetIntrinsicRatio`, `nsFlexContainerFrame`
+// replaced-item measurement) and Blink (`LayoutReplaced` intrinsic ratio,
+// `flex_layout_algorithm.cc` replaced-item measurement) both size the replaced
+// item from its intrinsic ratio. Closest WPT oracles:
+// `css/css-flexbox/flexbox-replaced-*`, `css/replaced-element-*`. The
+// cross-axis STRETCH case is divergent and pinned separately by
+// `off_spec_flex_stretch_distorts_replaced_img`.
+#[test]
+fn flex_item_replaced_images() {
+    let rows: [ReplacedImageRow; 4] = [
+        ("a_intrinsic_size_row_base", assert_img_intrinsic_row_base),
+        ("c_shrink_context", assert_img_shrink_context),
+        (
+            "d_percent_width_in_definite_item",
+            assert_img_percent_in_definite_item,
+        ),
+        ("f_img_text_sibling_gap", assert_img_text_sibling_gap),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named replaced-image-in-flex probe: the row name plus a runner.
+type ReplacedImageRow = (&'static str, fn(&str));
+
+const IMG_PLACEHOLDER_WIDTH_PX: f32 = 160.0;
+const IMG_PLACEHOLDER_HEIGHT_PX: f32 = 90.0;
+
+fn assert_img_intrinsic_row_base(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    let img = assert_append_img_to(&mut root, container);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, img).width_px,
+        IMG_PLACEHOLDER_WIDTH_PX,
+        &format!("{name}: img intrinsic base width"),
+    );
+    assert_close(
+        assert_node_layout(&root, img).height_px,
+        IMG_PLACEHOLDER_HEIGHT_PX,
+        &format!("{name}: img intrinsic height"),
+    );
+}
+
+// CSS Flexbox 1 §8.3 (align-items/align-self stretch) composed with CSS 2.1
+// §10.6.2 (replaced-element cross size through the intrinsic ratio): stretch
+// applies only to an item whose cross size is `auto`. A replaced `img` with an
+// intrinsic ratio has a NON-auto cross size (its used height follows the ratio
+// from the used width), so stretch must not distort it. Gecko exempts replaced
+// items in `nsFlexContainerFrame::GetFlexBaseSizeAndHypotheticalMainSize` /
+// the `Stretch` branch of `AlignSelf` resolution; Blink in
+// `FlexItem::CrossAxisIntrinsicSize` (a replaced item carries a definite cross
+// intrinsic size, so `Stretch` is a no-op). Closest WPT oracles:
+// `css/css-flexbox/flexbox_stretch-image.html`.
+//
+// OFF-SPEC: the cross-axis stretch path stretches ANY auto-cross-size item to
+// the line cross size, including a replaced `img`, so the img's height becomes
+// the line cross size (120px, or 100px through a nested flex) instead of its
+// 90px ratio height — the image is distorted.
+#[test]
+fn off_spec_flex_stretch_distorts_replaced_img() {
+    let rows: [ReplacedStretchRow; 2] = [
+        ("direct_stretch", assert_replaced_img_direct_stretch),
+        (
+            "nested_flex_stretch",
+            assert_replaced_img_nested_flex_stretch,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named replaced-img stretch probe: the row name plus a runner.
+type ReplacedStretchRow = (&'static str, fn(&str));
+
+fn assert_replaced_img_direct_stretch(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "120px");
+    // default align-items: stretch.
+    let img = assert_append_img_to(&mut root, container);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, img).width_px,
+        IMG_PLACEHOLDER_WIDTH_PX,
+        &format!("{name}: img width"),
+    );
+    // Divergent: stretched to the line cross size (spec: 90px ratio height).
+    assert_close(
+        assert_node_layout(&root, img).height_px,
+        120.0,
+        &format!("{name}: img height stretched to line cross size"),
+    );
+}
+
+fn assert_replaced_img_nested_flex_stretch(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "100px");
+    let inner = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, inner, "display", "flex");
+    let img = assert_append_img_to(&mut root, inner);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, img).width_px,
+        IMG_PLACEHOLDER_WIDTH_PX,
+        &format!("{name}: nested img width"),
+    );
+    // Divergent: stretched through the nested flex's cross size (spec: 90px).
+    assert_close(
+        assert_node_layout(&root, img).height_px,
+        100.0,
+        &format!("{name}: nested img height stretched to 100px"),
+    );
+}
+
+fn assert_img_shrink_context(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    let img = assert_append_img_to(&mut root, container);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    assert_style_set(&mut root, img, "flex-shrink", "1");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let img_width = assert_node_layout(&root, img).width_px;
+    let img_height = assert_node_layout(&root, img).height_px;
+    // The replaced item's automatic minimum is its content size suggestion
+    // (intrinsic 160px); shrinking below that is divergence.
+    assert_close(
+        img_width,
+        IMG_PLACEHOLDER_WIDTH_PX,
+        &format!("{name}: img floors at intrinsic width"),
+    );
+    assert_close(
+        img_height,
+        IMG_PLACEHOLDER_HEIGHT_PX,
+        &format!("{name}: img height follows ratio"),
+    );
+}
+
+fn assert_img_percent_in_definite_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "100px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "200px");
+    let img = assert_append_img_to(&mut root, item);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    assert_style_set(&mut root, img, "width", "50%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // 50% of the 200px item content width = 100px; height transfers through
+    // the 16:9 ratio.
+    assert_close(
+        assert_node_layout(&root, img).width_px,
+        100.0,
+        &format!("{name}: img 50% width"),
+    );
+    assert_close(
+        assert_node_layout(&root, img).height_px,
+        100.0 / (IMG_PLACEHOLDER_WIDTH_PX / IMG_PLACEHOLDER_HEIGHT_PX),
+        &format!("{name}: img height through ratio"),
+    );
+}
+
+fn assert_img_text_sibling_gap(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let img = assert_append_img_to(&mut root, container);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    let label = assert_append_div_to(&mut root, container);
+    let _label_text = assert_append_text_to(&mut root, label, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let label_box = node_box(&root, label).expect("label role should expose a box model");
+    assert_close(
+        label_box.border_box.left_px,
+        IMG_PLACEHOLDER_WIDTH_PX + 10.0,
+        &format!("{name}: label after img + gap"),
+    );
+    assert!(
+        label_box.border_box.width_px > 0.0,
+        "{name}: label keeps its measured width",
     );
 }
