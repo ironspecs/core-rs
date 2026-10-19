@@ -31,11 +31,15 @@ use crate::numeric::usize_to_f32;
 use crate::types::dom_node::measure_text_intrinsic_from_content_and_font_size;
 use crate::types::{
     DomBoxModel, DomError, DomIntrinsic, DomNode, DomNodeSlotKey, DomRect, DomTextDirection,
-    LaneRange, LayoutScratch, RootDom, RootDomMetricName,
+    DomWhiteSpace, LaneRange, LayoutScratch, RootDom, RootDomMetricName,
 };
 
 use super::DomLayoutResolver;
 use super::MeasurementRecord;
+use super::flex_anonymous_run::{
+    RunAccumulator, accumulate_run, container_mode_is_collapse, empty_run,
+    member_metrics_from_element_atom, member_metrics_from_text, node_is_inline_run_member,
+};
 use super::flex_item_lane::FlexItemLane;
 use super::flex_item_source::FlexItemSource;
 use super::flex_line_lane::{FlexLineEntry, FlexLineLane};
@@ -390,30 +394,60 @@ where
     // lane → back-fill), then builds lines over the order lane. Nested
     // containers claim their own disjoint ranges during their own measurement
     // fold (T3-verified discipline).
+    //
+    // Item formation (CSS Flexbox §4, flex arc step 3a-ii): a maximal run of
+    // contiguous inline-level in-flow children (text nodes and inline
+    // elements) contributes ONE virtual item — `measure_inline_run` folds the
+    // run's fragment metrics into the three cursors (D3) while measuring the
+    // run's cross at the measure width (D4). Block-level children (block,
+    // inline-block, flex, inline-flex, img, element controls) and
+    // abs-pos/`display: none` children break the run and keep today's
+    // per-child item treatment. A whitespace-only run is dropped when — and
+    // only when — its characters are collapsible AND the container's
+    // white-space mode collapses spaces (the D3 emit gate).
     let item_range_start = root_dom.layout_scratch.items.begin_range();
     let order_range_start = root_dom.layout_scratch.order.begin_range();
+    let white_space = request
+        .child_context
+        .inherited_style
+        .effective_white_space();
     let mut child_key = first_child_key(root_dom, request.key)?;
     while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let source = FlexItemSource::BlockItem(current_child_key);
-        let item = measure_one_flex_item(
-            root_dom,
-            tree_size,
-            source,
-            &request.child_context,
-            request.container_style.main_axis,
-            resolver,
-        )?;
-        let dom_index = root_dom.layout_scratch.items.push(item);
-        root_dom
-            .layout_scratch
-            .order
-            .push_in_order(FlexOrderLaneEntry {
-                dom_index,
-                child_key: current_child_key,
-                order: item.order,
-            });
-        child_key = next_child_key;
+        let current_node = node_for_key(root_dom, current_child_key)?;
+        if node_is_inline_run_member(current_node) {
+            let (run, run_breaker_key) = measure_inline_run(
+                root_dom,
+                tree_size,
+                current_child_key,
+                &request.child_context,
+                white_space,
+                resolver,
+            )?;
+            if !(run.all_members_text_and_all_whitespace && container_mode_is_collapse(white_space))
+            {
+                let source = FlexItemSource::AnonymousInlineGroup {
+                    first_child_key: run.first_child_key,
+                    child_count: run.child_count,
+                };
+                let item =
+                    anonymous_inline_run_item_view(source, run, request.container_style.main_axis);
+                push_flex_item_into_lanes(&mut root_dom.layout_scratch, item, current_child_key);
+            }
+            child_key = run_breaker_key;
+        } else {
+            let next_child_key = next_sibling_key(root_dom, current_child_key)?;
+            let source = FlexItemSource::BlockItem(current_child_key);
+            let item = measure_one_flex_item(
+                root_dom,
+                tree_size,
+                source,
+                &request.child_context,
+                request.container_style.main_axis,
+                resolver,
+            )?;
+            push_flex_item_into_lanes(&mut root_dom.layout_scratch, item, current_child_key);
+            child_key = next_child_key;
+        }
     }
     let item_range = root_dom.layout_scratch.items.finish_range(item_range_start);
     let order_range = root_dom
@@ -446,6 +480,145 @@ fn backfill_order_indices(scratch: &mut LayoutScratch, order_range: LaneRange) {
         scratch.items.get_mut(entry.dom_index).order_index = order_range.start
             + u32::try_from(position).expect("order lane position should fit into u32");
     }
+}
+
+/// Pushes one assembled item view into the item lane and its order-lane entry
+/// (the `child_key` is the item's identity anchor: the child's own key for a
+/// block item, the run's first-child key for an anonymous inline group).
+fn push_flex_item_into_lanes(
+    scratch: &mut LayoutScratch,
+    item: FlexItemView,
+    child_key: DomNodeSlotKey,
+) {
+    let dom_index = scratch.items.push(item);
+    scratch.order.push_in_order(FlexOrderLaneEntry {
+        dom_index,
+        child_key,
+        order: item.order,
+    });
+}
+
+/// The virtual item view for an anonymous inline run (`FLEX_MAPPING` §3.2, D5):
+/// order 0, `align_self` None, grow/shrink 0, basis auto (base = the run's
+/// max-content), zero margins/border/padding, no min/max, `auto_min` = the run's
+/// min-content (the widest-segment cursor).
+///
+/// The run's content sizes come from the accumulator, NOT a node record (there
+/// is no node) — the one view exempt from the record-read contract.
+///
+/// The auto-min walk is bypassed for run items — a run has no node to walk —
+/// so the cursor min-content IS the automatic minimum. grow/shrink 0 freezes
+/// the item at its base (inflexible), so the run never shrinks below its
+/// max-content and the min-content floor is recorded, never applied. The
+/// vertical-main axis maps the strut cross to the main size (the run's
+/// single-line height) and the max-content width to the cross size.
+fn anonymous_inline_run_item_view(
+    source: FlexItemSource,
+    run: RunAccumulator,
+    main_axis: FlexAxis,
+) -> FlexItemView {
+    let max_content_width_px = run.max_content_sum_px;
+    let min_content_width_px = run.widest_segment_px;
+    // The D4 joint-measured height at the measure width (max child height) —
+    // equal to the accumulator's strut for the single-line run.
+    let measured_cross_size_input_px = run.strut_line_height_px;
+    let (flex_base_size_px, automatic_min_main_size_px, measured_cross_size_input_px) =
+        match main_axis {
+            FlexAxis::Horizontal => (
+                max_content_width_px,
+                min_content_width_px,
+                measured_cross_size_input_px,
+            ),
+            FlexAxis::Vertical => (
+                measured_cross_size_input_px,
+                measured_cross_size_input_px,
+                max_content_width_px,
+            ),
+        };
+    FlexItemView {
+        source,
+        order: 0,
+        align_self: None,
+        flex_grow_factor: 0.0,
+        flex_shrink_factor: 0.0,
+        flex_base_size_px,
+        hypothetical_main_size_px: flex_base_size_px,
+        automatic_min_main_size_px,
+        min_main_size_px: None,
+        max_main_size_px: None,
+        main_axis_border_padding_px: 0.0,
+        outer_hypothetical_main_size_px: flex_base_size_px,
+        measured_cross_size_input_px,
+        margin_main_start_px: 0.0,
+        margin_main_end_px: 0.0,
+        margin_cross_start_px: 0.0,
+        margin_cross_end_px: 0.0,
+    }
+}
+
+/// Measures a maximal run of contiguous inline-level children starting at
+/// `first_child_key`: the D3 fold (intrinsic cursors) interleaved with the D4
+/// cross measurement (the existing inline accumulation — one measure per child
+/// writing its record, `InlineFlowState`/`next_inline_child_context` reducing
+/// the available width by the used line width). Returns the folded accumulator
+/// and the key of the first run-breaker after the run (`None` at the end of
+/// the siblings). `first_child_key` is a run member (the caller classified it);
+/// subsequent siblings are classified here.
+fn measure_inline_run<R>(
+    root_dom: &mut RootDom,
+    tree_size: (f32, f32),
+    first_child_key: DomNodeSlotKey,
+    child_context: &LayoutContext,
+    white_space: DomWhiteSpace,
+    resolver: &mut R,
+) -> Result<(RunAccumulator, Option<DomNodeSlotKey>), DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    let mut run = empty_run(first_child_key);
+    let mut flow = InlineFlowState::default();
+    let mut child_key = Some(first_child_key);
+    while let Some(current_child_key) = child_key {
+        let is_text_node = {
+            let current_node = node_for_key(root_dom, current_child_key)?;
+            if !node_is_inline_run_member(current_node) {
+                return Ok((run, Some(current_child_key)));
+            }
+            current_node.as_text().is_some()
+        };
+        // D4: measure the member at the remaining inline width — the same
+        // per-child loop as `measure_inline_node_without_layout_write`, with a
+        // different child source (the run's sibling range, not a node's
+        // children). The measure writes the member's record, so an inline
+        // element's record is fresh for the atom fold immediately below.
+        let (child_style, child_inherited_style) =
+            resolved_node_style(root_dom, current_child_key, child_context)?;
+        let next_child_context = next_inline_child_context(child_context.clone(), flow);
+        let child_flow = measure_tree_walker_node_without_layout_write(
+            root_dom,
+            tree_size,
+            current_child_key,
+            &next_child_context,
+            child_style,
+            child_inherited_style,
+            resolver,
+        )?;
+        flow.has_children = true;
+        flow.inline_left_px += child_flow.width_px;
+        flow.line_height_px = flow.line_height_px.max(child_flow.height_px);
+        // D3: fold the member's fragment metrics (text reads the retained
+        // intrinsic; an inline element reads its just-written record as one
+        // atom whose edges never join).
+        let current_node = node_for_key(root_dom, current_child_key)?;
+        let member = if is_text_node {
+            member_metrics_from_text(current_node)
+        } else {
+            member_metrics_from_element_atom(current_node, child_flow.height_px)
+        };
+        accumulate_run(&mut run, member, white_space);
+        child_key = next_sibling_key(root_dom, current_child_key)?;
+    }
+    Ok((run, None))
 }
 
 fn measure_one_flex_item<R>(
@@ -2525,7 +2698,7 @@ where
             request.container_style,
             line.resolved_cross_size_px,
         );
-        let placed_resolved_item = relayout_active_flex_child(
+        let placed_resolved_item = relayout_resolved_flex_child(
             root_dom,
             tree_size,
             &ActiveFlexChildRelayoutRequest {
@@ -2610,6 +2783,126 @@ where
         resolved_cross_size_px: cross_axis_flow_size(request.container_style.main_axis, child_flow),
         ..request.resolved_item
     })
+}
+
+/// Placement dispatch: a block item relayouts its single child; an anonymous
+/// inline run relayouts its run of children as one inline formatting context.
+fn relayout_resolved_flex_child<R>(
+    root_dom: &mut RootDom,
+    tree_size: (f32, f32),
+    request: &ActiveFlexChildRelayoutRequest<'_>,
+    resolver: &mut R,
+) -> Result<ResolvedFlexItem, DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    match request.source {
+        FlexItemSource::BlockItem(_) => {
+            relayout_active_flex_child(root_dom, tree_size, request, resolver)
+        }
+        FlexItemSource::AnonymousInlineGroup { .. } => {
+            relayout_anonymous_inline_run(root_dom, tree_size, request, resolver)
+        }
+    }
+}
+
+/// Lays out an anonymous inline run's children as ONE inline formatting
+/// context inside the resolved item box (CSS Flexbox §4). The children flow
+/// inline from the item's content origin, reusing the existing inline flow
+/// machinery (`relayout_tree_walker_node` + `next_inline_child_context`) over
+/// the parentless sibling range — the thin-entry-point path, not a reshaped
+/// production walk.
+fn relayout_anonymous_inline_run<R>(
+    root_dom: &mut RootDom,
+    tree_size: (f32, f32),
+    request: &ActiveFlexChildRelayoutRequest<'_>,
+    resolver: &mut R,
+) -> Result<ResolvedFlexItem, DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    // One increment per run the placement walk relayouts (a run is one virtual
+    // item relaid out once per placement, matching the block-item counter).
+    root_dom.increment_metric(RootDomMetricName::FlexNodesPlaced);
+    let first_child_key = request.source.first_child_key();
+    let child_count = request.source.child_count();
+    let origin_context = anonymous_inline_run_child_context(
+        request.child_context,
+        request.container_style,
+        request.container_main_size_px,
+        request.resolved_item,
+    );
+    let mut flow = InlineFlowState::default();
+    let mut child_key = Some(first_child_key);
+    // Iterate EXACTLY `child_count` siblings (the run's direct children), never
+    // past the run's end into the following item. A missing child (a
+    // `child_count` larger than the surviving siblings) is internal corruption.
+    for _ in 0..child_count {
+        let current_child_key = child_key.expect("run child should exist within child_count");
+        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
+        let child_context = next_inline_child_context(origin_context.clone(), flow);
+        let child_flow = relayout_tree_walker_node(
+            root_dom,
+            tree_size,
+            current_child_key,
+            child_context,
+            resolver,
+        )?;
+        flow.inline_left_px += child_flow.width_px;
+        flow.line_height_px = flow.line_height_px.max(child_flow.height_px);
+        child_key = next_child_key;
+    }
+    Ok(ResolvedFlexItem {
+        resolved_cross_size_px: cross_axis_flow_size(
+            request.container_style.main_axis,
+            FlowSize {
+                width_px: flow.inline_left_px,
+                height_px: flow.line_height_px,
+                min_width_px: 0.0,
+                max_width_px: flow.inline_left_px,
+            },
+        ),
+        ..request.resolved_item
+    })
+}
+
+/// The run's item-box content origin, mirroring `active_flex_resolved_child_context`
+/// without a child style (a run has no node style): `flow_left`/`flow_top` are
+/// the item's main/cross start. `available_width_px` is `None` so each run
+/// child lays out at its own intrinsic max-content width (the run never
+/// shrinks, so it never wraps — unlike a block item, there is no single
+/// resolved width to override each child to).
+fn anonymous_inline_run_child_context(
+    child_context: &LayoutContext,
+    container_style: FlexContainerStyle,
+    container_main_size_px: f32,
+    resolved_item: ResolvedFlexItem,
+) -> LayoutContext {
+    let main_start_px = resolved_flex_item_main_start_px(
+        resolved_item.main_offset_px,
+        resolved_item.resolved_main_size_px,
+        container_main_size_px,
+        resolved_main_axis_is_reversed(container_style),
+    );
+    let cross_start_px = resolved_item.cross_offset_px;
+    match container_style.main_axis {
+        FlexAxis::Horizontal => LayoutContext {
+            flow_left_px: child_context.flow_left_px + main_start_px,
+            flow_top_px: child_context.flow_top_px + cross_start_px,
+            available_width_px: None,
+            node_content_width_override_px: None,
+            node_content_height_override_px: None,
+            ..*child_context
+        },
+        FlexAxis::Vertical => LayoutContext {
+            flow_left_px: child_context.flow_left_px + cross_start_px,
+            flow_top_px: child_context.flow_top_px + main_start_px,
+            available_width_px: None,
+            node_content_width_override_px: None,
+            node_content_height_override_px: None,
+            ..*child_context
+        },
+    }
 }
 
 fn flex_line_gap_count(item_count: usize) -> usize {
@@ -3900,6 +4193,20 @@ mod tests {
         )
     }
 
+    /// The text node's retained fragment surface: (min-content, max-content,
+    /// strut line-height max) — the three values the run fold consumes.
+    fn text_intrinsic_triple(root: &RootDom, key: DomNodeSlotKey) -> (f32, f32, f32) {
+        let DomIntrinsic::Text(text_intrinsic) = root.node(key).expect("text node").intrinsic()
+        else {
+            panic!("text node should carry a measured text intrinsic");
+        };
+        (
+            text_intrinsic.min_content_width_px,
+            text_intrinsic.max_content_width_px,
+            text_intrinsic.fragment_line_height_max_px,
+        )
+    }
+
     /// Asserts an auto-basis item view's CONTENT-SIZE fields are the record's
     /// content sizes plus the node's own border/padding, exactly as the
     /// pre-change `main_axis_border_box_size_from_flow`/`cross_axis_border_box_size_from_flow`
@@ -3932,19 +4239,73 @@ mod tests {
     }
 
     #[test]
-    fn item_view_text_kind_reads_record_with_text_intrinsic_content_sizes() {
+    fn item_view_text_run_reads_text_intrinsic_fragment_metrics() {
         let (mut root, container, context) = flex_container_with_context();
         let text = append_text(&mut root, container, "Flex label");
 
         let items = collect_items_for_container(&mut root, container, context);
-        let item = items.first().expect("text item");
-        let record = node_record(&root, text);
-        let (min_width_px, max_width_px) = text_intrinsic_widths(&root, text);
+        let item = items.first().expect("text run item");
+        let (min_width_px, max_width_px, strut_px) = text_intrinsic_triple(&root, text);
 
-        assert_eq!(record.h_min_content_px, min_width_px);
-        assert_eq!(record.h_max_content_px, max_width_px);
-        assert!(record.content_height_at_width_px > 0.0);
-        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+        // A bare text node is now ONE anonymous inline-run item (CSS Flexbox
+        // §4, flex arc step 3a-ii), not a block item: its base is the run's
+        // max-content, its automatic minimum the run's min-content (the cursor
+        // value, bypassing the auto-min walk), and its cross the strut line
+        // height. The run item carries zero border/padding/margins.
+        assert_eq!(
+            item.source,
+            FlexItemSource::AnonymousInlineGroup {
+                first_child_key: text,
+                child_count: 1,
+            },
+        );
+        assert_eq!(item.flex_base_size_px, max_width_px);
+        assert_eq!(item.hypothetical_main_size_px, max_width_px);
+        assert_eq!(item.automatic_min_main_size_px, min_width_px);
+        assert_eq!(item.measured_cross_size_input_px, strut_px);
+        assert_eq!(item.main_axis_border_padding_px, 0.0);
+        assert_eq!(item.outer_hypothetical_main_size_px, max_width_px);
+    }
+
+    /// D9 pin (f): the run's min-content (the automatic minimum) is the widest
+    /// joined segment — `"foo"+"bar"` (no space) joins to `w("foobar")`, while
+    /// `"foo "+"bar"` breaks at the collapsible space to `max(w("foo"),w("bar"))`.
+    #[test]
+    fn item_view_joined_text_run_min_content_is_the_joined_segment() {
+        let (mut root, container, context) = flex_container_with_context();
+        let foo = append_text(&mut root, container, "foo");
+        let bar = append_text(&mut root, container, "bar");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("run item");
+        let (_, foo_max) = text_intrinsic_widths(&root, foo);
+        let (_, bar_max) = text_intrinsic_widths(&root, bar);
+
+        assert_eq!(
+            item.source,
+            FlexItemSource::AnonymousInlineGroup {
+                first_child_key: foo,
+                child_count: 2,
+            },
+        );
+        // Joined across the no-space boundary: min-content == w("foobar").
+        assert_eq!(item.automatic_min_main_size_px, foo_max + bar_max);
+        assert_eq!(item.flex_base_size_px, foo_max + bar_max);
+    }
+
+    #[test]
+    fn item_view_broken_text_run_min_content_is_the_widest_word() {
+        let (mut root, container, context) = flex_container_with_context();
+        let foo = append_text(&mut root, container, "foo ");
+        let bar = append_text(&mut root, container, "bar");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("run item");
+        let (foo_min, _) = text_intrinsic_widths(&root, foo);
+        let (bar_min, _) = text_intrinsic_widths(&root, bar);
+
+        // Broken at the collapsible space: min-content == max(w("foo"), w("bar")).
+        assert_eq!(item.automatic_min_main_size_px, foo_min.max(bar_min));
     }
 
     #[test]
@@ -3978,22 +4339,37 @@ mod tests {
     }
 
     #[test]
-    fn item_view_inline_kind_reads_record_with_inline_flow_sizes() {
+    fn item_view_inline_run_reads_span_fragment_metrics() {
         let (mut root, container, context) = flex_container_with_context();
         let span = append_span(&mut root, container);
         let first = append_text(&mut root, span, "one two");
         let second = append_text(&mut root, span, "three four");
 
         let items = collect_items_for_container(&mut root, container, context);
-        let item = items.first().expect("inline item");
-        let record = node_record(&root, span);
-        let (first_min, first_max) = text_intrinsic_widths(&root, first);
-        let (second_min, second_max) = text_intrinsic_widths(&root, second);
+        let item = items.first().expect("inline run item");
+        let (_, first_max) = text_intrinsic_widths(&root, first);
+        let (_, second_max) = text_intrinsic_widths(&root, second);
 
-        // Inline min-content is the widest child's min; max-content is the sum.
-        assert_eq!(record.h_min_content_px, first_min.max(second_min));
-        assert_eq!(record.h_max_content_px, first_max + second_max);
-        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+        // A `display: inline` element is now ONE anonymous inline-run item
+        // (CSS Flexbox §4): its base is the run's max-content (the sum of the
+        // span's text children's max-content) and its automatic minimum the
+        // span's own min-content. The span is an ATOM (D1) — its whole subtree
+        // measures as one inline unit, so the run min-content reads the span's
+        // measured min-content (max child min-content, no fragment joining
+        // across the element boundary).
+        assert_eq!(
+            item.source,
+            FlexItemSource::AnonymousInlineGroup {
+                first_child_key: span,
+                child_count: 1,
+            },
+        );
+        assert_eq!(item.flex_base_size_px, first_max + second_max);
+        assert_eq!(
+            item.automatic_min_main_size_px,
+            node_record(&root, span).h_min_content_px,
+        );
+        assert_eq!(item.main_axis_border_padding_px, 0.0);
     }
 
     #[test]

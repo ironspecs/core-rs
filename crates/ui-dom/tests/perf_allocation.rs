@@ -417,9 +417,16 @@ fn allocation_windows_match_baseline_after_warmup() {
     assert_window_stats(
         "flex step 1 (d1) text layout phase",
         WindowPin {
-            allocations: 1934,
-            deallocations: 1934,
-            reallocations: 85,
+            // Re-pinned in flex arc step 3a-ii: the 12 bare text children now
+            // fold into ONE anonymous inline run instead of 12 per-child items,
+            // so the measurement fold and the lane solve allocate far fewer
+            // item/order/resolution lane entries (allocations 1934 → 1014,
+            // reallocations 85 → 45). Run formation itself is fold-local state
+            // (no allocation); the drop is the reduced ITEM count, CSS Flexbox
+            // §4. Documented cause: anonymous inline-run merging.
+            allocations: 1014,
+            deallocations: 1014,
+            reallocations: 45,
         },
         region.change(),
     );

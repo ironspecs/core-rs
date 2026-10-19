@@ -5476,39 +5476,46 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
 // list after the box tree has already wrapped inline runs); Blink collects
 // them in `flex_layout_algorithm.cc` (`ConstructAndAppendFlexItems`).
 //
-// OFF-SPEC: this solver makes every DOM child its own flex item —
-// `collect_measured_flex_items_in_dom_order` (`flex.rs:406`) assigns
-// `FlexItemSource::BlockItem` per child at `flex.rs:421` and never merges a
-// contiguous inline run, so `FlexItemSource::AnonymousInlineGroup`
-// (`flex_item_source.rs:16`) is dead. Spec-correct: two adjacent text nodes
-// merge into one anonymous item (no inter-item gap); a span + adjacent text
-// run merge into one item; a block between runs breaks them into two
-// anonymous items plus the block (the solver's per-child model gets this
-// right); a whitespace-only text node between blocks is discarded (no item,
-// no gap). Divergent rows (a), (b), (d) pin the per-child model; row (c) is
-// the on-spec control where a block already breaks the run.
-//
-// Relabeled from `text_children_in_flex_row_honor_gap_and_normal_flow_placement`
-// (row (a)) so the whole family carries the `off_spec_` name.
+// ON-SPEC (relabeled from `off_spec_anonymous_inline_runs_are_not_merged` in
+// flex arc step 3a-ii): the measurement fold now merges each maximal
+// contiguous inline run into ONE virtual item (`measure_inline_run`,
+// `flex.rs`), so two adjacent text nodes (and a span + adjacent text) merge
+// into one item with no inter-item gap; a whitespace-only run is dropped under
+// a collapse white-space mode (no item, no gap) and forms an item under a
+// preserve mode. Rows (a)/(b)/(d) flipped to the spec-correct single-item
+// shape; row (c) stays the on-spec control (a block breaks the run); rows
+// (e)/(g)/(h) are new on-spec pins; row (f) (fragment-joining min-content) is
+// pinned at the item-view/accumulator unit level (`flex.rs`,
+// `flex_anonymous_run.rs`) because the inflexible run item never shrinks, so
+// its min-content is recorded, never applied at layout.
 #[test]
-fn off_spec_anonymous_inline_runs_are_not_merged() {
-    let rows: [AnonymousRunRow; 4] = [
+fn anonymous_inline_runs_merge_into_single_flex_items() {
+    let rows: [AnonymousRunRow; 7] = [
         (
-            "text_plus_text_gap_inserted_between_nodes",
-            assert_text_plus_text_gap_inserted,
+            "text_plus_text_merges_into_one_item",
+            assert_text_plus_text_merged,
         ),
         (
-            "span_plus_text_run_not_merged",
-            assert_span_plus_text_run_not_merged,
+            "span_plus_text_merges_into_one_item",
+            assert_span_plus_text_merged,
         ),
         (
             "text_block_text_block_breaks_run_on_spec",
             assert_text_block_text_block_breaks_run,
         ),
         (
-            "whitespace_only_text_between_blocks_kept_as_item",
-            assert_whitespace_only_text_between_blocks,
+            "whitespace_only_text_between_blocks_dropped",
+            assert_whitespace_only_text_between_blocks_dropped,
         ),
+        (
+            "whitespace_only_text_pre_wrap_forms_item",
+            assert_whitespace_only_text_pre_wrap_forms_item,
+        ),
+        (
+            "run_order_semantics_ignore_member_order",
+            assert_run_order_semantics,
+        ),
+        ("joint_cross_is_one_strut", assert_joint_cross_is_one_strut),
     ];
     for (name, run) in rows {
         run(name);
@@ -5519,7 +5526,7 @@ fn off_spec_anonymous_inline_runs_are_not_merged() {
 /// builds the scenario and asserts through the row name.
 type AnonymousRunRow = (&'static str, fn(&str));
 
-fn assert_text_plus_text_gap_inserted(name: &str) {
+fn assert_text_plus_text_merged(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -5536,16 +5543,16 @@ fn assert_text_plus_text_gap_inserted(name: &str) {
         &format!("{name}: first text left"),
     );
     let label_width = assert_node_layout(&root, label).width_px;
-    // Divergent: spec merges "Left"+"Right" into one anonymous item (no
-    // gap); the solver inserts the column-gap between the per-child items.
+    // On-spec: "Left"+"Right" merge into ONE anonymous item — the second text
+    // sits contiguous at the first text's width (no inter-item gap).
     assert_close(
         text_runs[1].position_px[0],
-        label_width + 10.0,
-        &format!("{name}: second text left after gap"),
+        label_width,
+        &format!("{name}: second text contiguous after first"),
     );
 }
 
-fn assert_span_plus_text_run_not_merged(name: &str) {
+fn assert_span_plus_text_merged(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -5562,12 +5569,12 @@ fn assert_span_plus_text_run_not_merged(name: &str) {
         "{name}: span text + sibling text"
     );
     let span_width = assert_node_layout(&root, span).width_px;
-    // Divergent: spec merges the span and the adjacent text node into one
-    // anonymous item; the solver keeps them as two items with a column-gap.
+    // On-spec: the span and the adjacent text merge into ONE anonymous item —
+    // the sibling text sits contiguous at the span's width (no inter-item gap).
     assert_close(
         plans[0].text_runs[1].position_px[0],
-        span_width + 10.0,
-        &format!("{name}: sibling text left after gap"),
+        span_width,
+        &format!("{name}: sibling text contiguous after span"),
     );
 }
 
@@ -5605,7 +5612,7 @@ fn assert_text_block_text_block_breaks_run(name: &str) {
     );
 }
 
-fn assert_whitespace_only_text_between_blocks(name: &str) {
+fn assert_whitespace_only_text_between_blocks_dropped(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -5624,19 +5631,110 @@ fn assert_whitespace_only_text_between_blocks(name: &str) {
         3,
         "{name}: container + two block rects"
     );
-    // Divergent: spec discards the whitespace-only run (no item, one gap
-    // between the blocks); the solver keeps it as a painted item, adding its
-    // width plus a second gap before the trailing block.
-    assert_eq!(
-        plans[0].text_runs.len(),
-        1,
-        "{name}: whitespace run painted as its own item",
+    // On-spec: the whitespace-only run is DISCARDED under the normal collapse
+    // mode — no phantom ITEM, so the second block sits one gap after the first
+    // block (the drop removes the flex-item slot, not the stray paint run).
+    assert_close(
+        plans[0].rects[2].position_px[0],
+        30.0 + 10.0,
+        &format!("{name}: second block left after one gap"),
     );
-    let whitespace_width = plans[0].text_runs[0].size_px[0];
+}
+
+fn assert_whitespace_only_text_pre_wrap_forms_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "white-space", "pre-wrap");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "30px");
+    assert_style_set(&mut root, first, "height", "20px");
+    let whitespace = assert_append_text_to(&mut root, container, "   ");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "40px");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    // On-spec: under `pre-wrap` the preserved whitespace keeps its width, so
+    // the run FORMS an item and the second block is pushed past it by two gaps.
+    let whitespace_width = assert_node_layout(&root, whitespace).width_px;
     assert_close(
         plans[0].rects[2].position_px[0],
         30.0 + 10.0 + whitespace_width + 10.0,
-        &format!("{name}: second block left pushed by whitespace item and two gaps"),
+        &format!("{name}: second block left pushed by the preserved whitespace item"),
+    );
+}
+
+fn assert_run_order_semantics(name: &str) {
+    // Pin (i): a span with `order: 1` inside a run of inline children keeps
+    // its DOM position — `order` applies to the anonymous run wrapper (the
+    // item), not to the inline member, so layout and paint agree on DOM order.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let first = assert_append_text_to(&mut root, container, "A");
+    let span = assert_append_span_to(&mut root, container);
+    assert_style_set(&mut root, span, "order", "1");
+    let _span_text = assert_append_text_to(&mut root, span, "B");
+    let _last = assert_append_text_to(&mut root, container, "C");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let first_width = assert_node_layout(&root, first).width_px;
+    let plans = take_staged_layer_paint_plans(&root);
+    // The span's order:1 does not reorder it out of the run — it sits between
+    // the first and last text members in DOM (inline) order.
+    assert_close(
+        plans[0].rects[1].position_px[0],
+        first_width,
+        &format!("{name}: span stays in run DOM position despite order: 1"),
+    );
+    assert_eq!(
+        plans[0].text_runs.len(),
+        3,
+        "{name}: three text runs in DOM order"
+    );
+
+    // Pin (ii): a run beside an `order: 1` block item sequences the block
+    // last (the run is one unit at order 0).
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let run_text = assert_append_text_to(&mut root, container, "A");
+    let block = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, block, "order", "1");
+    assert_style_set(&mut root, block, "flex-basis", "20px");
+    assert_style_set(&mut root, block, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    // The order-0 run leads at the start; the order-1 block sequences last.
+    assert_close(
+        plans[0].text_runs[0].position_px[0],
+        0.0,
+        &format!("{name}: the order-0 run leads at the start"),
+    );
+    let run_width = assert_node_layout(&root, run_text).width_px;
+    assert_close(
+        plans[0].rects[1].position_px[0],
+        run_width,
+        &format!("{name}: the order-1 block sequences last after the run"),
+    );
+}
+
+fn assert_joint_cross_is_one_strut(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_style_set(&mut root, container, "display", "flex");
+    assert_style_set(&mut root, container, "flex-direction", "column");
+    assert_style_set(&mut root, container, "width", "100px");
+    let first = assert_append_text_to(&mut root, container, "a");
+    let _second = assert_append_text_to(&mut root, container, "b");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    // On-spec: "a"+"b" merge into ONE run laid out inline on one line, so the
+    // container's cross (height) is ONE strut, not 2× strut (two stacked items).
+    let strut_px = assert_node_layout(&root, first).height_px;
+    assert_close(
+        assert_node_layout(&root, container).height_px,
+        strut_px,
+        &format!("{name}: joint cross is one strut, not two"),
     );
 }
 
@@ -5711,10 +5809,11 @@ fn auto_width_flex_container_stretches_to_containing_block_and_respects_gap() {
     );
 }
 
-// CSS Flexbox 1 §4 (Flex Items): inline-level children (spans without
-// explicit display) participate as anonymous flex items with their
-// inline content contributing to the flex algorithm's measurement and
-// placement phases.
+// CSS Flexbox 1 §4 (Flex Items): contiguous inline-level children (spans
+// without explicit display) merge into ONE anonymous flex item; the inline
+// content contributes to the flex algorithm's measurement and placement.
+// Moved on-spec in flex arc step 3a-ii: two adjacent spans are now one run
+// laid out inline (no inter-item gap) instead of two per-child items.
 #[test]
 fn span_children_in_flex_row_participate_as_flex_items() {
     let (mut world, mut root, container) = flex_row_container_setup();
@@ -5739,23 +5838,26 @@ fn span_children_in_flex_row_participate_as_flex_items() {
         first_width > 0.0,
         "first span should have non-zero layout width from its text",
     );
+    // On-spec: the two spans merge into one anonymous run, so the second span
+    // sits contiguous at the first span's width (no inter-item gap).
     assert_close(
         rects[2].position_px[0],
-        first_width + 6.0,
-        "second span left after gap",
+        first_width,
+        "second span contiguous after first",
     );
 }
 
-// CSS Flexbox 1 §9.5 (Main-Axis Alignment): `justify-content:
-// space-between` distributes remaining space as gaps between items.
-// Combined with an explicit `column-gap`, the gap between items is the
-// explicit gap plus the distributed packing space.
+// CSS Flexbox 1 §9.5 (Main-Axis Alignment): `justify-content: space-between`
+// distributes remaining space between FLEX ITEMS. Moved on-spec in flex arc
+// step 3a-ii: three bare text children now merge into ONE anonymous run item,
+// so there are no inter-item gaps to distribute — the run's members flow
+// inline contiguously (space-between has no free space over one item).
 #[test]
 fn text_children_with_justify_content_space_between_and_gap() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let first = assert_append_text_to(&mut root, container, "A");
     let second = assert_append_text_to(&mut root, container, "B");
-    let third = assert_append_text_to(&mut root, container, "C");
+    let _third = assert_append_text_to(&mut root, container, "C");
 
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -5768,29 +5870,32 @@ fn text_children_with_justify_content_space_between_and_gap() {
     let text_runs = &plans[0].text_runs;
     // text_runs[0] = first, text_runs[1] = second, text_runs[2] = third
     // (text children emit text runs, not rects).
-    assert_close(text_runs[0].position_px[0], 0.0, "first item left at start");
+    assert_close(
+        text_runs[0].position_px[0],
+        0.0,
+        "first member left at start",
+    );
     let first_width = assert_node_layout(&root, first).width_px;
     let second_width = assert_node_layout(&root, second).width_px;
-    let third_width = assert_node_layout(&root, third).width_px;
-    let total_item_width = first_width + second_width + third_width;
-    let extra_per_gap = (200.0 - total_item_width - 10.0) / 2.0;
 
+    // On-spec: one merged run — members flow inline contiguously, no gap and
+    // no space-between packing between them.
     assert_close(
         text_runs[1].position_px[0],
-        first_width + 5.0 + extra_per_gap,
-        "second item left with gap and packing",
+        first_width,
+        "second member contiguous after first",
     );
     assert_close(
         text_runs[2].position_px[0],
-        200.0 - third_width,
-        "third item right-aligned at end",
+        first_width + second_width,
+        "third member contiguous after second",
     );
 }
 
-// CSS Flexbox 1 §4 (Flex Items) and §9.2 (Line Breaking): text children
-// in a column flex container stack vertically with row-gap separating
-// them. The column cross-axis (horizontal) sizing respects each item's
-// measured width.
+// CSS Flexbox 1 §4 (Flex Items) and §9.2 (Line Breaking): Moved on-spec in
+// flex arc step 3a-ii — two text children in a column container now merge
+// into ONE anonymous run laid out inline on one line, so the second text
+// sits contiguous after the first (horizontally) instead of stacking below.
 #[test]
 fn text_children_in_flex_column_stack_with_row_gap() {
     let (mut world, mut root, container) = flex_row_container_setup();
@@ -5808,12 +5913,14 @@ fn text_children_in_flex_column_stack_with_row_gap() {
     let plans = take_staged_layer_paint_plans(&root);
     let text_runs = &plans[0].text_runs;
     // text_runs[0] = first, text_runs[1] = second (text children emit text runs, not rects).
-    assert_close(text_runs[0].position_px[1], 0.0, "first column item top");
-    let first_height = assert_node_layout(&root, first).height_px;
+    assert_close(text_runs[0].position_px[1], 0.0, "first member top");
+    let first_width = assert_node_layout(&root, first).width_px;
+    // On-spec: one merged run flows inline — the second text sits contiguous
+    // after the first on the SAME line (no row-gap, no vertical stack).
     assert_close(
-        text_runs[1].position_px[1],
-        first_height + 8.0,
-        "second column item top after row-gap",
+        text_runs[1].position_px[0],
+        first_width,
+        "second member contiguous after first on one line",
     );
 }
 
@@ -9716,11 +9823,11 @@ fn nested_flex_with_content() {
 /// A named nested-flex-with-content probe: the row name plus a runner.
 type NestedFlexContentRow = (&'static str, fn(&str));
 
-/// Row (a): outer row → inner row (no width) → two text items with column-gap.
-/// A block-level inner flex container stretches to the outer's content width
-/// (200px) rather than shrink-wrapping; the two text items keep the gap between
-/// them (the anonymous-runs per-child model keeps the two text nodes as two
-/// items — see `off_spec_anonymous_inline_runs_are_not_merged`).
+/// Row (a): outer row → inner row (no width) → two text children. A
+/// block-level inner flex container stretches to the outer's content width
+/// (200px) rather than shrink-wrapping. Moved on-spec in flex arc step 3a-ii:
+/// the two text nodes now merge into ONE anonymous run (no inter-item gap),
+/// so the second text sits contiguous after the first.
 fn assert_nested_row_text_items_gap(name: &str) {
     let (mut world, mut root, outer) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, outer, "200px");
@@ -9744,8 +9851,8 @@ fn assert_nested_row_text_items_gap(name: &str) {
     let text_runs = &plans[0].text_runs;
     assert_close(
         text_runs[1].position_px[0],
-        left_width + 10.0,
-        &format!("{name}: second text item after gap"),
+        left_width,
+        &format!("{name}: second text contiguous after first (one run)"),
     );
 }
 

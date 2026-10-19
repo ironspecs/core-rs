@@ -24,6 +24,7 @@ use crate::types::{DomBoxModel, DomNode, DomNodeSlotKey};
 
 mod dom_layout_resolver;
 mod flex;
+mod flex_anonymous_run;
 mod flex_item_lane;
 mod flex_item_source;
 mod flex_line_lane;

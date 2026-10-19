@@ -504,7 +504,13 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // is update-scoped and empty on paint-dirty-only updates, so paint cannot
     // consume it (the architect's amendment to FLEX_MAPPING §4 step 2, pin
     // `off_spec_flex_paint_ignores_order_modified_sequence` relabeled on-spec).
-    assert_node_counts(&root, 140, 29, 0, "flex relayout");
+    // flex arc step 3a-ii run formation (+2 Get from 140/29/0): the measurement
+    // fold now fetches each child once more (`node_for_key`) to classify it
+    // against the D1 run-membership predicate (`node_is_inline_run_member`)
+    // before routing it to the run fold or the node-item measure (+1 Get each
+    // for the two block items). Documented cause: anonymous inline-run
+    // formation (CSS Flexbox §4) classifies each child by display/position.
+    assert_node_counts(&root, 142, 29, 0, "flex relayout");
 }
 
 /// Builds the (d1) scenario (`FLEX_DEBATE_BRIEF.md` (d1)(v), ratified): a
@@ -537,26 +543,33 @@ fn flex_step1_scenario_setup() -> (World, RootDom, DomNodeSlotKey, DomNodeSlotKe
 /// The (d1) scenario pin: exact `FlexNodesMeasured`/`FlexNodesPlaced` counts
 /// per update, derived from the implementation.
 ///
-/// Tree: container (flex row, wrap, 240px) with 12 bare text items plus 4
+/// Tree: container (flex row, wrap, 240px) with 12 bare text children plus 4
 /// nested flex items, each nested item holding one text child.
 ///
 /// `FlexNodesMeasured` is one per `compute_node_measurement` on the flex
 /// measure path (`measure_exited_node_flow_size`). The measurement fold over
-/// the container's 16 children measures 12 text items (one measured node each)
-/// plus 4 nested flex items (two each: the item's text child via its inner
-/// fold, and the nested container's own record), so the fold measures 20
-/// nodes. The staged double-layout then re-measures each nested item's text
-/// child once more when placement re-enters the flex solver
+/// the container's 16 children folds the 12 bare text children into ONE
+/// anonymous inline run and measures each of its members for the run's cross
+/// (D4, 12 measured nodes), plus 4 nested flex items (two each: the item's
+/// text child via its inner fold, and the nested container's own record), so
+/// the fold measures 20 nodes. The staged double-layout then re-measures each
+/// nested item's text child once more when placement re-enters the flex solver
 /// (`relayout_active_flex_child` → `relayout_tree_walker_node` →
 /// `relayout_flex_node`), adding 4. Total measured = 24.
 ///
-/// `FlexNodesPlaced` is one per `relayout_active_flex_child`. Top-level
-/// placement relayouts all 16 children (16), and each nested item's placement
-/// relayouts its own text child (4). Total placed = 20.
+/// `FlexNodesPlaced` is one per flex ITEM the placement walk relayouts
+/// (`relayout_active_flex_child` for a block item, `relayout_anonymous_inline_run`
+/// for a run). Re-pinned in flex arc step 3a-ii: the 12 bare text children now
+/// merge into ONE anonymous run, so top-level placement relayouts 1 run + 4
+/// nested flex items (5), and each nested item's placement relayouts its own
+/// single-text run (4). Total placed = 9 (was 20 under the per-child model
+/// that relaid all 16 top-level children plus the 4 nested text children).
+/// Documented cause: anonymous inline-run merging (CSS Flexbox §4) — the item
+/// count replaces the child count.
 ///
-/// The double-layout is the pre-mechanism cost shape: every child is relaid
-/// out during placement (the ≡100% refold analog), and the nested text child
-/// is measured twice (fold + placement) — this is the (d2) baseline the ≤50%
+/// The double-layout is the pre-mechanism cost shape: every ITEM is relaid out
+/// during placement (the ≡100% refold analog), and the nested text child is
+/// measured twice (fold + placement) — this is the (d2) baseline the ≤50%
 /// refold-fraction ceiling later binds against.
 #[test]
 fn flex_step1_scenario_measure_place_counts_stay_pinned() {
@@ -579,7 +592,7 @@ fn flex_step1_scenario_measure_place_counts_stay_pinned() {
             (PaintPlanBuilt, 1),
             (LayerPainted, 1),
             (FlexNodesMeasured, 24),
-            (FlexNodesPlaced, 20),
+            (FlexNodesPlaced, 9),
         ],
         "flex step 1 scenario",
     );
