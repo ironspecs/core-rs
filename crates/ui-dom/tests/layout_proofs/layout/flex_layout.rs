@@ -9138,3 +9138,222 @@ fn assert_text_align_column_definite_end(name: &str) {
         &format!("{name}: text left"),
     );
 }
+
+// CSS Text 4 §white-space composed with CSS Flexbox 1 §4.5 (automatic minimum
+// size) and §9.2 (line collection): white-space mode changes the text's
+// intrinsic min/max content, and the question is whether the flex item's
+// measurement and auto-min floor honor that mode. Closest WPT oracles:
+// `css/css-text/white-space/white-space-*` and `css/css-flexbox/flexbox-min-
+// width-auto-*`. Gecko (`nsTextFrame` intrinsic width per white-space mode,
+// `nsFlexContainerFrame` content-based min) and Blink (`NGInlineNode` intrinsic
+// per `EWhiteSpace`, `FlexItem::UpdateAutoMinSize`) both resolve the automatic
+// minimum from the text's per-white-space min-content.
+#[test]
+fn flex_item_text_white_space_stacking() {
+    let rows: [TextWhiteSpaceStackingRow; 4] = [
+        (
+            "a_pre_wrap_newline_two_lines",
+            assert_white_space_pre_wrap_newline,
+        ),
+        (
+            "b_pre_line_shrink_context_auto_min",
+            assert_white_space_pre_line_shrink,
+        ),
+        (
+            "c_break_spaces_lone_trailing_space_fold",
+            assert_white_space_break_spaces_trailing,
+        ),
+        (
+            "d_normal_wrap_item_wraps_at_resolved_width",
+            assert_white_space_normal_wrap_item,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named white-space-in-flex probe: the row name plus a runner.
+type TextWhiteSpaceStackingRow = (&'static str, fn(&str));
+
+/// Row (a): `white-space: pre-wrap` preserves the `\n` segment break, so the
+/// text box is two lines and the item's cross size grows to two line boxes.
+fn assert_white_space_pre_wrap_newline(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "40px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "white-space", "pre-wrap");
+    let text = assert_append_text_to(&mut root, item, "Alpha\nBeta");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let text_layout = assert_node_layout(&root, text);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        text_intrinsic.max_content_width_px,
+        text_intrinsic.line_height_px * 2.0,
+        &format!("{name}: item two lines tall"),
+    );
+    assert_close(
+        text_layout.height_px,
+        text_intrinsic.line_height_px * 2.0,
+        &format!("{name}: text box two lines"),
+    );
+}
+
+/// Row (b): `white-space: pre-line` collapses spaces but preserves segment
+/// breaks, so its min-content (widest word) matches `normal`'s — the shrink
+/// floor lands on the widest word, on-spec.
+fn assert_white_space_pre_line_shrink(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "20px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "white-space", "pre-line");
+    assert_style_set(&mut root, item, "flex-basis", "300px");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    let text = assert_append_text_to(&mut root, item, "one two three four");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let item_width = assert_node_layout(&root, item).width_px;
+    assert_close(
+        item_width,
+        text_intrinsic.min_content_width_px,
+        &format!("{name}: pre-line shrink floor = min-content (widest word)"),
+    );
+}
+
+/// Row (c): `white-space: break-spaces` inside a flex item composes the
+/// registered `off_spec_break_spaces_approximated_as_pre_wrap` divergence. The
+/// shrink-wrap WIDTH side is on-spec: the lone trailing space takes advance in
+/// max-content (the item is ~3.3px wider); the divergent side is the line-end
+/// COLLAPSE (the space does not wrap/hang onto a second line), which is pinned
+/// by the `admitted_gaps` row and shares the same root cause
+/// (`text_layout_input_for_white_space` maps `BreakSpaces` to the pre-wrap
+/// transform).
+fn assert_white_space_break_spaces_trailing(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    let no_trailing = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, no_trailing, "white-space", "break-spaces");
+    let _no_trailing_text = assert_append_text_to(&mut root, no_trailing, "Alpha Beta");
+    let lone_trailing = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, lone_trailing, "white-space", "break-spaces");
+    let _lone_trailing_text = assert_append_text_to(&mut root, lone_trailing, "Alpha Beta ");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let no_trailing_width = assert_node_layout(&root, no_trailing).width_px;
+    let lone_trailing_width = assert_node_layout(&root, lone_trailing).width_px;
+    assert!(
+        lone_trailing_width > no_trailing_width,
+        "{name}: trailing space takes advance in shrink-wrap width ({lone_trailing_width} > {no_trailing_width})",
+    );
+}
+
+/// Row (d): `white-space: normal` in a definite-width item wraps the long text
+/// at the RESOLVED item width (100px), so the text run fills 100px and spans
+/// multiple lines.
+fn assert_white_space_normal_wrap_item(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "60px");
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "100px");
+    assert_style_set(&mut root, item, "white-space", "normal");
+    let text = assert_append_text_to(
+        &mut root,
+        item,
+        "The quick brown fox jumps over the lazy dog",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        100.0,
+        text_runs[0].size_px[1],
+        &format!("{name}: item wraps at 100px"),
+    );
+    assert_close(
+        text_runs[0].size_px[0],
+        100.0,
+        &format!("{name}: text run fills the 100px content box"),
+    );
+    assert!(
+        text_runs[0].size_px[1] > text_intrinsic.line_height_px,
+        "{name}: wrapped text should span more than one line; got {}",
+        text_runs[0].size_px[1],
+    );
+}
+
+// CSS Flexbox 1 §4.5 automatic minimum size composed with CSS Text 4
+// `white-space`: the content-based automatic minimum for a visible-overflow
+// flex item is the item's min-content size in the main axis, resolved per the
+// text's white-space mode. `white-space: nowrap` forbids wrapping, so its
+// min-content is the FULL run (max-content); `white-space: pre` shares that
+// shape. No single WPT oracle pairs a nowrap text with the flex auto-min floor,
+// so this is cited from §4.5 directly; closest family is
+// `css/css-flexbox/min-width-auto-*`. Gecko (`nsTextFrame` per-white-space
+// intrinsic width, `nsFlexContainerFrame` content-based min) and Blink
+// (`NGInlineNode` intrinsic per `EWhiteSpace`, `FlexItem::UpdateAutoMinSize`)
+// both floor a nowrap item at its full-run min-content.
+//
+// OFF-SPEC: `text_min_content_width_px` (`flex.rs:1498`) splits the text on
+// whitespace and takes the widest word, ignoring the white-space mode, so a
+// nowrap (or pre) item floors at the widest WORD (33.3px for "three"/"four")
+// instead of the full run (115.5px). The nowrap item therefore lands at the
+// SAME floor as a normal-white-space item (normal's min-content IS the widest
+// word). Spec-correct: the nowrap item keeps its 115.5px full-run min-content.
+#[test]
+fn off_spec_flex_auto_min_nowrap_text_floors_at_widest_word() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "20px");
+    assert_style_set(&mut root, container, "height", "20px");
+
+    let nowrap_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, nowrap_item, "white-space", "nowrap");
+    assert_style_set(&mut root, nowrap_item, "flex-basis", "300px");
+    assert_style_set(&mut root, nowrap_item, "flex-shrink", "1");
+    let nowrap_text = assert_append_text_to(&mut root, nowrap_item, "one two three four");
+
+    let normal_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, normal_item, "white-space", "normal");
+    assert_style_set(&mut root, normal_item, "flex-basis", "300px");
+    assert_style_set(&mut root, normal_item, "flex-shrink", "1");
+    let _normal_text = assert_append_text_to(&mut root, normal_item, "one two three four");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let nowrap_text_intrinsic = assert_text_intrinsic(&root, nowrap_text);
+    let nowrap_width = assert_node_layout(&root, nowrap_item).width_px;
+    let normal_width = assert_node_layout(&root, normal_item).width_px;
+    // Divergent: the nowrap item floors at the widest word, identical to the
+    // normal item's floor, instead of its full-run min-content.
+    assert!(
+        nowrap_width < nowrap_text_intrinsic.min_content_width_px,
+        "nowrap floor should sit below its full-run min-content; floor {nowrap_width} vs min-content {}",
+        nowrap_text_intrinsic.min_content_width_px,
+    );
+    assert_close(
+        nowrap_width,
+        normal_width,
+        "nowrap floor equals normal's widest-word floor",
+    );
+}
