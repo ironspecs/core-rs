@@ -111,7 +111,7 @@ use crate::types::root_dom_nodes::{
 };
 use crate::types::{
     DomAttribute, DomAttributeValue, DomCanonicalSnapshot, DomCanonicalStyleSnapshot, DomError,
-    DomEventListenerOwner, parse_authored_value_input,
+    DomEventListenerOwner, LayoutScratch, parse_authored_value_input,
 };
 use crate::types::{RootDomMetricHistoryIter, RootDomMetricName, RootDomMetrics};
 use slotmap::SlotMap;
@@ -259,6 +259,11 @@ pub struct RootDom {
     metrics: RootDomMetricTally,
     clock_s: f64,
     style_runtime_revision: u64,
+    /// Per-document, per-update flex layout scratch: the order/line/resolution
+    /// lanes, cleared at the start of each update's layout phase (see
+    /// `LayoutScratch::reset_for_update`). Capacity is kept at the high-water
+    /// mark so the flex solve reaches steady state with zero allocation.
+    layout_scratch: LayoutScratch,
 }
 
 impl RootDom {
@@ -292,6 +297,7 @@ impl RootDom {
             metrics: RootDomMetricTally::default(),
             clock_s: 0.0,
             style_runtime_revision,
+            layout_scratch: LayoutScratch::default(),
         }
     }
 
@@ -653,6 +659,12 @@ impl RootDom {
     ) -> Result<Vec<DomEvent>, DomError> {
         self.clock_s = now_s;
         self.sync_stylesheet_runtime();
+        // Update-scoped layout scratch reset (FLEX_STEP1_EXECUTION.md §2
+        // scratch-ownership amendment): the flex lanes are per-document,
+        // per-update state. This runs exactly once per `update(...)` call,
+        // before any style or layout pass, so every layout phase in this
+        // update writes into a fresh range at the retained high-water mark.
+        self.layout_scratch.reset_for_update();
         let Some(parent) = self.attached_bevy_parent else {
             if matches!(pointer, DomPointerUpdate::Unchanged)
                 && self.transitions.active_nodes.is_empty()
