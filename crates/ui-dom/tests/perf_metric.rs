@@ -470,7 +470,18 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // goes through style_mut (one declaration upsert, style-dirty only), and
     // the style pass writes the seven computed groups directly on the node
     // record — the legacy per-attr projection channel is deleted.
-    assert_node_counts(&root, 139, 27, 0, "flex relayout");
+    // flex measure-fold record writes (T4a, +2 Get +2 GetMut from 139/27/0):
+    // the fold now writes each measured flex item's measurement record through
+    // a read-first gate — one immutable read per item compares the freshly
+    // computed record (content contributions: h_min/h_max 0, height 40) against
+    // the stored one before taking the mutable borrow. On this relayout the two
+    // `flex: 0 0 50px` items' measure-fold records (0/0/40) differ from the
+    // block-world `exit_node` records they land on later in the same pass
+    // (resolved width 50 → 50/50/40), so the gate's mutable borrow fires each
+    // pass (+2 GetMut) alongside its read (+2 Get). Documented cause: record
+    // writes in the flex measure fold; the T4a ruling, FLEX_STEP1_EXECUTION.md
+    // §10; PLAN.md PR 3 permits re-pin with documented cause.
+    assert_node_counts(&root, 141, 29, 0, "flex relayout");
 }
 
 #[test]

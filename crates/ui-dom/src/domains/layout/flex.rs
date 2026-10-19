@@ -36,6 +36,7 @@ use crate::types::{
 };
 
 use super::DomLayoutResolver;
+use super::MeasurementRecord;
 use super::flex_item_source::FlexItemSource;
 use super::flex_wrap_mode::FlexWrapMode;
 use super::flow::{
@@ -47,6 +48,7 @@ use super::flow::{
     resolved_content_size_px, resolved_node_style, resolved_node_style_with_basis,
     wrapped_text_content_height_px,
 };
+use super::measurement_record::compute_node_measurement;
 use super::style::{BoxSides, LayoutDisplay, NodeStyle, PositionMode};
 
 #[cfg(test)]
@@ -58,7 +60,10 @@ use crate::domains::style::computed::BoxSizingKw;
 #[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
-use crate::types::{BoxEdgeInsets, DomLayerKind, DomLayoutState, DomTag, RootDomContext};
+use crate::types::{
+    BoxEdgeInsets, DomAttribute, DomAttributeValue, DomLayerKind, DomLayoutState, DomTag,
+    RootDomContext,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FlexAxis {
@@ -128,12 +133,20 @@ struct FlexContainerStyle {
     gap_sizes: FlexGapSizes,
 }
 
+/// The flex item view the solve consumes in place of the former
+/// 20-field `MeasuredFlexItem`. Its CONTENT-SIZE fields
+/// (`flex_base_size_px` for the auto/content basis case,
+/// `measured_cross_size_input_px`, and the derived
+/// `hypothetical_main_size_px`/`outer_hypothetical_main_size_px`) are
+/// derived from the child's measurement record (written by the measure fold
+/// just before this view is assembled); every style-derived field keeps its
+/// exact production site and resolution timing in `measure_one_flex_item`.
+/// `main_axis`/`cross_axis` died here (dead in production: the container style
+/// answers both axes).
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct MeasuredFlexItem {
+struct FlexItemView {
     source: FlexItemSource,
     order: i32,
-    main_axis: FlexAxis,
-    cross_axis: FlexAxis,
     align_self: Option<FlexCrossAxisAlignment>,
     flex_grow_factor: f32,
     flex_shrink_factor: f32,
@@ -173,8 +186,8 @@ struct ResolvedFlexItem {
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct FlexContainerSolve {
-    measured_items_in_dom_order: Vec<MeasuredFlexItem>,
-    line_collection_items: Vec<MeasuredFlexItem>,
+    measured_items_in_dom_order: Vec<FlexItemView>,
+    line_collection_items: Vec<FlexItemView>,
     lines: Vec<FlexLine>,
     line_cross_sizes_px: Vec<f32>,
     resolved_items: Vec<ResolvedFlexItem>,
@@ -184,7 +197,7 @@ struct FlexContainerSolve {
 
 #[derive(Clone, Copy, Debug)]
 struct FlexLineItemResolutionState {
-    measured_item: MeasuredFlexItem,
+    measured_item: FlexItemView,
     resolved_main_size_px: f32,
     is_frozen: bool,
 }
@@ -410,7 +423,7 @@ fn collect_measured_flex_items_in_dom_order<R>(
     child_context: &LayoutContext,
     container_style: FlexContainerStyle,
     resolver: &mut R,
-) -> Result<Vec<MeasuredFlexItem>, DomError>
+) -> Result<Vec<FlexItemView>, DomError>
 where
     R: DomLayoutResolver + ?Sized,
 {
@@ -440,7 +453,7 @@ fn measure_one_flex_item<R>(
     child_context: &LayoutContext,
     main_axis: FlexAxis,
     resolver: &mut R,
-) -> Result<MeasuredFlexItem, DomError>
+) -> Result<FlexItemView, DomError>
 where
     R: DomLayoutResolver + ?Sized,
 {
@@ -453,7 +466,7 @@ where
     // shrink-wrapping as inline-level. This keeps the measurement below on
     // the same path the dispatcher routes `InlineFlex` onto.
     let child_style = blockified_flex_item_style(child_style);
-    let measured_flow = measure_tree_walker_node_without_layout_write(
+    measure_tree_walker_node_without_layout_write(
         root_dom,
         tree_size,
         child_key,
@@ -462,11 +475,15 @@ where
         child_inherited_style,
         resolver,
     )?;
-    let measured_main_size_px =
-        main_axis_border_box_size_from_flow(main_axis, measured_flow, child_style);
-    let measured_cross_size_px =
-        cross_axis_border_box_size_from_flow(main_axis, measured_flow, child_style);
     let node = node_for_key(root_dom, child_key)?;
+    // The child's record was written by the measurement walk just exited (a
+    // pass output, fresh by construction); the content sizes below read it
+    // instead of re-deriving from the now-discarded `FlowSize`.
+    let record = node_measurement_of(node);
+    let measured_main_size_px = record_content_main_size(main_axis, record)
+        + main_axis_border_padding_size_px(child_style.sides, main_axis);
+    let measured_cross_size_px = record_content_cross_size(main_axis, record)
+        + cross_axis_border_padding_size_px(child_style.sides, main_axis);
     let order = item_order_from_node(node);
     let align_self = item_align_self(node);
     let flex_grow_factor = item_flex_grow_factor_from_node(node);
@@ -490,11 +507,9 @@ where
     let margin_main_end_px = main_axis_end_margin(child_style, main_axis);
     let margin_cross_start_px = cross_axis_start_margin(child_style, main_axis);
     let margin_cross_end_px = cross_axis_end_margin(child_style, main_axis);
-    Ok(MeasuredFlexItem {
+    Ok(FlexItemView {
         source,
         order,
-        main_axis,
-        cross_axis: cross_axis(main_axis),
         align_self,
         flex_grow_factor,
         flex_shrink_factor,
@@ -794,7 +809,7 @@ where
 }
 
 fn measure_exited_node_flow_size(
-    root_dom: &RootDom,
+    root_dom: &mut RootDom,
     key: DomNodeSlotKey,
     entered: &EnteredNodeLayout,
     auto_content_width_px: f32,
@@ -822,6 +837,27 @@ fn measure_exited_node_flow_size(
         auto_min_content_width_px,
         auto_max_content_width_px,
     );
+    // Read-first record write (the T4a ruling, FLEX_STEP1_EXECUTION.md §10):
+    // compare the freshly-computed record against the stored one with an
+    // immutable read, and take the mutable borrow only when the value changed.
+    // The record is a pass output, never a dirt source; unchanged records cost
+    // a read, not a mutation.
+    let next_record = compute_node_measurement(
+        entered,
+        min_content_width_px,
+        max_content_width_px,
+        content_size.viewport_height_px,
+    );
+    if node_measurement_of(root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?) != next_record
+    {
+        node_measurement_mut(
+            root_dom
+                .nodes
+                .get_mut(key)
+                .ok_or(DomError::InvalidNodeKey)?,
+        )
+        .replace_measurement_if_changed(next_record);
+    }
     Ok(layout_flow_size(
         entered.style,
         measured_box_model(entered.box_model, entered.style, content_size),
@@ -1556,14 +1592,14 @@ fn entered_container_cross_size(entered: &EnteredNodeLayout, main_axis: FlexAxis
     }
 }
 
-fn order_modified_measured_items(items: &[MeasuredFlexItem]) -> Vec<MeasuredFlexItem> {
+fn order_modified_measured_items(items: &[FlexItemView]) -> Vec<FlexItemView> {
     let mut ordered_items = items.to_vec();
     ordered_items.sort_by_key(|item| item.order);
     ordered_items
 }
 
 fn build_measured_flex_lines(
-    items: &[MeasuredFlexItem],
+    items: &[FlexItemView],
     wrap_mode: FlexWrapMode,
     container_main_size_px: Option<f32>,
     gap_between_items_px: f32,
@@ -1613,7 +1649,7 @@ fn build_measured_flex_lines(
     lines
 }
 
-fn build_measured_flex_line(items: &[MeasuredFlexItem], gap_between_items_px: f32) -> FlexLine {
+fn build_measured_flex_line(items: &[FlexItemView], gap_between_items_px: f32) -> FlexLine {
     let mut line = FlexLine {
         item_sources: Vec::with_capacity(items.len()),
         outer_hypothetical_main_size_px: 0.0,
@@ -1635,8 +1671,8 @@ fn build_measured_flex_line(items: &[MeasuredFlexItem], gap_between_items_px: f3
 }
 
 fn resolve_measured_flex_container(
-    measured_items_in_dom_order: Vec<MeasuredFlexItem>,
-    line_collection_items: Vec<MeasuredFlexItem>,
+    measured_items_in_dom_order: Vec<FlexItemView>,
+    line_collection_items: Vec<FlexItemView>,
     lines: Vec<FlexLine>,
 ) -> FlexContainerSolve {
     let mut main_size_px: f32 = 0.0;
@@ -1892,8 +1928,8 @@ fn total_line_cross_size_px(line_cross_sizes_px: &[f32], gap_between_lines_px: f
 }
 
 fn measured_items_by_child_key(
-    measured_items: &[MeasuredFlexItem],
-) -> HashMap<DomNodeSlotKey, MeasuredFlexItem> {
+    measured_items: &[FlexItemView],
+) -> HashMap<DomNodeSlotKey, FlexItemView> {
     let item_map = measured_items
         .iter()
         .copied()
@@ -1909,8 +1945,8 @@ fn measured_items_by_child_key(
 
 fn measured_items_for_line(
     line: &FlexLine,
-    measured_items_by_child_key: &HashMap<DomNodeSlotKey, MeasuredFlexItem>,
-) -> Vec<MeasuredFlexItem> {
+    measured_items_by_child_key: &HashMap<DomNodeSlotKey, FlexItemView>,
+) -> Vec<FlexItemView> {
     line.item_sources
         .iter()
         .map(|source| {
@@ -1923,7 +1959,7 @@ fn measured_items_for_line(
 }
 
 fn resolve_flex_line_items(
-    items: &[MeasuredFlexItem],
+    items: &[FlexItemView],
     container_main_size_px: f32,
     container_style: FlexContainerStyle,
     gap_between_items_px: f32,
@@ -2054,7 +2090,7 @@ fn extra_main_axis_space_between_items_px(
 }
 
 fn resolve_flex_line_item_resolution_states(
-    items: &[MeasuredFlexItem],
+    items: &[FlexItemView],
     container_main_size_px: f32,
     gap_between_items_px: f32,
 ) -> Vec<FlexLineItemResolutionState> {
@@ -2105,7 +2141,7 @@ fn resolve_flex_line_item_resolution_states(
 }
 
 fn flex_line_uses_flex_grow(
-    items: &[MeasuredFlexItem],
+    items: &[FlexItemView],
     container_main_size_px: f32,
     gap_between_items_px: f32,
 ) -> bool {
@@ -2119,7 +2155,7 @@ fn flex_line_uses_flex_grow(
 }
 
 fn initial_flex_line_item_resolution_states(
-    items: &[MeasuredFlexItem],
+    items: &[FlexItemView],
 ) -> Vec<FlexLineItemResolutionState> {
     items
         .iter()
@@ -2143,7 +2179,7 @@ fn freeze_flex_line_inflexible_items(
     }
 }
 
-fn flex_line_item_is_inflexible(item: MeasuredFlexItem, is_using_flex_grow: bool) -> bool {
+fn flex_line_item_is_inflexible(item: FlexItemView, is_using_flex_grow: bool) -> bool {
     if is_using_flex_grow {
         if item.flex_grow_factor == 0.0 {
             return true;
@@ -2243,10 +2279,7 @@ fn freeze_flex_line_main_size_violations(
     froze_violation
 }
 
-fn clamped_main_size_after_flex_constraints(
-    item: MeasuredFlexItem,
-    resolved_main_size_px: f32,
-) -> f32 {
+fn clamped_main_size_after_flex_constraints(item: FlexItemView, resolved_main_size_px: f32) -> f32 {
     let mut clamped_main_size_px = resolved_main_size_px
         .max(item.automatic_min_main_size_px)
         .max(item.main_axis_border_padding_px);
@@ -2281,14 +2314,14 @@ fn unfrozen_raw_flex_line_factor_sum(
         .sum()
 }
 
-fn raw_flex_line_flex_factor(item: MeasuredFlexItem, is_using_flex_grow: bool) -> f32 {
+fn raw_flex_line_flex_factor(item: FlexItemView, is_using_flex_grow: bool) -> f32 {
     if is_using_flex_grow {
         return item.flex_grow_factor;
     }
     item.flex_shrink_factor
 }
 
-fn flex_line_flex_factor(item: MeasuredFlexItem, is_using_flex_grow: bool) -> f32 {
+fn flex_line_flex_factor(item: FlexItemView, is_using_flex_grow: bool) -> f32 {
     if is_using_flex_grow {
         return item.flex_grow_factor;
     }
@@ -2696,44 +2729,10 @@ fn non_negative_flex_axis_size_px(size_px: f32) -> f32 {
     size_px.max(0.0)
 }
 
-fn main_axis_flow_size(main_axis: FlexAxis, measured_flow: FlowSize) -> f32 {
-    match main_axis {
-        FlexAxis::Horizontal => measured_flow.width_px,
-        FlexAxis::Vertical => measured_flow.height_px,
-    }
-}
-
-fn main_axis_border_box_size_from_flow(
-    main_axis: FlexAxis,
-    measured_flow: FlowSize,
-    style: NodeStyle,
-) -> f32 {
-    (main_axis_flow_size(main_axis, measured_flow)
-        - main_axis_margin_size_px(style.sides, main_axis))
-    .max(0.0)
-}
-
 fn cross_axis_flow_size(main_axis: FlexAxis, measured_flow: FlowSize) -> f32 {
     match main_axis {
         FlexAxis::Horizontal => measured_flow.height_px,
         FlexAxis::Vertical => measured_flow.width_px,
-    }
-}
-
-fn cross_axis_border_box_size_from_flow(
-    main_axis: FlexAxis,
-    measured_flow: FlowSize,
-    style: NodeStyle,
-) -> f32 {
-    (cross_axis_flow_size(main_axis, measured_flow)
-        - cross_axis_margin_size_px(style.sides, main_axis))
-    .max(0.0)
-}
-
-fn cross_axis(main_axis: FlexAxis) -> FlexAxis {
-    match main_axis {
-        FlexAxis::Horizontal => FlexAxis::Vertical,
-        FlexAxis::Vertical => FlexAxis::Horizontal,
     }
 }
 
@@ -2769,16 +2768,6 @@ fn cross_axis_border_padding_size_px(sides: BoxSides, main_axis: FlexAxis) -> f3
                 + sides.padding.right_px
         }
     }
-}
-
-fn main_axis_margin_size_px(sides: BoxSides, main_axis: FlexAxis) -> f32 {
-    main_axis_start_margin_from_sides(sides, main_axis)
-        + main_axis_end_margin_from_sides(sides, main_axis)
-}
-
-fn cross_axis_margin_size_px(sides: BoxSides, main_axis: FlexAxis) -> f32 {
-    cross_axis_start_margin_from_sides(sides, main_axis)
-        + cross_axis_end_margin_from_sides(sides, main_axis)
 }
 
 fn main_axis_start_margin(style: NodeStyle, main_axis: FlexAxis) -> f32 {
@@ -2839,6 +2828,58 @@ fn node_for_key(root_dom: &RootDom, key: DomNodeSlotKey) -> Result<&DomNode, Dom
     root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)
 }
 
+// The flex item view's measure-path record accessors. The measurement record
+// stores only basis-independent CONTENT sizes (min/max inline contributions
+// and the content height at this pass's measure width); the item view re-adds
+// the node's own border+padding at its production site, exactly as the
+// pre-change `main_axis_border_box_size_from_flow`/`cross_axis_border_box_size_from_flow`
+// recovered the border box from the folded `FlowSize`.
+
+/// The record's MAIN-axis content size for an item: the max-content inline
+/// contribution for a horizontal main axis, the content height at measure width
+/// for a vertical main axis.
+fn record_content_main_size(main_axis: FlexAxis, record: MeasurementRecord) -> f32 {
+    match main_axis {
+        FlexAxis::Horizontal => record.h_max_content_px,
+        FlexAxis::Vertical => record.content_height_at_width_px,
+    }
+}
+
+/// The record's CROSS-axis content size for an item (the inverse of
+/// `record_content_main_size`): content height for a horizontal main axis,
+/// max-content inline contribution for a vertical main axis.
+fn record_content_cross_size(main_axis: FlexAxis, record: MeasurementRecord) -> f32 {
+    match main_axis {
+        FlexAxis::Horizontal => record.content_height_at_width_px,
+        FlexAxis::Vertical => record.h_max_content_px,
+    }
+}
+
+/// Returns a node's retained measurement record (read side). The measure fold
+/// writes it once per node per pass; the item view reads children it has
+/// already exited, so freshness is structural.
+fn node_measurement_of(node: &DomNode) -> MeasurementRecord {
+    match node {
+        DomNode::Document(node) => node.base.measurement,
+        DomNode::DocumentFragment(node) => node.base.measurement,
+        DomNode::Element(node) => node.base.measurement,
+        DomNode::Text(node) => node.base.measurement,
+    }
+}
+
+/// Returns a node's retained measurement record slot (write side). The write is
+/// equality-gated by the caller through `replace_measurement_if_changed`; this
+/// helper only routes to the right node-kind base, mirroring flow.rs's private
+/// `node_measurement_mut`.
+fn node_measurement_mut(node: &mut DomNode) -> &mut MeasurementRecord {
+    match node {
+        DomNode::Document(node) => &mut node.base.measurement,
+        DomNode::DocumentFragment(node) => &mut node.base.measurement,
+        DomNode::Element(node) => &mut node.base.measurement,
+        DomNode::Text(node) => &mut node.base.measurement,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
@@ -2858,7 +2899,7 @@ mod tests {
         flex_shrink_factor: f32,
         flex_base_size_px: f32,
         measured_cross_size_input_px: f32,
-    ) -> MeasuredFlexItem {
+    ) -> FlexItemView {
         measured_row_item_with_automatic_min(
             source,
             flex_grow_factor,
@@ -2876,12 +2917,10 @@ mod tests {
         flex_base_size_px: f32,
         measured_cross_size_input_px: f32,
         automatic_min_main_size_px: f32,
-    ) -> MeasuredFlexItem {
-        MeasuredFlexItem {
+    ) -> FlexItemView {
+        FlexItemView {
             source,
             order: 0,
-            main_axis: FlexAxis::Horizontal,
-            cross_axis: FlexAxis::Vertical,
             align_self: None,
             flex_grow_factor,
             flex_shrink_factor,
@@ -2908,7 +2947,7 @@ mod tests {
         measured_cross_size_input_px: f32,
         min_main_size_px: Option<f32>,
         max_main_size_px: Option<f32>,
-    ) -> MeasuredFlexItem {
+    ) -> FlexItemView {
         let mut measured_item = measured_row_item(
             source,
             flex_grow_factor,
@@ -2944,12 +2983,10 @@ mod tests {
     fn measured_row_item_with_box_edges(
         source: FlexItemSource,
         box_edges: MeasuredRowItemBoxEdges,
-    ) -> MeasuredFlexItem {
-        MeasuredFlexItem {
+    ) -> FlexItemView {
+        FlexItemView {
             source,
             order: 0,
-            main_axis: FlexAxis::Horizontal,
-            cross_axis: FlexAxis::Vertical,
             align_self: None,
             flex_grow_factor: 0.0,
             flex_shrink_factor: 0.0,
@@ -3058,7 +3095,7 @@ mod tests {
         root: &mut RootDom,
         container: DomNodeSlotKey,
         context: LayoutContext,
-    ) -> Vec<MeasuredFlexItem> {
+    ) -> Vec<FlexItemView> {
         let document_key = root.document_node().0;
         recompute_dirty_style_subtree_for_layer_root(root, document_key).expect("style pass");
         let mut resolver = IdentityDomLayoutResolver;
@@ -3142,8 +3179,6 @@ mod tests {
         let item = items.first().expect("child item");
 
         assert_eq!(item.source.key(), child);
-        assert_eq!(item.main_axis, FlexAxis::Horizontal);
-        assert_eq!(item.cross_axis, FlexAxis::Vertical);
         assert_eq!(item.flex_base_size_px, 12.0);
         assert_eq!(item.hypothetical_main_size_px, 12.0);
         assert_eq!(item.outer_hypothetical_main_size_px, 12.0);
@@ -3607,7 +3642,249 @@ mod tests {
         );
     }
 
+    // --- flex measure-fold record + item-view identity (flex step 1, T4a) ---
+    //
+    // Each kind below asserts (a) the measure fold wrote the child's record with
+    // the corpus-table values and (b) the assembled item view derives its
+    // CONTENT-SIZE fields from that record — the same values the pre-change
+    // `MeasuredFlexItem` assembly produced from the folded `FlowSize`.
+
+    fn node_record(root: &RootDom, key: DomNodeSlotKey) -> MeasurementRecord {
+        node_measurement_of(root.node(key).expect("node should exist"))
+    }
+
+    fn text_intrinsic_widths(root: &RootDom, key: DomNodeSlotKey) -> (f32, f32) {
+        let DomIntrinsic::Text(text_intrinsic) = root.node(key).expect("text node").intrinsic()
+        else {
+            panic!("text node should carry a measured text intrinsic");
+        };
+        (
+            text_intrinsic.min_content_width_px,
+            text_intrinsic.max_content_width_px,
+        )
+    }
+
+    /// Asserts an auto-basis item view's CONTENT-SIZE fields are the record's
+    /// content sizes plus the node's own border/padding, exactly as the
+    /// pre-change `main_axis_border_box_size_from_flow`/`cross_axis_border_box_size_from_flow`
+    /// recovered the border box from the folded `FlowSize`.
+    fn assert_item_view_reads_record(
+        item: &FlexItemView,
+        record: MeasurementRecord,
+        main_axis: FlexAxis,
+        main_border_padding_px: f32,
+        cross_border_padding_px: f32,
+    ) {
+        assert_eq!(
+            item.flex_base_size_px,
+            record_content_main_size(main_axis, record) + main_border_padding_px,
+            "auto-basis flex base size should be the record's main content size plus border/padding",
+        );
+        assert_eq!(
+            item.measured_cross_size_input_px,
+            record_content_cross_size(main_axis, record) + cross_border_padding_px,
+            "measured cross size should be the record's cross content size plus border/padding",
+        );
+        assert_eq!(
+            item.hypothetical_main_size_px, item.flex_base_size_px,
+            "unclamped auto-basis hypothetical main size should equal the flex base size",
+        );
+        assert_eq!(
+            item.outer_hypothetical_main_size_px,
+            item.hypothetical_main_size_px + item.margin_main_start_px + item.margin_main_end_px,
+        );
+    }
+
     #[test]
+    fn item_view_text_kind_reads_record_with_text_intrinsic_content_sizes() {
+        let (mut root, container, context) = flex_container_with_context();
+        let text = append_text(&mut root, container, "Flex label");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("text item");
+        let record = node_record(&root, text);
+        let (min_width_px, max_width_px) = text_intrinsic_widths(&root, text);
+
+        assert_eq!(record.h_min_content_px, min_width_px);
+        assert_eq!(record.h_max_content_px, max_width_px);
+        assert!(record.content_height_at_width_px > 0.0);
+        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+    }
+
+    #[test]
+    fn item_view_block_with_children_kind_reads_record_with_block_flow_sizes() {
+        let (mut root, container, context) = flex_container_with_context();
+        let child = append_div(&mut root, container);
+        let first = append_div(&mut root, child);
+        root.style_mut(first)
+            .set("width", "50px")
+            .expect("first width should set");
+        root.style_mut(first)
+            .set("height", "20px")
+            .expect("first height should set");
+        let second = append_div(&mut root, child);
+        root.style_mut(second)
+            .set("width", "80px")
+            .expect("second width should set");
+        root.style_mut(second)
+            .set("height", "30px")
+            .expect("second height should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("block item");
+        let record = node_record(&root, child);
+
+        // Widest child content contribution (80px) and stacked child heights.
+        assert_eq!(record.h_min_content_px, 80.0);
+        assert_eq!(record.h_max_content_px, 80.0);
+        assert_eq!(record.content_height_at_width_px, 50.0);
+        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+    }
+
+    #[test]
+    fn item_view_inline_kind_reads_record_with_inline_flow_sizes() {
+        let (mut root, container, context) = flex_container_with_context();
+        let span = append_span(&mut root, container);
+        let first = append_text(&mut root, span, "one two");
+        let second = append_text(&mut root, span, "three four");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("inline item");
+        let record = node_record(&root, span);
+        let (first_min, first_max) = text_intrinsic_widths(&root, first);
+        let (second_min, second_max) = text_intrinsic_widths(&root, second);
+
+        // Inline min-content is the widest child's min; max-content is the sum.
+        assert_eq!(record.h_min_content_px, first_min.max(second_min));
+        assert_eq!(record.h_max_content_px, first_max + second_max);
+        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+    }
+
+    #[test]
+    fn item_view_img_kind_reads_record_with_intrinsic_and_replaced_ratio_flag() {
+        let (mut root, container, context) = flex_container_with_context();
+        let img_key = root.create_element(DomTag::Img).expect("img should insert");
+        root.append_child(container, img_key)
+            .expect("img should append");
+        root.set_attr(
+            img_key,
+            DomAttribute::Src,
+            Some(DomAttributeValue::String("memory://a.png".to_string())),
+        )
+        .expect("src should set");
+        root.style_mut(img_key)
+            .set("width", "320px")
+            .expect("width should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("img item");
+        let record = node_record(&root, img_key);
+
+        // Explicit width substitutes the intrinsic width for both content
+        // contributions; the intrinsic ratio (160/90) derives the height.
+        assert_eq!(record.h_min_content_px, 320.0);
+        assert_eq!(record.h_max_content_px, 320.0);
+        assert_eq!(record.content_height_at_width_px, 180.0);
+        assert!(record.flags.replaced_ratio());
+        assert!(!record.flags.preserve_mode());
+        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+    }
+
+    #[test]
+    fn item_view_element_control_kind_reads_record_with_preferred_size_intrinsic() {
+        let (mut root, container, context) = flex_container_with_context();
+        let input_key = root
+            .create_element(DomTag::Input)
+            .expect("input should insert");
+        root.append_child(container, input_key)
+            .expect("input should append");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("input item");
+        let record = node_record(&root, input_key);
+        let DomIntrinsic::ElementDefaultPreferredSize(intrinsic) =
+            root.node(input_key).expect("input node").intrinsic()
+        else {
+            panic!("input should carry a preferred-size intrinsic");
+        };
+
+        assert_eq!(record.h_min_content_px, intrinsic.width_px);
+        assert_eq!(record.h_max_content_px, intrinsic.width_px);
+        assert_eq!(record.content_height_at_width_px, intrinsic.height_px);
+        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+    }
+
+    #[test]
+    fn item_view_nested_flex_kind_reads_record_with_inner_resolved_container_sizes() {
+        let (mut root, container, context) = flex_container_with_context();
+        root.style_mut(container)
+            .set("width", "100px")
+            .expect("container width should set");
+        root.style_mut(container)
+            .set("height", "40px")
+            .expect("container height should set");
+        let nested = append_div(&mut root, container);
+        root.style_mut(nested)
+            .set("display", "flex")
+            .expect("nested display should set");
+        root.style_mut(nested)
+            .set("width", "30px")
+            .expect("nested width should set");
+        root.style_mut(nested)
+            .set("height", "20px")
+            .expect("nested height should set");
+        let nested_child = append_div(&mut root, nested);
+        root.style_mut(nested_child)
+            .set("width", "10px")
+            .expect("nested child width should set");
+        root.style_mut(nested_child)
+            .set("height", "10px")
+            .expect("nested child height should set");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("nested flex item");
+        let record = node_record(&root, nested);
+
+        // The inner container's record carries the inner solve's resolved
+        // content sizes: h_min == h_max == resolved content width.
+        assert_eq!(record.h_min_content_px, 30.0);
+        assert_eq!(record.h_max_content_px, 30.0);
+        assert_eq!(record.content_height_at_width_px, 20.0);
+        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, 0.0, 0.0);
+    }
+
+    #[test]
+    fn item_view_reads_record_content_sizes_before_adding_own_border_padding() {
+        let (mut root, container, context) = flex_container_with_context();
+        let child = append_div(&mut root, container);
+        root.style_mut(child)
+            .set("padding-left", "4px")
+            .expect("left padding should set");
+        root.style_mut(child)
+            .set("padding-right", "6px")
+            .expect("right padding should set");
+        root.style_mut(child)
+            .set("padding-top", "2px")
+            .expect("top padding should set");
+        root.style_mut(child)
+            .set("padding-bottom", "3px")
+            .expect("bottom padding should set");
+        append_text(&mut root, child, "Flex label");
+
+        let items = collect_items_for_container(&mut root, container, context);
+        let item = items.first().expect("padded block item");
+        let record = node_record(&root, child);
+        let main_bp = 4.0 + 6.0;
+        let cross_bp = 2.0 + 3.0;
+
+        assert_eq!(item.main_axis_border_padding_px, main_bp);
+        assert_item_view_reads_record(item, record, FlexAxis::Horizontal, main_bp, cross_bp);
+    }
+
+    #[test]
+    // Purity pin: the staged measurement solve writes only each node's
+    // measurement record (the sanctioned measurement output), never node
+    // layout/box-model state.
     fn staged_measurement_solve_measures_nested_flex_without_writing_layout() {
         let (mut root, container, context) = flex_container_with_context();
         root.style_mut(container)
@@ -3723,6 +4000,9 @@ mod tests {
     }
 
     #[test]
+    // Purity pin: the staged measurement solve writes only each node's
+    // measurement record (the sanctioned measurement output), never node
+    // layout/box-model state.
     fn staged_measurement_solve_does_not_write_node_layout_or_box_model() {
         let (mut root, container, context) = flex_container_with_context();
         root.style_mut(container)
