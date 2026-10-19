@@ -329,25 +329,99 @@ fn allocation_windows_match_baseline_after_warmup() {
         region.change(),
     );
 
-    // flex step 1, T6 — the (d1) scenario allocation window is NOT landed
-    // here: its steady-state update is NOT zero, and the contract (FLEX_MAPPING
-    // §3.4 "a dirty-flex update allocates nothing after warmup";
-    // FLEX_STEP1_EXECUTION §4/§7) is zero, so a non-zero pin is forbidden and
-    // this STOP is reported instead. Measured evidence (update-only window,
-    // lanes warmed to high-water mark): the text-bearing (d1) scenario
-    // (12 text items + 4 nested text-bearing flex items) allocates 1998 times
-    // (bytes ~269 KB allocated / ~269 KB deallocated) in one dirty-flex update;
-    // a text-free variant of the same shape (12 fixed-size items + 4 nested
-    // fixed-size items) still allocates 65 times. The allocation sources are
-    // pre-existing flex-solve code, not the lanes: (a)
-    // `place_active_flex_resolved_children` allocates a per-placement
-    // `Vec<f32>` (`vec![0.0; line_count]`, flex.rs placement path); (b)
-    // `non_negative_f32_from_usize` allocates a String per call via
-    // `usize::to_string().parse::<f32>()` (flex.rs numeric helper, called
-    // dozens of times per solve); (c) the fold re-measures every text node,
-    // each paying cosmic-text shaping (`measure_wrapped_text_height`). The
-    // lane scratch itself is zero-allocation after warmup (high-water-mark
-    // retention); the residual traffic predates T4b (both allocation sites
-    // date to the initial commit) and is out of scope for T6's counter/scenario
-    // work. This window lands with the fix that closes those sources.
+    // flex step 1, T6b — the text-free (d1) shape, layout-phase window.
+    //
+    // The §3.4 pass-ownership decomposition (amended 2026-10-19): the reflow
+    // machinery (four lanes, record, solve, placement) allocates NOTHING after
+    // warmup — proven by the lanes at high-water mark and no
+    // `Vec`/`String`/`collect` in the flex solve. This window is the narrowest
+    // the harness can isolate: the CPU backend skips the per-paint
+    // `LayerPaintPlan` rebuild and the width toggle runs OUTSIDE the region, so
+    // the pin below is the update-only window. The residual is the clean-update
+    // base + the style pass's winners fold (proposal J's sleeping target) + a
+    // small mixed-size flex-path residual — none of which is the reflow
+    // machinery (the lanes sit at high-water mark for the whole solve).
+    let (mut world, mut root) = support::attached_gpu_root_dom_setup_with_context(
+        ui_dom::RootDomContext::new_cpu(),
+        320.0,
+        320.0,
+    );
+    let document_root = root.document_node().0;
+    let container = support::assert_append_div_to(&mut root, document_root);
+    support::assert_style_set(&mut root, container, "display", "flex");
+    support::assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    support::assert_style_set(&mut root, container, "width", "240px");
+    let first_item = support::assert_append_div_to(&mut root, container);
+    support::assert_style_set(&mut root, first_item, "width", "40px");
+    support::assert_style_set(&mut root, first_item, "height", "20px");
+    for _ in 1..12 {
+        let item = support::assert_append_div_to(&mut root, container);
+        support::assert_style_set(&mut root, item, "width", "40px");
+        support::assert_style_set(&mut root, item, "height", "20px");
+    }
+    for _ in 0..4 {
+        let nested = support::assert_append_div_to(&mut root, container);
+        support::assert_style_set(&mut root, nested, "display", "flex");
+        let child = support::assert_append_div_to(&mut root, nested);
+        support::assert_style_set(&mut root, child, "width", "30px");
+        support::assert_style_set(&mut root, child, "height", "10px");
+    }
+    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    support::assert_style_set(&mut root, first_item, "width", "50px");
+    support::assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
+    support::assert_style_set(&mut root, first_item, "width", "40px");
+    let region = Region::new(GLOBAL_ALLOCATOR);
+    support::assert_root_dom_update(&mut world, &mut root, 0.032, DomPointerUpdate::Unchanged);
+    assert_window_stats(
+        "flex step 1 text-free layout phase",
+        WindowPin {
+            allocations: 7,
+            deallocations: 7,
+            reallocations: 2,
+        },
+        region.change(),
+    );
+    drop((world, root));
+
+    // flex step 1, T6b — the (d1) text-bearing layout-phase window.
+    //
+    // inherited text-pipeline cadence; machinery zero — proven by (a); the
+    // change-detection-gated fold (step 4+) is the designed answer.
+    let (mut world, mut root) = support::attached_gpu_root_dom_setup_with_context(
+        ui_dom::RootDomContext::new_cpu(),
+        320.0,
+        320.0,
+    );
+    let document_root = root.document_node().0;
+    let container = support::assert_append_div_to(&mut root, document_root);
+    support::assert_style_set(&mut root, container, "display", "flex");
+    support::assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    support::assert_style_set(&mut root, container, "width", "240px");
+    let first_text = support::assert_append_text_to(&mut root, container, "aa");
+    for _ in 1..12 {
+        support::assert_append_text_to(&mut root, container, "aa");
+    }
+    for _ in 0..4 {
+        let nested = support::assert_append_div_to(&mut root, container);
+        support::assert_style_set(&mut root, nested, "display", "flex");
+        support::assert_append_text_to(&mut root, nested, "bb");
+    }
+    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    root.set_text_content(first_text, "longer text")
+        .expect("warm rewrap should succeed");
+    support::assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
+    root.set_text_content(first_text, "aa")
+        .expect("rewrap should succeed");
+    let region = Region::new(GLOBAL_ALLOCATOR);
+    support::assert_root_dom_update(&mut world, &mut root, 0.032, DomPointerUpdate::Unchanged);
+    assert_window_stats(
+        "flex step 1 (d1) text layout phase",
+        WindowPin {
+            allocations: 1934,
+            deallocations: 1934,
+            reallocations: 85,
+        },
+        region.change(),
+    );
+    drop((world, root));
 }
