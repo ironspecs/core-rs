@@ -51,7 +51,8 @@ with the per-file split produced as an artifact.
 |---|---|---|
 | `crates/ui-dom/src/domains/layout/measurement_record.rs` | NEW | `MeasurementRecord`, `compute_node_measurement` (the shared exit-time computation), `replace_measurement_if_changed` (equality-gated write → bool) |
 | `crates/ui-dom/src/domains/layout/measurement_flags.rs` | NEW | `MeasurementFlags` + const builders/queries (structural rule 1: impl-bearing types get their own file — corrected from the original single-file plan, T1 escalation) |
-| `crates/ui-dom/src/domains/layout/flex_order_lane.rs` | NEW | `FlexOrderLane` + entry type; the adaptive insertion discipline |
+| `crates/ui-dom/src/domains/layout/flex_order_lane.rs` | NEW | `FlexOrderLane` + entry type `{dom_index: u32, child_key, order: i32}` (tiny); the adaptive insertion discipline |
+| `crates/ui-dom/src/domains/layout/flex_item_lane.rs` | NEW | `FlexItemLane` (the dom-ordered item-view lane) + entry type `{view, order_index: u32}` — placement iterates it directly (DOM order preserved); `order_index` cross-references the order lane |
 | `crates/ui-dom/src/domains/layout/flex_line_lane.rs` | NEW | `FlexLineLane` + `FlexLineEntry` (ranges into the order lane) |
 | `crates/ui-dom/src/domains/layout/flex_resolution_lane.rs` | NEW | `FlexResolutionLane` + entry type (parallel to the order lane) |
 | `crates/ui-dom/src/types/layout_scratch.rs` | NEW | `LayoutScratch`: the RootDom-owned owner of the three lanes' storage; `reset_for_update` |
@@ -151,6 +152,22 @@ claims ranges during its solve; all ranges reset once per update
 mark). Layout writes; paint reads in the same update (step 2). Steady
 state: zero allocation after warmup — the `perf_allocation` window is
 the judge.
+
+**The four-lane design (amended at T4b design time, 2026-10-19).** The
+HashMap re-join's real job is mapping placement's DOM-order walk to the
+order-modified resolution results. The lane design that replaces it
+WITHOUT maps or key lookups: (1) the **item lane** (dom-ordered) holds
+the assembled item views — the fold pushes children in DOM order, so
+placement iterates the range directly with DOM order preserved
+(paint-order's step-2 fix stays out of step 1's contract); (2) the
+**order lane** holds tiny `{dom_index: u32, child_key, order: i32}`
+entries, insertion-sorted by `(order, dom index)`; each item-lane
+entry's `order_index` back-references its order-lane position; (3) the
+**line lane** ranges over the order lane; (4) the **resolution lane**
+is parallel to the order lane. Solve: iterate the order lane, read the
+view via `dom_index`. Placement: iterate the item lane, read the
+resolution result via `order_index`. All O(1), no maps, no per-container
+allocation — and the two dead `MeasuredFlexItem` fields stay dead.
 
 ---
 
@@ -334,3 +351,16 @@ placement).
   insufficient for a family, the family's fate is decided by the
   policy (die as bespoke-internal) rather than growing production
   surface for a test.
+- **R6 — the record's two phase-values for flex items (found at T4a,
+  accepted with a named follow-up).** A flex item's measure-fold record
+  (intrinsic contributions, e.g. `0/0/40` for `flex: 0 0 50px`) and its
+  placement-phase `exit_node` record (solver-override contribution,
+  `50/50/40`) differ, so the equality gate writes every pass for such
+  items (+2 GetMut in the pinned scenario, re-pinned with the documented
+  cause). Timing is safe: the solve and step 4's auto-min derivation
+  both read PRE-overwrite values, so no consumer is affected today. The
+  end-of-pass h-values for flex items are override-polluted; the
+  refinement — contribution substitution uses AUTHORED definite sizes
+  only, never solver overrides — is owed to the FIRST consumer that
+  reads end-of-pass flex-item records (none exists until step 4; if one
+  lands earlier, the refinement lands first).
