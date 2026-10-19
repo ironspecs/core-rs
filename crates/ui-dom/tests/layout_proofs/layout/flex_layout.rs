@@ -5484,13 +5484,14 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
 // a collapse white-space mode (no item, no gap) and forms an item under a
 // preserve mode. Rows (a)/(b)/(d) flipped to the spec-correct single-item
 // shape; row (c) stays the on-spec control (a block breaks the run); rows
-// (e)/(g)/(h) are new on-spec pins; row (f) (fragment-joining min-content) is
-// pinned at the item-view/accumulator unit level (`flex.rs`,
-// `flex_anonymous_run.rs`) because the inflexible run item never shrinks, so
-// its min-content is recorded, never applied at layout.
+// (e)/(g)/(h)/(i) are new on-spec pins; row (f) (fragment-joining min-content)
+// is pinned at the item-view/accumulator unit level (`flex.rs`,
+// `flex_anonymous_run.rs`) because it pins the fold arithmetic directly, while
+// row (i) exercises the run's min-content floor at layout (the run shrinks
+// with the CSS initial `flex-shrink: 1` and clamps at that floor).
 #[test]
 fn anonymous_inline_runs_merge_into_single_flex_items() {
-    let rows: [AnonymousRunRow; 7] = [
+    let rows: [AnonymousRunRow; 8] = [
         (
             "text_plus_text_merges_into_one_item",
             assert_text_plus_text_merged,
@@ -5516,6 +5517,10 @@ fn anonymous_inline_runs_merge_into_single_flex_items() {
             assert_run_order_semantics,
         ),
         ("joint_cross_is_one_strut", assert_joint_cross_is_one_strut),
+        (
+            "run_shrinks_with_css_initial_flex_shrink",
+            assert_anonymous_run_shrinks_with_css_initial,
+        ),
     ];
     for (name, run) in rows {
         run(name);
@@ -5735,6 +5740,84 @@ fn assert_joint_cross_is_one_strut(name: &str) {
         assert_node_layout(&root, container).height_px,
         strut_px,
         &format!("{name}: joint cross is one strut, not two"),
+    );
+}
+
+/// Row (i): an anonymous inline run is a flex item carrying the CSS INITIAL
+/// flex values — `flex-grow: 0`, `flex-shrink: 1` (an anonymous wrapper
+/// inherits nothing, so `flex-shrink` keeps its initial 1). In negative free
+/// space the run shrinks by its scaled shrink factor and clamps at its
+/// min-content (the widest segment).
+///
+/// The run has no node of its own, so its resolved main size is observed
+/// through the following inflexible block item's left edge (gap 0). With the
+/// 3a-ii `flex_shrink: 0.0` error the run froze at max-content and the block
+/// stayed at the run's full max-content width, so the shrunk-size assertions
+/// here fail — this row discriminates that field.
+///
+/// The shrinking-cross half of D9(i) ("a shrunk run's cross reflects the
+/// wrapping the shrink causes") is NOT pinned here: placement lays a run's
+/// children at their intrinsic max-content width (`anonymous_inline_run_child_context`
+/// passes `available_width_px: None`), so a shrunk run does not yet wrap and
+/// its cross stays the single-line strut. Pinning that requires the placement
+/// to pass the resolved main size down to the run children — out of scope for
+/// this field-only fix.
+fn assert_anonymous_run_shrinks_with_css_initial(name: &str) {
+    // One text node is one run beside an inflexible block item (flex-basis
+    // 30px, shrink 0): the run absorbs all of the line's negative free space,
+    // so its resolved main size is observable as the block's left edge.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "400px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let text = assert_append_text_to(&mut root, container, "one two three four");
+    let block = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, block, "flex-basis", "30px");
+    assert_style_set(&mut root, block, "flex-shrink", "0");
+    assert_style_set(&mut root, block, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let max_content_px = assert_text_intrinsic(&root, text).max_content_width_px;
+    let min_content_px = assert_text_intrinsic(&root, text).min_content_width_px;
+
+    // (a) scaled-shrink distribution: at a container width equal to the run's
+    // max-content, the line's negative free space is the block's 30px basis
+    // (the run's shrink factor is 1, the block's 0 freezes it), so the run
+    // resolves to max-content − 30px and the block's left edge lands there.
+    assert_style_set(
+        &mut root,
+        container,
+        "width",
+        &format!("{max_content_px}px"),
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    // rects[0] = container, rects[1] = block (the text emits a text run).
+    assert_close(
+        plans[0].rects[1].position_px[0],
+        max_content_px - 30.0,
+        &format!("{name}: shrunk run resolves to max-content minus the block basis"),
+    );
+    assert_close(
+        plans[0].rects[1].size_px[0],
+        30.0,
+        &format!("{name}: the inflexible block keeps its 30px basis"),
+    );
+
+    // (b) min-content clamp: a container no wider than the widest word would
+    // push the run below its min-content, so it clamps at the widest segment
+    // instead and the block's left edge lands at the run's min-content.
+    assert_style_set(
+        &mut root,
+        container,
+        "width",
+        &format!("{min_content_px}px"),
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    assert_close(
+        plans[0].rects[1].position_px[0],
+        min_content_px,
+        &format!("{name}: run clamps at its min-content (the widest word)"),
     );
 }
 

@@ -499,17 +499,18 @@ fn push_flex_item_into_lanes(
 }
 
 /// The virtual item view for an anonymous inline run (`FLEX_MAPPING` §3.2, D5):
-/// order 0, `align_self` None, grow/shrink 0, basis auto (base = the run's
-/// max-content), zero margins/border/padding, no min/max, `auto_min` = the run's
-/// min-content (the widest-segment cursor).
+/// order 0, `align_self` None, grow 0 / shrink 1 (the CSS INITIALS — an
+/// anonymous wrapper inherits nothing, so `flex-shrink` keeps its initial 1),
+/// basis auto (base = the run's max-content), zero margins/border/padding, no
+/// min/max, `auto_min` = the run's min-content (the widest-segment cursor).
 ///
 /// The run's content sizes come from the accumulator, NOT a node record (there
 /// is no node) — the one view exempt from the record-read contract.
 ///
 /// The auto-min walk is bypassed for run items — a run has no node to walk —
-/// so the cursor min-content IS the automatic minimum. grow/shrink 0 freezes
-/// the item at its base (inflexible), so the run never shrinks below its
-/// max-content and the min-content floor is recorded, never applied. The
+/// so the cursor min-content IS the automatic minimum. shrink 1 lets the run
+/// shrink in negative free space, clamped at that min-content floor (never
+/// below it); grow 0 keeps it frozen against positive free space. The
 /// vertical-main axis maps the strut cross to the main size (the run's
 /// single-line height) and the max-content width to the cross size.
 fn anonymous_inline_run_item_view(
@@ -540,7 +541,7 @@ fn anonymous_inline_run_item_view(
         order: 0,
         align_self: None,
         flex_grow_factor: 0.0,
-        flex_shrink_factor: 0.0,
+        flex_shrink_factor: 1.0,
         flex_base_size_px,
         hypothetical_main_size_px: flex_base_size_px,
         automatic_min_main_size_px,
