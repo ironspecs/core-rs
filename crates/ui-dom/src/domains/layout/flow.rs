@@ -9,14 +9,17 @@
 //! - block and inline flow solving for one node at a time
 //! - local box math for width, height, margins, padding, borders, and
 //!   positioned offsets
-//! - final writes into node `box_model`, `layout`, and `paint`
+//! - final writes into node `box_model`, `layout`, and `measurement` (the
+//!   measurement record is a pass OUTPUT written once per node at `exit_node`,
+//!   equality-gated through `replace_measurement_if_changed` and never a dirt
+//!   source)
 //!
 //! Invariants and rules:
 //!
 //! - this file solves one node from current DOM properties and current walker
 //!   context; it must not store solver scratch on the node for its own use
 //! - all persistent writes here must be for other phases or other nodes:
-//!   `box_model`, `layout`, and `paint`
+//!   `box_model`, `layout`, and `measurement`
 //! - this file must not create a second walker or a parallel layout engine
 //! - layout decisions should be recomputed from current state instead of cached
 //!   unless later profiling proves otherwise
@@ -45,16 +48,17 @@ use crate::types::{
     DomNodeSlotKey, DomRect, DomTag, RootDom,
 };
 
+use super::measurement_record::compute_node_measurement;
 use super::style::{
     BoxSides, LayoutDisplay, NodeStyle, PositionMode, intrinsic_box_for_node, node_style,
     presented_position,
 };
-use super::{DomLayoutInput, DomLayoutResolver};
+use super::{DomLayoutInput, DomLayoutResolver, MeasurementRecord};
 
 #[cfg(test)]
 use crate::domains::layout::walker::relayout_tree;
 #[cfg(test)]
-use crate::domains::layout::{IdentityDomLayoutResolver, node_box};
+use crate::domains::layout::{IdentityDomLayoutResolver, MeasurementFlags, node_box};
 #[cfg(test)]
 use crate::domains::style::computed::{
     BoxLength, ComputedGroups, DisplayKw, OverflowKw, PositionKw,
@@ -581,6 +585,15 @@ pub(super) fn exit_node(
             .nodes
             .get_mut(key)
             .ok_or(DomError::InvalidNodeKey)?;
+        // The record write is a pass output, never a dirt source: the equality
+        // gate's bool result is deliberately unused in step 1 (record writes
+        // never mark style/layout/paint dirty).
+        node_measurement_mut(node).replace_measurement_if_changed(compute_node_measurement(
+            &entered,
+            min_content_width_px,
+            max_content_width_px,
+            content_size.viewport_height_px,
+        ));
         write_layout_state(
             node,
             entered.style.layer_kind,
@@ -2113,6 +2126,19 @@ fn write_node_box(node: &mut DomNode, next_box: DomBoxModel) {
     }
 }
 
+/// Returns the node's retained measurement record slot for the exit-time write.
+/// The write itself is equality-gated by the caller through
+/// `replace_measurement_if_changed`; this helper only routes to the right
+/// node-kind base, mirroring `write_node_box`.
+fn node_measurement_mut(node: &mut DomNode) -> &mut MeasurementRecord {
+    match node {
+        DomNode::Document(document) => &mut document.base.measurement,
+        DomNode::DocumentFragment(fragment) => &mut fragment.base.measurement,
+        DomNode::Element(element) => &mut element.base.measurement,
+        DomNode::Text(text) => &mut text.base.measurement,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2791,5 +2817,281 @@ mod tests {
         assert_close(separate_height_flow.height_px, 45.0);
         assert_close(normal_height_box.border_box.width_px, 80.0);
         assert_close(normal_height_box.border_box.height_px, 45.0);
+    }
+
+    // --- block-world measurement record identity (flex step 1, T2) ---
+
+    fn node_measurement(root: &RootDom, key: DomNodeSlotKey) -> MeasurementRecord {
+        match root.node(key).expect("node should exist") {
+            DomNode::Document(node) => node.base.measurement,
+            DomNode::DocumentFragment(node) => node.base.measurement,
+            DomNode::Element(node) => node.base.measurement,
+            DomNode::Text(node) => node.base.measurement,
+        }
+    }
+
+    fn assert_record_close(actual: MeasurementRecord, expected: MeasurementRecord) {
+        assert_close(actual.h_min_content_px, expected.h_min_content_px);
+        assert_close(actual.h_max_content_px, expected.h_max_content_px);
+        assert_close(
+            actual.content_height_at_width_px,
+            expected.content_height_at_width_px,
+        );
+        assert_eq!(actual.v_min_content_px, expected.v_min_content_px);
+        assert_eq!(actual.v_max_content_px, expected.v_max_content_px);
+        assert_eq!(actual.flags, expected.flags);
+    }
+
+    fn text_intrinsic_widths(root: &RootDom, key: DomNodeSlotKey) -> (f32, f32) {
+        let DomIntrinsic::Text(text_intrinsic) = root.node(key).expect("text node").intrinsic()
+        else {
+            panic!("text node should carry a measured text intrinsic");
+        };
+        (
+            text_intrinsic.min_content_width_px,
+            text_intrinsic.max_content_width_px,
+        )
+    }
+
+    #[test]
+    fn block_world_exit_writes_text_node_measurement_identity() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.root;
+        let container = root.create_element(DomTag::Div).expect("container");
+        root.append_child(document, container)
+            .expect("append container");
+        let text_key = root
+            .create_text_node("Wrapped text sample")
+            .expect("text node");
+        root.append_child(container, text_key).expect("append text");
+
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document).expect("style pass");
+        let mut resolver = IdentityDomLayoutResolver;
+        let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
+
+        let text_node = root.node(text_key).expect("text node");
+        let (min_width_px, max_width_px) = text_intrinsic_widths(&root, text_key);
+
+        assert_record_close(
+            node_measurement(&root, text_key),
+            MeasurementRecord {
+                h_min_content_px: min_width_px,
+                h_max_content_px: max_width_px,
+                content_height_at_width_px: text_node.layout().content_height_px,
+                v_min_content_px: None,
+                v_max_content_px: None,
+                flags: MeasurementFlags::empty(),
+            },
+        );
+    }
+
+    #[test]
+    fn block_world_exit_writes_block_with_children_measurement_identity() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.root;
+        let container = root.create_element(DomTag::Div).expect("container");
+        root.append_child(document, container)
+            .expect("append container");
+        let first = root.create_element(DomTag::Div).expect("first child");
+        let second = root.create_element(DomTag::Div).expect("second child");
+        root.append_child(container, first).expect("append first");
+        root.append_child(container, second).expect("append second");
+        root.style_mut(first)
+            .set("width", "50px")
+            .expect("first width");
+        root.style_mut(first)
+            .set("height", "20px")
+            .expect("first height");
+        root.style_mut(second)
+            .set("width", "80px")
+            .expect("second width");
+        root.style_mut(second)
+            .set("height", "30px")
+            .expect("second height");
+
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document).expect("style pass");
+        let mut resolver = IdentityDomLayoutResolver;
+        let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
+
+        // The block's min/max content contribution is the widest child (80px),
+        // and its content height is the stacked child heights (20px + 30px).
+        assert_record_close(
+            node_measurement(&root, container),
+            MeasurementRecord {
+                h_min_content_px: 80.0,
+                h_max_content_px: 80.0,
+                content_height_at_width_px: 50.0,
+                v_min_content_px: None,
+                v_max_content_px: None,
+                flags: MeasurementFlags::empty(),
+            },
+        );
+    }
+
+    #[test]
+    fn block_world_exit_writes_inline_children_measurement_identity() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.root;
+        let container = root.create_element(DomTag::Div).expect("container");
+        root.append_child(document, container)
+            .expect("append container");
+        let span = root.create_element(DomTag::Span).expect("span");
+        root.append_child(container, span).expect("append span");
+        let first = root.create_text_node("one two").expect("first text");
+        let second = root.create_text_node("three four").expect("second text");
+        root.append_child(span, first).expect("append first");
+        root.append_child(span, second).expect("append second");
+
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document).expect("style pass");
+        let mut resolver = IdentityDomLayoutResolver;
+        let _ = relayout_tree(&mut root, document, (300.0, 120.0), &mut resolver).expect("layout");
+
+        let (first_min, first_max) = text_intrinsic_widths(&root, first);
+        let (second_min, second_max) = text_intrinsic_widths(&root, second);
+        let span_node = root.node(span).expect("span node");
+
+        // Inline min-content is the widest child's min; max-content is the sum
+        // of the children's max (they lay out on one line).
+        assert_record_close(
+            node_measurement(&root, span),
+            MeasurementRecord {
+                h_min_content_px: first_min.max(second_min),
+                h_max_content_px: first_max + second_max,
+                content_height_at_width_px: span_node.layout().content_height_px,
+                v_min_content_px: None,
+                v_max_content_px: None,
+                flags: MeasurementFlags::empty(),
+            },
+        );
+    }
+
+    #[test]
+    fn block_world_exit_writes_img_measurement_identity() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.root;
+        let img_key = root.create_element(DomTag::Img).expect("img");
+        root.append_child(document, img_key).expect("append img");
+        root.set_attr(
+            img_key,
+            DomAttribute::Src,
+            Some(DomAttributeValue::String("memory://a.png".to_string())),
+        )
+        .expect("src should set");
+        root.style_mut(img_key)
+            .set("width", "320px")
+            .expect("width");
+
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document).expect("style pass");
+        let mut resolver = IdentityDomLayoutResolver;
+        let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver).expect("layout");
+
+        // A specified width substitutes the intrinsic width for both content
+        // contributions, and the intrinsic ratio (160/90) derives the height.
+        assert_record_close(
+            node_measurement(&root, img_key),
+            MeasurementRecord {
+                h_min_content_px: 320.0,
+                h_max_content_px: 320.0,
+                content_height_at_width_px: 180.0,
+                v_min_content_px: None,
+                v_max_content_px: None,
+                flags: MeasurementFlags::empty().with_replaced_ratio(),
+            },
+        );
+    }
+
+    #[test]
+    fn block_world_exit_writes_element_control_measurement_identity() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.root;
+        let input_key = root.create_element(DomTag::Input).expect("input");
+        root.append_child(document, input_key)
+            .expect("append input");
+
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document).expect("style pass");
+        let mut resolver = IdentityDomLayoutResolver;
+        let _ = relayout_tree(&mut root, document, (300.0, 120.0), &mut resolver).expect("layout");
+
+        let input_node = root.node(input_key).expect("input node");
+        let DomIntrinsic::ElementDefaultPreferredSize(intrinsic) = input_node.intrinsic() else {
+            panic!("input should carry a preferred-size intrinsic");
+        };
+
+        assert_record_close(
+            node_measurement(&root, input_key),
+            MeasurementRecord {
+                h_min_content_px: intrinsic.width_px,
+                h_max_content_px: intrinsic.width_px,
+                content_height_at_width_px: intrinsic.height_px,
+                v_min_content_px: None,
+                v_max_content_px: None,
+                flags: MeasurementFlags::empty(),
+            },
+        );
+    }
+
+    #[test]
+    fn block_world_exit_second_identical_update_keeps_record_equal() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.root;
+        let container = root.create_element(DomTag::Div).expect("container");
+        root.append_child(document, container)
+            .expect("append container");
+        let child = root.create_element(DomTag::Div).expect("child");
+        root.append_child(container, child).expect("append child");
+        root.style_mut(child)
+            .set("width", "60px")
+            .expect("child width");
+        root.style_mut(child)
+            .set("height", "10px")
+            .expect("child height");
+
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document).expect("style pass");
+        let mut resolver = IdentityDomLayoutResolver;
+        let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver)
+            .expect("first layout");
+        let first = node_measurement(&root, container);
+
+        // A second, identical walk must produce the identical record: the
+        // equality gate rejects the re-write, so the retained value never
+        // thrashes.
+        let _ = relayout_tree(&mut root, document, (200.0, 120.0), &mut resolver)
+            .expect("second layout");
+        let second = node_measurement(&root, container);
+
+        assert_record_close(first, second);
+        assert_record_close(
+            second,
+            MeasurementRecord {
+                h_min_content_px: 60.0,
+                h_max_content_px: 60.0,
+                content_height_at_width_px: 10.0,
+                v_min_content_px: None,
+                v_max_content_px: None,
+                flags: MeasurementFlags::empty(),
+            },
+        );
+    }
+
+    #[test]
+    fn block_world_exit_sets_preserve_mode_flag_for_pre_white_space() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.root;
+        let container = root.create_element(DomTag::Div).expect("container");
+        root.append_child(document, container)
+            .expect("append container");
+        root.style_mut(container)
+            .set("white-space", "pre")
+            .expect("white-space");
+        let text_key = root.create_text_node("two  spaces").expect("text node");
+        root.append_child(container, text_key).expect("append text");
+
+        recompute_dirty_style_subtree_for_layer_root(&mut root, document).expect("style pass");
+        let mut resolver = IdentityDomLayoutResolver;
+        let _ = relayout_tree(&mut root, document, (300.0, 120.0), &mut resolver).expect("layout");
+
+        let record = node_measurement(&root, text_key);
+        assert!(record.flags.preserve_mode());
+        assert!(!record.flags.replaced_ratio());
     }
 }
