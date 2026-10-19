@@ -303,6 +303,20 @@ change of record: its review runs the scenario pin and the full suite.
 
 ## 10. Risk register
 
+**Architect ruling (T4a STOP, 2026-10-19) — the record write gate is
+read-first.** The flex fold's record write compares the new record
+against the stored one using the immutable borrow the measure path
+already holds, and takes the `get_mut` (and its node-store metric
+count) ONLY when the value changed — the equality gate's purpose (the
+phantom-dirty lesson) is that an unchanged record costs a read, not a
+mutation. If a perf pin still moves after the gate, the move is the
+architecture's honest, intended cost (a measurement pass that writes
+measurement records mutates the node store) and the pin re-pins with
+the documented cause per PLAN.md PR 3 ("perf pins re-pin only with a
+documented cause"). Hiding the write through an uninstrumented path is
+rejected; deferring it is impossible (the solve reads records before
+placement).
+
 - **R1 — identity mismatch per kind** (record ≠ current computed for
   some item kind): gated by T2/T4 per-kind identity tests derived from
   the corpus inventory; a kind that cannot match exactly is a STOP,
