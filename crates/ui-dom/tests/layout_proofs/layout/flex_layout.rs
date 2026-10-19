@@ -9768,3 +9768,162 @@ fn assert_nested_item_text_align_center(name: &str) {
         &format!("{name}: text run fills the item content box"),
     );
 }
+
+// CSS Flexbox 1 §4.5/§9.9 measurement recursion through 3–4 level content
+// trees under flex items: an item whose subtree is nested blocks (or nested
+// flex containers) measures its intrinsic width by walking the whole subtree,
+// and content mutation at depth must re-measure on the next update (the
+// phantom-dirty lesson in the visitor README). Gecko/Blink measure the item's
+// content contribution through the full descendant tree before final reflow.
+// Rows (c)/(d)/(e) additionally pin the two graceful gates
+// (`flex_container_content_based_auto_min_is_supported` and the grow-factor
+// boundary, `flex.rs`) with real content: no panic, graceful measured-size
+// fallback where an unsupported shape is reached.
+#[test]
+fn deep_hierarchy_mixed_content() {
+    let rows: [DeepHierarchyRow; 5] = [
+        (
+            "a_three_level_block_text_measurement",
+            assert_deep_block_text_measurement,
+        ),
+        ("b_mixed_img_text_at_depth", assert_deep_mixed_img_text),
+        (
+            "c_flex_in_flex_in_flex_text_leaf",
+            assert_deep_flex_text_leaf,
+        ),
+        (
+            "d_append_text_at_depth_remeasures",
+            assert_deep_append_text_remeasures,
+        ),
+        (
+            "e_remove_deep_child_retracts",
+            assert_deep_remove_child_retracts,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named deep-hierarchy probe: the row name plus a runner.
+type DeepHierarchyRow = (&'static str, fn(&str));
+
+/// Row (a): flex item → div → div → text (three levels). Measurement propagates
+/// the text max-content up through the block levels to the item's auto width.
+fn assert_deep_block_text_measurement(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, outer, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, outer);
+    let mid = assert_append_div_to(&mut root, item);
+    let deep = assert_append_div_to(&mut root, mid);
+    let text = assert_append_text_to(&mut root, deep, "Deep text");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    assert_close(
+        assert_node_layout(&root, item).width_px,
+        text_intrinsic.max_content_width_px,
+        &format!("{name}: item width propagates text through three levels"),
+    );
+}
+
+/// Row (b): flex item → div → img + div → text (mixed content at depth). The
+/// block's width is the widest child (the img intrinsic), propagated up.
+fn assert_deep_mixed_img_text(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "100px");
+    assert_style_set(&mut root, outer, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, outer);
+    let mid = assert_append_div_to(&mut root, item);
+    let img = assert_append_img_to(&mut root, mid);
+    assert_set_attr_str(&mut root, img, "src", "memory://a.png");
+    let deep = assert_append_div_to(&mut root, mid);
+    let _text = assert_append_text_to(&mut root, deep, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, item).width_px,
+        IMG_PLACEHOLDER_WIDTH_PX,
+        &format!("{name}: item width = widest deep child (img intrinsic)"),
+    );
+}
+
+/// Row (c): flex → flex → flex → text (three flex levels). Measurement recurses
+/// through two supported flex boundaries without panicking; the leaf text keeps
+/// its own width.
+fn assert_deep_flex_text_leaf(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let inner = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, inner, "display", "flex");
+    let middle = assert_append_div_to(&mut root, inner);
+    assert_style_set(&mut root, middle, "display", "flex");
+    let leaf = assert_append_div_to(&mut root, middle);
+    assert_style_set(&mut root, leaf, "display", "flex");
+    let text = assert_append_text_to(&mut root, leaf, "Leaf");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_intrinsic = assert_text_intrinsic(&root, text);
+    assert_close(
+        assert_node_layout(&root, text).width_px,
+        text_intrinsic.max_content_width_px,
+        &format!("{name}: leaf text keeps its own width (no panic)"),
+    );
+}
+
+/// Row (d): append a longer text node at depth 3 and update; the item must
+/// re-measure and shift on the FIRST update (no delayed phantom-dirty shift).
+fn assert_deep_append_text_remeasures(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, outer, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, outer);
+    let mid = assert_append_div_to(&mut root, item);
+    let deep = assert_append_div_to(&mut root, mid);
+    let short = assert_append_text_to(&mut root, deep, "A");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let short_width = assert_node_layout(&root, item).width_px;
+
+    root.set_text_content(short, "MuchLongerText")
+        .expect("text mutation");
+    assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
+
+    let grown_width = assert_node_layout(&root, item).width_px;
+    assert!(
+        grown_width > short_width,
+        "{name}: item should re-measure wider after append ({grown_width} > {short_width})",
+    );
+}
+
+/// Row (e): remove one of two deep children and update; the item's width
+/// retracts to the remaining child on the first update.
+fn assert_deep_remove_child_retracts(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    assert_style_set(&mut root, outer, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, outer);
+    let mid = assert_append_div_to(&mut root, item);
+    let wide = assert_append_div_to(&mut root, mid);
+    let _wide_text = assert_append_text_to(&mut root, wide, "Deep text");
+    let narrow = assert_append_div_to(&mut root, mid);
+    let _narrow_text = assert_append_text_to(&mut root, narrow, "Hi");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let before_width = assert_node_layout(&root, item).width_px;
+
+    root.remove_node(wide).expect("deep child removal");
+    assert_root_dom_update(&mut world, &mut root, 1.0, DomPointerUpdate::Unchanged);
+
+    let after_width = assert_node_layout(&root, item).width_px;
+    assert!(
+        after_width < before_width,
+        "{name}: item should retract after deep removal ({after_width} < {before_width})",
+    );
+}
