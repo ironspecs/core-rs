@@ -228,8 +228,8 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 426 layout proofs (418 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 3b);
-the off-spec registry (20 divergent proofs in 16 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 3c);
+the off-spec registry (19 divergent proofs in 15 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1323,6 +1323,25 @@ an f32 basis.
   inline height inside it), so 3c is the blockification row's
   re-adjudication plus the residual inline-block verification, not a
   naive `inline → block` map.
+
+- **2026-10-19 — flex arc step 3c LANDED (`3ffab7b`): the
+  blockification row re-adjudicated under the run model.** The
+  verification-first protocol (D1) decided the landing: a lone
+  `display: inline` child DOES form a length-1 run (D1.1 ✓) and
+  `inline-block` still block-measures (D1.3 ✓), but the stretch path
+  did NOT reach run items (D1.2 ✗) — so the conditional fix landed:
+  run items now resolve their cross to the line cross under stretch
+  while their inline content renders at its own inline height at
+  cross-start (the engine model — anonymous wrapper stretches, content
+  does not). The T1 divergence closes; `blockified_flex_item_style`
+  stays `InlineFlex → Flex` (inline elements are run members, never
+  items — the naive map was correctly avoided). Divergent registry
+  20-in-16 → 19-in-15. **Step 3 complete: all three item-formation
+  landings plus two follow-ups are in** (3a `1ac6d39`/`7dc007b`/
+  `d5456fd`/`1269113`, 3b `7d1c067`, 3c `3ffab7b`). Next: step 4 —
+  auto-min by fold (the hypothetical floor folded into the record;
+  nowrap mode-aware min-content; both graceful gates die), designed
+  first per the task discipline.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
