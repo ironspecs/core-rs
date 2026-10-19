@@ -10733,45 +10733,45 @@ fn assert_subtree_percent_against_content_basis(name: &str) {
     );
 }
 
-// CSS Display 3 §2.7 (blockification of flex items) composed with CSS Flexbox
-// 1 §4 (flex items): when a box becomes a flex item, its inline-level outer
-// display blockifies — `inline` → `block`, `inline-block` → `block`,
-// `inline-flex` → `flex`. Every flex item is therefore block-level, which is
-// what makes `align-items`/`align-self: stretch` (and the `normal` initial
-// value, which behaves as `stretch` per CSS Align 3 §5.1.3) apply to the item's
-// auto cross size. Gecko blockifies at tree/build time in
-// `CreateNeededAnonFlexOrGridItems` + frame construction
-// (`nsCSSFrameConstructor.cpp`); Blink blockifies in `LayoutBlock::AddChild`
-// before flex item construction (`GenerateFlexItemForChild` /
-// `ConstructAndAppendFlexItems`). No single WPT oracle pairs `display:
-// inline`/`inline-block` flex items with cross-axis stretch, so this is cited
-// from §2.7/§4 directly; closest family is `css/css-flexbox/flex-item-blockify-*`.
+// CSS Flexbox 1 §4 (anonymous items) composed with CSS Display 3 §2.7
+// (blockification) and CSS Align 3 §5.1.3 (`normal` behaves as `stretch`):
+// per both engines, a lone `display: inline` element in a flex container is
+// NOT a flex item and is NOT blockified — it joins a length-1 anonymous run
+// wrapped in an anonymous BLOCK box (Blink: anonymous `LayoutBlock` at
+// `LayoutBlock::AddChild`, `layout_block.cc:147-171`; Gecko:
+// `-moz-anonymous-item` `nsBlockFrame` in `CreateNeededAnonFlexOrGridItems`,
+// `nsCSSFrameConstructor.cpp:8134`). The anonymous block participates as the
+// item — it STRETCHES to the line cross size under `align-items`/`align-self:
+// stretch` when the cross size is auto; the inline content inside it renders
+// at its own inline height, positioned inside the stretched block at the line's
+// cross-start. No single WPT oracle pairs `display: inline`/`inline-block` flex
+// items with cross-axis stretch, so this is cited from §4/§2.7 directly;
+// closest family is `css/css-flexbox/flex-item-blockify-*`.
 //
-// OFF-SPEC (rows a/c): `blockified_flex_item_style` (`flex.rs:522`) rewrites
-// only `InlineFlex → Flex`, leaving `LayoutDisplay::Inline` routed to
-// `measure_inline_node_without_layout_write` at measure time
-// (`measure_tree_walker_node_without_layout_write`, `flex.rs:559`) and to the
-// inline solver at final relayout (`solver_kind_for_display`, `flow.rs:1706`).
-// The inline solver ignores the cross-size stretch override (inline boxes
-// ignore authored height), so a `display: inline` item keeps its line-height
-// cross size under `align-items: stretch` instead of stretching to the line
-// cross size like its blockified `block`/`inline-block` siblings. The MAIN-size
-// concern in the review does NOT manifest: both measure paths shrink-wrap a
-// single text child to the text max-content, so the main size matches the block
-// control in every row.
+// ON-SPEC (re-adjudicated from `off_spec_flex_item_inline_level_display_blockification`
+// in flex arc step 3c): the T1 pin's spec-correct expectation ("blockified →
+// the item stretches to the line cross size") was written against a
+// blockification model the engines do not use. The engine-correct observable is
+// the run item's resolved cross == the line cross (the anonymous wrapper
+// stretches — pinned at the unit level by
+// `anonymous_inline_run_resolves_cross_to_line_cross_under_stretch` in
+// `flex.rs`), while the inline content keeps its line-height cross size at the
+// line's cross-start. Rows (a)/(c) therefore flip from "inline does not
+// stretch" (divergent) to "the wrapper stretches, the inline content keeps its
+// inline height" (on-spec); rows (b)/(d) stay on-spec.
 #[test]
-fn off_spec_flex_item_inline_level_display_blockification() {
-    let rows: [InlineLevelDisplayBlockificationRow; 4] = [
+fn flex_item_inline_level_display_participation() {
+    let rows: [InlineLevelDisplayParticipationRow; 4] = [
         (
-            "a_inline_item_shrink_wraps_and_keeps_line_height",
-            assert_inline_item_shrink_wraps_and_keeps_line_height,
+            "a_inline_item_forms_run_and_keeps_inline_height",
+            assert_inline_item_forms_run_and_keeps_inline_height,
         ),
         (
             "b_inline_block_item_block_measures_and_stretches",
             assert_inline_block_item_block_measures_and_stretches,
         ),
         (
-            "c_inline_item_under_stretch_keeps_line_height_vs_block_control",
+            "c_inline_item_under_stretch_keeps_inline_height_vs_block_control",
             assert_inline_item_under_stretch_vs_block_control,
         ),
         (
@@ -10784,15 +10784,16 @@ fn off_spec_flex_item_inline_level_display_blockification() {
     }
 }
 
-/// A named inline-level display blockification probe: the row name plus a runner.
-type InlineLevelDisplayBlockificationRow = (&'static str, fn(&str));
+/// A named inline-level display participation probe: the row name plus a runner.
+type InlineLevelDisplayParticipationRow = (&'static str, fn(&str));
 
-/// Row (a): a `display: inline` item with short text in a definite row. The
-/// main size shrink-wraps to the text max-content (identical to the block
-/// control — the review's "block fill" concern does not manifest), but the
-/// cross size stays at the text line height instead of stretching to the 20px
-/// line cross size (divergent).
-fn assert_inline_item_shrink_wraps_and_keeps_line_height(name: &str) {
+/// Row (a): a lone `display: inline` child with short text in a definite 200×20
+/// row. The child forms a length-1 anonymous run: the run item (the anonymous
+/// block) resolves its cross to the 20px line cross under the stretch-behaving
+/// `normal` initial (pinned at the unit level), while the inline content renders
+/// at its own inline height (the text line height, ≈14px) at the line's
+/// cross-start — the engine model, not blockification.
+fn assert_inline_item_forms_run_and_keeps_inline_height(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -10805,19 +10806,20 @@ fn assert_inline_item_shrink_wraps_and_keeps_line_height(name: &str) {
     let item_layout = assert_node_layout(&root, item);
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
-    // rects[0] = container, rects[1] = item; the text child emits a text run.
-    assert_eq!(rects.len(), 2, "{name}: container + item rects");
+    // rects[0] = container, rects[1] = the inline run member; the text child
+    // emits a text run.
+    assert_eq!(rects.len(), 2, "{name}: container + inline element rects");
     assert_close(
         item_layout.width_px,
         text_intrinsic.max_content_width_px,
-        &format!("{name}: inline item main size shrink-wraps to text"),
+        &format!("{name}: inline run member main size shrink-wraps to text"),
     );
-    // Divergent cross size: keeps the text line height (14px) instead of the
-    // 20px line cross size.
+    // On-spec: the inline content keeps its inline height (≈14px) at the line's
+    // cross-start — the anonymous wrapper stretches, the inline content does not.
     assert_close(
         item_layout.height_px,
         text_intrinsic.line_height_px,
-        &format!("{name}: inline item cross size stays at line height"),
+        &format!("{name}: inline content keeps its inline height, not the 20px line cross"),
     );
     assert_rect_op_geometry(
         &rects[1],
@@ -10825,14 +10827,26 @@ fn assert_inline_item_shrink_wraps_and_keeps_line_height(name: &str) {
         0.0,
         text_intrinsic.max_content_width_px,
         text_intrinsic.line_height_px,
-        &format!("{name}: inline item geometry"),
+        &format!("{name}: inline element geometry at the line's cross-start"),
+    );
+    // The rendered text rect keeps its inline height at the line's cross-start.
+    assert_eq!(plans[0].text_runs.len(), 1, "{name}: one text run");
+    assert_close(
+        plans[0].text_runs[0].size_px[1],
+        text_intrinsic.line_height_px,
+        &format!("{name}: rendered text rect height stays at its inline height"),
+    );
+    assert_close(
+        plans[0].text_runs[0].position_px[1],
+        0.0,
+        &format!("{name}: rendered text rect sits at the line's cross-start"),
     );
 }
 
-/// Row (b): a `display: inline-block` item, same shape. Confirms the review's
-/// claim that `inline-block` already routes to block measure: it stretches its
-/// cross size to the line cross size exactly like the block control, and is
-/// identical in kind to the block control rather than to the `inline` item.
+/// Row (b): a `display: inline-block` item, same shape — UNCHANGED on-spec
+/// (T1's original outcome). `inline-block` is a run-breaker (not an inline run
+/// member), so it block-measures and stretches its auto cross size to the line
+/// cross size exactly like the block control.
 fn assert_inline_block_item_block_measures_and_stretches(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
@@ -10867,10 +10881,12 @@ fn assert_inline_block_item_block_measures_and_stretches(name: &str) {
     );
 }
 
-/// Row (c): a `display: inline` item under explicit `align-items: stretch` next
-/// to a `display: block` control. The inline item keeps its line-height cross
-/// size (14px) while the block control stretches to the 50px line cross size —
-/// the observable consequence of not blockifying `inline` → `block`.
+/// Row (c): a `display: inline` child under explicit `align-items: stretch` next
+/// to a `display: block` control. Both STRETCH to the 50px line cross size (the
+/// run item's resolved cross == 50, pinned at the unit level; the block
+/// control's content box == 50) — the inline child's rendered content keeps its
+/// line-height cross size (≈14px) inside the stretched wrapper, which is the
+/// engine model, not a failure to blockify `inline` → `block`.
 fn assert_inline_item_under_stretch_vs_block_control(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
@@ -10887,11 +10903,12 @@ fn assert_inline_item_under_stretch_vs_block_control(name: &str) {
     let text_intrinsic = assert_text_intrinsic(&root, inline_text);
     let inline_layout = assert_node_layout(&root, inline_item);
     let block_layout = assert_node_layout(&root, block_item);
-    // Divergent: the inline item keeps its line-height cross size.
+    // On-spec: the inline child's rendered content keeps its line-height cross
+    // size inside the stretched wrapper (the wrapper stretches, not the content).
     assert_close(
         inline_layout.height_px,
         text_intrinsic.line_height_px,
-        &format!("{name}: inline item keeps line-height cross size under stretch"),
+        &format!("{name}: inline content keeps line-height cross size under stretch"),
     );
     // Spec-correct control: a block item stretches to the 50px line cross size.
     assert_close(
@@ -10901,7 +10918,7 @@ fn assert_inline_item_under_stretch_vs_block_control(name: &str) {
     );
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
-    // rects[0] = container, rects[1] = inline item, rects[2] = block control.
+    // rects[0] = container, rects[1] = inline run member, rects[2] = block control.
     assert_eq!(rects.len(), 3, "{name}: container + two items");
     assert_rect_op_geometry(
         &rects[1],
@@ -10909,7 +10926,7 @@ fn assert_inline_item_under_stretch_vs_block_control(name: &str) {
         0.0,
         text_intrinsic.max_content_width_px,
         text_intrinsic.line_height_px,
-        &format!("{name}: inline item rect"),
+        &format!("{name}: inline run member rect"),
     );
     assert_rect_op_geometry(
         &rects[2],
@@ -10921,10 +10938,9 @@ fn assert_inline_item_under_stretch_vs_block_control(name: &str) {
     );
 }
 
-/// Row (d): a `display: block` control item, the known-good reference geometry.
-/// It shrink-wraps its main size to the text and stretches its cross size to
-/// the line cross size — the §2.7 blockified expectation every inline-level
-/// item should match.
+/// Row (d): a `display: block` control item, the known-good reference geometry
+/// — UNCHANGED on-spec. It shrink-wraps its main size to the text and stretches
+/// its auto cross size to the line cross size.
 fn assert_block_control_shrink_wraps_and_stretches(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");

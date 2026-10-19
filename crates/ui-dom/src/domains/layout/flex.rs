@@ -737,6 +737,12 @@ where
 /// `flex`. The solver hosts only block-level flex containers, and the flex
 /// item path (`measure_one_flex_item`) applies this before measurement so a
 /// nested `inline-flex` item behaves identically to `display: flex`.
+///
+/// The blockification map stays `InlineFlex → Flex` (`FLEX_STEP3C_DESIGN.md` D2):
+/// `inline-block` is already block-routed (it reaches this function's caller
+/// as a block-measured item, never `InlineBlock` here), and `display: inline`
+/// elements are anonymous-run members (flex arc step 3a-ii) — never flex items,
+/// so `inline → block` has no application.
 fn blockified_flex_item_style(mut style: NodeStyle) -> NodeStyle {
     if style.display == LayoutDisplay::InlineFlex {
         style.display = LayoutDisplay::Flex;
@@ -3284,15 +3290,21 @@ where
         members_laid_out += 1;
         child_key = next_child_key;
     }
+    let measured_cross_size_px = cross_axis_flow_size(
+        request.container_style.main_axis,
+        FlowSize {
+            width_px: flow.inline_left_px,
+            height_px: flow.line_height_px,
+            min_width_px: 0.0,
+            max_width_px: flow.inline_left_px,
+        },
+    );
     Ok(ResolvedFlexItem {
-        resolved_cross_size_px: cross_axis_flow_size(
-            request.container_style.main_axis,
-            FlowSize {
-                width_px: flow.inline_left_px,
-                height_px: flow.line_height_px,
-                min_width_px: 0.0,
-                max_width_px: flow.inline_left_px,
-            },
+        resolved_cross_size_px: anonymous_inline_run_resolved_cross_size_px(
+            request.container_style,
+            request.resolved_item,
+            request.line_cross_size_px,
+            measured_cross_size_px,
         ),
         ..request.resolved_item
     })
@@ -3481,6 +3493,30 @@ fn stretched_flex_item_content_cross_size_px(
         line_cross_size_px
             - cross_axis_border_padding_size_px(child_style.sides, container_style.main_axis),
     ))
+}
+
+/// The run item's placed cross size (flex arc step 3c): a run's cross is always
+/// auto and its border/padding is zero, so under `align-items`/`align-self:
+/// stretch` the resolved cross equals the line cross — the stretched content
+/// cross is `line cross − zero border/padding`. The run's children still render
+/// at their own inline heights at the line's cross-start
+/// (`relayout_anonymous_inline_run` / `anonymous_inline_run_child_context` lay
+/// them out at `cross_start_px` with no cross-size override), matching the
+/// node-item stretch behavior for their subtrees. Any other alignment keeps the
+/// measured joint cross.
+fn anonymous_inline_run_resolved_cross_size_px(
+    container_style: FlexContainerStyle,
+    resolved_item: ResolvedFlexItem,
+    line_cross_size_px: f32,
+    measured_cross_size_px: f32,
+) -> f32 {
+    if resolved_flex_item_cross_axis_alignment(resolved_item, container_style)
+        == FlexCrossAxisAlignment::Stretch
+    {
+        non_negative_flex_axis_size_px(line_cross_size_px)
+    } else {
+        measured_cross_size_px
+    }
 }
 
 fn resolved_flex_item_content_main_size_px(resolved_item: ResolvedFlexItem) -> f32 {
@@ -5916,6 +5952,45 @@ mod tests {
         assert_eq!(
             cross_axis_alignment_offset_px(resolved_item, container_style, 50.0),
             40.0,
+        );
+    }
+
+    #[test]
+    fn anonymous_inline_run_resolves_cross_to_line_cross_under_stretch() {
+        // A run's cross is always auto and its border/padding is zero, so under
+        // `align-items: stretch` its placed cross resolves to the line cross
+        // (the stretched content cross = line cross − zero border/padding);
+        // under any other alignment it keeps the measured joint cross. This is
+        // the flex arc step 3c re-adjudication: the anonymous wrapper stretches
+        // while its inline content renders at its own inline height at the
+        // line's cross-start.
+        let run_item = super::ResolvedFlexItem {
+            source: FlexItemSource::AnonymousInlineGroup {
+                first_child_key: DomNodeSlotKey::default(),
+                child_count: 1,
+            },
+            align_self: None,
+            resolved_main_size_px: 14.0,
+            main_axis_border_padding_px: 0.0,
+            resolved_cross_size_px: 14.0,
+            main_offset_px: 0.0,
+            cross_offset_px: 0.0,
+        };
+        let mut container_style = row_container_style();
+        container_style.align_items = super::FlexCrossAxisAlignment::Stretch;
+
+        assert_eq!(
+            anonymous_inline_run_resolved_cross_size_px(container_style, run_item, 20.0, 14.0),
+            20.0,
+            "a stretch-aligned run resolves its placed cross to the line cross",
+        );
+
+        let mut centered_style = container_style;
+        centered_style.align_items = super::FlexCrossAxisAlignment::Center;
+        assert_eq!(
+            anonymous_inline_run_resolved_cross_size_px(centered_style, run_item, 20.0, 14.0),
+            14.0,
+            "a non-stretch-aligned run keeps its measured joint cross",
         );
     }
 
