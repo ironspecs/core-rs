@@ -219,11 +219,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-423 layout proofs (415 in
+424 layout proofs (416 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after the flex
-composition-axis enumeration); the off-spec registry (22 divergent
-proofs in 19 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after the
+composition-axis and review-incorporation rounds); the off-spec
+registry (23 divergent proofs in 20 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -495,7 +495,7 @@ concludes alternative (c) — measurement shows the lock is contention-free
 in every realistic scenario AND no consumer names a concurrent-reader
 need. A debate that can only ratify is not a debate.
 
-### PR 3 — the flex solver: source-verified migration `DEBATE — mapping doc and agreement required before implementation`
+### PR 3 — the flex solver: source-verified migration `DEBATE — mapping document WRITTEN 2026-10-19 (FLEX_MAPPING.md); third-party agreement required before implementation`
 
 **Problem.** The solver works for batches 3–7 and is the users' biggest
 complaint anyway. The complaint decomposes into: coverage gaps (the
@@ -897,7 +897,25 @@ an f32 basis.
   ad-hoc reflows become measure-once plus flagged-refold. Task hygiene
   for the rest of the arc: implementation/research tasks are narrow,
   chained, and corpus-building; data structures and algorithms are
-  decided by the architect, never delegated.
+  decided   by the architect, never delegated.
+
+- **2026-10-19 — the mapping document is written; the debate may
+  convene.** `FLEX_MAPPING.md` lands the debate's subject: the
+  field/phase mapping (fetched Blink + Gecko sources), the two-axis
+  complaint list with fix-site assignments, the two adjudications
+  (space-evenly → engine 0-clamp; subtree-margin split reclassification,
+  landed `b3e9aec`), the target architecture (two-fold,
+  zero-allocation, scratch lanes, anonymous runs as virtual items, the
+  auto-min walk subsumed), the 10-step fix sequence, and the five
+  debate questions answered with evidence. Headline positions the
+  debate must attack: the kill criterion does NOT fire (skeleton close,
+  deltas real); map-first vs admit-first DISSOLVES (every Tier-1 fix
+  site is a structural delta — the structure work and the behavior fix
+  are the same landing); "done" = §4 steps 1–9 plus debate-scoped
+  admissions (auto margins §8.1 first). Also landed under the review
+  incorporation: `7946aa7` (inline blockification pin — cross-axis
+  divergence registered; the review's predicted main-size divergence
+  correctly did not manifest).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
