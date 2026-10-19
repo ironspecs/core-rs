@@ -502,7 +502,7 @@ concludes alternative (c) — measurement shows the lock is contention-free
 in every realistic scenario AND no consumer names a concurrent-reader
 need. A debate that can only ratify is not a debate.
 
-### PR 3 — the two-fold layout pass and the flex fix sequence `DEBATE — mapping document WRITTEN and AMENDED under adversarial review 2026-10-19 (FLEX_MAPPING.md); third-party agreement against the enumerated obligations required before implementation`
+### PR 3 — the two-fold layout pass and the flex fix sequence `DEBATE — mapping document WRITTEN and AMENDED under adversarial review 2026-10-19 (FLEX_MAPPING.md); third-party agreement against the enumerated obligations (FLEX_DEBATE_BRIEF.md) required before implementation`
 
 **Problem.** The solver works for batches 3–7 and is the users' biggest
 complaint anyway. The complaint decomposes into: coverage gaps (the
@@ -524,8 +524,10 @@ two-axis complaint list. The debate ratifies THIS scope; the old title's
 "migration" framing is retired.
 
 **The first deliverable (before any code): the mapping document.** Blink's
-`flex_layout_algorithm.cc` + `flex_layout_utils.cc` and Gecko's flex
-container/frame code, mapped field-by-field to `MeasuredFlexItem`,
+`flex_layout_algorithm.cc` and the `core/layout/flex/` headers (fetched at
+Chromium `61ef1bef` — `flex_layout_utils.cc` does not exist upstream;
+`.tmp/engine-corpus/MANIFEST.md`) and Gecko's flex
+container/frame code (mozilla-central `0fdb388b`), mapped field-by-field to `MeasuredFlexItem`,
 `FlexLine`, `FlexContainerStyle`, and the `resolve_active_flex_container`
 phases — with the engines' durable shapes named (flex lines as
 first-class objects with hypothetical main sizes; items with min/max
@@ -1010,7 +1012,8 @@ an f32 basis.
   restated; the entry is kept verbatim as the record of what the review
   attacked.
 
-- **2026-10-19 — the PR 3 adversarial review and its folded amendments.**
+- **2026-10-19 — the THIRD-PARTY adversarial review of PR 3 and its folded
+  amendments (seat: the reviewer, not the architect).**
   A full adversarial review of PR 3 against PLAN.md and FLEX_MAPPING.md
   (counts re-verified against the tree: `flex.rs` 5,356 lines, 135 flex
   proofs, 59 solver unit tests; `root_dom.rs` 7,340 lines, 48 public
@@ -1081,6 +1084,49 @@ an f32 basis.
   audit should answer it specifically. The debate package stands as
   amended; the next act is the third party executing obligations
   (a)–(e) BY NAME.
+
+- **2026-10-19 — review round 2 adjudicated: evidence, budget, fire
+  path, seats, and the work-order repairs.** Round 2 (the third-party
+  reviewer, same chain) found the response real but structurally flawed
+  — an ephemeral evidence base, a bootstrap deadlock, an unscoped fire
+  path, unnamed seats, and an orphaned brief. All findings accepted and
+  fixed: (1) **ephemeral evidence base (critical)** — the fetched
+  engine sources lived in OS temp, unmanifested and unreproducible by
+  construction. The corpus now lives at `.tmp/engine-corpus/`
+  (GITIGNORED — vendoring the licensed sources into this repo is
+  illegal and impractical, per the product owner) with `MANIFEST.md`
+  carrying per-file upstream URLs, resolved revisions (Chromium
+  `61ef1bef`, mozilla-central `0fdb388b`), fetch date, and
+  revision-pinned re-fetch instructions; 15 files (13 Blink, 2 Gecko;
+  the listing proved `flex_layout_utils.cc/.h` and `flex_item.cc` do
+  NOT exist upstream — PR 3's citations corrected). (2) **obligation
+  (d) bootstrap deadlock (critical)** — the scenario could not exist
+  before step 1, which required the ratified number. Split: (d1) policy
+  ratified NOW (metric definitions, the ≤2× construction bound, memo
+  doctrine compliance, the ceiling as policy, the authored-input
+  scenario definition: 240px wrapping row, 12 text items + 4 nested
+  flex items with text, one text mutation per update); (d2) baseline
+  observed at step 1's gate, breach lands the memo. (3) **fire path
+  unscoped (high)** — rules written: per-claim consequence (a refuted
+  claim N re-maps the phases resting on N; the criterion fires only
+  when the refuted set defeats the doctrine's LOCAL, engine-independent
+  recursion/allocation evidence — no skeleton refutation alone fires
+  branch (a)); branch (a) firing amends the doctrine entry and
+  re-scopes PR 5 in the same decision; verdict (a) gains
+  CONFIRMED-WITH-DELTA. (4) **seats (high)** — the third-party reviewer
+  named by role (the 2026-10-19 review chain's author; independence
+  criteria in the brief: not the architect, not the implementation
+  agents, demonstrably able to read engine sources, holds
+  kill-criterion authority); the review entry above retitled so author
+  and reviewer seats are distinguishable. (5) **obligation (f) +
+  output 5 (medium)** — substitute-surface coverage (no confirmed
+  skeleton phase unpinned) and the step-10 admission scope (default:
+  §8.1 auto margins in-arc first; flex-basis %, intrinsic keywords,
+  aspect-ratio deferred to a post-sequence consumer re-check; silence
+  adopts the default). (6) **orphaned brief (medium)** — linked from
+  PR 3's header and FLEX_MAPPING.md's header. (7) **sequencing note
+  (minor)** — (b), (c), (e) locally executable today; (a), (f) need
+  the corpus.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

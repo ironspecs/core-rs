@@ -1,12 +1,14 @@
 # FLEX_MAPPING.md — the PR 3 mapping document (debate subject)
 
-Status: `DEBATE INPUT — no code until resolved with third-party agreement against the §8 obligations`
+Status: `DEBATE INPUT — no code until resolved with third-party agreement against the obligations in FLEX_DEBATE_BRIEF.md (the work order)`
 Date: 2026-10-19; amended 2026-10-19 under the adversarial review
 (PLAN.md decision log, same date). Author: the architect. Corpus: the
 two-axis enumeration (Runs A/B/C, 424 layout proofs, 23 divergent proofs
-in 20 registry rows), the fetched engine sources (Blink
-`third_party/blink/renderer/core/layout/flex/`,
-Gecko `layout/generic/nsFlexContainerFrame.cpp` + `nsCSSFrameConstructor.cpp`),
+in 20 registry rows), the engine sources at `.tmp/engine-corpus/`
+(GITIGNORED, manifest-pinned — Blink `third_party/blink/renderer/core/layout/flex/`
+at Chromium `61ef1bef`; Gecko `layout/generic/nsFlexContainerFrame.cpp` +
+`nsCSSFrameConstructor.cpp` at mozilla-central `0fdb388b`;
+`flex_layout_utils.cc` does not exist upstream — see the manifest),
 and the layout-pass doctrine (PLAN.md decision log, 2026-10-19).
 
 This document does four things: (1) maps our solver to Blink and Gecko,

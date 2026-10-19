@@ -1,17 +1,42 @@
 # FLEX_DEBATE_BRIEF.md — the PR 3 third-party work order
 
-Status: `CONVENED 2026-10-19 — implementation unlocks when every
+Status: `CONVENED 2026-10-19; amended the same day under the round-2
+review (PLAN.md decision log) — implementation unlocks when every
 obligation below returns a named verdict`. Subject: `FLEX_MAPPING.md`
 (amended), `PLAN.md` PR 3 (rewritten). This brief is the work order;
-the documents carry the substance. Rule: agreement is per obligation,
-BY NAME — a general assent is not agreement (PLAN.md decision log,
-2026-10-19).
+those documents carry the substance. Rule: agreement is per obligation,
+BY NAME — a general assent is not agreement.
+
+**Assignee and independence (added per round 2, finding 4).** The
+third-party reviewer: the author of the 2026-10-19 review chain (the
+graceful-gate review, the mapping amendments, the round-2 review of
+this brief). Independence criteria, required of any substitute: NOT the
+architect, NOT the implementation agents; demonstrably able to read
+Chromium/Gecko sources against our tree; holds kill-criterion
+authority. Author and reviewer seats are distinguished in PLAN.md's
+decision log by title.
+
+**Evidence corpus (added per round 2, finding 1).** The fetched
+Blink/Gecko sources live at `.tmp/engine-corpus/` (GITIGNORED —
+vendoring licensed sources into this repo is both illegal and
+impractical) with `MANIFEST.md` carrying per-file upstream URLs,
+resolved revision hashes, fetch date, and revision-pinned re-fetch
+instructions. Every file:line verdict below cites against the
+manifest's revisions; a cold reviewer re-fetches per the manifest if
+the corpus is absent.
+
+**Sequencing (round 2, finding 8).** Obligations (b), (c), (e) are
+locally executable today (our tree + the enumerated corpus). (a) and
+(f) need the engine corpus. Nothing else blocks local work.
 
 ## Obligation (a) — source spot-check
 
-Verify the five skeleton claims (FLEX_MAPPING §2.1) FROM the fetched
-engine sources, not from the mapping document's paraphrase. Each claim
-returns CONFIRMED or REFUTED with file:line from the source itself.
+Verify the five skeleton claims (FLEX_MAPPING §2.1) FROM the corpus
+sources, not from the mapping document's paraphrase. Verdict per claim:
+CONFIRMED, CONFIRMED-WITH-DELTA (semantically equivalent, structurally
+different — with the delta named; added per round 2: a binary verdict
+invites overfitting claims to anchors), or REFUTED — each with
+file:line from the source itself.
 
 | # | Claim | Blink anchor | Gecko anchor |
 |---|---|---|---|
@@ -48,19 +73,33 @@ is consumable by paint TODAY — `line_collection_items` exists
 past relayout to paint time is unverified. Verdict per row: holds, or
 reclassified with the dependency named.
 
-## Obligation (d) — budget sign-off
+## Obligation (d1) — budget POLICY, ratified now (split per round 2)
 
-Confirm: (i) the refold budget (FLEX_MAPPING §3.4) is MEASURABLE on the
-pinned text-heavy scenario named there; (ii) the construction bound
-(total intrinsic measurements per dirty update ≤ 2× the up-fold count,
-once per nesting level) holds; (iii) the within-update memo fallback
-(context-owned, keyed by `(node, resolved width)`, reset per update) is
-designed rather than improvised and does not violate the
-no-speculative-caches doctrine. Then RATIFY the fraction ceiling for
-the pinned scenario (starting position: ≤ 50% of measured flex nodes)
-or set the number with rationale.
+Ratify, against FLEX_MAPPING §3.4: (i) the metric DEFINITIONS (flex
+nodes measured, flex nodes placed, flagged refolds per level — landing
+with the structural step); (ii) the construction bound (total intrinsic
+measurements per dirty update ≤ 2× the up-fold count — each subtree
+refolds at most once per nesting level); (iii) the within-update memo
+fallback (context-owned, keyed by `(node, resolved width)`, reset per
+update) is designed rather than improvised and does not violate the
+no-speculative-caches doctrine; (iv) the ceiling AS POLICY: ≤ 50% of
+measured flex nodes flagged-refolding in the pinned scenario, breach
+landing the memo; (v) the scenario DEFINITION (the ceiling's subject —
+authored-input shape, pinned at step 1): a wrapping row container at
+240px content width holding 12 short text-bearing items plus 4 nested
+flex items each with a text child, with one text mutation per update —
+the text-heavy-in-shrink-context stress the refold flag exists for.
 
-## Obligation (e) — kill-criterion adjudication
+## Obligation (d2) — budget BASELINE, at step 1's gate (split per round 2)
+
+The scenario from (d1)(v) lands with the structural step's perf pins;
+the observed refold fraction is recorded in PLAN.md's decision log at
+that gate; breaching the (d1)(iv) ceiling lands the memo with its own
+perf pins. (Round-2 finding 2: the number cannot be observed before
+step 1, so no ratification of an observed value is possible or required
+now — ratifying one would be theater.)
+
+## Obligation (e) — kill-criterion adjudication, with the fire path (round 2, finding 3)
 
 Confirm the restated criterion (PLAN.md PR 3, question 5) is
 falsifiable in both directions, then adjudicate it against the doctrine
@@ -68,19 +107,50 @@ evidence — the recursion and allocation inventory in the hot path:
 per-container `Vec<MeasuredFlexItem>` (`flex.rs:406-434`), the
 `HashMap` re-join (`flex.rs:1894-1923`), the recursive auto-min walk
 (`flex.rs:1252-1367`), the staged double-layout of every child
-(`flex.rs:2365-2480`). Verdict: the criterion FIRES (the restructure
-dies — name which branch and the evidence) or does not fire.
+(`flex.rs:2365-2480`). Verdict: FIRES (name the branch and the
+evidence) or does not fire.
+
+**Fire-path rules (binding):**
+- **Per-claim consequence:** a REFUTED claim N in obligation (a)
+  re-maps the phases resting on N (the mapping document is corrected in
+  the same decision). The criterion fires only when the refuted set
+  defeats the doctrine's OWN evidence — and that evidence (the
+  recursion/allocation inventory above) is LOCAL and engine-independent,
+  so no skeleton-claim refutation alone can fire branch (a). This rule
+  exists so neither ratchet direction is spinnable.
+- **Branch (a) firing** amends the layout-pass doctrine entry itself —
+  which binds PR 5 as well as PR 3 — so the same decision must
+  re-scope PR 5 explicitly.
+- Verdict values per claim per obligation (a): CONFIRMED /
+  CONFIRMED-WITH-DELTA / REFUTED.
+
+## Obligation (f) — substitute-surface coverage (added per round 2, finding 5)
+
+Against the CONFIRMED §2.1 claims (after (a)): confirm FLEX_MAPPING §6's
+phase-family plan maps onto them with NO phase unpinned — each
+confirmed skeleton phase has a named proof family with spec section and
+WPT provenance, including phases that move no registered row
+(line-formation invariants, greedy break-never-before-first-item,
+gap-once-per-adjacency, the single-line cross short-circuit). Any
+unpinned phase is a finding with the family owed.
 
 ## The debate's required outputs
 
-1. The per-obligation verdicts (a)–(e), each named.
+1. The per-obligation verdicts (a)–(f), each named.
 2. **Sequencing pulls:** which §1 NO/PARTIAL rows, if any, pull forward
    as in-place pin-flip landings on the current solver (accepting
    double work), each recorded in FLEX_MAPPING §4. None by default.
-3. **The refold budget number** (obligation d).
+3. **The refold budget policy ratification** (obligation d1) — and at
+   step 1's gate, the observed baseline (obligation d2).
 4. **Grid's dated arc decision** (PLAN.md PR 3, question 6 — REQUIRED;
    the recorded recommendation: enter immediately after the fix
    sequence, before PR 4).
+5. **The step-10 admission scope** (added per round 2, finding 6):
+   which admission candidates land in-arc. Default recorded: `margin:
+   auto` §8.1 lands in-arc first; `flex-basis` percentages, intrinsic
+   size keywords, and `aspect-ratio` are deferred to a post-sequence
+   consumer re-check. Overrule with rationale; silence adopts the
+   default.
 
-Implementation unlocks at FLEX_MAPPING §4 step 1 when all four outputs
+Implementation unlocks at FLEX_MAPPING §4 step 1 when all five outputs
 are recorded in PLAN.md's decision log.
