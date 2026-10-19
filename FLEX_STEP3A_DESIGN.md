@@ -176,7 +176,7 @@ handled).
 | `source` | `AnonymousInlineGroup { first_child_key, child_count }` |
 | `order` | `0` |
 | `align_self` | `None` |
-| `flex_grow` / `flex_shrink` | `0.0` |
+| `flex_grow` / `flex_shrink` | `0.0` / `1.0` — the CSS INITIALS: anonymous wrappers inherit nothing, and `flex-shrink`'s initial is 1, so anonymous items DO shrink in negative free space (clamped at their min-content). The 3a-ii landing shipped `0.0` in error (the architect's D5, corrected 2026-10-19); shrinking makes the D4 wrapping-cross path live (a shrunk run wraps), which the shrink-0 field had suppressed |
 | `flex_base_size` | `record.h_max` (basis auto → content → max-content) |
 | `hypothetical_main` | `flex_base_size` (no clamps; `base ≥ auto_min` always) |
 | `automatic_min_main` | `record.h_min` (widest segment — §4.5 content-based minimum, no specified size) |
@@ -254,6 +254,7 @@ on-spec):
 | (f) NEW: fragment joining | `"foo"+"bar"` (no space) in shrink context: min-content = `w("foobar")`; `"foo "+"bar"`: min-content = `max(w("foo "),w("bar"))` |
 | (g) NEW: order semantics | span `order:1` inside a run keeps DOM position (layout + paint); run vs `order:1` block: block last |
 | (h) NEW: joint cross | two short texts on one line at the measure width: run cross == strut (NOT 2×strut) |
+| (i) NEW: shrink with the CSS initial | a run in negative free space SHRINKS (`flex-shrink: 1`), distributing by scaled shrink factor and clamping at its min-content (the widest segment); a shrunk run's cross reflects the wrapping the shrink causes |
 
 **The audit rule (binding):** any OTHER existing proof whose behavior
 moves under run-merging (the §4 text-participation family, two-column
