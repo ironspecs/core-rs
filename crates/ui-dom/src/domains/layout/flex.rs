@@ -38,7 +38,8 @@ use super::DomLayoutResolver;
 use super::MeasurementRecord;
 use super::flex_anonymous_run::{
     RunAccumulator, accumulate_run, container_mode_is_collapse, empty_run,
-    member_metrics_from_element_atom, member_metrics_from_text, node_is_inline_run_member,
+    member_metrics_from_element_atom, member_metrics_from_text, node_is_excluded_flex_child,
+    node_is_inline_run_member,
 };
 use super::flex_item_lane::FlexItemLane;
 use super::flex_item_source::FlexItemSource;
@@ -58,7 +59,7 @@ use super::flow::{
 use super::measurement_record::{
     compute_node_measurement, node_measurement_of, write_measurement_if_changed,
 };
-use super::style::{BoxSides, LayoutDisplay, NodeStyle, PositionMode};
+use super::style::{BoxSides, LayoutDisplay, NodeStyle, PositionMode, presented_position};
 
 #[cfg(test)]
 use crate::domains::layout::IdentityDomLayoutResolver;
@@ -438,6 +439,13 @@ where
                 push_flex_item_into_lanes(&mut root_dom.layout_scratch, item, current_child_key);
             }
             child_key = run_breaker_key;
+        } else if node_is_excluded_flex_child(current_node) {
+            // D1 (flex arc step 3b): abs-pos/`display: none` children are
+            // EXCLUDED from item formation — no item view, no gap adjacency,
+            // no line membership, no justify count. The lanes (item, order,
+            // line, resolution) never carry them, so justify distribution and
+            // gap insertion read only real items.
+            child_key = next_sibling_key(root_dom, current_child_key)?;
         } else {
             let next_child_key = next_sibling_key(root_dom, current_child_key)?;
             let source = FlexItemSource::BlockItem(current_child_key);
@@ -588,6 +596,17 @@ where
     let mut flow = InlineFlowState::default();
     let mut child_key = Some(first_child_key);
     while let Some(current_child_key) = child_key {
+        // D1 (flex arc step 3b): an excluded child (abs-pos/`display: none`) is
+        // NOT a run-breaker — the run joins across it (engines skip OOF/none
+        // children at formation, so a text–abs–text sequence is one contiguous
+        // run). It contributes no width and is not folded.
+        {
+            let current_node = node_for_key(root_dom, current_child_key)?;
+            if node_is_excluded_flex_child(current_node) {
+                child_key = next_sibling_key(root_dom, current_child_key)?;
+                continue;
+            }
+        }
         let is_text_node = {
             let current_node = node_for_key(root_dom, current_child_key)?;
             if !node_is_inline_run_member(current_node) {
@@ -2638,6 +2657,18 @@ where
     )?;
     let solve =
         flex_container_solve_with_placed_active_flex_children(request.solve, placed_children);
+    place_excluded_abs_flex_children(
+        root_dom,
+        &ActiveFlexAbsPlacementRequest {
+            tree_size,
+            container_key: request.key,
+            entered: &request.entered,
+            child_context: &request.child_context,
+            container_style: request.container_style,
+            solve,
+        },
+        resolver,
+    )?;
     let content_width_px = active_flex_content_width_px(
         request.container_style.main_axis,
         solve.main_size_px,
@@ -2671,6 +2702,386 @@ fn flex_container_solve_with_placed_active_flex_children(
 ) -> FlexContainerSolve {
     solve.cross_size_px = placed_children.container_cross_size_px;
     solve
+}
+
+/// Lays out each EXCLUDED abs-pos/fixed child of the container at its D3
+/// static position (flex arc step 3b). Runs after the real items are placed:
+/// the static position is read from the solved lanes (item/order/line/
+/// resolution) WITHOUT re-solving, and each child is laid out through the
+/// existing abs-pos machinery (`relayout_tree_walker_node`) with the
+/// container's PADDING box as its containing block.
+struct ActiveFlexAbsPlacementRequest<'a> {
+    tree_size: (f32, f32),
+    container_key: DomNodeSlotKey,
+    entered: &'a EnteredNodeLayout,
+    child_context: &'a LayoutContext,
+    container_style: FlexContainerStyle,
+    solve: FlexContainerSolve,
+}
+
+fn place_excluded_abs_flex_children<R>(
+    root_dom: &mut RootDom,
+    request: &ActiveFlexAbsPlacementRequest<'_>,
+    resolver: &mut R,
+) -> Result<(), DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    let mut child_key = root_dom
+        .nodes
+        .get(request.container_key)
+        .ok_or(DomError::InvalidNodeKey)?
+        .first_child_key_for_store();
+    while let Some(current_child_key) = child_key {
+        let (is_abs_fixed, child_order, child_align_self, next_child_key) = {
+            let current_node = root_dom
+                .nodes
+                .get(current_child_key)
+                .ok_or(DomError::InvalidNodeKey)?;
+            let is_abs_fixed = matches!(
+                presented_position(current_node),
+                PositionMode::Absolute | PositionMode::Fixed
+            );
+            let child_order = if is_abs_fixed {
+                item_order_from_node(current_node)
+            } else {
+                0
+            };
+            let child_align_self = if is_abs_fixed {
+                item_align_self(current_node)
+            } else {
+                None
+            };
+            (
+                is_abs_fixed,
+                child_order,
+                child_align_self,
+                current_node.next_sibling_key_for_store(),
+            )
+        };
+        if is_abs_fixed {
+            place_one_excluded_abs_flex_child(
+                root_dom,
+                request,
+                current_child_key,
+                child_order,
+                child_align_self,
+                resolver,
+            )?;
+        }
+        child_key = next_child_key;
+    }
+    Ok(())
+}
+
+/// Lays out ONE excluded abs-pos/fixed child at its D3 static position.
+fn place_one_excluded_abs_flex_child<R>(
+    root_dom: &mut RootDom,
+    request: &ActiveFlexAbsPlacementRequest<'_>,
+    child_key: DomNodeSlotKey,
+    child_order: i32,
+    child_align_self: Option<FlexCrossAxisAlignment>,
+    resolver: &mut R,
+) -> Result<(), DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    let (static_main_px, static_cross_px) = static_position_for_excluded_abs_child(
+        root_dom,
+        request.container_key,
+        child_key,
+        child_order,
+        child_align_self,
+        request.container_style,
+        request.solve,
+    )?;
+
+    // Map (static main, static cross) to physical CONTENT-box offsets, applying
+    // main-axis reversal exactly like `active_flex_resolved_child_context`
+    // (a 0×0 item has zero resolved main size).
+    let main_start_px = resolved_flex_item_main_start_px(
+        static_main_px,
+        0.0,
+        request.solve.main_size_px,
+        resolved_main_axis_is_reversed(request.container_style),
+    );
+    let (content_left_px, content_top_px) = match request.container_style.main_axis {
+        FlexAxis::Horizontal => (main_start_px, static_cross_px),
+        FlexAxis::Vertical => (static_cross_px, main_start_px),
+    };
+
+    // The static position is CONTENT-box-relative; the containing block is the
+    // container's PADDING box (CSS 2.1 §10.1, the reviewer's amendment). Keep
+    // the two distinct: the abs-pos layout below receives the padding box as CB.
+    let (padding_left_px, padding_top_px, padding_width_px, padding_height_px) =
+        flex_container_padding_box_geometry(
+            request.entered,
+            request.container_style,
+            request.solve,
+        );
+
+    let abs_context = LayoutContext {
+        containing_layer_absolute_left_px: padding_left_px,
+        containing_layer_absolute_top_px: padding_top_px,
+        containing_layer_width_px: padding_width_px,
+        containing_layer_height_px: padding_height_px,
+        flow_left_px: 0.0,
+        flow_top_px: 0.0,
+        ..*request.child_context
+    };
+
+    // Real abs-pos layout (CSS 2.1 §10.3.7/§10.6.4): the child sizes per its
+    // own rules and its subtree is laid out. With no explicit left/top offsets
+    // the machinery resolves the border-box origin to the CB origin (0,0), so
+    // the static position below is applied by writing the child's border-box
+    // origin: content-box origin + static offset. Composite reads a positioned
+    // layer's own border-box origin as its layer offset, so this lands the
+    // whole subtree at the static position.
+    relayout_tree_walker_node(
+        root_dom,
+        request.tree_size,
+        child_key,
+        abs_context,
+        resolver,
+    )?;
+    let content_left_px =
+        padding_left_px + request.entered.style.sides.padding.left_px + content_left_px;
+    let content_top_px =
+        padding_top_px + request.entered.style.sides.padding.top_px + content_top_px;
+    write_node_border_box_position(root_dom, child_key, content_left_px, content_top_px)
+}
+
+/// The container's PADDING-box geometry as the abs-pos containing block:
+/// `(absolute_left, absolute_top, width, height)`.
+fn flex_container_padding_box_geometry(
+    entered: &EnteredNodeLayout,
+    container_style: FlexContainerStyle,
+    solve: FlexContainerSolve,
+) -> (f32, f32, f32, f32) {
+    let content_height_px = active_flex_content_height_px(
+        container_style.main_axis,
+        solve.main_size_px,
+        solve.cross_size_px,
+    );
+    let padding_box_width_px = entered.content_width_px
+        + entered.style.sides.padding.left_px
+        + entered.style.sides.padding.right_px;
+    let padding_box_height_px = content_height_px
+        + entered.style.sides.padding.top_px
+        + entered.style.sides.padding.bottom_px;
+    (
+        entered.absolute_left_px + entered.style.sides.border.left_px,
+        entered.absolute_top_px + entered.style.sides.border.top_px,
+        padding_box_width_px,
+        padding_box_height_px,
+    )
+}
+
+/// The D3 static position of one excluded abs-pos child: `(static_main,
+/// static_cross)` in the container's content box, computed from the solved
+/// lanes WITHOUT re-solving (the 0×0 item changes nothing about line breaking,
+/// so real items keep their solved line membership).
+fn static_position_for_excluded_abs_child(
+    root_dom: &RootDom,
+    container_key: DomNodeSlotKey,
+    child_key: DomNodeSlotKey,
+    child_order: i32,
+    child_align_self: Option<FlexCrossAxisAlignment>,
+    container_style: FlexContainerStyle,
+    solve: FlexContainerSolve,
+) -> Result<(f32, f32), DomError> {
+    let scratch = &root_dom.layout_scratch;
+    let slot = excluded_flex_child_slot(
+        root_dom,
+        scratch,
+        container_key,
+        child_key,
+        child_order,
+        solve,
+    )?;
+    let static_main_px = excluded_flex_child_static_main_px(scratch, container_style, solve, slot);
+    let static_cross_px = excluded_flex_child_static_cross_px(
+        scratch,
+        container_style,
+        solve,
+        slot,
+        child_align_self,
+        child_key,
+    );
+    Ok((static_main_px, static_cross_px))
+}
+
+/// The order-modified insertion slot (0..=n) for an excluded child, keyed by
+/// `(order, dom sequence)` among the REAL items (D3): the number of real items
+/// that sort strictly before the excluded child. Stable: equal orders keep DOM
+/// order.
+fn excluded_flex_child_slot(
+    root_dom: &RootDom,
+    scratch: &LayoutScratch,
+    container_key: DomNodeSlotKey,
+    child_key: DomNodeSlotKey,
+    child_order: i32,
+    solve: FlexContainerSolve,
+) -> Result<usize, DomError> {
+    let item_entries = scratch.items.slice(solve.item_range);
+    // items_before_dom: real items whose DOM anchor precedes the child (the
+    // item lane is DOM-ordered, so the first items_before_dom dom_indices are
+    // exactly the items before the child in DOM order).
+    let mut items_before_dom = 0usize;
+    for entry in item_entries {
+        if dom_child_precedes(root_dom, container_key, entry.view.source.key(), child_key)? {
+            items_before_dom += 1;
+        }
+    }
+    let first_dom_index_after_child = solve.item_range.start
+        + u32::try_from(items_before_dom).expect("item count should fit into u32");
+    let mut slot = 0usize;
+    for entry in scratch.order.slice(solve.order_range) {
+        let sorts_before_child = entry.order < child_order
+            || (entry.order == child_order && entry.dom_index < first_dom_index_after_child);
+        if sorts_before_child {
+            slot += 1;
+        }
+    }
+    Ok(slot)
+}
+
+/// Whether `first` precedes `second` in the container's child list (both are
+/// direct children). `false` when neither appears first (internal corruption).
+fn dom_child_precedes(
+    root_dom: &RootDom,
+    container_key: DomNodeSlotKey,
+    first: DomNodeSlotKey,
+    second: DomNodeSlotKey,
+) -> Result<bool, DomError> {
+    let mut child_key = first_child_key(root_dom, container_key)?;
+    while let Some(current_key) = child_key {
+        if current_key == first {
+            return Ok(true);
+        }
+        if current_key == second {
+            return Ok(false);
+        }
+        child_key = next_sibling_key(root_dom, current_key)?;
+    }
+    Ok(false)
+}
+
+/// The static MAIN position of the 0×0 item at `slot` (D3): walk the line's
+/// solved items — the position after the `k`th item is
+/// `item[k].main_offset + item[k].outer_main + gap`; `k == 0` yields the
+/// line's initial justify offset; a slot past the end yields the position after
+/// the last item (no trailing gap).
+fn excluded_flex_child_static_main_px(
+    scratch: &LayoutScratch,
+    container_style: FlexContainerStyle,
+    solve: FlexContainerSolve,
+    slot: usize,
+) -> f32 {
+    let order_entries = scratch.order.slice(solve.order_range);
+    let item_count = order_entries.len();
+    if item_count == 0 {
+        // No real items: the 0×0 item forms its own single line, packed by
+        // justify-content alone (its line main size is 0).
+        return initial_main_axis_alignment_offset_px(container_style, solve.main_size_px, 1);
+    }
+    if slot == 0 {
+        // Before the first item: the first line's justify offset.
+        return scratch.items.get(order_entries[0].dom_index).main_offset_px;
+    }
+    let last_dom_index = order_entries[slot - 1].dom_index;
+    let last_entry = scratch.items.get(last_dom_index);
+    let last_resolved_main_px = scratch
+        .resolution
+        .get(last_entry.order_index)
+        .resolved_main_size_px;
+    let outer_main_px = last_entry.view.margin_main_start_px
+        + last_resolved_main_px
+        + last_entry.view.margin_main_end_px;
+    if slot == item_count {
+        // Past the end: after the last item, no trailing gap.
+        return last_entry.main_offset_px + outer_main_px;
+    }
+    let next_entry = scratch.items.get(order_entries[slot].dom_index);
+    if last_entry.line_index == next_entry.line_index {
+        // Same line: one gap adjacency before the slot.
+        last_entry.main_offset_px + outer_main_px + container_style.gap_sizes.between_items_px
+    } else {
+        // The slot sits at a line break: the end of item[slot-1]'s line, no gap.
+        last_entry.main_offset_px + outer_main_px
+    }
+}
+
+/// The static CROSS position of the 0-height item (D3): per the child's
+/// `align_self` (falling back to `align_items`), resolved against the line's
+/// cross-start edge (which already carries the `align_content` packing offset).
+fn excluded_flex_child_static_cross_px(
+    scratch: &LayoutScratch,
+    container_style: FlexContainerStyle,
+    solve: FlexContainerSolve,
+    slot: usize,
+    child_align_self: Option<FlexCrossAxisAlignment>,
+    child_key: DomNodeSlotKey,
+) -> f32 {
+    let order_entries = scratch.order.slice(solve.order_range);
+    if order_entries.is_empty() {
+        // No real items: the empty line has zero cross size, so every alignment
+        // resolves to the cross-start (0).
+        return 0.0;
+    }
+    // The slot's line is the line containing item[slot-1] (or item 0 at slot 0).
+    let anchor_dom_index = if slot == 0 {
+        order_entries[0].dom_index
+    } else {
+        order_entries[slot - 1].dom_index
+    };
+    let line_index = scratch.items.get(anchor_dom_index).line_index;
+    let line = scratch.lines.get(line_index);
+    let dummy_item = ResolvedFlexItem {
+        source: FlexItemSource::BlockItem(child_key),
+        align_self: child_align_self,
+        resolved_main_size_px: 0.0,
+        main_axis_border_padding_px: 0.0,
+        resolved_cross_size_px: 0.0,
+        main_offset_px: 0.0,
+        cross_offset_px: 0.0,
+    };
+    line.cross_offset_px
+        + cross_axis_alignment_offset_px(dummy_item, container_style, line.resolved_cross_size_px)
+}
+
+/// Writes a node's retained border-box origin (the positioned-layer offset
+/// composite reads back via `relative_offset_for_node`). Mirrors `write_node_box`
+/// in `flow.rs`; scoped to the abs-child static-position write.
+fn write_node_border_box_position(
+    root_dom: &mut RootDom,
+    key: DomNodeSlotKey,
+    left_px: f32,
+    top_px: f32,
+) -> Result<(), DomError> {
+    let node = root_dom
+        .nodes
+        .get_mut(key)
+        .ok_or(DomError::InvalidNodeKey)?;
+    match node {
+        DomNode::Document(document) => {
+            document.base.box_model.border_box.left_px = left_px;
+            document.base.box_model.border_box.top_px = top_px;
+        }
+        DomNode::DocumentFragment(fragment) => {
+            fragment.base.box_model.border_box.left_px = left_px;
+            fragment.base.box_model.border_box.top_px = top_px;
+        }
+        DomNode::Element(element) => {
+            element.base.box_model.border_box.left_px = left_px;
+            element.base.box_model.border_box.top_px = top_px;
+        }
+        DomNode::Text(text) => {
+            text.base.box_model.border_box.left_px = left_px;
+            text.base.box_model.border_box.top_px = top_px;
+        }
+    }
+    Ok(())
 }
 
 fn place_active_flex_resolved_children<R>(
@@ -2843,12 +3254,23 @@ where
     );
     let mut flow = InlineFlowState::default();
     let mut child_key = Some(first_child_key);
-    // Iterate EXACTLY `child_count` siblings (the run's direct children), never
-    // past the run's end into the following item. A missing child (a
-    // `child_count` larger than the surviving siblings) is internal corruption.
-    for _ in 0..child_count {
+    // Lay out EXACTLY `child_count` run MEMBERS (the run's direct children),
+    // never past the run's end into the following item. Excluded children
+    // (abs-pos/`display: none`) sit between run members without breaking the
+    // run (the D1 amendment), so they are SKIPPED here and laid out by
+    // `place_excluded_abs_flex_children` — they are not members and contribute
+    // no inline width. A missing member (a `child_count` larger than the
+    // surviving members) is internal corruption.
+    let mut members_laid_out = 0usize;
+    while members_laid_out
+        < usize::try_from(child_count).expect("run child count should fit into usize")
+    {
         let current_child_key = child_key.expect("run child should exist within child_count");
         let next_child_key = next_sibling_key(root_dom, current_child_key)?;
+        if node_is_excluded_flex_child(node_for_key(root_dom, current_child_key)?) {
+            child_key = next_child_key;
+            continue;
+        }
         let child_context = next_inline_child_context(origin_context.clone(), flow);
         let child_flow = relayout_tree_walker_node(
             root_dom,
@@ -2859,6 +3281,7 @@ where
         )?;
         flow.inline_left_px += child_flow.width_px;
         flow.line_height_px = flow.line_height_px.max(child_flow.height_px);
+        members_laid_out += 1;
         child_key = next_child_key;
     }
     Ok(ResolvedFlexItem {

@@ -40,6 +40,11 @@ use crate::types::{DomNodeSlotKey, DomWhiteSpace};
 use super::measurement_record::node_measurement_of;
 use super::style::{LayoutDisplay, PositionMode, presented_display, presented_position};
 
+#[cfg(test)]
+use crate::domains::style::computed::{DisplayKw, PositionKw};
+#[cfg(test)]
+use crate::types::{DomTag, RootDom, RootDomContext};
+
 /// The D3 fold accumulator for one maximal run of contiguous inline-level
 /// in-flow children (CSS Flexbox §4 anonymous flex item).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -195,13 +200,33 @@ pub(super) fn member_metrics_from_element_atom(
 
 /// Whether one node is a member of an inline run: `display: inline` (text
 /// nodes and inline elements) and in-flow (static/relative). Block-level
-/// children (block, inline-block, flex, inline-flex, img, element controls) and
-/// abs-pos/`display: none` children are run-breakers.
+/// children (block, inline-block, flex, inline-flex, img, element controls)
+/// are run-breakers. Abs-pos/`display: none` children are EXCLUDED from item
+/// formation entirely (step 3b): they are neither members nor run-breakers —
+/// an inline run joins across them (see `node_is_excluded_flex_child`).
 pub(super) fn node_is_inline_run_member(node: &DomNode) -> bool {
     presented_display(node) == LayoutDisplay::Inline
         && matches!(
             presented_position(node),
             PositionMode::Static | PositionMode::Relative
+        )
+}
+
+/// Whether one node is excluded from flex item formation entirely (flex arc
+/// step 3b, the D1 exclusion predicate): a `display: none` child or an
+/// absolutely/fixed-positioned child (CSS Flexbox 1 §4.1, CSS 2.1 §9.2).
+///
+/// Excluded children form no item view, occupy no flex slot, add no gap
+/// adjacency, and do not count toward justify-content distribution. They are
+/// ALSO not run-breakers: engines skip OOF/none children at formation, so a
+/// text–abs–text sequence is one contiguous inline run (the 3b amendment to the
+/// 3a run predicate). Abs-pos children are later laid out at their D3 static
+/// position by the flex solve's placement phase.
+pub(super) fn node_is_excluded_flex_child(node: &DomNode) -> bool {
+    presented_display(node) == LayoutDisplay::None
+        || matches!(
+            presented_position(node),
+            PositionMode::Absolute | PositionMode::Fixed
         )
 }
 
@@ -433,5 +458,47 @@ mod tests {
         accumulate_run(&mut run, tall, DomWhiteSpace::Normal);
 
         assert_eq!(run.strut_line_height_px, 22.0);
+    }
+
+    /// Builds a fresh element node whose computed box group carries the given
+    /// display/position, so the classification predicates read the same
+    /// computed surface the flex fold reads (spine 3.3g-2a direct group write).
+    fn element_with_computed_box(display: DisplayKw, position: PositionKw) -> DomNode {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let key = root.create_element(DomTag::Div).expect("div should insert");
+        let node = root.nodes.get_mut(key).expect("node should exist");
+        match node {
+            DomNode::Element(element) => {
+                element.base.presentation.computed.box_.display = display;
+                element.base.presentation.computed.box_.position = position;
+            }
+            _ => panic!("classification test helper expects an element node"),
+        }
+        root.nodes.remove(key).expect("node should remove")
+    }
+
+    #[test]
+    fn excluded_flex_child_predicate_flags_abs_fixed_and_display_none() {
+        let abs = element_with_computed_box(DisplayKw::Block, PositionKw::Absolute);
+        assert!(node_is_excluded_flex_child(&abs));
+        assert!(!node_is_inline_run_member(&abs));
+
+        let fixed = element_with_computed_box(DisplayKw::Block, PositionKw::Fixed);
+        assert!(node_is_excluded_flex_child(&fixed));
+        assert!(!node_is_inline_run_member(&fixed));
+
+        let none = element_with_computed_box(DisplayKw::None, PositionKw::Static);
+        assert!(node_is_excluded_flex_child(&none));
+        assert!(!node_is_inline_run_member(&none));
+
+        // In-flow controls are NOT excluded: a block item and an inline run
+        // member both keep their membership (the run member is not excluded).
+        let block = element_with_computed_box(DisplayKw::Block, PositionKw::Static);
+        assert!(!node_is_excluded_flex_child(&block));
+        assert!(!node_is_inline_run_member(&block));
+
+        let inline_relative = element_with_computed_box(DisplayKw::Inline, PositionKw::Relative);
+        assert!(!node_is_excluded_flex_child(&inline_relative));
+        assert!(node_is_inline_run_member(&inline_relative));
     }
 }

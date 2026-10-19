@@ -510,7 +510,14 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // before routing it to the run fold or the node-item measure (+1 Get each
     // for the two block items). Documented cause: anonymous inline-run
     // formation (CSS Flexbox §4) classifies each child by display/position.
-    assert_node_counts(&root, 142, 29, 0, "flex relayout");
+    // flex arc step 3b abs-pos/none exclusion (+3 Get from 142/29/0): placement
+    // (`place_excluded_abs_flex_children`, `flex.rs`) walks the container's DOM
+    // children once more to find excluded abs-pos/fixed children for the D3
+    // static-position layout (+1 Get each for the two children, +1 for the
+    // container's first-child lookup). Documented cause: excluded children are
+    // absent from the item lane (they form no item view), so placement must
+    // read them from the DOM child list; FLEX_STEP3B_DESIGN.md D4.
+    assert_node_counts(&root, 145, 29, 0, "flex relayout");
 }
 
 /// Builds the (d1) scenario (`FLEX_DEBATE_BRIEF.md` (d1)(v), ratified): a
