@@ -226,6 +226,33 @@ Grid gate vocabulary: `grid-template-columns` `grid-template-rows`
 lookup; the `display: grid`/`inline-grid` VALUE gate is
 `unsupported_display_values_drop_to_initial`.
 
+### Flex composition axis (Run C — deep hierarchies and stacked features)
+
+Census: 414 → 423 proofs; three new divergent rows; one extended citation.
+The COMPOSITION axis complements the spec-surface matrix: it proves what
+happens when flex items carry real subtree content (text, images, mixed, and
+nested flex), not just flat resolved boxes. Per family:
+
+| Family | Rows | Outcome |
+|---|---|---|
+| C1 `flex_item_text_alignment_stacking` (CSS Text 3 §7.1 × Flexbox §9) | 7 | on-spec — item sizing ignores `text-align`; the text run fills the resolved content width and carries the inherited alignment field; the grown item centers text in its GROWN width |
+| C2 `flex_item_text_white_space_stacking` (CSS Text 4 × Flexbox §4.5/§9.2) | 4 + 1 off-spec | pre-wrap `\n` gives two lines; pre-line shrink floor = widest word; break-spaces composes the registered `off_spec_break_spaces_approximated_as_pre_wrap` (width side on-spec); normal wrap at the resolved 100px; **`off_spec_flex_auto_min_nowrap_text_floors_at_widest_word`** (nowrap auto-min uses widest word, not full run) |
+| C3 `flex_item_replaced_images` (CSS 2.1 §10.3.2/§10.6.2 × Flexbox §4.5) | 4 + 1 off-spec (2 rows) | img base = intrinsic 160px; shrink floor = intrinsic; 50% width through ratio; img+text gap spacing on-spec; **`off_spec_flex_stretch_distorts_replaced_img`** (cross-axis stretch distorts the 16:9 img instead of exempting it) |
+| C4 `nested_flex_with_content` (Flexbox §9.9 × §9.7) | 5 | inner row stretches to the outer content width; inner column keeps the graceful measured size (cites `off_spec_flex_auto_min_unsupported_shapes_use_measured_size`); mixed img+text auto-min; inner justify uses the outer-resolved width; nested text-align composes C1 |
+| C5 `deep_hierarchy_mixed_content` (3–4 levels) | 5 | 3-level block text measurement propagates; mixed img+text at depth; flex-in-flex-in-flex text leaf (no panic); depth append re-measures; depth removal retracts |
+| C6 `subtree_box_features_in_flex_items` (CSS Values §percentages × Flexbox §4) | 4 + 1 off-spec | grandchild margin/padding/width percentages resolve against the item's CONTENT width (on-spec — the registered ITEM-level wrong basis does NOT extend to the subtree); item border+padding uses the content-box basis; **`off_spec_flex_item_subtree_first_child_margin_lost_at_boundary`** (a first-child margin collapses through the subtree but does not offset the item) |
+
+Divergent rows landed this run (3 new registry rows + 1 extended citation):
+`off_spec_flex_auto_min_nowrap_text_floors_at_widest_word`,
+`off_spec_flex_stretch_distorts_replaced_img`,
+`off_spec_flex_item_subtree_first_child_margin_lost_at_boundary`; the
+`off_spec_break_spaces_approximated_as_pre_wrap` row gained the C2(c)
+composition citation. Two suspected divergences resolved on-spec (no registry
+row): C1 text-align (the text box fills the resolved content width, so
+center/end/justify compose correctly through the `alignment` field) and C6
+subtree percentages (they resolve against the item's content box, the correct
+containing block).
+
 
 Normal-flow coverage map:
 
