@@ -51,7 +51,9 @@ use super::flow::{
     resolved_content_size_px, resolved_node_style, resolved_node_style_with_basis,
     wrapped_text_content_height_px,
 };
-use super::measurement_record::compute_node_measurement;
+use super::measurement_record::{
+    compute_node_measurement, node_measurement_of, write_measurement_if_changed,
+};
 use super::style::{BoxSides, LayoutDisplay, NodeStyle, PositionMode};
 
 #[cfg(test)]
@@ -859,27 +861,20 @@ fn measure_exited_node_flow_size(
     // compare the freshly-computed record against the stored one with an
     // immutable read, and take the mutable borrow only when the value changed.
     // The record is a pass output, never a dirt source; unchanged records cost
-    // a read, not a mutation.
+    // a read, not a mutation. Record assembly is unified through
+    // `compute_node_measurement` (one computation, one comparison; pass
+    // outputs, never a dirt source), and the write gate is the single-comparison
+    // `write_measurement_if_changed`.
     let next_record = compute_node_measurement(
         entered,
-        min_content_width_px,
-        max_content_width_px,
-        content_size.viewport_height_px,
+        (min_content_width_px, max_content_width_px),
+        content_size,
     );
     // FlexNodesMeasured is a work counter, so it increments per COMPUTE, not
     // per record write: an unchanged record below still costs one compute on
     // the flex measure path.
     root_dom.increment_metric(RootDomMetricName::FlexNodesMeasured);
-    if node_measurement_of(root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?) != next_record
-    {
-        node_measurement_mut(
-            root_dom
-                .nodes
-                .get_mut(key)
-                .ok_or(DomError::InvalidNodeKey)?,
-        )
-        .replace_measurement_if_changed(next_record);
-    }
+    let _ = write_measurement_if_changed(&mut root_dom.nodes, key, next_record)?;
     Ok(layout_flow_size(
         entered.style,
         measured_box_model(entered.box_model, entered.style, content_size),
@@ -2923,31 +2918,6 @@ fn record_content_cross_size(main_axis: FlexAxis, record: MeasurementRecord) -> 
     match main_axis {
         FlexAxis::Horizontal => record.content_height_at_width_px,
         FlexAxis::Vertical => record.h_max_content_px,
-    }
-}
-
-/// Returns a node's retained measurement record (read side). The measure fold
-/// writes it once per node per pass; the item view reads children it has
-/// already exited, so freshness is structural.
-fn node_measurement_of(node: &DomNode) -> MeasurementRecord {
-    match node {
-        DomNode::Document(node) => node.base.measurement,
-        DomNode::DocumentFragment(node) => node.base.measurement,
-        DomNode::Element(node) => node.base.measurement,
-        DomNode::Text(node) => node.base.measurement,
-    }
-}
-
-/// Returns a node's retained measurement record slot (write side). The write is
-/// equality-gated by the caller through `replace_measurement_if_changed`; this
-/// helper only routes to the right node-kind base, mirroring flow.rs's private
-/// `node_measurement_mut`.
-fn node_measurement_mut(node: &mut DomNode) -> &mut MeasurementRecord {
-    match node {
-        DomNode::Document(node) => &mut node.base.measurement,
-        DomNode::DocumentFragment(node) => &mut node.base.measurement,
-        DomNode::Element(node) => &mut node.base.measurement,
-        DomNode::Text(node) => &mut node.base.measurement,
     }
 }
 

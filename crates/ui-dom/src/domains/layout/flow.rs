@@ -587,12 +587,13 @@ pub(super) fn exit_node(
             .ok_or(DomError::InvalidNodeKey)?;
         // The record write is a pass output, never a dirt source: the equality
         // gate's bool result is deliberately unused in step 1 (record writes
-        // never mark style/layout/paint dirty).
+        // never mark style/layout/paint dirty). Record assembly is unified
+        // through `compute_node_measurement` (one computation, one comparison;
+        // pass outputs, never a dirt source).
         node_measurement_mut(node).replace_measurement_if_changed(compute_node_measurement(
             &entered,
-            min_content_width_px,
-            max_content_width_px,
-            content_size.viewport_height_px,
+            (min_content_width_px, max_content_width_px),
+            content_size,
         ));
         write_layout_state(
             node,

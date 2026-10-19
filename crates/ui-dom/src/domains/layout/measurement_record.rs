@@ -1,11 +1,19 @@
 //! Per-node intrinsic measurement record for the shared layout up fold.
 //!
 //! This file owns `MeasurementRecord`, the shared exit-time computation
-//! `compute_node_measurement`, and the equality-gated write gate
-//! `replace_measurement_if_changed`. Its purpose is to give each node one
-//! retained slot that the layout pass writes exactly once per dirty pass (the
-//! block world at `exit_node`, the flex subtree at the measure fold), carrying
-//! the subtree-computed content sizes the flex solver reads in the same pass.
+//! `compute_node_measurement`, the node-kind routing to the retained record
+//! slot (`node_measurement_of`/`node_measurement_mut`), and the two
+//! equality-gated write gates (`replace_measurement_if_changed` for a live
+//! mutable borrow; `write_measurement_if_changed` for a node store + key).
+//! Its purpose is to give each node one retained slot that the layout pass
+//! writes exactly once per dirty pass (the block world at `exit_node`, the
+//! flex subtree at the measure fold), carrying the subtree-computed content
+//! sizes the flex solver reads in the same pass.
+//!
+//! Record assembly is unified here: both epilogues pass their shared outputs
+//! (the entered-node layout, the min/max content-width contribution pair, and
+//! the resolved content size) into one `compute_node_measurement` entry point —
+//! one computation, one comparison, and a pass OUTPUT, never a dirt source.
 //!
 //! Invariants and rules:
 //!
@@ -15,12 +23,18 @@
 //! - the `v_*` slots stay `None` until their named consumer lands in flex
 //!   step 4; nothing computes what nothing reads
 //! - record writes are equality-gated through `replace_measurement_if_changed`
+//!   (live borrow) or `write_measurement_if_changed` (store + key, read-first)
 //!   and are a pass OUTPUT: they never mark style/layout/paint dirty
 
 use crate::domains::layout::measurement_flags::MeasurementFlags;
-use crate::types::DomWhiteSpace;
+use crate::types::dom_node::{DomNode, DomNodeSlotKey};
+use crate::types::root_dom_nodes::RootDomNodes;
+use crate::types::{DomError, DomWhiteSpace};
 
-use super::flow::EnteredNodeLayout;
+use super::flow::{EnteredNodeLayout, ResolvedContentSizePx};
+
+#[cfg(test)]
+use crate::types::RootDomNodesMetricName;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MeasurementRecord {
@@ -56,16 +70,64 @@ impl MeasurementRecord {
     }
 }
 
+/// Returns a node's retained measurement record (read side). The layout up
+/// fold writes it once per node per dirty pass; readers see children the fold
+/// has already exited, so freshness is structural. This is the canonical
+/// node-kind routing for the retained record slot.
+pub(super) fn node_measurement_of(node: &DomNode) -> MeasurementRecord {
+    match node {
+        DomNode::Document(node) => node.base.measurement,
+        DomNode::DocumentFragment(node) => node.base.measurement,
+        DomNode::Element(node) => node.base.measurement,
+        DomNode::Text(node) => node.base.measurement,
+    }
+}
+
+/// Returns a node's retained measurement record slot (write side). This helper
+/// only routes to the right node-kind base; callers gate the write through
+/// `write_measurement_if_changed` (store + key) or
+/// `replace_measurement_if_changed` (a live `&mut MeasurementRecord`).
+pub(super) fn node_measurement_mut(node: &mut DomNode) -> &mut MeasurementRecord {
+    match node {
+        DomNode::Document(node) => &mut node.base.measurement,
+        DomNode::DocumentFragment(node) => &mut node.base.measurement,
+        DomNode::Element(node) => &mut node.base.measurement,
+        DomNode::Text(node) => &mut node.base.measurement,
+    }
+}
+
+/// Read-first record write gate for the flex measure fold: compares the
+/// freshly-computed `next` record against the stored one with ONE immutable
+/// node-store read, and takes the mutable borrow only when the value changed.
+/// Returns `Ok(true)` iff a write occurred.
+///
+/// The record is a pass OUTPUT, never a dirt source; an unchanged record costs
+/// a read, not a mutation. This is the single-comparison form of
+/// `replace_measurement_if_changed` for call sites that hold only the node
+/// store + key rather than a live mutable borrow.
+pub(super) fn write_measurement_if_changed(
+    nodes: &mut RootDomNodes,
+    key: DomNodeSlotKey,
+    next: MeasurementRecord,
+) -> Result<bool, DomError> {
+    let stored = node_measurement_of(nodes.get(key).ok_or(DomError::InvalidNodeKey)?);
+    if stored == next {
+        return Ok(false);
+    }
+    *node_measurement_mut(nodes.get_mut(key).ok_or(DomError::InvalidNodeKey)?) = next;
+    Ok(true)
+}
+
 /// Computes the exit-time measurement record for one node from the shared
 /// block/inline/flex exit epilogue's data.
 ///
-/// `min_content_width_px`/`max_content_width_px` are the CONTENT inline-size
-/// contributions from `content_width_contribution_for_exit` (before this
+/// `content_width_contribution_px` is the `(min, max)` CONTENT inline-size
+/// contribution pair from `content_width_contribution_for_exit` (before this
 /// node's own horizontal border+padding — the value `layout_flow_size` adds
-/// edges to). `content_height_at_width_px` is the resolved content height at
-/// this pass's laid-out width (the `ResolvedContentSizePx::viewport_height_px`
-/// the box model derives from). The `v_*` slots stay `None`: their named
-/// consumer (the step-4 auto-min walk) has not landed, so nothing is computed.
+/// edges to). `content_size` is the resolved content size the box model
+/// derives from; its `viewport_height_px` is the content height at this pass's
+/// laid-out width. The `v_*` slots stay `None`: their named consumer (the
+/// step-4 auto-min walk) has not landed, so nothing is computed.
 ///
 /// Flags are the two fixed measurement class bits read from the entered node:
 /// `PRESERVE_MODE` from the node's effective white-space class (preserve =
@@ -76,10 +138,11 @@ impl MeasurementRecord {
 /// the value that actually applies at the node.
 pub(super) fn compute_node_measurement(
     entered: &EnteredNodeLayout,
-    min_content_width_px: f32,
-    max_content_width_px: f32,
-    content_height_at_width_px: f32,
+    content_width_contribution_px: (f32, f32),
+    content_size: ResolvedContentSizePx,
 ) -> MeasurementRecord {
+    let (min_content_width_px, max_content_width_px) = content_width_contribution_px;
+    let content_height_at_width_px = content_size.viewport_height_px;
     let mut flags = MeasurementFlags::empty();
     if white_space_is_preserve_mode(entered.inherited_style.effective_white_space()) {
         flags = flags.with_preserve_mode();
@@ -177,6 +240,85 @@ mod tests {
         assert_eq!(record.v_min_content_px, Some(8.0));
         assert_eq!(record.v_max_content_px, None);
         assert_eq!(record.flags.bits, 0);
+    }
+
+    #[test]
+    fn write_measurement_if_changed_rejects_equal_without_write() {
+        let mut nodes = RootDomNodes::with_key();
+        let key = nodes.insert_with_key(DomNode::document);
+        let record = MeasurementRecord {
+            h_min_content_px: 10.0,
+            h_max_content_px: 20.0,
+            content_height_at_width_px: 15.0,
+            v_min_content_px: None,
+            v_max_content_px: None,
+            flags: MeasurementFlags { bits: 1 },
+        };
+        *node_measurement_mut(nodes.get_mut(key).expect("node should exist")) = record;
+        nodes.reset_metrics();
+
+        let wrote = write_measurement_if_changed(&mut nodes, key, record)
+            .expect("write gate should resolve");
+
+        assert!(!wrote);
+        // The equal gate costs one immutable read and takes no mutable borrow.
+        assert_eq!(nodes.count(RootDomNodesMetricName::Get), 1);
+        assert_eq!(nodes.count(RootDomNodesMetricName::GetMut), 0);
+        assert_eq!(
+            node_measurement_of(nodes.get(key).expect("node should exist")),
+            record,
+        );
+    }
+
+    #[test]
+    fn write_measurement_if_changed_writes_changed_value() {
+        let mut nodes = RootDomNodes::with_key();
+        let key = nodes.insert_with_key(DomNode::document);
+        let stored = MeasurementRecord::default();
+        *node_measurement_mut(nodes.get_mut(key).expect("node should exist")) = stored;
+        nodes.reset_metrics();
+        let next = MeasurementRecord {
+            h_min_content_px: 10.0,
+            h_max_content_px: 20.0,
+            content_height_at_width_px: 15.0,
+            v_min_content_px: None,
+            v_max_content_px: None,
+            flags: MeasurementFlags { bits: 2 },
+        };
+
+        let wrote =
+            write_measurement_if_changed(&mut nodes, key, next).expect("write gate should resolve");
+
+        assert!(wrote);
+        // One read + one write; the write is unconditional after the single
+        // comparison (no second compare inside).
+        assert_eq!(nodes.count(RootDomNodesMetricName::Get), 1);
+        assert_eq!(nodes.count(RootDomNodesMetricName::GetMut), 1);
+        assert_eq!(
+            node_measurement_of(nodes.get(key).expect("node should exist")),
+            next,
+        );
+    }
+
+    #[test]
+    fn write_measurement_if_changed_treats_none_to_some_v_slot_as_change() {
+        let mut nodes = RootDomNodes::with_key();
+        let key = nodes.insert_with_key(DomNode::document);
+        nodes.reset_metrics();
+        let next = MeasurementRecord {
+            v_min_content_px: Some(8.0),
+            ..MeasurementRecord::default()
+        };
+
+        let wrote =
+            write_measurement_if_changed(&mut nodes, key, next).expect("write gate should resolve");
+
+        assert!(wrote);
+        assert_eq!(nodes.count(RootDomNodesMetricName::GetMut), 1);
+        let written = node_measurement_of(nodes.get(key).expect("node should exist"));
+        assert_eq!(written.v_min_content_px, Some(8.0));
+        assert_eq!(written.v_max_content_px, None);
+        assert_eq!(written.flags.bits, 0);
     }
 
     #[test]
