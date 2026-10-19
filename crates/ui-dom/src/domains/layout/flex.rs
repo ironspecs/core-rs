@@ -415,7 +415,7 @@ where
     while let Some(current_child_key) = child_key {
         let current_node = node_for_key(root_dom, current_child_key)?;
         if node_is_inline_run_member(current_node) {
-            let (run, run_breaker_key) = measure_inline_run(
+            let (run, run_breaker_key, measured_joint_height_px) = measure_inline_run(
                 root_dom,
                 tree_size,
                 current_child_key,
@@ -429,8 +429,12 @@ where
                     first_child_key: run.first_child_key,
                     child_count: run.child_count,
                 };
-                let item =
-                    anonymous_inline_run_item_view(source, run, request.container_style.main_axis);
+                let item = anonymous_inline_run_item_view(
+                    source,
+                    run,
+                    measured_joint_height_px,
+                    request.container_style.main_axis,
+                );
                 push_flex_item_into_lanes(&mut root_dom.layout_scratch, item, current_child_key);
             }
             child_key = run_breaker_key;
@@ -511,28 +515,29 @@ fn push_flex_item_into_lanes(
 /// so the cursor min-content IS the automatic minimum. shrink 1 lets the run
 /// shrink in negative free space, clamped at that min-content floor (never
 /// below it); grow 0 keeps it frozen against positive free space. The
-/// vertical-main axis maps the strut cross to the main size (the run's
-/// single-line height) and the max-content width to the cross size.
+/// horizontal-main cross is the D4 joint-measured height at the measure width
+/// (a shrunk run wraps and grows its cross); the vertical-main axis maps the
+/// strut to the main size (the run's single-line height) and the max-content
+/// width to the cross size.
 fn anonymous_inline_run_item_view(
     source: FlexItemSource,
     run: RunAccumulator,
+    measured_joint_height_px: f32,
     main_axis: FlexAxis,
 ) -> FlexItemView {
     let max_content_width_px = run.max_content_sum_px;
     let min_content_width_px = run.widest_segment_px;
-    // The D4 joint-measured height at the measure width (max child height) —
-    // equal to the accumulator's strut for the single-line run.
-    let measured_cross_size_input_px = run.strut_line_height_px;
+    let strut_line_height_px = run.strut_line_height_px;
     let (flex_base_size_px, automatic_min_main_size_px, measured_cross_size_input_px) =
         match main_axis {
             FlexAxis::Horizontal => (
                 max_content_width_px,
                 min_content_width_px,
-                measured_cross_size_input_px,
+                measured_joint_height_px,
             ),
             FlexAxis::Vertical => (
-                measured_cross_size_input_px,
-                measured_cross_size_input_px,
+                strut_line_height_px,
+                strut_line_height_px,
                 max_content_width_px,
             ),
         };
@@ -561,10 +566,13 @@ fn anonymous_inline_run_item_view(
 /// `first_child_key`: the D3 fold (intrinsic cursors) interleaved with the D4
 /// cross measurement (the existing inline accumulation — one measure per child
 /// writing its record, `InlineFlowState`/`next_inline_child_context` reducing
-/// the available width by the used line width). Returns the folded accumulator
-/// and the key of the first run-breaker after the run (`None` at the end of
-/// the siblings). `first_child_key` is a run member (the caller classified it);
-/// subsequent siblings are classified here.
+/// the available width by the used line width). Returns the folded accumulator,
+/// the key of the first run-breaker after the run (`None` at the end of the
+/// siblings), and the run's joint laid-out height at the measure width (the
+/// D4 wrapper's `flow.line_height_px` — max child height, wrapping-aware). A
+/// shrunk run wraps and its joint height exceeds the single-line strut; an
+/// unshrunk run's joint height equals the strut. `first_child_key` is a run
+/// member (the caller classified it); subsequent siblings are classified here.
 fn measure_inline_run<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
@@ -572,7 +580,7 @@ fn measure_inline_run<R>(
     child_context: &LayoutContext,
     white_space: DomWhiteSpace,
     resolver: &mut R,
-) -> Result<(RunAccumulator, Option<DomNodeSlotKey>), DomError>
+) -> Result<(RunAccumulator, Option<DomNodeSlotKey>, f32), DomError>
 where
     R: DomLayoutResolver + ?Sized,
 {
@@ -583,7 +591,7 @@ where
         let is_text_node = {
             let current_node = node_for_key(root_dom, current_child_key)?;
             if !node_is_inline_run_member(current_node) {
-                return Ok((run, Some(current_child_key)));
+                return Ok((run, Some(current_child_key), flow.line_height_px));
             }
             current_node.as_text().is_some()
         };
@@ -619,7 +627,7 @@ where
         accumulate_run(&mut run, member, white_space);
         child_key = next_sibling_key(root_dom, current_child_key)?;
     }
-    Ok((run, None))
+    Ok((run, None, flow.line_height_px))
 }
 
 fn measure_one_flex_item<R>(
@@ -2869,10 +2877,14 @@ where
 
 /// The run's item-box content origin, mirroring `active_flex_resolved_child_context`
 /// without a child style (a run has no node style): `flow_left`/`flow_top` are
-/// the item's main/cross start. `available_width_px` is `None` so each run
-/// child lays out at its own intrinsic max-content width (the run never
-/// shrinks, so it never wraps — unlike a block item, there is no single
-/// resolved width to override each child to).
+/// the item's main/cross start. On the horizontal-main axis the resolved
+/// content main size (the run's resolved width minus its zero border/padding)
+/// is passed down as `available_width_px`, so the run's children lay out
+/// inside the resolved box and wrap at the resolved width (CSS Flexbox §4:
+/// the run shrinks with the CSS initial `flex-shrink: 1`, and a shrunk run's
+/// cross reflects the wrapping the shrink causes). The vertical-main axis keeps
+/// `available_width_px: None` — the run's cross (its horizontal max-content
+/// width) never shrinks, so there is no vertical-main wrapping width to impose.
 fn anonymous_inline_run_child_context(
     child_context: &LayoutContext,
     container_style: FlexContainerStyle,
@@ -2890,7 +2902,9 @@ fn anonymous_inline_run_child_context(
         FlexAxis::Horizontal => LayoutContext {
             flow_left_px: child_context.flow_left_px + main_start_px,
             flow_top_px: child_context.flow_top_px + cross_start_px,
-            available_width_px: None,
+            available_width_px: Some(
+                resolved_flex_item_content_main_size_px(resolved_item).max(0.0),
+            ),
             node_content_width_override_px: None,
             node_content_height_override_px: None,
             ..*child_context

@@ -5488,10 +5488,13 @@ fn stylesheet_align_content_stretch_persists_after_recompute() {
 // is pinned at the item-view/accumulator unit level (`flex.rs`,
 // `flex_anonymous_run.rs`) because it pins the fold arithmetic directly, while
 // row (i) exercises the run's min-content floor at layout (the run shrinks
-// with the CSS initial `flex-shrink: 1` and clamps at that floor).
+// with the CSS initial `flex-shrink: 1` and clamps at that floor). Row (i)(c)
+// pins the shrinking-cross half (a shrunk run wraps at its resolved width and
+// grows its cross); the row (i) control proves an unshrunk run stays
+// single-line.
 #[test]
 fn anonymous_inline_runs_merge_into_single_flex_items() {
-    let rows: [AnonymousRunRow; 8] = [
+    let rows: [AnonymousRunRow; 10] = [
         (
             "text_plus_text_merges_into_one_item",
             assert_text_plus_text_merged,
@@ -5520,6 +5523,14 @@ fn anonymous_inline_runs_merge_into_single_flex_items() {
         (
             "run_shrinks_with_css_initial_flex_shrink",
             assert_anonymous_run_shrinks_with_css_initial,
+        ),
+        (
+            "shrunk_run_wraps_at_resolved_width",
+            assert_anonymous_run_wraps_at_resolved_width,
+        ),
+        (
+            "unshrunk_run_stays_single_line",
+            assert_anonymous_run_unshrunk_stays_single_line,
         ),
     ];
     for (name, run) in rows {
@@ -5756,12 +5767,11 @@ fn assert_joint_cross_is_one_strut(name: &str) {
 /// here fail — this row discriminates that field.
 ///
 /// The shrinking-cross half of D9(i) ("a shrunk run's cross reflects the
-/// wrapping the shrink causes") is NOT pinned here: placement lays a run's
-/// children at their intrinsic max-content width (`anonymous_inline_run_child_context`
-/// passes `available_width_px: None`), so a shrunk run does not yet wrap and
-/// its cross stays the single-line strut. Pinning that requires the placement
-/// to pass the resolved main size down to the run children — out of scope for
-/// this field-only fix.
+/// wrapping the shrink causes") is pinned by row (i)(c)
+/// `shrunk_run_wraps_at_resolved_width`, not here: this row fixes the
+/// container height (20px), so the shrunk run's wrapped cross is not the
+/// observable. Row (i)(c) drops the fixed height and asserts the run's placed
+/// cross directly.
 fn assert_anonymous_run_shrinks_with_css_initial(name: &str) {
     // One text node is one run beside an inflexible block item (flex-basis
     // 30px, shrink 0): the run absorbs all of the line's negative free space,
@@ -5818,6 +5828,95 @@ fn assert_anonymous_run_shrinks_with_css_initial(name: &str) {
         plans[0].rects[1].position_px[0],
         min_content_px,
         &format!("{name}: run clamps at its min-content (the widest word)"),
+    );
+}
+
+/// Row (i)(c): a shrunk anonymous run's cross reflects the wrapping the shrink
+/// causes (D9(i) "a shrunk run's cross reflects the wrapping the shrink
+/// causes", D6). Placement passes the run's resolved content main size down as
+/// the available width (`anonymous_inline_run_child_context`), so a run shrunk
+/// below its max-content wraps its children at the resolved width and its
+/// placed cross (the joint laid-out height) exceeds the single-line strut.
+///
+/// The run has no node of its own, so its placed cross is observed through its
+/// single text child's placed height: four words wrap into one line each at the
+/// resolved min-content width, so the text's height is 4 × strut (the wrapped
+/// remainder sits on the following lines).
+fn assert_anonymous_run_wraps_at_resolved_width(name: &str) {
+    // One text node is one run beside an inflexible block item (flex-basis
+    // 30px, shrink 0, height 20px): the run absorbs all of the line's negative
+    // free space and clamps at its min-content (the widest word), so its four
+    // words wrap into one line each at the resolved width.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "400px");
+    let text = assert_append_text_to(&mut root, container, "one two three four");
+    let block = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, block, "flex-basis", "30px");
+    assert_style_set(&mut root, block, "flex-shrink", "0");
+    assert_style_set(&mut root, block, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let strut_px = assert_text_intrinsic(&root, text).line_height_px;
+    let min_content_px = assert_text_intrinsic(&root, text).min_content_width_px;
+
+    assert_style_set(
+        &mut root,
+        container,
+        "width",
+        &format!("{min_content_px}px"),
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+
+    // Four words wrap into four lines at the min-content width, so the run's
+    // placed cross is 4 × strut: the text child's placed height (the joint
+    // laid-out height) spans four lines, exceeding the single-line strut.
+    let wrapped_height_px = 4.0 * strut_px;
+    assert!(
+        assert_node_layout(&root, text).height_px > strut_px,
+        "{name}: the shrunk run's cross exceeds the single-line strut",
+    );
+    assert_close(
+        assert_node_layout(&root, text).height_px,
+        wrapped_height_px,
+        &format!("{name}: the shrunk run's cross wraps into four lines"),
+    );
+    assert_close(
+        plans[0].text_runs[0].size_px[1],
+        wrapped_height_px,
+        &format!("{name}: the wrapped text run spans four lines"),
+    );
+}
+
+/// Row (i) control: an UNSHRUNK anonymous run stays single-line. At a container
+/// width above the run's max-content the run resolves to its max-content
+/// (grow 0, no negative free space), so its children do not wrap and the run's
+/// placed cross stays the single-line strut — the flip side of row (i)(c)'s
+/// wrap.
+fn assert_anonymous_run_unshrunk_stays_single_line(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "400px");
+    let text = assert_append_text_to(&mut root, container, "one two three four");
+    let block = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, block, "flex-basis", "30px");
+    assert_style_set(&mut root, block, "flex-shrink", "0");
+    assert_style_set(&mut root, block, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let strut_px = assert_text_intrinsic(&root, text).line_height_px;
+    let plans = take_staged_layer_paint_plans(&root);
+
+    // No shrink: the text stays on one line (height == strut), unlike row
+    // (i)(c)'s wrapped run.
+    assert_close(
+        assert_node_layout(&root, text).height_px,
+        strut_px,
+        &format!("{name}: the unshrunk run's text stays on one strut line"),
+    );
+    assert_close(
+        plans[0].text_runs[0].size_px[1],
+        strut_px,
+        &format!("{name}: the unshrunk run's text run spans one strut line"),
     );
 }
 
