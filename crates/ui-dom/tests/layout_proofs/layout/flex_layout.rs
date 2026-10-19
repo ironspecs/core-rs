@@ -9927,3 +9927,175 @@ fn assert_deep_remove_child_retracts(name: &str) {
         "{name}: item should retract after deep removal ({after_width} < {before_width})",
     );
 }
+
+// CSS Values 4 §percentages + CSS 2.1 §10.1 composed with a flex item's block
+// SUBTREE: children INSIDE the item resolve box-feature percentages against
+// their own containing block (the item's block child, whose content width is
+// the item's content width), never against the flex container. This is a
+// DIFFERENT path from the registered `off_spec_percentage_resolution_against_flex_container`
+// (which covers the item's OWN margin/padding re-resolving against the item).
+// Gecko/Blink resolve descendant percentages against the nearest block
+// container's content box during the descendant reflow that follows flex item
+// final layout.
+#[test]
+fn subtree_box_features_in_flex_items() {
+    let rows: [SubtreeBoxFeatureRow; 4] = [
+        (
+            "a_grandchild_margin_left_percent",
+            assert_subtree_grandchild_margin_left_percent,
+        ),
+        (
+            "b_grandchild_padding_left_percent",
+            assert_subtree_grandchild_padding_left_percent,
+        ),
+        (
+            "c_grandchild_width_percent_of_definite_item",
+            assert_subtree_grandchild_width_percent,
+        ),
+        (
+            "e_item_border_padding_subtree_percent_basis",
+            assert_subtree_percent_against_content_basis,
+        ),
+    ];
+    for (name, run) in rows {
+        run(name);
+    }
+}
+
+/// A named subtree-box-feature probe: the row name plus a runner.
+type SubtreeBoxFeatureRow = (&'static str, fn(&str));
+
+fn assert_subtree_grandchild_margin_left_percent(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let item = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, item, "width", "100px");
+    let block_child = assert_append_div_to(&mut root, item);
+    let grandchild = assert_append_div_to(&mut root, block_child);
+    assert_style_set(&mut root, grandchild, "margin-left", "10%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let grandchild_box = node_box(&root, grandchild).expect("grandchild box");
+    // On-spec: 10% of the block child's content width (= item content 100px).
+    assert_close(
+        grandchild_box.margin.left_px,
+        10.0,
+        &format!("{name}: grandchild margin-left resolves against item content"),
+    );
+}
+
+fn assert_subtree_grandchild_padding_left_percent(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let item = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, item, "width", "100px");
+    let block_child = assert_append_div_to(&mut root, item);
+    let grandchild = assert_append_div_to(&mut root, block_child);
+    assert_style_set(&mut root, grandchild, "padding-left", "10%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let grandchild_box = node_box(&root, grandchild).expect("grandchild box");
+    assert_close(
+        grandchild_box.padding.left_px,
+        10.0,
+        &format!("{name}: grandchild padding-left resolves against item content"),
+    );
+}
+
+fn assert_subtree_grandchild_width_percent(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let item = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, item, "width", "100px");
+    let block_child = assert_append_div_to(&mut root, item);
+    let grandchild = assert_append_div_to(&mut root, block_child);
+    assert_style_set(&mut root, grandchild, "width", "50%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, grandchild).width_px,
+        50.0,
+        &format!("{name}: grandchild 50% of item content width"),
+    );
+}
+
+// CSS 2.1 §8.3.1 (parent/child margin collapsing) composed with CSS Flexbox 1
+// §4 (flex items): a first in-flow block child's top margin inside a flex
+// item's block subtree collapses with the item's top boundary; the collapsed
+// margin then becomes the ITEM's own top margin, which the flex algorithm uses
+// to offset the item in the cross axis. Closest WPT: the CSS21 margin-collapse
+// suite (`css/CSS2/normal-flow/margin-collapse-*.xht`); Gecko
+// (`nsBlockFrame` margin-collapse path feeding the flex item's reflow) and
+// Blink (`ng_margin_collapse.cc` → flex item margin) both propagate the
+// collapsed first-child margin to the flex item.
+//
+// OFF-SPEC: `collapsed_parent_top_margin_px` (`flow.rs:1017`) collapses the
+// child's top margin into the item's INTERNAL content edge (the grandchild
+// sits at the item's content top), but the collapsed value never reaches the
+// item's own `margin` read by the flex placement — the flex cross-axis
+// placement reads the authored `margin-top` (0), so the item is NOT offset.
+// Spec-correct: the item's top margin is 20px, so the item's border box sits
+// 20px below the flex cross-start.
+#[test]
+fn off_spec_flex_item_subtree_first_child_margin_lost_at_boundary() {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "40px");
+    assert_style_set(&mut root, outer, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, item, "width", "100px");
+    let block_child = assert_append_div_to(&mut root, item);
+    let grandchild = assert_append_div_to(&mut root, block_child);
+    assert_style_set(&mut root, grandchild, "margin-top", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let grandchild_box = node_box(&root, grandchild).expect("grandchild box");
+    let block_child_box = node_box(&root, block_child).expect("block child box");
+    let item_box = node_box(&root, item).expect("item box");
+    // On-spec half: the grandchild's margin collapses through the empty block
+    // child, so the grandchild sits at the block child's content top.
+    assert_close(
+        grandchild_box.border_box.top_px,
+        block_child_box.border_box.top_px,
+        "grandchild top stays at block child top (margin collapsed through)",
+    );
+    // Divergent half: the collapsed 20px does NOT offset the item (spec: the
+    // item's top margin is 20px, its border box sits at cross-start + 20).
+    assert_close(
+        item_box.border_box.top_px,
+        0.0,
+        "item border box stays at flex cross-start (collapsed margin lost)",
+    );
+}
+
+fn assert_subtree_percent_against_content_basis(name: &str) {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let item = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, item, "width", "100px");
+    assert_style_set(&mut root, item, "padding-left", "10px");
+    assert_style_set(&mut root, item, "border-left-width", "2px");
+    let block_child = assert_append_div_to(&mut root, item);
+    let grandchild = assert_append_div_to(&mut root, block_child);
+    assert_style_set(&mut root, grandchild, "width", "50%");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The grandchild's 50% resolves against the item's CONTENT width (100 −
+    // padding-left 10 − border-left 2 = 88), not the border-box 100.
+    let grandchild_width = assert_node_layout(&root, grandchild).width_px;
+    let item_box = node_box(&root, item).expect("item box");
+    let content_width = item_box.border_box.width_px
+        - item_box.padding.left_px
+        - item_box.padding.right_px
+        - item_box.border.left_px
+        - item_box.border.right_px;
+    assert_close(
+        grandchild_width,
+        content_width * 0.5,
+        &format!("{name}: grandchild 50% of item content width (after insets)"),
+    );
+}
