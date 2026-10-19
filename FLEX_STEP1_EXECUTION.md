@@ -49,7 +49,8 @@ with the per-file split produced as an artifact.
 
 | File | Status | Owns |
 |---|---|---|
-| `crates/ui-dom/src/domains/layout/measurement_record.rs` | NEW | `MeasurementRecord`, `MeasurementFlags`, `compute_node_measurement` (the shared exit-time computation), `replace_measurement_if_changed` (equality-gated write → bool) |
+| `crates/ui-dom/src/domains/layout/measurement_record.rs` | NEW | `MeasurementRecord`, `compute_node_measurement` (the shared exit-time computation), `replace_measurement_if_changed` (equality-gated write → bool) |
+| `crates/ui-dom/src/domains/layout/measurement_flags.rs` | NEW | `MeasurementFlags` + const builders/queries (structural rule 1: impl-bearing types get their own file — corrected from the original single-file plan, T1 escalation) |
 | `crates/ui-dom/src/domains/layout/flex_order_lane.rs` | NEW | `FlexOrderLane` + entry type; the adaptive insertion discipline |
 | `crates/ui-dom/src/domains/layout/flex_line_lane.rs` | NEW | `FlexLineLane` + `FlexLineEntry` (ranges into the order lane) |
 | `crates/ui-dom/src/domains/layout/flex_resolution_lane.rs` | NEW | `FlexResolutionLane` + entry type (parallel to the order lane) |
