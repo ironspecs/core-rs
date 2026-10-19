@@ -864,6 +864,41 @@ an f32 basis.
   only a citation extension. The complaint list now has two axes —
   spec-surface and composition — both exhausted.
 
+- **2026-10-19 — third-party review of the graceful-gate PR (accepted,
+  two observations incorporated) and the layout-pass architecture
+  doctrine (settled, binding PR 3 and PR 5).** The review verified the
+  blockification scoping, the fallback arithmetic (measured border-box
+  recovered exactly), and the grow-check relocation. Incorporated:
+  (a) blockification is PARTIAL — CSS Display 3 §2.7 blockifies ALL
+  inline-level outer displays for flex items (inline → block,
+  inline-block → block, inline-flex → flex); `display: inline` items
+  still measure via the inline shrink-wrap path. A verification pin is
+  owed (first link of the corpus chain); registration follows the
+  empirical result. (b) the nested graceful over-estimate threads the
+  TOP-LEVEL item's measured size (one unsupported grandchild inflates
+  the whole item's auto-min) — already documented in the registry rows;
+  confirmed as a named PR-3 input (the mapping document's auto-min
+  design replaces the approximation, see below). **The layout-pass
+  doctrine (settled):** (1) a reflow MUST NOT allocate — node-inline
+  fixed-size measurement records (S1: Copy, value-compared), transient
+  solver state in context-owned reused scratch at high-water-mark, no
+  per-element or per-container allocation in steady state (the
+  perf_allocation window is the judge); (2) layout is ONE bottom-up
+  intrinsic fold and ONE top-down resolution/placement fold per update,
+  gated by dirty bits — the recursive auto-min walk is subsumed by the
+  up fold and dies; (3) neighbor access only: nodes read
+  child/sibling/parent records through arena links and the visitor's
+  carried context; no free recursion outside the two folds; (4) the
+  visitor carries downward distribution state (containing-block sizes,
+  accumulated offsets); (5) subtrees whose cross size depends on the
+  resolved main size are flagged in the up fold and re-folded once, in
+  the down fold, at the resolved width (Gecko's
+  `CanMainSizeInfluenceCrossSize` semantics) — the engines' repeated
+  ad-hoc reflows become measure-once plus flagged-refold. Task hygiene
+  for the rest of the arc: implementation/research tasks are narrow,
+  chained, and corpus-building; data structures and algorithms are
+  decided by the architect, never delegated.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
