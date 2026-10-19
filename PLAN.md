@@ -1219,6 +1219,45 @@ an f32 basis.
   judge). Next artifact: the step-1 execution plan (the architect's
   chained task decomposition).
 
+- **2026-10-19 — PR 3 step 1 (the structural step) LANDED; the (d2)
+  baseline recorded.** The chained execution (FLEX_STEP1_EXECUTION.md)
+  completed: T1 `a653abb` (the record + node integration;
+  `measurement_flags.rs` split per structural rule 1), T2 `0c1f640`
+  (block-world record writes at exit, per-kind identities), T3
+  `0f3dedd` (the lanes + RootDom-owned scratch, reset at
+  `RootDom::update`), T4a `bd9afb5` (the flex measurement fold + item
+  view; the record-write gate ruled read-first with the re-pin
+  protocol), T4b `4eefaef` (the lane-based solve: four lanes — item,
+  order, line, resolution; `Vec<MeasuredFlexItem>`/`Vec<FlexLine>`/
+  order-sort `Vec`/`HashMap` re-join all deleted; nested-container lane
+  interleaving solved by the range-start stack + transient truncation;
+  placement DOM-order preserved via the item lane), T5 `beda916` (the
+  66-test migration split: 26 re-home, 40 re-express, 0 deaths — shape
+  pins died at compile time in the cutover), T6 `72002d4` +
+  T6b `db4e790`/`3702b81` (counters, the (d1) scenario pin, two
+  mechanical allocation kills, the amended allocation contract).
+  **The (d2) baseline:** the ratified scenario (240px wrapping row, 12
+  bare text items + 4 nested text-bearing flex items — interpretation
+  ruled bare-text, one text mutation per update) measures
+  `FlexNodesMeasured` = 24 and `FlexNodesPlaced` = 20 per update
+  (placement relayouts EVERY child = the double-layout ≡ 100% refold
+  analog; the ≤50% refold-fraction ceiling binds step 7's mechanism,
+  not step 1). Allocation: the reflow machinery is zero after warmup
+  (lanes at high-water mark, no `Vec`/`String`/`collect` in the flex
+  solve — the two mechanical sources killed in T6b); the text
+  layout-phase window carries 1934 allocations / ~267 KB of inherited
+  cosmic-text shaping (the per-pass re-measure cadence; the
+  change-detection-gated fold at step 4+ is the designed answer);
+  the text-free window is 7/7/2 (clean-update base + the winners
+  fold's proposal-J traffic + a 5-alloc/1-realloc flex-path residual,
+  unattributed beyond "outside flex.rs", best-read paint-damage
+  bookkeeping — owed a scoped attribution task). Perf-pin motion, all
+  with documented causes: node-store Get 139→141 (fold record
+  read-compare) then 141→138 (placement no longer DOM-walks), GetMut
+  27→29 (fold record writes when changed). The 135 flex proofs passed
+  unchanged at every link. Step 1's zero-pin-flip contract is met
+  (only sanctioned perf re-pins moved), and the full gate is green.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
