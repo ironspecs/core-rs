@@ -84,6 +84,14 @@ pub(super) struct LayoutContext {
     pub root_local_top_px: Option<f32>,
     pub available_width_px: Option<f32>,
     pub available_height_px: Option<f32>,
+    /// The width reference a flex item's block-level auto margins resolve
+    /// against, carried by the flex placement site (flex arc step 6). It is the
+    /// ITEM's own resolved content main size, so the block §10.3.3 free-space
+    /// solver sees `item_content − item_border_box ≤ 0` and the deferred §8.1
+    /// main-axis auto-margin admission stays at 0. `None` (every non-flex
+    /// context) falls back to the general width basis in `enter_node`,
+    /// preserving block-world behavior exactly.
+    pub auto_margin_reference_width_px: Option<f32>,
     pub node_content_width_override_px: Option<f32>,
     pub node_content_height_override_px: Option<f32>,
     pub parent_absolute_left_px: f32,
@@ -494,7 +502,15 @@ where
     // non-replaced box in normal flow before local-left placement. The
     // resolved margins write back into both `style.sides.margin` (placement)
     // and `box_model.margin` (the used box model).
-    let cb_width_px = available_width_px_for_node(style, &context);
+    // The dedicated auto-margin reference (set at the flex placement site to
+    // the item's own resolved content main size) keeps a flex item's main-axis
+    // `margin: auto` at 0 — `free = item_content − item_border_box ≤ 0` — the
+    // deferred §8.1 admission preserved exactly (flex arc step 6). A `None`
+    // reference falls back to the general width basis, so block-world and
+    // column-cross-axis behavior is unchanged.
+    let cb_width_px = context
+        .auto_margin_reference_width_px
+        .or_else(|| available_width_px_for_node(style, &context));
     resolve_block_auto_margins(
         &mut style,
         cb_width_px,
@@ -719,6 +735,7 @@ fn next_block_child_context(
             available_width_px: parent
                 .available_width_px
                 .map(|width| (width - flow.inline_left_px).max(0.0)),
+            auto_margin_reference_width_px: None,
             node_content_width_override_px: None,
             node_content_height_override_px: None,
             ..parent
@@ -737,6 +754,7 @@ fn next_block_child_context(
             available_height_px: parent
                 .available_height_px
                 .map(|height| (height - next_block_top_px.max(0.0)).max(0.0)),
+            auto_margin_reference_width_px: None,
             node_content_width_override_px: None,
             node_content_height_override_px: None,
             ..parent
@@ -754,6 +772,7 @@ pub(super) fn next_inline_child_context(
         available_width_px: parent
             .available_width_px
             .map(|width| (width - flow.inline_left_px).max(0.0)),
+        auto_margin_reference_width_px: None,
         node_content_width_override_px: None,
         node_content_height_override_px: None,
         ..parent
@@ -835,6 +854,7 @@ pub(super) fn child_layout_context(
         root_local_top_px,
         available_width_px,
         available_height_px,
+        auto_margin_reference_width_px: None,
         node_content_width_override_px: None,
         node_content_height_override_px: None,
         parent_absolute_left_px: entered.absolute_left_px,
@@ -2062,7 +2082,7 @@ fn vertical_non_content_px(sides: BoxSides) -> f32 {
         + sides.padding.bottom_px
 }
 
-fn clamp_length(value: f32, min_px: Option<f32>, max_px: Option<f32>) -> f32 {
+pub(super) fn clamp_length(value: f32, min_px: Option<f32>, max_px: Option<f32>) -> f32 {
     let mut clamped = value;
     if let Some(min_px) = min_px {
         clamped = clamped.max(min_px);
@@ -2227,6 +2247,7 @@ mod tests {
             root_local_top_px: None,
             available_width_px: Some(100.0),
             available_height_px: Some(80.0),
+            auto_margin_reference_width_px: None,
             node_content_width_override_px: None,
             node_content_height_override_px: None,
             parent_absolute_left_px: 0.0,

@@ -162,6 +162,7 @@ where
         root_local_top_px: root_position.map(|offset| offset.y_px),
         available_width_px: Some(available_width_px),
         available_height_px: Some(available_height_px),
+        auto_margin_reference_width_px: None,
         node_content_width_override_px: None,
         node_content_height_override_px: None,
         parent_absolute_left_px: 0.0,

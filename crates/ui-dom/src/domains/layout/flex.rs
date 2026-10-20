@@ -48,11 +48,12 @@ use super::flex_resolution_lane::{FlexResolutionEntry, ViolationClass};
 use super::flex_wrap_mode::FlexWrapMode;
 use super::flow::{
     EnteredNodeLayout, FlowSize, InlineFlowState, LayoutContext, auto_content_width_for_exit,
-    border_box_height, border_box_width, child_layout_context, content_width_contribution_for_exit,
-    display_is_inline_outer, enter_node, entered_content_size_property_style, exit_node,
-    first_child_key, intrinsic_content_width, layout_flow_size, next_inline_child_context,
-    next_sibling_key, non_negative_auto_content_height, relayout_tree_walker_node,
-    resolved_content_size_px, resolved_node_style, wrapped_text_content_height_px,
+    border_box_height, border_box_width, child_layout_context, clamp_length,
+    content_width_contribution_for_exit, display_is_inline_outer, enter_node,
+    entered_content_size_property_style, exit_node, first_child_key, intrinsic_content_width,
+    layout_flow_size, next_inline_child_context, next_sibling_key,
+    non_negative_auto_content_height, relayout_tree_walker_node, resolved_content_size_px,
+    resolved_node_style, wrapped_text_content_height_px,
 };
 use super::measurement_record::{
     compute_node_measurement, node_measurement_of, write_measurement_if_changed,
@@ -1708,13 +1709,28 @@ fn style_has_definite_cross_axis_size(style: NodeStyle, main_axis: FlexAxis) -> 
 fn entered_container_main_size(entered: &EnteredNodeLayout, main_axis: FlexAxis) -> Option<f32> {
     match main_axis {
         FlexAxis::Horizontal => Some(entered.content_width_px),
-        FlexAxis::Vertical => entered.style.height_px,
+        // The vertical main size reads the raw specified height, so it is
+        // min/max-clamped here exactly as the block machinery does (flex arc
+        // step 6): the same resolved `NodeStyle` min/max, the same clamp.
+        FlexAxis::Vertical => entered.style.height_px.map(|height| {
+            clamp_length(
+                height,
+                entered.style.min_height_px,
+                entered.style.max_height_px,
+            )
+        }),
     }
 }
 
 fn entered_container_cross_size(entered: &EnteredNodeLayout, main_axis: FlexAxis) -> Option<f32> {
     match main_axis {
-        FlexAxis::Horizontal => entered.style.height_px,
+        FlexAxis::Horizontal => entered.style.height_px.map(|height| {
+            clamp_length(
+                height,
+                entered.style.min_height_px,
+                entered.style.max_height_px,
+            )
+        }),
         FlexAxis::Vertical => Some(entered.content_width_px),
     }
 }
@@ -3401,6 +3417,31 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
     usize_to_f32(value)
 }
 
+/// Builds the placement item-context for one resolved flex item (flex arc
+/// step 6). Two basis separations live here:
+///
+/// - `available_width_px` is the GENERAL percentage basis — the CONTAINER's
+///   content-box width (carried from the container's entered record via
+///   `child_context.available_width_px`), matching measure time and CSS Values
+///   §percentages for the whole width family (`width`, `min-width`,
+///   `max-width`, `margin×4`, `padding×4`, `left`, `right`). It is NOT the
+///   item's resolved main size.
+/// - `auto_margin_reference_width_px` is the DEDICATED auto-margin reference —
+///   the ITEM's own resolved content main size — so the block §10.3.3 solver
+///   in `enter_node` sees `free = item_content − item_border_box ≤ 0` and the
+///   deferred §8.1 main-axis `margin: auto` admission stays at 0.
+///
+/// Verification enumeration (D2 obligation): the item context's
+/// `available_width_px` is read by (1) the item's `NodeStyle` width-family
+/// resolution (`resolved_node_style` → `node_style_basis`, `flow.rs`) — the
+/// fix's target; (2) `resolve_node_content_width` for the item's own box —
+/// driven by the `node_content_width_override_px` override, not this field
+/// (`style_with_node_content_size_overrides`, `flow.rs`); (3) the children's
+/// context derivation — from the entered record's `content_width_px`
+/// (`child_available_width_px`, `flow.rs`), not this field; (4) the re-pointed
+/// `resolve_block_auto_margins` — now the dedicated
+/// `auto_margin_reference_width_px`, not this field; (5) no other reader
+/// changes beyond the width family.
 fn active_flex_resolved_child_context(
     child_context: LayoutContext,
     container_style: FlexContainerStyle,
@@ -3430,7 +3471,8 @@ fn active_flex_resolved_child_context(
         FlexAxis::Horizontal => LayoutContext {
             flow_left_px: child_context.flow_left_px + main_start_px,
             flow_top_px: child_context.flow_top_px + cross_start_px,
-            available_width_px: Some(resolved_content_main_size_px),
+            available_width_px: child_context.available_width_px,
+            auto_margin_reference_width_px: Some(resolved_content_main_size_px),
             node_content_width_override_px: Some(resolved_content_main_size_px),
             node_content_height_override_px: stretched_content_cross_size_px,
             ..child_context
@@ -3439,6 +3481,7 @@ fn active_flex_resolved_child_context(
             flow_left_px: child_context.flow_left_px + cross_start_px,
             flow_top_px: child_context.flow_top_px + main_start_px,
             available_height_px: Some(resolved_content_main_size_px),
+            auto_margin_reference_width_px: None,
             node_content_width_override_px: stretched_content_cross_size_px,
             node_content_height_override_px: Some(resolved_content_main_size_px),
             ..child_context
@@ -3854,6 +3897,7 @@ mod tests {
             root_local_top_px: None,
             available_width_px: Some(320.0),
             available_height_px: Some(320.0),
+            auto_margin_reference_width_px: None,
             node_content_width_override_px: None,
             node_content_height_override_px: None,
             parent_absolute_left_px: 0.0,
