@@ -138,20 +138,25 @@ this step (the named consumer §3.1 reserved it for). Per CSS Sizing
 
 ## D4. The hypothetical floor (exact)
 
-At hypothetical computation (the existing `clamp_main_axis_size` call
-site in item-view assembly):
+At OUTER-hypothetical computation (line breaking), in item-view
+assembly:
 
 ```text
-hypothetical = clamp(base, resolved_min, resolved_max).max(automatic_min_main_size_px)
+hypothetical_outer = clamp(base, resolved_min, resolved_max)
+                         .max(automatic_min_main_size_px) + margins
 ```
 
-Equivalent to the engines' clamp with `min' = max(min, auto_min)`
-(including the `auto_min > max` case, where the floor wins exactly as
-`min > max` wins today). `outer_hypothetical = hypothetical + margins`
-(unchanged derivation — the floor then governs line breaking, killing
-the wrap-point half of the hypothetical-floor divergence) and the
-seed's source value is correct when step 5 switches the seed to
-hypothetical.
+The `hypothetical_main_size_px` FIELD stays clamp-only in step 4: the
+field feeds the inflexibility test (`flex_line_item_is_inflexible`),
+and flooring it before step 5's seed switch regresses shrink-clamped
+items (the transcription's observed 650.44 → 80 regression — the
+resolution of flooring only the outer hypothetical is ADOPTED from the
+transcription and credited). The shrink violation clamp reads the D1
+derivation directly (`automatic_min_main_size_px`), so the floor for
+flexible items is already correct without the field move. Step 5 floors
+the field together with the hypothetical seed and freeze-at-hypothetical
+(the engines' full form: Blink clamps the field with auto-min folded
+and freezes inflexible items at it).
 
 ## D5. What dies (the death list, exact)
 
@@ -176,7 +181,8 @@ style) and one `min` — no recursion of any kind.
 
 | Row | New asserted behavior |
 |---|---|
-| `off_spec_hypothetical_main_size_not_floored_by_auto_min` (3 rows) | (a) wrapping container: the line-break point floors at auto-min (items break earlier, per the floored outer hypothetical); (b) inflexible visible item with base < content-min: floored at content-min; (c) content-min > container: overflow from the floored size. Family moves on-spec |
+| `off_spec_hypothetical_main_size_not_floored_by_auto_min` (2 of 3 rows at step 4) | (a) wrapping container: the line-break point floors at auto-min (items break earlier, per the floored outer hypothetical); (c) content-min > container: overflow from the floored size (the shrink violation clamp at the derived auto-min). Family moves on-spec in TWO PARTS — (a)(c) at step 4; (b) at step 5 |
+| ~~(b) inflexible visible item with base < content-min~~ | MISATTRIBUTED (caught by the transcription, 2026-10-19): an inflexible item freezes at base under the current resolution; this is the step-5 §9.7 hypothetical-seed switch, the same scenario as `off_spec_inflexible_items_skip_hypothetical_clamps` (D9's deferral). Flips at step 5 |
 | `off_spec_flex_auto_min_nowrap_text_floors_at_widest_word` | nowrap auto-min == the full run width (mode-aware min-content from the record); control `normal` keeps widest-fragment. Moves on-spec |
 | `off_spec_flex_auto_min_unsupported_shapes_use_measured_size` (gate 1, 5 rows) | nested column/reversed/wrap/rtl containers and the grandchild recursion case compute the true `min(min_content, definite)` (the pinned 200px fallback becomes the computed spec-correct value, e.g. 40px for the row-(a) scenario) — the gate and the measured-size over-estimate die. Moves on-spec |
 | `off_spec_flex_auto_min_growing_children_use_measured_size` (gate 2, 3 rows) | a growing child no longer forces the fallback: the titlebar row's auto-min becomes the factor-blind content minimum (16px icon basis + empty title min-content, not 200px measured). Moves on-spec |
