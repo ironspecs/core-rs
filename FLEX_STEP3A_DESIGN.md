@@ -118,7 +118,15 @@ else if joined:
     widest_segment_px = max(widest_segment_px,
                             trailing_fragment_px + child.leading_fragment,
                             child.min_content)          // interior segments compete too
-    trailing_fragment_px = trailing_fragment_px + child.trailing_fragment
+    // The joined segment TERMINATES at the child's first internal break:
+    // single-fragment children (min == max) continue it through their whole
+    // width; multi-fragment children REPLACE the trailing fragment with
+    // their own trailing segment. (The original pseudocode used the
+    // single-fragment form for both — the bug the third party caught
+    // 2026-10-19: a multi-fragment join over-counts by prev_trailing.)
+    trailing_fragment_px = if child.min_content == child.max_content
+        { trailing_fragment_px + child.trailing_fragment }
+        else { child.trailing_fragment }
 else:
     widest_segment_px = max(widest_segment_px, child.min_content)
     trailing_fragment_px = child.trailing_fragment
@@ -130,8 +138,9 @@ child_count += 1
 ```
 
 (`trailing_fragment` of a single-fragment child IS its whole width, so
-the `trailing + child.trailing` form handles the join-through case with
-no special casing.)
+the single-fragment arm needs no width test beyond `min == max`; a
+multi-fragment child always has `min < max` — total width exceeds the
+widest segment — which makes the test exact.)
 
 Per inline-ELEMENT member (an atom, D1): the crate's inline intrinsic
 gives `min_content`/`max_content` but no edge fragments; the atom rule
