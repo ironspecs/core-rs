@@ -84,13 +84,16 @@ pub(super) struct LayoutContext {
     pub root_local_top_px: Option<f32>,
     pub available_width_px: Option<f32>,
     pub available_height_px: Option<f32>,
-    /// The width reference a flex item's block-level auto margins resolve
-    /// against, carried by the flex placement site (flex arc step 6). It is the
-    /// ITEM's own resolved content main size, so the block §10.3.3 free-space
-    /// solver sees `item_content − item_border_box ≤ 0` and the deferred §8.1
-    /// main-axis auto-margin admission stays at 0. `None` (every non-flex
-    /// context) falls back to the general width basis in `enter_node`,
-    /// preserving block-world behavior exactly.
+    /// DOUBLE-ABSORPTION GUARD (D4, flex arc step 10): set at the flex placement
+    /// site (`active_flex_resolved_child_context`) to the item's own resolved
+    /// content width, it gives the block §10.3.3 solver a reference width ≤ the
+    /// item's resolved content size on the axis the block solver would otherwise
+    /// absorb, so `free = item_content − item_border_box ≤ 0` and
+    /// `resolve_block_auto_margins` resolves flex-item auto margins ONLY to 0 —
+    /// never twice. It keeps the flex and block auto-margin solvers disjoint
+    /// (§8.1 landed in the flex solver, which owns absorption: D2 main, D3
+    /// cross). `None` (every non-flex context) preserves the block solver's
+    /// normal fallback in `enter_node`.
     pub auto_margin_reference_width_px: Option<f32>,
     pub node_content_width_override_px: Option<f32>,
     pub node_content_height_override_px: Option<f32>,
@@ -530,12 +533,12 @@ where
     // non-replaced box in normal flow before local-left placement. The
     // resolved margins write back into both `style.sides.margin` (placement)
     // and `box_model.margin` (the used box model).
-    // The dedicated auto-margin reference (set at the flex placement site to
-    // the item's own resolved content main size) keeps a flex item's main-axis
-    // `margin: auto` at 0 — `free = item_content − item_border_box ≤ 0` — the
-    // deferred §8.1 admission preserved exactly (flex arc step 6). A `None`
-    // reference falls back to the general width basis, so block-world and
-    // column-cross-axis behavior is unchanged.
+    // The DOUBLE-ABSORPTION GUARD (the flex placement site's dedicated
+    // auto-margin reference) keeps a flex item's auto margins at 0 here —
+    // `free = item_content − item_border_box ≤ 0` — so this solver and the flex
+    // solver's §8.1 absorption stay disjoint (never twice). A `None` reference
+    // falls back to the general width basis, preserving block-world behavior
+    // exactly.
     let cb_width_px = context
         .auto_margin_reference_width_px
         .or_else(|| available_width_px_for_node(style, &context));
@@ -2006,20 +2009,17 @@ fn resolve_node_content_width(
 /// margins resolve to zero (their placeholder). When the width is `auto`, auto
 /// margins compute to zero per the same section.
 ///
-/// Flex-item auto margins are a DIFFERENT algorithm (Flexbox §8.1) and are
-/// deferred for the MAIN axis (PR 1 item 7 scope boundary): a flex item's
-/// main-axis `margin: auto` computes to 0 for now. The flex placement context
-/// gives the item's own resolved content size as `available_width_px`, so the
-/// main-axis free space here is `item_content − item_border_box ≤ 0` and this
-/// solver naturally leaves the 0.0 placeholder — see
-/// `flex_item_auto_margin_computes_to_zero_for_now`. The registered cross-axis
-/// exception is a block-level item in a COLUMN container: it reaches this
-/// solver through the flex placed-child context's Vertical branch (which leaves
-/// `available_width_px` as the container's content width), so its cross-axis
-/// auto margins DO absorb free space — accidental but §8.1-aligned, pinned by
-/// `column_flex_block_item_cross_auto_margins_absorb_free_space`. Full §8.1
-/// semantics (auto margins vs align-self, main-axis absorption) await the named
-/// D6 admission.
+/// This solver serves block-layout contexts, where `margin: 0 auto` centering
+/// works per CSS 2.1 §10.3.3. Flex-item auto margins are a DIFFERENT algorithm
+/// (Flexbox §8.1) and resolve in the FLEX solver (landed — D2 main, D3 cross);
+/// this function never absorbs them. The DOUBLE-ABSORPTION GUARD above (the
+/// flex placement site's `auto_margin_reference_width_px`) hands it a reference
+/// width ≤ the item's resolved content size, so inside a flex item
+/// `free = item_content − item_border_box ≤ 0` and it resolves auto margins
+/// only to 0 — the flex solver owns absorption. The former accidental column
+/// cross-axis path (a block-level item in a COLUMN container reaching this
+/// solver through the Vertical branch and absorbing cross free space) was
+/// removed in favor of the flex solver's §8.1 cross distribution.
 fn resolve_block_auto_margins(
     style: &mut NodeStyle,
     cb_width_px: Option<f32>,
