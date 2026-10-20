@@ -226,14 +226,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-435 layout proofs (427 in
+436 layout proofs (428 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 7);
-the off-spec registry (10 divergent proofs in 9 divergent-class rows —
-the count now INCLUDES rows whose class cell carries a qualifier, e.g.
-"step-5 follower"/"documented"/"internal-disposition"; the last few
-censuses used the unqualified grep and were low by 2–3, corrected here —
-5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 9);
+the off-spec registry (6 divergent proofs in 5 divergent-class rows, 5
+deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1510,6 +1507,33 @@ an f32 basis.
   replacements per PR 1 item 2's shape, plus the flex-item boundary
   containment with a verification-first gate), then step 10 (auto
   margins §8.1, the clients' top ask).
+
+- **2026-10-20 — flex arc step 9 LANDED (`0548877`): the flow.rs trio,
+  the arc's hardest landing.** The three-branch collapse rule (PR 1
+  item 2's shape) now governs every boundary: parent-top/bottom
+  boundaries, the empty-intermediary delta, and the empty-block
+  self-collapse. The containment half required the full adjudication
+  chain, all recorded in `FLEX_STEP9_DESIGN.md`: the per-parentage
+  formatting-context flag (`child_layout_context` computes
+  `!parent_is_flex_container` — no propagation); the generalized
+  leading-margin chain (top-down from styles at positioning time —
+  correcting the architect's own "no lookahead for flag-true" error);
+  the flag-true pull-up at the parent's `flow_top` vs the flag-false
+  containment offset inside the item; the consumer-timing rule (the
+  contribution is computed in the parent's child loop, combined at its
+  exit); the empty-intermediary double-apply guard; and the chain
+  walk's cost model (one style read per positioned container, a
+  constant per-level step — four perf pins re-pinned with documented
+  causes: hover/append/stylesheet +1, text_rewrap +3). The deliberate
+  layer-spillover decision stands; its scenario re-scoped to a
+  middle-sibling negative margin (correct first-child collapse pulls
+  the layer up with its child — the old scenario's premise required
+  the clamp), with the first-child pulled-up behavior pinned as its own
+  on-spec expectation. Registry 9-in-8 → 6-in-5: the remaining
+  divergences are the four long-standing rows (font-family/weight/style
+  unconsumed, break-spaces, range pill, line-height normal) plus
+  box-sizing min/max. Next: step 10 — auto margins §8.1, the clients'
+  top ask and the final step of the fix sequence.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
