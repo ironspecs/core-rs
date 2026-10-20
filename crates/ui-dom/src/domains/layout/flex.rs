@@ -281,6 +281,11 @@ struct ActiveFlexChildRelayoutRequest<'a> {
     container_main_size_px: f32,
     line_cross_size_px: f32,
     resolved_item: ResolvedFlexItem,
+    /// The item view, carried into placement so the child context can place the
+    /// item's content origin at the absorbed start margins BEFORE the subtree
+    /// relayout (the auto-margin flags + absorbed px live here, not on the
+    /// resolved-item bundle).
+    view: FlexItemView,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -3534,13 +3539,16 @@ fn physical_absorbed_auto_margins(view: FlexItemView, main_axis: FlexAxis) -> (f
     }
 }
 
-/// Writes a flex item's absorbed auto margins into its retained box model
-/// (CSS Flexbox §8.1): the absorbed START margins shift the border-box origin
-/// (the flex placement context already positioned the item at its margin-box
-/// start, with the block auto-margin solver guarded to 0), and all four
-/// absorbed edges add into the corresponding `box_model.margin` edges for
-/// paint/hit-test. Run items have no node box (and no auto margins), so this is
-/// a no-op for them; a view with no absorbed edges is likewise a no-op.
+/// Writes a flex item's absorbed auto margins into its retained box model's
+/// MARGIN edges (CSS Flexbox §8.1) for paint/hit-test. The border-box origin is
+/// NOT shifted here: the placement context places the item's content origin at
+/// the absorbed start BEFORE the subtree relayout
+/// (`active_flex_resolved_child_context` adds the absorbed start margins to the
+/// flow origin), so the layout's own border-box write lands at the absorbed
+/// origin (the block auto-margin solver resolves a flex item's auto margins to
+/// 0 — the double-absorption guard — so nothing is added on top). Run items
+/// have no node box (and no auto margins), so this is a no-op for them; a view
+/// with no absorbed edges is likewise a no-op.
 fn write_flex_item_absorbed_auto_margins(
     root_dom: &mut RootDom,
     source: FlexItemSource,
@@ -3565,32 +3573,24 @@ fn write_flex_item_absorbed_auto_margins(
         .ok_or(DomError::InvalidNodeKey)?;
     match node {
         DomNode::Document(document) => {
-            document.base.box_model.border_box.left_px += absorbed_left;
-            document.base.box_model.border_box.top_px += absorbed_top;
             document.base.box_model.margin.left_px += absorbed_left;
             document.base.box_model.margin.right_px += absorbed_right;
             document.base.box_model.margin.top_px += absorbed_top;
             document.base.box_model.margin.bottom_px += absorbed_bottom;
         }
         DomNode::DocumentFragment(fragment) => {
-            fragment.base.box_model.border_box.left_px += absorbed_left;
-            fragment.base.box_model.border_box.top_px += absorbed_top;
             fragment.base.box_model.margin.left_px += absorbed_left;
             fragment.base.box_model.margin.right_px += absorbed_right;
             fragment.base.box_model.margin.top_px += absorbed_top;
             fragment.base.box_model.margin.bottom_px += absorbed_bottom;
         }
         DomNode::Element(element) => {
-            element.base.box_model.border_box.left_px += absorbed_left;
-            element.base.box_model.border_box.top_px += absorbed_top;
             element.base.box_model.margin.left_px += absorbed_left;
             element.base.box_model.margin.right_px += absorbed_right;
             element.base.box_model.margin.top_px += absorbed_top;
             element.base.box_model.margin.bottom_px += absorbed_bottom;
         }
         DomNode::Text(text) => {
-            text.base.box_model.border_box.left_px += absorbed_left;
-            text.base.box_model.border_box.top_px += absorbed_top;
             text.base.box_model.margin.left_px += absorbed_left;
             text.base.box_model.margin.right_px += absorbed_right;
             text.base.box_model.margin.top_px += absorbed_top;
@@ -3653,6 +3653,7 @@ where
                 container_main_size_px: request.container_main_size_px,
                 line_cross_size_px: line.resolved_cross_size_px,
                 resolved_item: aligned_resolved_item,
+                view,
             },
             resolver,
         )?;
@@ -3728,6 +3729,7 @@ where
         request.resolved_item,
         child_style,
         request.line_cross_size_px,
+        request.view,
     );
     let child_flow = relayout_tree_walker_node(
         root_dom,
@@ -3994,6 +3996,7 @@ fn active_flex_resolved_child_context(
     resolved_item: ResolvedFlexItem,
     child_style: NodeStyle,
     line_cross_size_px: f32,
+    view: FlexItemView,
 ) -> LayoutContext {
     let cross_axis_alignment =
         resolved_flex_item_cross_axis_alignment(resolved_item, container_style);
@@ -4004,6 +4007,14 @@ fn active_flex_resolved_child_context(
         resolved_main_axis_is_reversed(container_style),
     );
     let cross_start_px = resolved_item.cross_offset_px;
+    // The absorbed auto START margins (physical left/top) shift the item's
+    // content origin BEFORE the subtree relayout, so the item's own border-box
+    // write and its descendants both land at the absorbed origin. The block
+    // auto-margin solver resolves a flex item's auto margins to 0 at relayout
+    // (the double-absorption guard), so the layout's own margin application
+    // adds nothing on top of this shift — no double count.
+    let (absorbed_left, _, absorbed_top, _) =
+        physical_absorbed_auto_margins(view, container_style.main_axis);
     let resolved_content_main_size_px =
         resolved_flex_item_content_main_size_px(resolved_item).max(0.0);
     let resolved_content_cross_size_px = (resolved_item.resolved_cross_size_px
@@ -4018,8 +4029,8 @@ fn active_flex_resolved_child_context(
     );
     match container_style.main_axis {
         FlexAxis::Horizontal => LayoutContext {
-            flow_left_px: child_context.flow_left_px + main_start_px,
-            flow_top_px: child_context.flow_top_px + cross_start_px,
+            flow_left_px: child_context.flow_left_px + main_start_px + absorbed_left,
+            flow_top_px: child_context.flow_top_px + cross_start_px + absorbed_top,
             available_width_px: child_context.available_width_px,
             auto_margin_reference_width_px: Some(resolved_content_main_size_px),
             node_content_width_override_px: Some(resolved_content_main_size_px),
@@ -4027,8 +4038,8 @@ fn active_flex_resolved_child_context(
             ..child_context
         },
         FlexAxis::Vertical => LayoutContext {
-            flow_left_px: child_context.flow_left_px + cross_start_px,
-            flow_top_px: child_context.flow_top_px + main_start_px,
+            flow_left_px: child_context.flow_left_px + cross_start_px + absorbed_left,
+            flow_top_px: child_context.flow_top_px + main_start_px + absorbed_top,
             available_height_px: Some(resolved_content_main_size_px),
             auto_margin_reference_width_px: Some(resolved_content_cross_size_px),
             node_content_width_override_px: stretched_content_cross_size_px,
@@ -7494,6 +7505,7 @@ mod tests {
                 bottom_px: None,
             },
             12.0,
+            measured_row_item(source(test_keys(1)[0]), 0.0, 0.0, 0.0, 0.0),
         );
 
         assert_eq!(

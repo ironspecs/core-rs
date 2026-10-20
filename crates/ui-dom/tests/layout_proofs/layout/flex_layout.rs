@@ -6229,6 +6229,87 @@ fn flex_item_single_main_auto_margin_pushes_to_main_end() {
 }
 
 #[test]
+// CSS Flexbox 1 §8.1 + the placement contract: an absorbed auto START margin
+// shifts the item's CONTENT ORIGIN before its subtree relayout, so both the
+// item's border box and its descendants land at the absorbed position. A 50px
+// item with `margin-left: auto` (absorbing 150px in a 200px row) and a text
+// child therefore places the text child's staged run at left 150, not at the
+// margin-box start (left 0) — the former post-relayout border-box shift moved
+// the item's box but left its subtree behind.
+fn flex_item_absorbed_auto_margin_places_subtree_at_absorbed_origin() {
+    // (a) single auto start margin: item AND text child both land at left 150.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+    assert_append_text_to(&mut root, item, "Hi");
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-left", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("flex item should expose a box model");
+    assert_close(
+        box_.border_box.left_px,
+        150.0,
+        "absorbed auto start margin lands the item border box at left 150",
+    );
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(
+        text_runs.len(),
+        1,
+        "the text child emits exactly one text run",
+    );
+    assert_close(
+        text_runs[0].position_px[0],
+        150.0,
+        "the text child's subtree relayout starts at the absorbed origin (left 150), not 0",
+    );
+}
+
+#[test]
+// Control for the absorbed-start shift: a NON-auto `margin-left: 20px` behaves
+// exactly as before — the item's border box and its text child both sit at left
+// 20 (the margin-box start plus the authored margin), because the absorbed-start
+// shift in `active_flex_resolved_child_context` applies only to auto margins
+// (`physical_absorbed_auto_margins` reports 0.0 for non-auto edges).
+fn flex_item_non_auto_margin_keeps_subtree_at_margin_box_start() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+    assert_append_text_to(&mut root, item, "Hi");
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-left", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("flex item should expose a box model");
+    assert_close(
+        box_.border_box.left_px,
+        20.0,
+        "non-auto left margin keeps the item border box at left 20",
+    );
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let text_runs = &plans[0].text_runs;
+    assert_eq!(
+        text_runs.len(),
+        1,
+        "the text child emits exactly one text run",
+    );
+    assert_close(
+        text_runs[0].position_px[0],
+        20.0,
+        "the text child's subtree stays at the non-auto margin-box start (left 20)",
+    );
+}
+
+#[test]
 // CSS Flexbox 1 §8.1: when auto main margins absorb free space, justify-content
 // has no effect — the auto margins take all of it. A single 10px item with
 // `margin-left: auto` in a 100px row under `justify-content: space-between`
