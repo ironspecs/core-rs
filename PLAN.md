@@ -226,10 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-444 layout proofs (436 in
+447 layout proofs (439 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after the post-sequence
-review fixes); the off-spec registry (6 divergent proofs in 5
+cross-cutting `robustness.rs`; updated 2026-10-20 after the stretch
+suppression fix); the off-spec registry (6 divergent proofs in 5
 divergent-class rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
@@ -1583,6 +1583,24 @@ an f32 basis.
   bugs were uncaught because the original pins used margin-free and
   child-free leaves — the new pins close exactly those shapes. Proofs
   441 → 444.
+
+- **2026-10-20 — the third-party's third post-sequence bug: stretch
+  not suppressed by auto cross margins (architect-verified, fixed
+  `b8bdca9`).** CSS Flexbox §9.4 gates the used cross size under
+  stretch on "neither of its cross-axis margins are auto" — otherwise
+  the used cross is the item's HYPOTHETICAL cross. The step-10
+  absorption suppressed the alignment OFFSET but never the stretch
+  size override: with `margin-top/bottom: auto` and default
+  `align-items: stretch`, a 20px item in a 100px row stretched to 100
+  ON TOP of the correctly absorbed 40/40 margins (margin box 180,
+  overflowing). Fixed per the review's direction:
+  `stretched_flex_item_content_cross_size_px` now gates on
+  `cross_margins_auto` (either side, per §9.4's "neither"), returning
+  no override so the item keeps its hypothetical cross and the auto
+  margins center it. Three discriminating pins (the scenario fails
+  un-gated with "should be 20, got 100"; a no-margin control still
+  stretches; single-side auto also suppresses). A stale call-site
+  comment corrected in the same commit. Proofs 444 → 447.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
