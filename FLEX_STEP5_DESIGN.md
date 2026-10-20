@@ -146,6 +146,7 @@ working (now via the floored field).
 |---|---|
 | `crates/ui-dom/src/domains/layout/flex.rs` | D1 field floor + outer simplification, D2 seed + ctor freeze, D3 loop rewrite, D5 pins |
 | `crates/ui-dom/src/domains/layout/flex_resolution_lane.rs` | `ViolationClass` + entry field + tests |
+| `crates/ui-dom/src/types/layout_scratch.rs` | the resolution-entry struct literal in its test gains `violation: ViolationClass::None` (mechanical; the scratch owns the lanes and its tests construct entries — the original map's omission was a file-map defect caught by the transcription, 2026-10-19) |
 | `crates/ui-dom/tests/layout_proofs/layout/flex_layout.rs` | the D5 families + new pins |
 | `crates/ui-dom/tests/layout_proofs/README.md` | two registry rows move on-spec |
 | `crates/ui-dom/tests/perf_metric.rs` | CONDITIONAL re-pin only, documented cause |
