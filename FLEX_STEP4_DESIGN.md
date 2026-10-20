@@ -53,11 +53,12 @@ indefinite percentages → `None`.
 
 ## D2. `min_content_main` — horizontal main axis
 
-`record.h_min_content_px` — already correct and mode-aware for every
-node kind (text: the 3a-i intrinsic's min-content buffer; img/control:
-intrinsic width; block/inline: the bottom-up fold; nested flex: the
-inner container's resolved min width from its own record). NO new
-computation in this step.
+`record.h_min_content_px` — mode-aware for every node kind EXCEPT
+nested flex containers (text: the 3a-i intrinsic's min-content buffer;
+img/control: intrinsic width; block/inline: the bottom-up fold). NO new
+computation for those kinds in this step. For nested flex containers
+the record today carries the stretched/available width — corrected by
+D2a (added 2026-10-19 under the transcription's STOP).
 
 **The nowrap divergence dies here:** the record's `h_min_content_px`
 for text is the cosmic-computed min-content under the node's
@@ -65,6 +66,46 @@ white-space mode (nowrap/pre → one run = full width; normal → widest
 fragment), proven by 3a-i's tests. The walk's manual
 whitespace-splitting leaf (`text_min_content_width_px`) is the only
 place the divergence existed, and it dies with the walk.
+
+## D2a. The flex container's §9.9 intrinsic main sizes (the STOP's correction)
+
+The transcription STOP proved D2's premise false: a nested flex
+container's record carried the resolved width, not intrinsic sizes, and
+the derivation therefore produced spec-wrong values (320 vs 140.53;
+50 vs 173.398). The correction is a small computation — arithmetic
+over data the inner measurement solve already holds (item views carry
+each item's `record.h_min`/`h_max` and margins) — at the inner
+container's record write in `measure_flex_node_without_layout_write`:
+
+```text
+contributions_min(view) = view.record.h_min_content_px + view.main_margins_sum
+contributions_max(view) = view.record.h_max_content_px + view.main_margins_sum
+gap = container main-axis gap (between items); n = real item count
+
+h_min_content_px =
+    row, nowrap        => Σ contributions_min + gap × (n−1)
+    row, wrap/reverse  => max(contributions_min)          // lines can break anywhere
+    column (any wrap)  => max(contributions_min)          // width = widest item
+h_max_content_px =
+    row (any wrap)     => Σ contributions_max + gap × (n−1) // single-line arrangement is the max
+    column (any wrap)  => max(contributions_max)
+```
+
+Anonymous-run items contribute with zero margins (run h_min = widest
+segment, h_max = sum — already correct per 3a). Empty container: both 0.
+
+**Consequence (named, with its divergence):** the item view's
+auto-basis base for nested flex items reads `record.h_max_content_px`,
+which after this computation is the §9.9 MAX-CONTENT main size — per
+§9.2 the flex base size for auto basis without a definite main size.
+Today's value is the available/stretched width (block-modeled): an
+UNREGISTERED divergence the nested-flex proofs pin as correct. The
+corrected base moves those proofs (fractional-grow, shrink,
+auto-sized-column families): each move is spec-correct per §9.2 and is
+updated with a documented cause and a report entry (the D6 audit rule
+applies); the move is recorded in the decision log (no registry row —
+the divergence is fixed in the same change that discovered it, so
+there is no current-divergent state to pin).
 
 ## D3. `min_content_main` — vertical main axis (column containers)
 
