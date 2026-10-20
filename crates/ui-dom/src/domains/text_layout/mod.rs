@@ -108,6 +108,13 @@ pub(crate) struct TextIntrinsicMetrics {
     /// size). Equals `line_height_px` for today's single-style text; kept as a
     /// forward-compatible shape for heterogeneous-font runs.
     pub(crate) fragment_line_height_max_px: f32,
+    /// Min-content block size (CSS Sizing §5.1, flex arc step 4): the
+    /// min-content buffer's run count × line height. The min-content buffer
+    /// breaks at every soft-wrap opportunity, so each layout run is exactly one
+    /// unbreakable fragment; the run count IS the fragment count (mode-aware:
+    /// `nowrap`/`pre` collapse to one full-width run, `normal`/`pre-wrap`/
+    /// `pre-line` split at every break opportunity).
+    pub(crate) v_min_content_px: f32,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

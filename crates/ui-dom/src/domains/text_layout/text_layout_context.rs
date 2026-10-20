@@ -80,6 +80,9 @@ impl TextLayoutContext {
                 starts_with_wrap_opportunity,
                 ends_with_wrap_opportunity,
                 fragment_line_height_max_px: line_height_px,
+                // Zero-size text produces no fragments (no buffer is built), so
+                // the min-content block size is zero.
+                v_min_content_px: 0.0,
             };
         }
         let max_content_width_px =
@@ -102,12 +105,14 @@ impl TextLayoutContext {
         let mut min_content_width_px = 0.0f32;
         let mut leading_fragment_width_px = 0.0f32;
         let mut trailing_fragment_width_px = 0.0f32;
+        let mut min_content_fragment_count = 0usize;
         for (run_index, run) in min_content_buffer.layout_runs().enumerate() {
             min_content_width_px = min_content_width_px.max(run.line_w);
             if run_index == 0 {
                 leading_fragment_width_px = run.line_w;
             }
             trailing_fragment_width_px = run.line_w;
+            min_content_fragment_count += 1;
         }
         TextIntrinsicMetrics {
             min_content_width_px,
@@ -120,6 +125,11 @@ impl TextLayoutContext {
             // Single-style text today: every fragment shares one line height, so
             // the fragment maximum is the node's own line height.
             fragment_line_height_max_px: line_height_px,
+            // Min-content block size (flex arc step 4): the run count IS the
+            // fragment count because the min-content buffer breaks at every
+            // soft-wrap opportunity. Reuses the same buffer — no extra cosmic
+            // measurement.
+            v_min_content_px: usize_to_f32(min_content_fragment_count) * line_height_px,
         }
     }
 
@@ -725,6 +735,77 @@ mod tests {
         assert_eq!(
             intrinsic.min_content_width_px, bbb_width,
             "min-content is the widest fragment (the middle word)"
+        );
+    }
+
+    #[test]
+    fn multi_word_v_min_is_fragment_count_times_line_height() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text("aa bbb cc", DEFAULT_TEXT_FONT_SIZE_PX);
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        // Three fragments ("aa", "bbb", "cc") stack at min-content block size:
+        // each is one min-content-buffer layout run, so v_min == 3 × line height.
+        assert_eq!(
+            intrinsic.v_min_content_px,
+            intrinsic.line_height_px * 3.0,
+            "three fragments should give three lines of block size",
+        );
+    }
+
+    #[test]
+    fn single_word_v_min_is_one_line_height() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text("hello", DEFAULT_TEXT_FONT_SIZE_PX);
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        assert_eq!(
+            intrinsic.v_min_content_px, intrinsic.line_height_px,
+            "a single fragment gives exactly one line of block size",
+        );
+    }
+
+    #[test]
+    fn nowrap_v_min_is_one_full_run_line_height() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text_with_white_space(
+            "aa bbb cc",
+            DEFAULT_TEXT_FONT_SIZE_PX,
+            DomWhiteSpace::Nowrap,
+        );
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        // nowrap suppresses every wrap opportunity: one full-width run, so the
+        // min-content block size is exactly one line, not the fragment count.
+        assert_eq!(
+            intrinsic.min_content_width_px, intrinsic.max_content_width_px,
+            "nowrap min-content equals max-content",
+        );
+        assert_eq!(
+            intrinsic.v_min_content_px, intrinsic.line_height_px,
+            "nowrap collapses to one run, so one line of block size",
+        );
+    }
+
+    #[test]
+    fn pre_line_breaks_at_newlines_for_v_min() {
+        let mut context = default_context();
+        let request = TextLayoutRequest::for_text_with_white_space(
+            "one\ntwo",
+            DEFAULT_TEXT_FONT_SIZE_PX,
+            DomWhiteSpace::PreLine,
+        );
+
+        let intrinsic = context.measure_intrinsic(&request);
+
+        // pre-line preserves the forced segment break: two lines at min-content.
+        assert_eq!(
+            intrinsic.v_min_content_px,
+            intrinsic.line_height_px * 2.0,
+            "pre-line preserves the segment break as two lines",
         );
     }
 

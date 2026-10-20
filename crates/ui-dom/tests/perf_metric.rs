@@ -517,7 +517,13 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // container's first-child lookup). Documented cause: excluded children are
     // absent from the item lane (they form no item view), so placement must
     // read them from the DOM child list; FLEX_STEP3B_DESIGN.md D4.
-    assert_node_counts(&root, 145, 29, 0, "flex relayout");
+    // flex arc step 4 auto-min by fold (−2 Get from 145/29/0): the recursive
+    // auto-min walk died (D5); the derivation now reads the already-written
+    // child record from the item view (no extra `node_for_key` re-fetch) and
+    // the §9.9 intrinsic fold reads the item lane (D2a), neither of which walks
+    // the DOM child list. Documented cause: auto-min by fold
+    // (FLEX_STEP4_DESIGN.md D0/D2a).
+    assert_node_counts(&root, 143, 29, 0, "flex relayout");
 }
 
 /// Builds the (d1) scenario (`FLEX_DEBATE_BRIEF.md` (d1)(v), ratified): a

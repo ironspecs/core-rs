@@ -27,14 +27,21 @@
 //!   and are a pass OUTPUT: they never mark style/layout/paint dirty
 
 use crate::domains::layout::measurement_flags::MeasurementFlags;
-use crate::types::dom_node::{DomNode, DomNodeSlotKey};
+use crate::domains::style::computed::FlexDirectionKw;
+use crate::types::dom_node::{DomIntrinsic, DomNode, DomNodeSlotKey};
 use crate::types::root_dom_nodes::RootDomNodes;
-use crate::types::{DomError, DomWhiteSpace};
+use crate::types::{DomError, DomWhiteSpace, RootDom};
 
+use super::flex_anonymous_run::node_is_excluded_flex_child;
 use super::flow::{EnteredNodeLayout, ResolvedContentSizePx};
+use super::style::LayoutDisplay;
 
 #[cfg(test)]
+use crate::domains::style::computed::DisplayKw;
+#[cfg(test)]
 use crate::types::RootDomNodesMetricName;
+#[cfg(test)]
+use crate::types::{DomTag, RootDomContext};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MeasurementRecord {
@@ -126,8 +133,11 @@ pub(super) fn write_measurement_if_changed(
 /// node's own horizontal border+padding — the value `layout_flow_size` adds
 /// edges to). `content_size` is the resolved content size the box model
 /// derives from; its `viewport_height_px` is the content height at this pass's
-/// laid-out width. The `v_*` slots stay `None`: their named consumer (the
-/// step-4 auto-min walk) has not landed, so nothing is computed.
+/// laid-out width. The `v_min` slot stays `None` here: the flex measure
+/// epilogue computes it after this call via `compute_v_min_content_px` (its
+/// named consumer is the flex auto-min derivation), while the block world
+/// leaves it `None` (nothing reads it). `v_max` stays `None` everywhere (no
+/// consumer; D6 discipline).
 ///
 /// Flags are the two fixed measurement class bits read from the entered node:
 /// `PRESERVE_MODE` from the node's effective white-space class (preserve =
@@ -160,6 +170,95 @@ pub(super) fn compute_node_measurement(
     }
 }
 
+/// Computes the min-content BLOCK size (`v_min_content_px`) for one node at its
+/// exit (flex arc step 4, D3). Leaf kinds read their retained intrinsic (text's
+/// run-count × line-height; img/control's fixed block size); block, inline, and
+/// nested flex containers fold their in-flow children's records bottom-up (the
+/// up fold wrote the children first): block/inline/column-flex SUM the stacked
+/// children, row-flex takes the MAX (the tallest item). `v_max_content_px`
+/// stays `None` (no consumer; D6 discipline).
+///
+/// This is the flex measure fold's vertical half: the record's `v_min` is only
+/// consumed by the flex auto-min derivation (D1), so it is computed here and
+/// written by the flex measure epilogue (`measure_exited_node_flow_size` in
+/// `flex.rs`), never by the block world's `exit_node` (whose records carry
+/// `None` and are never read for `v_min`).
+pub(super) fn compute_v_min_content_px(
+    root_dom: &RootDom,
+    key: DomNodeSlotKey,
+    entered: &EnteredNodeLayout,
+) -> f32 {
+    let Some(node) = root_dom.nodes.get(key) else {
+        return 0.0;
+    };
+    match node.intrinsic() {
+        DomIntrinsic::Text(text) => text.v_min_content_px,
+        DomIntrinsic::Img(image) => image.height_px,
+        DomIntrinsic::ElementDefaultPreferredSize(intrinsic) => intrinsic.height_px,
+        DomIntrinsic::None | DomIntrinsic::NotMeasured => {
+            if matches!(
+                entered.style.display,
+                LayoutDisplay::Flex | LayoutDisplay::InlineFlex
+            ) {
+                flex_container_v_min_content_px(root_dom, node)
+            } else {
+                child_v_min_content_sum_px(root_dom, node)
+            }
+        }
+    }
+}
+
+/// A nested flex container's min-content block size (D3): a row's is the
+/// tallest item's (items share one line), a column's is the sum (items stack).
+/// Read from the in-flow child records at the inner container's exit.
+fn flex_container_v_min_content_px(root_dom: &RootDom, node: &DomNode) -> f32 {
+    let is_row = matches!(
+        node.computed_flex().direction,
+        FlexDirectionKw::Row | FlexDirectionKw::RowReverse
+    );
+    let mut result: f32 = 0.0;
+    let mut child_key = node.first_child_key_for_store();
+    while let Some(key) = child_key {
+        let Some(child) = root_dom.nodes.get(key) else {
+            break;
+        };
+        let next = child.next_sibling_key_for_store();
+        if node_is_excluded_flex_child(child) {
+            child_key = next;
+            continue;
+        }
+        let child_v_min = node_measurement_of(child).v_min_content_px.unwrap_or(0.0);
+        if is_row {
+            result = result.max(child_v_min);
+        } else {
+            result += child_v_min;
+        }
+        child_key = next;
+    }
+    result
+}
+
+/// A block/inline container's min-content block size (D3): the sum of its
+/// in-flow children's `v_min` (block stacking; at min-content width nothing
+/// shares an inline line). Abs-pos/`display: none` children contribute nothing.
+fn child_v_min_content_sum_px(root_dom: &RootDom, node: &DomNode) -> f32 {
+    let mut sum = 0.0;
+    let mut child_key = node.first_child_key_for_store();
+    while let Some(key) = child_key {
+        let Some(child) = root_dom.nodes.get(key) else {
+            break;
+        };
+        let next = child.next_sibling_key_for_store();
+        if node_is_excluded_flex_child(child) {
+            child_key = next;
+            continue;
+        }
+        sum += node_measurement_of(child).v_min_content_px.unwrap_or(0.0);
+        child_key = next;
+    }
+    sum
+}
+
 /// The preserve white-space class (`pre`/`pre-wrap`/`break-spaces`) carries
 /// literal space runs; every other class (`normal`, `nowrap`, `pre-line`)
 /// collapses them. This mirrors the crate's `text_layout_input_for_white_space`
@@ -174,6 +273,90 @@ fn white_space_is_preserve_mode(white_space: DomWhiteSpace) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a block container with `child_count` div children and writes each
+    /// child's record `v_min` to the given value, returning the container key.
+    fn block_container_with_child_v_mins(root: &mut RootDom, child_v_min: f32) -> DomNodeSlotKey {
+        let document = root.document_node().0;
+        let container = root
+            .create_element(DomTag::Div)
+            .expect("container should insert");
+        root.append_child(document, container)
+            .expect("container should append");
+        for _ in 0..2 {
+            let child = root
+                .create_element(DomTag::Div)
+                .expect("child should insert");
+            root.append_child(container, child)
+                .expect("child should append");
+            node_measurement_mut(root.nodes.get_mut(child).expect("child node should exist"))
+                .v_min_content_px = Some(child_v_min);
+        }
+        container
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // the fold is exact integer arithmetic (10 + 10)
+    fn child_v_min_sum_adds_in_flow_child_block_sizes() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let container = block_container_with_child_v_mins(&mut root, 10.0);
+
+        let node = root.nodes.get(container).expect("container node");
+        let sum = child_v_min_content_sum_px(&root, node);
+
+        assert_eq!(sum, 20.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // the fold is exact arithmetic (12, excluded 99)
+    fn child_v_min_sum_skips_excluded_children() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.document_node().0;
+        let container = root
+            .create_element(DomTag::Div)
+            .expect("container should insert");
+        root.append_child(document, container)
+            .expect("container should append");
+        let in_flow = root
+            .create_element(DomTag::Div)
+            .expect("in-flow child should insert");
+        root.append_child(container, in_flow)
+            .expect("in-flow child should append");
+        node_measurement_mut(
+            root.nodes
+                .get_mut(in_flow)
+                .expect("in-flow child node should exist"),
+        )
+        .v_min_content_px = Some(12.0);
+        let hidden = root
+            .create_element(DomTag::Div)
+            .expect("hidden child should insert");
+        root.append_child(container, hidden)
+            .expect("hidden child should append");
+        // Set the computed display directly (no style pass in this unit test),
+        // mirroring the flex classification predicate's read surface.
+        match root
+            .nodes
+            .get_mut(hidden)
+            .expect("hidden child node should exist")
+        {
+            DomNode::Element(element) => {
+                element.base.presentation.computed.box_.display = DisplayKw::None;
+            }
+            _ => panic!("hidden child should be an element"),
+        }
+        node_measurement_mut(
+            root.nodes
+                .get_mut(hidden)
+                .expect("hidden child node should exist"),
+        )
+        .v_min_content_px = Some(99.0);
+
+        let node = root.nodes.get(container).expect("container node");
+        let sum = child_v_min_content_sum_px(&root, node);
+
+        assert_eq!(sum, 12.0);
+    }
 
     #[test]
     fn default_record_has_none_v_slots_and_zero_flags() {

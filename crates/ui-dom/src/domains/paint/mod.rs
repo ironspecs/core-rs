@@ -644,6 +644,9 @@ fn text_intrinsic_from_metrics(font_size_px: f32, metrics: &TextIntrinsicMetrics
         starts_with_wrap_opportunity: metrics.starts_with_wrap_opportunity,
         ends_with_wrap_opportunity: metrics.ends_with_wrap_opportunity,
         fragment_line_height_max_px: metrics.fragment_line_height_max_px,
+        // Min-content block size (flex arc step 4): the min-content buffer's
+        // run count × line height, carried from the fragment-level intrinsic.
+        v_min_content_px: metrics.v_min_content_px,
     }
 }
 

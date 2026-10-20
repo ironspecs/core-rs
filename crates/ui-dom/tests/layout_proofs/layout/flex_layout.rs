@@ -33,20 +33,14 @@
 //! - Blink line data model:
 //!   <https://chromium.googlesource.com/chromium/src/+/c50f75313342e085919cf7525192f45f2ab649d1/third_party/blink/renderer/core/layout/flex/flex_line.h>
 //!
-//! These proofs lock the admitted active-solver behavior in place; the
-//! subset the active solver does not yet admit degrades gracefully at two
-//! gates in `src/domains/layout/flex.rs`: the
-//! `flex_container_content_based_auto_min_is_supported` predicate
-//! (`flex.rs`) admits content-based auto-min only for horizontal,
-//! non-reversed, no-wrap containers, and the grow-factor boundary in
-//! `horizontal_flex_container_content_based_auto_min_content_width_px`
-//! degrades a growing child to the measured size. Any visible-overflow
-//! auto-min measurement outside those gates falls back to the item's measured
-//! main size instead of panicking (see
-//! `off_spec_flex_auto_min_unsupported_shapes_use_measured_size` and
-//! `off_spec_flex_auto_min_growing_children_use_measured_size`). There is
-//! no placeholder solver fallback — the measured-size fallback is a registered
-//! divergence deferred to the engine-mapped admission (PR 3).
+//! These proofs lock the admitted active-solver behavior in place. The flex
+//! arc step 4 auto-min derivation is shape-general and grow-blind: every
+//! visible-overflow item's automatic minimum is `min(min_content_main,
+//! definite)` read from its record (D1/D2a), with no shape gates and no
+//! measured-size fallback. The former two graceful gates
+//! (`flex_container_content_based_auto_min_is_supported` and the grow-factor
+//! boundary in `horizontal_flex_container_content_based_auto_min_content_width_px`)
+//! died with the recursive auto-min walk.
 
 use ui_dom::{
     DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, TextAlign,
@@ -3225,12 +3219,13 @@ fn visible_overflow_flex_item_uses_content_based_automatic_min_main_size_before_
 }
 
 #[test]
-// CSS Flexbox automatic minimum size and the Gecko/Blink block-axis content
-// size suggestion path: in a column flex container, a visible-overflow item
-// keeps its measured intrinsic block size as the automatic minimum main size.
-// A 30px-tall item with flex-basis: 30px inside a 20px-tall column therefore
-// stays 30px tall instead of shrinking to the container's free space.
-fn visible_overflow_column_flex_item_uses_intrinsic_block_size_before_shrink() {
+// CSS Flexbox automatic minimum size in the block axis (flex arc step 4, D3):
+// a column flex item's automatic minimum main size is its v_min — the
+// min-content block size folded from its children. A 30px-tall SPECIFIED-height
+// nested block has an empty content sum (its specified height is a definite used
+// size, not an intrinsic, per D3), so the item's v_min is 0 and it shrinks to
+// the 20px container rather than its former measured height.
+fn visible_overflow_column_flex_item_uses_v_min_before_shrink() {
     let (mut world, mut root, container) = flex_row_container_setup();
     let item = assert_append_div_to(&mut root, container);
     let nested = assert_append_div_to(&mut root, item);
@@ -3255,9 +3250,12 @@ fn visible_overflow_column_flex_item_uses_intrinsic_block_size_before_shrink() {
         20.0,
         "column visible-overflow min-size container height",
     );
+    // D3: the item's v_min is its content sum — the nested 30px div is a
+    // specified-height block (v_min 0), so the item shrinks to the 20px
+    // container, not its former 30px measured height.
     assert_close(
         assert_node_layout(&root, item).height_px,
-        30.0,
+        20.0,
         "column visible-overflow flex item height",
     );
     assert_close(
@@ -3273,7 +3271,7 @@ fn visible_overflow_column_flex_item_uses_intrinsic_block_size_before_shrink() {
         0.0,
         0.0,
         20.0,
-        30.0,
+        20.0,
         "column visible-overflow flex item",
     );
 }
@@ -7558,7 +7556,7 @@ fn assert_min_height_item_sets_wrapped_line_cross_size(name: &str) {
 }
 
 // CSS Flexbox 1 §9.2 (line length determination) and §4.5 (automatic minimum
-// size): a flex item's hypothetical main size is its flex base clamped by
+// size): a flex item's OUTER hypothetical main size is its flex base clamped by
 // min/max AND floored by the used automatic minimum size (content-based for
 // visible overflow), and line breaking consumes that floored size. Gecko
 // (`FlexItem::GetFlexBaseSize`/`FlexLine` construction in
@@ -7568,30 +7566,23 @@ fn assert_min_height_item_sets_wrapped_line_cross_size(name: &str) {
 // automatic-minimum floor); no single WPT pairs the line-break interaction,
 // cited from §9.2 directly.
 //
-// OFF-SPEC: `clamp_main_axis_size` (`flex.rs:1473`) clamps the flex base by
-// min/max only — `hypothetical_main_size_px` (`flex.rs:487`) never floors it
-// by `automatic_min_main_size_px`, so a visible item with a small explicit
-// base keeps its base as the hypothetical: line breaking uses the unfloored
-// base (row a), and an inflexible visible item stays at its base rather than
-// its content-based minimum (row b — the same root cause as the C4 family's
-// inflexible-item row, noted here as the §9.2-side interaction). Spec-correct
-// for the pinned "UnbreakableFlexLabel" text: ~140.5px (the content-based
-// automatic minimum). Row (c) shows the overflow shape when that minimum
-// exceeds the container.
+// ON-SPEC in TWO PARTS (was `off_spec_hypothetical_main_size_not_floored_by_auto_min`):
+// rows (a)(c) land here at step 4 — the outer hypothetical is floored, so a
+// wrapping container breaks earlier (a) and a content-min exceeding the
+// container overflows from the floored size (c). Row (b) (the INFLEXIBLE item
+// staying at base) is the step-5 §9.7 hypothetical-seed switch, the same
+// scenario as `off_spec_inflexible_items_skip_hypothetical_clamps`'s
+// `assert_auto_min_not_applied_to_inflexible_item` — it does NOT move here.
 #[test]
-fn off_spec_hypothetical_main_size_not_floored_by_auto_min() {
-    let rows: [AutoMinFloorRow; 3] = [
+fn flex_hypothetical_main_size_floored_by_auto_min() {
+    let rows: [AutoMinFloorRow; 2] = [
         (
-            "wrapping_line_break_uses_unfloored_base",
-            assert_wrapping_line_break_uses_unfloored_base,
+            "wrapping_line_break_floors_at_auto_min",
+            assert_wrapping_line_break_floors_at_auto_min,
         ),
         (
-            "inflexible_visible_item_stays_at_base",
-            assert_inflexible_visible_item_stays_at_base,
-        ),
-        (
-            "content_min_exceeding_container_overflows_from_base",
-            assert_content_min_exceeding_container_overflows_from_base,
+            "content_min_exceeding_container_overflows_from_floor",
+            assert_content_min_exceeding_container_overflows_from_floor,
         ),
     ];
     for (name, run) in rows {
@@ -7602,7 +7593,7 @@ fn off_spec_hypothetical_main_size_not_floored_by_auto_min() {
 /// A named automatic-minimum-floor probe: row name plus a runner.
 type AutoMinFloorRow = (&'static str, fn(&str));
 
-fn assert_wrapping_line_break_uses_unfloored_base(name: &str) {
+fn assert_wrapping_line_break_floors_at_auto_min(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "100px");
     assert_style_set(&mut root, container, "flex-wrap", "wrap");
@@ -7611,56 +7602,36 @@ fn assert_wrapping_line_break_uses_unfloored_base(name: &str) {
     assert_style_set(&mut root, first, "flex-basis", "10px");
     assert_style_set(&mut root, first, "overflow", "visible");
     assert_style_set(&mut root, first, "height", "20px");
-    let _text = assert_append_text_to(&mut root, first, "UnbreakableFlexLabel");
+    let first_text = assert_append_text_to(&mut root, first, "UnbreakableFlexLabel");
     let second = assert_append_div_to(&mut root, container);
     assert_style_set(&mut root, second, "flex-basis", "10px");
     assert_style_set(&mut root, second, "height", "20px");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let content_min_px = assert_text_intrinsic(&root, first_text).max_content_width_px;
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // Divergent: the first item's hypothetical is its 10px base (not its
-    // ~140.5px automatic minimum), so both items share one line; spec floors
-    // the first to ~140.5px, which exceeds the 100px container and breaks.
-    assert_rect_op_geometry(
-        &rects[1],
-        0.0,
-        0.0,
-        10.0,
-        20.0,
+    // On-spec: the first item's outer hypothetical floors at its ~140.5px
+    // automatic minimum, which exceeds the 100px container, so it breaks onto
+    // its own line; the second item wraps onto line 2 (the container's default
+    // `align-content: stretch` stretches both lines to 30px, so line 2 starts
+    // at y=30).
+    assert_close(
+        rects[1].size_px[0],
+        content_min_px,
         &format!("{name}: first item"),
     );
     assert_rect_op_geometry(
         &rects[2],
-        10.0,
         0.0,
+        30.0,
         10.0,
         20.0,
-        &format!("{name}: second item"),
+        &format!("{name}: second item wraps to line 2"),
     );
 }
 
-fn assert_inflexible_visible_item_stays_at_base(name: &str) {
-    let (mut world, mut root, container) = flex_row_container_setup();
-    assert_set_flex_row_container_width(&mut root, container, "200px");
-    assert_style_set(&mut root, container, "height", "20px");
-    let item = assert_append_div_to(&mut root, container);
-    assert_style_set(&mut root, item, "flex-basis", "10px");
-    assert_style_set(&mut root, item, "flex-shrink", "0");
-    assert_style_set(&mut root, item, "flex-grow", "0");
-    assert_style_set(&mut root, item, "overflow", "visible");
-    assert_style_set(&mut root, item, "height", "20px");
-    let _text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    let plans = take_staged_layer_paint_plans(&root);
-    let rects = &plans[0].rects;
-    assert_eq!(rects.len(), 2, "{name}: container + item");
-    // Divergent (C4 interaction): the inflexible visible item stays at its
-    // 10px base instead of its ~140.5px automatic minimum.
-    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, &format!("{name}: item"));
-}
-
-fn assert_content_min_exceeding_container_overflows_from_base(name: &str) {
+fn assert_content_min_exceeding_container_overflows_from_floor(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "100px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -7668,45 +7639,42 @@ fn assert_content_min_exceeding_container_overflows_from_base(name: &str) {
     assert_style_set(&mut root, item, "flex-basis", "10px");
     assert_style_set(&mut root, item, "overflow", "visible");
     assert_style_set(&mut root, item, "height", "20px");
-    let _text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
+    let item_text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let content_min_px = assert_text_intrinsic(&root, item_text).max_content_width_px;
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 2, "{name}: container + item");
-    // Divergent: with content-min (~140.5px) exceeding the 100px container,
-    // the item stays at its 10px base and its text overflows, instead of the
-    // item itself flooring to ~140.5px and overflowing the container.
-    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, &format!("{name}: item"));
+    // On-spec: the item floors at its ~140.5px content-based minimum, which
+    // exceeds the 100px container and overflows from the floored size.
+    assert_close(
+        rects[1].size_px[0],
+        content_min_px,
+        &format!("{name}: item overflows from its floored size"),
+    );
 }
 
 // CSS Flexbox 1 §4.5 automatic minimum size: a visible-overflow flex item
 // that is itself a flex container uses its content-based minimum size before
-// shrink. The active solver admits that computation only for the horizontal,
-// non-reversed, no-wrap subset; the formerly fail-fast gate in
-// `horizontal_flex_container_content_based_auto_min_content_width_px`
-// (`flex.rs`) now degrades gracefully to the item's measured main size. No
-// single WPT oracle pairs the unsupported shapes (column/reverse/wrap items
-// whose auto-min is a measured-size fallback), so this is cited from §4.5
-// directly (the "no WPT" rule, README); closest family is
-// `css/css-flexbox/min-width-auto-*`. Gecko computes the automatic minimum in
+// shrink. The flex arc step 4 derivation reads the item's record intrinsic
+// (`h_min_content_px`, the §9.9 main-size fold) for every flex-flow shape —
+// no shape gates remain. Gecko computes the automatic minimum in
 // `nsFlexContainerFrame.cpp` (`GenerateFlexItemForChild` → content-based
 // min-size); Blink in `flex_layout_algorithm.cc` (`ConstructAndAppendFlexItems`
-// → `FlexItem::UpdateAutoMinSize`).
+// → `FlexItem::UpdateAutoMinSize`). Closest WPT family:
+// `css/css-flexbox/min-width-auto-*`.
 //
-// OFF-SPEC: for a flex item whose own flex container shape is vertical,
-// reversed (incl. rtl rows), or wrapping, the content-based auto-min path
-// returns the item's MEASURED main size instead of the true §4.5 content-based
-// minimum. The measured size over-estimates the true value (never collapses
-// content). Spec-correct for rows (a)–(d): the item keeps its true
-// content-based minimum (the column item's widest-child 40px), so the sibling
-// sits at 40px; the solver instead pins the item at its measured size and the
-// sibling after it. Row (e) pins the grandchild recursion shape.
+// ON-SPEC (was `off_spec_flex_auto_min_unsupported_shapes_use_measured_size`):
+// every flex-flow shape now computes the true §4.5 `min(min_content, definite)`
+// — the column/reverse/wrap/rtl item's widest-child 40px, the grandchild
+// recursion's 30px leaf. The measured-size over-estimate died with the
+// graceful-degradation gate.
 #[test]
-fn off_spec_flex_auto_min_unsupported_shapes_use_measured_size() {
-    let rows: [UnsupportedShapeRow; 5] = [
+fn flex_auto_min_container_shapes_use_content_based_minimum() {
+    let rows: [ContainerShapeAutoMinRow; 5] = [
         (
-            "column_item_keeps_measured_size",
-            assert_column_item_keeps_measured_size,
+            "column_item_uses_content_min",
+            assert_column_item_uses_content_min,
         ),
         ("row_reverse_item_variant", assert_row_reverse_item_variant),
         ("wrap_item_variant", assert_wrap_item_variant),
@@ -7718,14 +7686,14 @@ fn off_spec_flex_auto_min_unsupported_shapes_use_measured_size() {
     }
 }
 
-/// A named unsupported-flex-shape probe: row name plus a runner.
-type UnsupportedShapeRow = (&'static str, fn(&str));
+/// A named flex-flow-shape auto-min probe: row name plus a runner.
+type ContainerShapeAutoMinRow = (&'static str, fn(&str));
 
 /// Builds the shared (a)–(d) scenario: an outer row whose first item is a flex
 /// container with `configure` shaping it, a 40px inner child, and a 10px
-/// inflexible sibling. Asserts the item keeps its measured width and the
-/// sibling is positioned after it.
-fn assert_unsupported_item_keeps_measured_size(
+/// inflexible sibling. Asserts the item floors at its content-based minimum
+/// (40px) and the sibling is positioned after it.
+fn assert_container_shape_uses_content_min(
     name: &str,
     configure: fn(&mut RootDom, DomNodeSlotKey),
 ) {
@@ -7743,50 +7711,42 @@ fn assert_unsupported_item_keeps_measured_size(
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    let item_width_px = assert_node_layout(&root, item).width_px;
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     // rects[0] = container, rects[1] = item, rects[2] = inner, rects[3] = sibling.
-    // Divergent: the item pins at its measured 200px (spec: 40px content-based
-    // minimum), so the sibling sits at 200px instead of 40px.
-    assert_rect_op_geometry(
-        &rects[1],
-        0.0,
-        0.0,
-        item_width_px,
-        20.0,
-        &format!("{name}: item"),
-    );
+    // On-spec: the item floors at its widest-child 40px content-based minimum,
+    // so the sibling sits at 40px.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 40.0, 20.0, &format!("{name}: item"));
     assert_rect_op_geometry(
         &rects[3],
-        item_width_px,
+        40.0,
         0.0,
         10.0,
         20.0,
-        &format!("{name}: sibling after measured item"),
+        &format!("{name}: sibling after content-min item"),
     );
 }
 
-fn assert_column_item_keeps_measured_size(name: &str) {
-    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+fn assert_column_item_uses_content_min(name: &str) {
+    assert_container_shape_uses_content_min(name, |root, item| {
         assert_style_set(root, item, "flex-direction", "column");
     });
 }
 
 fn assert_row_reverse_item_variant(name: &str) {
-    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+    assert_container_shape_uses_content_min(name, |root, item| {
         assert_style_set(root, item, "flex-direction", "row-reverse");
     });
 }
 
 fn assert_wrap_item_variant(name: &str) {
-    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+    assert_container_shape_uses_content_min(name, |root, item| {
         assert_style_set(root, item, "flex-wrap", "wrap");
     });
 }
 
 fn assert_rtl_row_item_variant(name: &str) {
-    assert_unsupported_item_keeps_measured_size(name, |root, item| {
+    assert_container_shape_uses_content_min(name, |root, item| {
         assert_style_set(root, item, "direction", "rtl");
     });
 }
@@ -7808,22 +7768,12 @@ fn assert_grandchild_recursion(name: &str) {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    let item_width_px = assert_node_layout(&root, item).width_px;
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     // rects[0] = container, rects[1] = item, rects[2] = child, rects[3] = grandchild, rects[4] = leaf.
-    assert_rect_op_geometry(
-        &rects[1],
-        0.0,
-        0.0,
-        item_width_px,
-        20.0,
-        &format!("{name}: item"),
-    );
-    // The unsupported column grandchild degrades to the measured size threaded
-    // through the recursion (the enclosing row item's measured 200px), which
-    // over-estimates its true 30px min-content rather than collapsing it: the
-    // leaf keeps its own 30px width inside the oversized ancestor chain.
+    // On-spec: the recursion folds the grandchild's 30px leaf up to the item's
+    // content-based minimum (30px); the leaf keeps its own 30px width.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 30.0, 20.0, &format!("{name}: item"));
     assert_close(
         rects[4].size_px[0],
         30.0,
@@ -7833,33 +7783,26 @@ fn assert_grandchild_recursion(name: &str) {
 
 // CSS Flexbox 1 §4.5 automatic minimum size: a visible-overflow flex item that
 // is itself a flex container uses its content-based minimum size before shrink.
-// The active solver admits that computation only for the horizontal,
-// non-reversed, no-wrap subset. No single WPT oracle pairs a growing child
-// inside the content-based auto-min walk, so this is cited from §4.5 directly
-// (the "no WPT" rule, README); closest family is
-// `css/css-flexbox/min-width-auto-*`. Gecko computes the automatic minimum in
+// The flex arc step 4 derivation reads the item's record intrinsic — grow-blind
+// (records carry no flex factors) — so a growing child no longer forces the
+// measured-size fallback. Gecko computes the automatic minimum in
 // `nsFlexContainerFrame.cpp` (`GenerateFlexItemForChild` → content-based
 // min-size); Blink in `flex_layout_algorithm.cc` (`ConstructAndAppendFlexItems`
-// → `FlexItem::UpdateAutoMinSize`).
+// → `FlexItem::UpdateAutoMinSize`). Closest WPT family:
+// `css/css-flexbox/min-width-auto-*`.
 //
-// OFF-SPEC: a growing child (`flex-grow != 0`) inside a supported-shape flex
-// item's auto-min walk makes the container fall back to the threaded MEASURED
-// main size instead of the true §4.5 content-based minimum (the same
-// over-estimate the unsupported-shape gate uses — never a collapse). The former
-// grow-factor fail-fast assert is replaced by that fallback in
-// `horizontal_flex_container_content_based_auto_min_content_width_px`
-// (`flex.rs`). Spec-correct for row (a): the titlebar item keeps its true
-// content-based minimum — the icon's 16px basis plus the growing title's
-// min-content (0px for an empty title) = 16px — so the sibling sits at 16px;
-// the solver instead pins the item at its measured 200px. The "ignore growth in
-// min-content" computation is the named admission deferred to PR 3's mapping
-// doc. Row (c) is the non-growing control: the content-based path is unchanged.
+// ON-SPEC (was `off_spec_flex_auto_min_growing_children_use_measured_size`):
+// a growing child no longer forces the measured-size fallback. Row (a): the
+// titlebar item's auto-min becomes the factor-blind content minimum — the
+// icon's 16px basis plus the growing title's min-content (0px for an empty
+// title) = 16px — so the sibling sits at 16px, not the measured 200px. Row (c)
+// is the non-growing control: the content-based path is unchanged.
 #[test]
-fn off_spec_flex_auto_min_growing_children_use_measured_size() {
+fn flex_auto_min_growing_children_use_content_min() {
     let rows: [GrowingChildAutoMinRow; 3] = [
         (
             "titlebar_growing_title",
-            assert_titlebar_growing_title_keeps_measured_size,
+            assert_titlebar_growing_title_content_min,
         ),
         (
             "nested_supported_flex_growing_grandchild",
@@ -7880,9 +7823,9 @@ type GrowingChildAutoMinRow = (&'static str, fn(&str));
 
 /// Row (a): the titlebar shape — outer row, item I (row, no width, visible
 /// overflow) with a 16px icon and a `flex-grow: 1` title, plus a 10px sibling.
-/// Asserts no panic, the item keeps its measured width, the title fills the
-/// rest of the item, and the sibling is positioned after the measured item.
-fn assert_titlebar_growing_title_keeps_measured_size(name: &str) {
+/// Asserts the item floors at its factor-blind content minimum (16px) and the
+/// sibling sits after it.
+fn assert_titlebar_growing_title_content_min(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -7898,47 +7841,32 @@ fn assert_titlebar_growing_title_keeps_measured_size(name: &str) {
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
-    let item_width_px = assert_node_layout(&root, item).width_px;
     assert_close(
-        item_width_px,
-        200.0,
-        &format!("{name}: item keeps its measured width"),
+        assert_node_layout(&root, item).width_px,
+        16.0,
+        &format!("{name}: item keeps its content minimum"),
     );
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
-    // rects[0] = container, rects[1] = item, rects[2] = icon, rects[3] = title,
-    // rects[4] = sibling. The growing title fills the item after the 16px icon;
-    // the sibling sits after the measured item (spec: 16px content-based).
-    assert_rect_op_geometry(
-        &rects[1],
-        0.0,
-        0.0,
-        item_width_px,
-        20.0,
-        &format!("{name}: item"),
-    );
+    // rects[0] = container, rects[1] = item, rects[2] = icon, rects[3] = sibling
+    // (the empty growing title emits no paint rect). The item floors at 16px
+    // (icon basis + empty title min-content), the icon keeps its 16px basis,
+    // and the sibling sits at 16px.
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 16.0, 20.0, &format!("{name}: item"));
     assert_rect_op_geometry(&rects[2], 0.0, 0.0, 16.0, 10.0, &format!("{name}: icon"));
     assert_rect_op_geometry(
         &rects[3],
         16.0,
         0.0,
-        item_width_px - 16.0,
-        10.0,
-        &format!("{name}: growing title fills the item"),
-    );
-    assert_rect_op_geometry(
-        &rects[4],
-        item_width_px,
-        0.0,
         10.0,
         20.0,
-        &format!("{name}: sibling after measured item"),
+        &format!("{name}: sibling after content-min item"),
     );
 }
 
 /// Row (b): the deeper recursion — outer row, item I (row) → child C (row) →
-/// growing grandchild G. Asserts no panic and that the growing grandchild
-/// threads the measured size through the recursion instead of collapsing.
+/// growing grandchild G. Asserts no panic and that the growing grandchild's
+/// factor-blind content minimum threads through the recursion.
 fn assert_nested_supported_flex_growing_grandchild(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
@@ -7954,30 +7882,9 @@ fn assert_nested_supported_flex_growing_grandchild(name: &str) {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let item_width_px = assert_node_layout(&root, item).width_px;
-    assert_close(
-        item_width_px,
-        200.0,
-        &format!("{name}: item keeps its measured width"),
-    );
-    let plans = take_staged_layer_paint_plans(&root);
-    let rects = &plans[0].rects;
-    // rects[0] = container, rects[1] = item, rects[2] = child, rects[3] = grandchild.
-    assert_rect_op_geometry(
-        &rects[1],
-        0.0,
-        0.0,
-        item_width_px,
-        20.0,
-        &format!("{name}: item"),
-    );
-    // The growing grandchild degrades to the measured size threaded through the
-    // recursion, keeping its own resolved width inside the oversized ancestor
-    // chain rather than collapsing or panicking.
-    assert_close(
-        rects[3].size_px[0],
-        200.0,
-        &format!("{name}: grandchild keeps its own width"),
-    );
+    // The whole chain is content-empty, so the factor-blind content minimum is
+    // 0 (no paint rects are emitted for the empty item/child/grandchild).
+    assert_close(item_width_px, 0.0, &format!("{name}: item content minimum"));
 }
 
 /// Row (c): non-growing control. A supported row item with a non-growing text
@@ -9853,14 +9760,12 @@ fn assert_white_space_normal_wrap_item(name: &str) {
 // (`NGInlineNode` intrinsic per `EWhiteSpace`, `FlexItem::UpdateAutoMinSize`)
 // both floor a nowrap item at its full-run min-content.
 //
-// OFF-SPEC: `text_min_content_width_px` (`flex.rs:1498`) splits the text on
-// whitespace and takes the widest word, ignoring the white-space mode, so a
-// nowrap (or pre) item floors at the widest WORD (33.3px for "three"/"four")
-// instead of the full run (115.5px). The nowrap item therefore lands at the
-// SAME floor as a normal-white-space item (normal's min-content IS the widest
-// word). Spec-correct: the nowrap item keeps its 115.5px full-run min-content.
+// ON-SPEC (was `off_spec_flex_auto_min_nowrap_text_floors_at_widest_word`):
+// the record's min-content is mode-aware (the 3a-i intrinsic), so the nowrap
+// item floors at its full-run min-content (115.5px), not the widest word
+// (33.3px) the manual whitespace-splitting leaf used to return.
 #[test]
-fn off_spec_flex_auto_min_nowrap_text_floors_at_widest_word() {
+fn flex_auto_min_nowrap_text_floors_at_full_run_width() {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "20px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -9882,17 +9787,16 @@ fn off_spec_flex_auto_min_nowrap_text_floors_at_widest_word() {
     let nowrap_text_intrinsic = assert_text_intrinsic(&root, nowrap_text);
     let nowrap_width = assert_node_layout(&root, nowrap_item).width_px;
     let normal_width = assert_node_layout(&root, normal_item).width_px;
-    // Divergent: the nowrap item floors at the widest word, identical to the
-    // normal item's floor, instead of its full-run min-content.
-    assert!(
-        nowrap_width < nowrap_text_intrinsic.min_content_width_px,
-        "nowrap floor should sit below its full-run min-content; floor {nowrap_width} vs min-content {}",
-        nowrap_text_intrinsic.min_content_width_px,
-    );
+    // On-spec: the nowrap item floors at its full-run min-content (==
+    // max-content for nowrap), while the normal item floors at its widest word.
     assert_close(
         nowrap_width,
-        normal_width,
-        "nowrap floor equals normal's widest-word floor",
+        nowrap_text_intrinsic.min_content_width_px,
+        "nowrap floor equals its full-run min-content",
+    );
+    assert!(
+        nowrap_width > normal_width,
+        "nowrap floor should exceed normal's widest-word floor; nowrap {nowrap_width} vs normal {normal_width}",
     );
 }
 
@@ -10108,9 +10012,10 @@ fn assert_img_text_sibling_gap(name: &str) {
 // composed across a NESTED flex boundary with real content: an inner flex
 // container whose items carry text/images is measured for its content, then
 // resolved through the outer line. This is the measurement-recursion path the
-// two graceful gates (`flex_container_content_based_auto_min_is_supported` and
+// flex arc step 4 §9.9 intrinsic fold (D2a) now computes — the two former
+// graceful gates (`flex_container_content_based_auto_min_is_supported` and
 // the grow-factor boundary in `horizontal_flex_container_content_based_auto_min_content_width_px`,
-// both `flex.rs`) guard. Gecko (`GenerateFlexItemForChild` →
+// both `flex.rs`) died with the walk. Gecko (`GenerateFlexItemForChild` →
 // `FlexLine::ResolveFlexibleLengths` → final reflow, `nsFlexContainerFrame.cpp`)
 // and Blink (`ConstructAndAppendFlexItems` → `LineFlexer::ResolveFlexibleLengths`
 // → `BuildSpaceForLayout`, `flex_layout_algorithm.cc`) measure the inner
@@ -10148,10 +10053,12 @@ fn nested_flex_with_content() {
 type NestedFlexContentRow = (&'static str, fn(&str));
 
 /// Row (a): outer row → inner row (no width) → two text children. A
-/// block-level inner flex container stretches to the outer's content width
-/// (200px) rather than shrink-wrapping. Moved on-spec in flex arc step 3a-ii:
-/// the two text nodes now merge into ONE anonymous run (no inter-item gap),
-/// so the second text sits contiguous after the first.
+/// block-level inner flex container used to stretch to the outer's content
+/// width (200px); its auto-basis base now reads the record's max-content (§9.2
+/// base consequence, flex arc step 4), so it shrink-wraps to the merged
+/// anonymous run's max-content sum. The two text nodes still merge into ONE
+/// anonymous run (no inter-item gap), so the second text sits contiguous after
+/// the first.
 fn assert_nested_row_text_items_gap(name: &str) {
     let (mut world, mut root, outer) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, outer, "200px");
@@ -10161,15 +10068,16 @@ fn assert_nested_row_text_items_gap(name: &str) {
     assert_style_set(&mut root, inner, "display", "flex");
     assert_style_set(&mut root, inner, "column-gap", "10px");
     let left_text = assert_append_text_to(&mut root, inner, "Left");
-    let _right_text = assert_append_text_to(&mut root, inner, "Right");
+    let right_text = assert_append_text_to(&mut root, inner, "Right");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     let left_width = assert_node_layout(&root, left_text).width_px;
+    let right_width = assert_node_layout(&root, right_text).width_px;
     let inner_width = assert_node_layout(&root, inner).width_px;
     assert_close(
         inner_width,
-        200.0,
-        &format!("{name}: inner stretches to outer content width"),
+        left_width + right_width,
+        &format!("{name}: inner shrink-wraps to its max-content sum"),
     );
     let plans = take_staged_layer_paint_plans(&root);
     let text_runs = &plans[0].text_runs;
@@ -10180,11 +10088,10 @@ fn assert_nested_row_text_items_gap(name: &str) {
     );
 }
 
-/// Row (b): outer row → inner COLUMN (no width) → text items. The column shape
-/// falls outside the supported content-based auto-min subset, so the inner
-/// keeps its measured main size (the graceful value, same root cause as
-/// `off_spec_flex_auto_min_unsupported_shapes_use_measured_size`) rather than
-/// its widest-text content width.
+/// Row (b): outer row → inner COLUMN (no width) → text items. The inner's
+/// auto-basis base now reads the record's max-content (§9.2 base consequence,
+/// flex arc step 4), so it shrink-wraps to its widest item rather than the
+/// former measured 200px.
 fn assert_nested_column_text_items_measured(name: &str) {
     let (mut world, mut root, outer) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, outer, "200px");
@@ -10193,24 +10100,27 @@ fn assert_nested_column_text_items_measured(name: &str) {
     assert_style_set(&mut root, inner, "display", "flex");
     assert_style_set(&mut root, inner, "flex-direction", "column");
     let first = assert_append_div_to(&mut root, inner);
-    let _first_text = assert_append_text_to(&mut root, first, "Alpha");
+    let first_text = assert_append_text_to(&mut root, first, "Alpha");
     let second = assert_append_div_to(&mut root, inner);
-    let _second_text = assert_append_text_to(&mut root, second, "Beta");
+    let second_text = assert_append_text_to(&mut root, second, "Beta");
     let sibling = assert_append_div_to(&mut root, outer);
     assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
+    let widest_text_px = assert_text_intrinsic(&root, first_text)
+        .max_content_width_px
+        .max(assert_text_intrinsic(&root, second_text).max_content_width_px);
     let inner_width = assert_node_layout(&root, inner).width_px;
     assert_close(
         inner_width,
-        200.0,
-        &format!("{name}: inner column keeps measured width"),
+        widest_text_px,
+        &format!("{name}: inner column shrink-wraps to its widest item"),
     );
     let sibling_box = node_box(&root, sibling).expect("sibling role should expose a box model");
     assert_close(
         sibling_box.border_box.left_px,
-        200.0,
-        &format!("{name}: sibling after measured inner"),
+        widest_text_px,
+        &format!("{name}: sibling after max-content inner"),
     );
 }
 
@@ -10313,10 +10223,11 @@ fn assert_nested_item_text_align_center(name: &str) {
 // and content mutation at depth must re-measure on the next update (the
 // phantom-dirty lesson in the visitor README). Gecko/Blink measure the item's
 // content contribution through the full descendant tree before final reflow.
-// Rows (c)/(d)/(e) additionally pin the two graceful gates
-// (`flex_container_content_based_auto_min_is_supported` and the grow-factor
-// boundary, `flex.rs`) with real content: no panic, graceful measured-size
-// fallback where an unsupported shape is reached.
+// Rows (c)/(d)/(e) additionally pin the deep-recursion measurement path — the
+// two former graceful gates (`flex_container_content_based_auto_min_is_supported`
+// and the grow-factor boundary, `flex.rs`) died in flex arc step 4, so a nested
+// unsupported shape now folds its true content minimum instead of degrading to
+// the measured size.
 #[test]
 fn deep_hierarchy_mixed_content() {
     let rows: [DeepHierarchyRow; 5] = [

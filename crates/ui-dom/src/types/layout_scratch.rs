@@ -131,6 +131,8 @@ mod tests {
             main_axis_border_padding_px: 0.0,
             outer_hypothetical_main_size_px: 0.0,
             measured_cross_size_input_px: 0.0,
+            h_min_content_px: 0.0,
+            h_max_content_px: 0.0,
             margin_main_start_px: 0.0,
             margin_main_end_px: 0.0,
             margin_cross_start_px: 0.0,

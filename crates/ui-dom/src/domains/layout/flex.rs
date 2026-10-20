@@ -28,10 +28,9 @@ use crate::domains::style::computed::{
 };
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
 use crate::numeric::usize_to_f32;
-use crate::types::dom_node::measure_text_intrinsic_from_content_and_font_size;
 use crate::types::{
-    DomBoxModel, DomError, DomIntrinsic, DomNode, DomNodeSlotKey, DomRect, DomTextDirection,
-    DomWhiteSpace, LaneRange, LayoutScratch, RootDom, RootDomMetricName,
+    DomBoxModel, DomError, DomNode, DomNodeSlotKey, DomRect, DomTextDirection, DomWhiteSpace,
+    LaneRange, LayoutScratch, RootDom, RootDomMetricName,
 };
 
 use super::DomLayoutResolver;
@@ -53,14 +52,15 @@ use super::flow::{
     display_is_inline_outer, enter_node, entered_content_size_property_style, exit_node,
     first_child_key, intrinsic_content_width, layout_flow_size, next_inline_child_context,
     next_sibling_key, non_negative_auto_content_height, relayout_tree_walker_node,
-    resolved_content_size_px, resolved_node_style, resolved_node_style_with_basis,
-    wrapped_text_content_height_px,
+    resolved_content_size_px, resolved_node_style, wrapped_text_content_height_px,
 };
 use super::measurement_record::{
     compute_node_measurement, node_measurement_of, write_measurement_if_changed,
 };
 use super::style::{BoxSides, LayoutDisplay, NodeStyle, PositionMode, presented_position};
 
+#[cfg(test)]
+use super::flow::resolved_node_style_with_basis;
 #[cfg(test)]
 use crate::domains::layout::IdentityDomLayoutResolver;
 #[cfg(test)]
@@ -70,9 +70,11 @@ use crate::domains::style::computed::BoxSizingKw;
 #[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
 #[cfg(test)]
+use crate::types::dom_node::measure_text_intrinsic_from_content_and_font_size;
+#[cfg(test)]
 use crate::types::{
-    BoxEdgeInsets, DomAttribute, DomAttributeValue, DomLayerKind, DomLayoutState, DomTag,
-    RootDomContext,
+    BoxEdgeInsets, DomAttribute, DomAttributeValue, DomIntrinsic, DomLayerKind, DomLayoutState,
+    DomTag, RootDomContext,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,6 +155,12 @@ struct FlexContainerStyle {
 /// exact production site and resolution timing in `measure_one_flex_item`.
 /// `main_axis`/`cross_axis` died here (dead in production: the container style
 /// answers both axes).
+///
+/// `h_min_content_px`/`h_max_content_px` carry the item's record inline
+/// min/max-content sizes (D2a, flex arc step 4): the inner container's §9.9
+/// intrinsic main-size fold reads them at the container's record write. For a
+/// run item (no node record) they carry the run's widest segment / max-content
+/// sum, the 3a cursors.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FlexItemView {
     pub(crate) source: FlexItemSource,
@@ -168,6 +176,8 @@ pub(crate) struct FlexItemView {
     pub(crate) main_axis_border_padding_px: f32,
     pub(crate) outer_hypothetical_main_size_px: f32,
     pub(crate) measured_cross_size_input_px: f32,
+    pub(crate) h_min_content_px: f32,
+    pub(crate) h_max_content_px: f32,
     pub(crate) margin_main_start_px: f32,
     pub(crate) margin_main_end_px: f32,
     pub(crate) margin_cross_start_px: f32,
@@ -563,6 +573,10 @@ fn anonymous_inline_run_item_view(
         main_axis_border_padding_px: 0.0,
         outer_hypothetical_main_size_px: flex_base_size_px,
         measured_cross_size_input_px,
+        // D2a: a run's inline min/max-content are the 3a cursors (widest
+        // segment / max-content sum), axis- and wrap-agnostic.
+        h_min_content_px: min_content_width_px,
+        h_max_content_px: max_content_width_px,
         margin_main_start_px: 0.0,
         margin_main_end_px: 0.0,
         margin_cross_start_px: 0.0,
@@ -695,21 +709,34 @@ where
         main_axis_border_padding_size_px(child_style.sides, main_axis);
     let flex_base_size_px =
         measured_flex_base_size_px(node, child_style, main_axis, measured_main_size_px);
-    let automatic_min_main_size_px = supported_automatic_min_main_size_px(
-        root_dom,
-        child_key,
-        node,
-        child_style,
-        &child_inherited_style,
-        main_axis,
-        measured_main_size_px,
-    )?;
+    // D1 (flex arc step 4): the automatic minimum main size is DERIVED at the
+    // item view's seed — `min(min_content_main, definite_specified_main_size)`
+    // for the overflow-visible subset, 0 otherwise (CSS Flexbox §4.5). Two
+    // reads (record + authored style) and one `min`; no recursion, no gates.
+    // The derivation reads the record during the measurement fold (pre-
+    // overwrite, by construction — R6's read discipline): the outer solve
+    // reads nested records before placement overwrites them, so no future
+    // consumer may drift into reading end-of-pass values.
+    let automatic_min_main_size_px =
+        automatic_min_main_size_px(node, child_style, main_axis, record);
+    // D4 (flex arc step 4): the hypothetical main size's OUTER form gains the
+    // automatic minimum floor — `clamp(base, min, max).max(auto_min)` — equivalent
+    // to the engines' clamp with `min' = max(min, auto_min)` (including the
+    // `auto_min > max` case, where the floor wins exactly as `min > max` wins
+    // today). The floor is applied to the OUTER hypothetical, which governs line
+    // breaking (killing the wrap-point half of the divergence); the inner
+    // `hypothetical_main_size_px` stays clamped only, so the §9.7 inflexibility
+    // check (base < hypothetical) keeps its pre-floor semantics — the §9.7 seed
+    // switch is step 5's, not this step's.
     let hypothetical_main_size_px = clamp_main_axis_size(child_style, main_axis, flex_base_size_px);
     let (min_main_size_px, max_main_size_px) = main_axis_limits(child_style, main_axis);
     let margin_main_start_px = main_axis_start_margin(child_style, main_axis);
     let margin_main_end_px = main_axis_end_margin(child_style, main_axis);
     let margin_cross_start_px = cross_axis_start_margin(child_style, main_axis);
     let margin_cross_end_px = cross_axis_end_margin(child_style, main_axis);
+    let outer_hypothetical_main_size_px = hypothetical_main_size_px.max(automatic_min_main_size_px)
+        + margin_main_start_px
+        + margin_main_end_px;
     Ok(FlexItemView {
         source,
         order,
@@ -722,10 +749,12 @@ where
         min_main_size_px,
         max_main_size_px,
         main_axis_border_padding_px,
-        outer_hypothetical_main_size_px: hypothetical_main_size_px
-            + margin_main_start_px
-            + margin_main_end_px,
+        outer_hypothetical_main_size_px,
         measured_cross_size_input_px: measured_cross_size_px,
+        // D2a: the item's record inline min/max-content, carried into the view
+        // for the inner container's §9.9 intrinsic fold.
+        h_min_content_px: record.h_min_content_px,
+        h_max_content_px: record.h_max_content_px,
         margin_main_start_px,
         margin_main_end_px,
         margin_cross_start_px,
@@ -886,12 +915,19 @@ where
         content_width_px,
         content_width_px,
     );
+    // D2a (flex arc step 4): the inner container's record inline min/max-content
+    // sizes are the §9.9 intrinsic main sizes, folded from the item views'
+    // carried record sizes + inline margins — NOT the resolved/stretched width
+    // the block model would otherwise write. This is what the auto-min
+    // derivation (D1) and the §9.2 auto-basis base read.
+    let (h_min_content_px, h_max_content_px) =
+        flex_container_intrinsic_inline_sizes(root_dom, container_style, resolved_solve.item_range);
     let flow = measure_exited_node_flow_size(
         root_dom,
         key,
         &entered,
         auto_content_width_px,
-        (auto_content_width_px, auto_content_width_px),
+        (h_min_content_px, h_max_content_px),
         active_flex_content_height_px(
             container_style.main_axis,
             resolved_solve.main_size_px,
@@ -906,6 +942,79 @@ where
         .resolution
         .truncate(saved_resolution_len);
     Ok(flow)
+}
+
+/// The inner flex container's §9.9 intrinsic inline (horizontal) min/max-content
+/// sizes, folded from the item lane's carried record sizes (D2a, flex arc step
+/// 4). Arithmetic over the views already assembled by the measurement fold:
+/// each item contributes its record `h_min`/`h_max` plus its inline-axis margins
+/// (main margins for a row, cross margins for a column — the axis of the `h_*`
+/// size). `gap` is the main-axis inter-item gap; run items carry zero margins.
+///
+/// ```text
+/// h_min = row nowrap    => Σ contribution_min + gap × (n−1)
+///         row wrap      => max contribution_min
+///         column        => max contribution_min
+/// h_max = row           => Σ contribution_max + gap × (n−1)
+///         column        => max contribution_max
+/// ```
+///
+/// Empty container: both 0.
+fn flex_container_intrinsic_inline_sizes(
+    root_dom: &RootDom,
+    container_style: FlexContainerStyle,
+    item_range: LaneRange,
+) -> (f32, f32) {
+    let is_row = container_style.main_axis == FlexAxis::Horizontal;
+    let mut min_sum: f32 = 0.0;
+    let mut max_sum: f32 = 0.0;
+    let mut min_max: f32 = 0.0;
+    let mut max_max: f32 = 0.0;
+    let mut item_count = 0usize;
+    for entry in root_dom.layout_scratch.items.slice(item_range) {
+        let view = entry.view;
+        let inline_margins = match container_style.main_axis {
+            FlexAxis::Horizontal => view.margin_main_start_px + view.margin_main_end_px,
+            FlexAxis::Vertical => view.margin_cross_start_px + view.margin_cross_end_px,
+        };
+        // §9.9.3 flex item intrinsic contribution: floored by the flex base
+        // size if the item is not shrinkable (an inflexible item won't shrink
+        // below its base). Content-box flex base, matching `h_min`/`h_max`.
+        let flex_base_content_px = view.flex_base_size_px - view.main_axis_border_padding_px;
+        let contribution_min = if view.flex_shrink_factor == 0.0 {
+            view.h_min_content_px.max(flex_base_content_px)
+        } else {
+            view.h_min_content_px
+        };
+        let contribution_max = if view.flex_shrink_factor == 0.0 {
+            view.h_max_content_px.max(flex_base_content_px)
+        } else {
+            view.h_max_content_px
+        };
+        let contribution_min = contribution_min + inline_margins;
+        let contribution_max = contribution_max + inline_margins;
+        min_sum += contribution_min;
+        max_sum += contribution_max;
+        min_max = min_max.max(contribution_min);
+        max_max = max_max.max(contribution_max);
+        item_count += 1;
+    }
+    if item_count == 0 {
+        return (0.0, 0.0);
+    }
+    let gap_total_px =
+        container_style.gap_sizes.between_items_px * non_negative_f32_from_usize(item_count - 1);
+    let (h_min, h_max) = if is_row {
+        let h_min = if container_style.wrap_mode.is_wrapping() {
+            min_max
+        } else {
+            min_sum + gap_total_px
+        };
+        (h_min, max_sum + gap_total_px)
+    } else {
+        (min_max, max_max)
+    };
+    (h_min, h_max)
 }
 
 fn measure_block_node_without_layout_write<R>(
@@ -1072,11 +1181,19 @@ fn measure_exited_node_flow_size(
     // `compute_node_measurement` (one computation, one comparison; pass
     // outputs, never a dirt source), and the write gate is the single-comparison
     // `write_measurement_if_changed`.
-    let next_record = compute_node_measurement(
+    let mut next_record = compute_node_measurement(
         entered,
         (min_content_width_px, max_content_width_px),
         content_size,
     );
+    // D3 (flex arc step 4): the flex measure fold computes the record's
+    // min-content BLOCK size bottom-up (`compute_v_min_content_px`, in
+    // measurement_record.rs) and writes it here; the block world's `exit_node`
+    // leaves it `None` (nothing reads it). The vertical auto-min derivation
+    // (D1) is its named consumer.
+    next_record.v_min_content_px = Some(super::measurement_record::compute_v_min_content_px(
+        root_dom, key, entered,
+    ));
     // FlexNodesMeasured is a work counter, so it increments per COMPUTE, not
     // per record write: an unchanged record below still costs one compute on
     // the flex measure path.
@@ -1509,264 +1626,47 @@ fn measured_flex_base_size_px(
     })
 }
 
-fn supported_automatic_min_main_size_px(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
+/// The automatic minimum main size (flex arc step 4, D1): the CSS Flexbox §4.5
+/// formula derived at the item view's seed — `min(min_content_main,
+/// definite_specified_main_size)` for the overflow-visible subset, `0`
+/// otherwise. Two reads (the record's main-axis min-content and the authored
+/// definite main size) and one `min`; no recursion, no shape gates.
+fn automatic_min_main_size_px(
     node: &DomNode,
     style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
     main_axis: FlexAxis,
-    measured_main_size_px: f32,
-) -> Result<f32, DomError> {
-    if supported_auto_min_resolves_to_zero(node) {
-        return Ok(0.0);
-    }
-    if style_has_definite_main_axis_size(style, main_axis) {
-        return Ok(measured_main_size_px);
-    }
-    content_based_auto_min_main_size_px(
-        root_dom,
-        key,
-        style,
-        inherited_style,
-        main_axis,
-        measured_main_size_px,
-    )
-}
-
-fn supported_auto_min_resolves_to_zero(node: &DomNode) -> bool {
-    node.computed_box().overflow != OverflowKw::Visible
-}
-
-fn content_based_auto_min_main_size_px(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
-    main_axis: FlexAxis,
-    measured_main_size_px: f32,
-) -> Result<f32, DomError> {
-    if main_axis == FlexAxis::Vertical {
-        return Ok(measured_main_size_px);
-    }
-    let content_width_px = horizontal_content_based_auto_min_content_width_px(
-        root_dom,
-        key,
-        style,
-        inherited_style,
-        measured_main_size_px,
-    )?;
-    Ok(border_box_width(style.sides, content_width_px))
-}
-
-fn horizontal_content_based_auto_min_content_width_px(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    style: NodeStyle,
-    inherited_style: &InheritedStyleContext,
-    measured_main_size_px: f32,
-) -> Result<f32, DomError> {
-    let node = node_for_key(root_dom, key)?;
-    if let Some(intrinsic_content_width_px) =
-        node_intrinsic_horizontal_content_width_px(node, inherited_style)
-    {
-        return Ok(intrinsic_content_width_px);
-    }
-    if style.display == LayoutDisplay::Flex {
-        let container_style = staged_flex_container_style(node);
-        if !flex_container_content_based_auto_min_is_supported(container_style) {
-            // Graceful degradation (replacing the former fail-fast assert): a
-            // flex item whose own flex container shape falls outside the
-            // supported content-based auto-min subset (vertical main axis,
-            // reversed main axis incl. rtl rows, or wrap/wrap-reverse) refuses
-            // to shrink below its measured main size. Return the measured
-            // CONTENT width; the caller re-adds this node's border/padding via
-            // `border_box_width`, recovering the measured border-box main size.
-            return Ok(measured_main_size_px
-                - main_axis_border_padding_size_px(style.sides, FlexAxis::Horizontal));
-        }
-        return horizontal_flex_container_content_based_auto_min_content_width_px(
-            root_dom,
-            key,
-            inherited_style,
-            measured_main_size_px,
-            style.sides,
-        );
-    }
-    let mut content_width_px: f32 = 0.0;
-    let mut child_key = first_child_key(root_dom, key)?;
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) = resolved_node_style_with_basis(
-            root_dom,
-            current_child_key,
-            inherited_style,
-            0.0,
-            None,
-        )?;
-        if child_style.display == LayoutDisplay::None
-            || matches!(
-                child_style.position,
-                PositionMode::Absolute | PositionMode::Fixed
-            )
-        {
-            child_key = next_child_key;
-            continue;
-        }
-        content_width_px =
-            content_width_px.max(horizontal_content_based_auto_min_content_width_px(
-                root_dom,
-                current_child_key,
-                child_style,
-                &child_inherited_style,
-                measured_main_size_px,
-            )?);
-        child_key = next_child_key;
-    }
-    Ok(content_width_px)
-}
-
-fn horizontal_flex_container_content_based_auto_min_content_width_px(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-    inherited_style: &InheritedStyleContext,
-    measured_main_size_px: f32,
-    container_sides: BoxSides,
-) -> Result<f32, DomError> {
-    let container_node = node_for_key(root_dom, key)?;
-    // This function is only reached when
-    // `flex_container_content_based_auto_min_is_supported` holds (horizontal,
-    // non-reversed, no-wrap); the sole caller
-    // (`horizontal_content_based_auto_min_content_width_px`) degrades every
-    // other container shape to the measured main size at its own gate. The two
-    // former fail-fast asserts — one for unsupported shapes, one for growing
-    // children — are both replaced by graceful fallbacks: unsupported shapes
-    // return the measured main size at the caller's gate, and a growing child
-    // returns the threaded measured main size below. Every recursive re-entry
-    // into a nested container passes back through those gates, so no descendant
-    // shape can panic either.
-    let container_style = staged_flex_container_style(container_node);
-    let mut content_width_px = 0.0;
-    let mut has_previous_item = false;
-    let mut child_key = first_child_key(root_dom, key)?;
-    while let Some(current_child_key) = child_key {
-        let next_child_key = next_sibling_key(root_dom, current_child_key)?;
-        let (child_style, child_inherited_style) = resolved_node_style_with_basis(
-            root_dom,
-            current_child_key,
-            inherited_style,
-            0.0,
-            None,
-        )?;
-        if child_style.display == LayoutDisplay::None
-            || matches!(
-                child_style.position,
-                PositionMode::Absolute | PositionMode::Fixed
-            )
-        {
-            child_key = next_child_key;
-            continue;
-        }
-        let child_node = node_for_key(root_dom, current_child_key)?;
-        if item_flex_grow_factor_from_node(child_node) != 0.0 {
-            // Graceful degradation (replacing the former grow-factor fail-fast
-            // assert): a growing child means this container's true §4.5
-            // content-based auto-min requires the "ignore growth in min-content"
-            // admission (deferred to PR 3's mapping doc), so the walk cannot
-            // compute it without either changing laid-out sizes or ignoring
-            // growth. Fall back to the threaded measured main size — the same
-            // over-estimate the unsupported-shape gate uses. The caller's
-            // `border_box_width` re-adds `container_sides`, recovering the
-            // measured border-box main size. Never a collapse, never a panic.
-            return Ok(measured_main_size_px
-                - main_axis_border_padding_size_px(container_sides, FlexAxis::Horizontal));
-        }
-        if has_previous_item {
-            content_width_px += container_style.gap_sizes.between_items_px;
-        }
-        let child_content_width_px = horizontal_content_based_auto_min_content_width_px(
-            root_dom,
-            current_child_key,
-            child_style,
-            &child_inherited_style,
-            measured_main_size_px,
-        )?;
-        content_width_px += horizontal_flex_container_auto_min_child_border_box_contribution_px(
-            child_node,
-            child_style,
-            border_box_width(child_style.sides, child_content_width_px),
-        ) + child_style.sides.margin.left_px
-            + child_style.sides.margin.right_px;
-        has_previous_item = true;
-        child_key = next_child_key;
-    }
-    Ok(content_width_px)
-}
-
-fn horizontal_flex_container_auto_min_child_border_box_contribution_px(
-    child_node: &DomNode,
-    child_style: NodeStyle,
-    child_border_box_min_width_px: f32,
+    record: MeasurementRecord,
 ) -> f32 {
-    // The grow-factor boundary is enforced by the caller's graceful fallback
-    // (`horizontal_flex_container_content_based_auto_min_content_width_px`):
-    // this function is only reached for non-growing children, because a growing
-    // child returns the measured-size fallback before any contribution branch.
-    if item_flex_shrink_factor_from_node(child_node) == 0.0 {
-        return child_border_box_min_width_px.max(
-            horizontal_flex_item_definite_base_border_box_width_px(child_node, child_style)
-                .unwrap_or(child_border_box_min_width_px),
-        );
+    if node.computed_box().overflow != OverflowKw::Visible {
+        return 0.0;
     }
-    child_border_box_min_width_px
-}
-
-fn horizontal_flex_item_definite_base_border_box_width_px(
-    child_node: &DomNode,
-    child_style: NodeStyle,
-) -> Option<f32> {
-    let base_content_width_px = preferred_flex_basis_px(child_node).or(child_style.width_px)?;
-    Some(
-        base_content_width_px
-            + main_axis_border_padding_size_px(child_style.sides, FlexAxis::Horizontal),
-    )
-}
-
-fn flex_container_content_based_auto_min_is_supported(container_style: FlexContainerStyle) -> bool {
-    container_style.main_axis == FlexAxis::Horizontal
-        && container_style.wrap_mode == FlexWrapMode::NoWrap
-        && !resolved_main_axis_is_reversed(container_style)
-}
-
-fn node_intrinsic_horizontal_content_width_px(
-    node: &DomNode,
-    inherited_style: &InheritedStyleContext,
-) -> Option<f32> {
-    match node {
-        DomNode::Text(text) => Some(text_min_content_width_px(
-            text.data(),
-            inherited_style.effective_font_size_px(),
-        )),
-        _ => match node.intrinsic() {
-            DomIntrinsic::Img(intrinsic) => Some(intrinsic.width_px),
-            DomIntrinsic::ElementDefaultPreferredSize(intrinsic) => Some(intrinsic.width_px),
-            DomIntrinsic::None | DomIntrinsic::NotMeasured | DomIntrinsic::Text(_) => None,
-        },
+    let content_min = min_content_main_size_px(main_axis, record);
+    match definite_specified_main_size(style, main_axis) {
+        Some(definite) => content_min.min(definite),
+        None => content_min,
     }
 }
 
-fn text_min_content_width_px(text: &str, font_size_px: f32) -> f32 {
-    let mut widest_segment_width_px: f32 = 0.0;
-    for segment in text.split_whitespace() {
-        widest_segment_width_px = widest_segment_width_px.max(
-            measure_text_intrinsic_from_content_and_font_size(segment, font_size_px)
-                .max_content_width_px,
-        );
+/// The record's min-content size in the item's main axis (D2/D3): horizontal
+/// reads `h_min_content_px` (mode-aware for text, fold-computed for the rest);
+/// vertical reads `v_min_content_px` (the step-4 fold's min-content block size).
+fn min_content_main_size_px(main_axis: FlexAxis, record: MeasurementRecord) -> f32 {
+    match main_axis {
+        FlexAxis::Horizontal => record.h_min_content_px,
+        FlexAxis::Vertical => record.v_min_content_px.unwrap_or(0.0),
     }
-    if widest_segment_width_px > 0.0 {
-        return widest_segment_width_px;
+}
+
+/// The authored definite main size (D1): the `width`/`height` resolved to a
+/// definite `BoxLength::Px` (`style.width_px`/`style.height_px` already carry
+/// the down-fold-resolved definite value; a percentage against a definite
+/// down-fold basis resolves to `Px`, an indefinite percentage to `auto`).
+/// `flex-basis` does NOT count as definite.
+fn definite_specified_main_size(style: NodeStyle, main_axis: FlexAxis) -> Option<f32> {
+    match main_axis {
+        FlexAxis::Horizontal => style.width_px,
+        FlexAxis::Vertical => style.height_px,
     }
-    measure_text_intrinsic_from_content_and_font_size(text, font_size_px).max_content_width_px
 }
 
 fn clamp_main_axis_size(style: NodeStyle, main_axis: FlexAxis, value_px: f32) -> f32 {
@@ -1785,13 +1685,6 @@ fn main_axis_limits(style: NodeStyle, main_axis: FlexAxis) -> (Option<f32>, Opti
     match main_axis {
         FlexAxis::Horizontal => (style.min_width_px, style.max_width_px),
         FlexAxis::Vertical => (style.min_height_px, style.max_height_px),
-    }
-}
-
-fn style_has_definite_main_axis_size(style: NodeStyle, main_axis: FlexAxis) -> bool {
-    match main_axis {
-        FlexAxis::Horizontal => style.width_px.is_some(),
-        FlexAxis::Vertical => style.height_px.is_some(),
     }
 }
 
@@ -3771,6 +3664,8 @@ mod tests {
             main_axis_border_padding_px: 0.0,
             outer_hypothetical_main_size_px: flex_base_size_px,
             measured_cross_size_input_px,
+            h_min_content_px: automatic_min_main_size_px,
+            h_max_content_px: flex_base_size_px,
             margin_main_start_px: 0.0,
             margin_main_end_px: 0.0,
             margin_cross_start_px: 0.0,
@@ -3839,6 +3734,8 @@ mod tests {
                 + box_edges.main_start_margin
                 + box_edges.main_end_margin,
             measured_cross_size_input_px: box_edges.cross_size,
+            h_min_content_px: box_edges.main_size,
+            h_max_content_px: box_edges.main_size,
             margin_main_start_px: box_edges.main_start_margin,
             margin_main_end_px: box_edges.main_end_margin,
             margin_cross_start_px: box_edges.cross_start_margin,
@@ -4385,7 +4282,7 @@ mod tests {
     }
 
     #[test]
-    fn measured_item_record_uses_measured_height_for_vertical_visible_overflow_auto_min() {
+    fn measured_item_record_uses_v_min_for_vertical_visible_overflow_auto_min() {
         let (mut root, container, context) = flex_container_with_context();
         root.style_mut(container)
             .set("flex-direction", "column")
@@ -4417,7 +4314,12 @@ mod tests {
         let items = collect_items_for_container(&mut root, container, context);
         let item = items.first().expect("child item");
 
-        assert_eq!(item.automatic_min_main_size_px, 30.0);
+        // D3 (flex arc step 4): the child's vertical auto-min is its v_min (the
+        // min-content block size). The nested 30px div is a SPECIFIED-height
+        // block — a definite used size, not an intrinsic — so its v_min is its
+        // content sum (0, empty content); the child's v_min is therefore 0, not
+        // the 30px measured height the old vertical gate returned.
+        assert_eq!(item.automatic_min_main_size_px, 0.0);
         assert_eq!(item.flex_base_size_px, 10.0);
     }
 
@@ -4587,11 +4489,13 @@ mod tests {
     }
 
     #[test]
-    fn measured_item_record_growing_child_in_supported_row_degrades_to_measured_size() {
+    fn measured_item_record_growing_child_uses_factor_blind_content_min() {
         let (mut root, container, context) = flex_container_with_context();
-        // Supported shape (horizontal, non-reversed, no-wrap) with no explicit
-        // width and default visible overflow, but a growing child: the auto-min
-        // walk must degrade to the measured main size instead of asserting.
+        // D6 gate 2 (flex arc step 4): a growing child no longer forces the
+        // measured-size fallback — the record is grow-blind. A growing child
+        // (flex-grow 1, height 10, no width/basis) has empty main-axis content,
+        // so it contributes 0 to the item's h_min/h_max and the item's base and
+        // auto-min are both 0 (not the stretched width the old gate returned).
         let item = append_div(&mut root, container);
         root.style_mut(item)
             .set("display", "flex")
@@ -4607,11 +4511,8 @@ mod tests {
         let items = collect_items_for_container(&mut root, container, context);
         let item_record = items.first().expect("child item");
 
-        assert!(item_record.flex_base_size_px > 0.0);
-        assert_eq!(
-            item_record.automatic_min_main_size_px, item_record.flex_base_size_px,
-            "growing child auto-min should fall back to the measured main size",
-        );
+        assert_eq!(item_record.flex_base_size_px, 0.0);
+        assert_eq!(item_record.automatic_min_main_size_px, 0.0);
     }
 
     #[test]

@@ -424,9 +424,15 @@ fn allocation_windows_match_baseline_after_warmup() {
             // reallocations 85 → 45). Run formation itself is fold-local state
             // (no allocation); the drop is the reduced ITEM count, CSS Flexbox
             // §4. Documented cause: anonymous inline-run merging.
-            allocations: 1014,
-            deallocations: 1014,
-            reallocations: 45,
+            // Re-pinned in flex arc step 4 (allocations 1014 → 830,
+            // reallocations 45 → 37): the recursive auto-min walk and its
+            // per-child re-resolution died — the derivation is now two record
+            // reads and one `min` (D1) plus the §9.9 intrinsic fold (D2a),
+            // neither of which allocates. Documented cause: auto-min by fold
+            // (FLEX_STEP4_DESIGN.md D0/D2a).
+            allocations: 830,
+            deallocations: 830,
+            reallocations: 37,
         },
         region.change(),
     );

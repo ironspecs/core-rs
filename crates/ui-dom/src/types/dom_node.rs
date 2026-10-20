@@ -153,6 +153,10 @@ pub struct TextIntrinsic {
     /// size). Equals `line_height_px` for today's single-style text; kept as a
     /// forward-compatible shape for heterogeneous-font runs.
     pub fragment_line_height_max_px: f32,
+    /// Min-content block size (CSS Sizing §5.1, flex arc step 4): the
+    /// min-content buffer's run count × line height. The run count IS the
+    /// fragment count (mode-aware; see `TextIntrinsicMetrics::v_min_content_px`).
+    pub v_min_content_px: f32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

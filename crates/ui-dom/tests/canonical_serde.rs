@@ -67,6 +67,9 @@ fn canonical_layout_snapshot_fixture_matches_public_wire_shape() {
             starts_with_wrap_opportunity: false,
             ends_with_wrap_opportunity: false,
             fragment_line_height_max_px: 20.0,
+            // Min-content block size (flex arc step 4): fragment count × line
+            // height (2 fragments of 24px at a 20px line height).
+            v_min_content_px: 40.0,
         }),
         available_width_px: 320.0,
         available_height_px: 180.0,
@@ -112,6 +115,8 @@ fn canonical_snapshot_fixture_matches_public_wire_shape() {
                 starts_with_wrap_opportunity: false,
                 ends_with_wrap_opportunity: false,
                 fragment_line_height_max_px: 20.0,
+                // Min-content block size (flex arc step 4).
+                v_min_content_px: 40.0,
             }),
             available_width_px: 320.0,
             available_height_px: 180.0,
