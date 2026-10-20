@@ -32,13 +32,23 @@ empty-intermediary propagation
 (`propagated_collapsed_margin_delta_px`, flow.rs:1136-1138, currently
 `child.max(own.max(0.0)) - own.max(0.0)`).
 
-Fix: replace each clamp with the three-branch rule against the ADJOINING
-margin (the parent's own margin edge where the machinery already pairs
-them): both-positive → `max(a, b)`; both-negative → `min(a, b)`; mixed
-→ `a + b`. The empty-intermediary delta keeps its delta shape but
-computes the collapsed value with the three-branch rule instead of the
-non-negative `max`. Comments cite CSS 2.1 §8.3.1 and PR 1 item 2's
-sibling rule.
+Fix: replace each clamp with the three-branch rule. **Clarification
+(2026-10-20, the transcription's site-1 question, answered):**
+`collapsed_parent_top_margin_px`'s return is the CHILD's collapsed
+CONTRIBUTION to the parent's effective margin — return it UNCLAMPED
+(negative passes; for the direct-child case it is simply the child's
+margin, no chain walk anywhere in D1). The parent's effective top
+margin is `three_branch(parent's OWN margin, that contribution)`,
+applied AT THE CONSUMER — the site where the parent's margin is
+actually computed (trace it; do not "unclamp" the child and leave the
+parent's margin uncombined — that is the failure mode where the child
+stops overflowing but the parent is not pulled up). The child's
+position when collapsed (at the parent's content edge) is the existing
+machinery and does not change. The delta function keeps its shape:
+`delta = three_branch(child_margin, own_margin) − own_margin`
+(positive chains stay `max` — the
+`empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_max`
+control must hold at 10; negative chains pass as negative deltas).
 
 **Rows flipped** (3 sub-cases): (a) first child `margin-top: -20px` →
 the boundary passes −20 (parent pulled up 20), child at −20 (today:
