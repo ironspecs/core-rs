@@ -135,6 +135,8 @@ the solve, the lanes, the auto-min derivation.
 | File | Change |
 |---|---|
 | `crates/ui-dom/src/domains/layout/flex.rs` | D1's clamp at the two probe sites; D2's container-basis at the placement item-context (+ the verification enumeration in a comment) |
+| `crates/ui-dom/src/domains/layout/flow.rs` | `LayoutContext.auto_margin_reference_width_px` + the `enter_node` re-point (added under the D2 amendment; the map's omission was caught by the transcription and is corrected here) |
+| `crates/ui-dom/src/domains/layout/walker.rs` | the root-context constructor carrying the new field (same correction) |
 | `crates/ui-dom/tests/layout_proofs/layout/flex_layout.rs` | the D1/D2 family flips + any new pins the verification requires |
 | `crates/ui-dom/tests/layout_proofs/README.md` | two registry rows move on-spec |
 | `crates/ui-dom/tests/perf_metric.rs` | CONDITIONAL re-pin only, documented cause |

@@ -228,8 +228,8 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 432 layout proofs (424 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 5);
-the off-spec registry (13 divergent proofs in 9 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 6);
+the off-spec registry (11 divergent proofs in 7 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1426,6 +1426,31 @@ an f32 basis.
   inflexible and mixed-violation rows moved on-spec). Next: step 6 —
   down-fold context bases (container used sizes; container-basis
   percentages), designed first.
+
+- **2026-10-20 — flex arc step 6 LANDED (`e2a0864`): the down-fold
+  context bases, with the §8.1 gate preserved by design.** Container
+  used main/cross sizes are now min/max-clamped at both probe sites for
+  both axes (the raw-`style.height_px` read died), and the placement
+  item-context's percentage basis for the whole WIDTH FAMILY
+  (width/min/max-width/margin/padding/left/right) is the container's
+  content-box width — margin/padding percentages no longer resolve
+  against the item itself. The transcription's STOP caught the fourth
+  reader: `resolve_block_auto_margins` reads the same field and its
+  ≤0 free-space outcome IS the deferred §8.1 admission's mechanism —
+  the amended design re-points it to a dedicated
+  `auto_margin_reference_width_px` (item's resolved size), so the
+  auto-margin gate's proof passes bit-for-bit while the width family
+  goes container-based (with new pins for `min-width: %`,
+  `max-width: %`, `left: %`). A file-map staleness note: the amended
+  D2 required `flow.rs` and `walker.rs`; the design's map was corrected
+  after the transcription flagged it. Registry 13-in-9 → 11-in-7.
+  Also recorded: the step-5 third-party review verified all three
+  `901b2ee` fixes and found no new blockers (PR #23 merged); its
+  non-blocking observation about the engine-shape reset write is
+  adjudicated KEEP (it preserves the Blink `FreezeItems` shape the
+  mapping's §3.3 names, and its deadness is already documented).
+  Next: step 7 — cross-after-main (the replaced-ratio exemption; the
+  staged double-layout dies), designed first.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
