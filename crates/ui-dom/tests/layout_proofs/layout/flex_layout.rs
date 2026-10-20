@@ -11933,3 +11933,251 @@ fn assert_block_control_shrink_wraps_and_stretches(name: &str) {
         &format!("{name}: block item geometry"),
     );
 }
+
+// ============================================================================
+// Reversed auto-margin placement regression set — locks the browser oracle for
+// reversed flex containers (row-reverse / column-reverse / rtl row).
+//
+// The reversed flip in `resolved_flex_item_main_start_px` places the item's
+// margin-box start by subtracting its full outer main size — both main margins
+// plus the border-box size. Under the fixed `main_axis_start/end` → left/right
+// (Horizontal) / top/bottom (Vertical) mapping, the spec main-start side for a
+// reversed axis is the view's `margin_main_end` (our "end" maps to the
+// bottom/right physical sides). The two margins re-enter downstream — the
+// non-auto one via the block solver, the auto one via the absorbed-start shift
+// — so subtracting both here is what stops the item's own margins from drifting
+// the border box (the old flip dropped them entirely). Scenarios A–D pin the
+// row/row-reverse border-box edges against the browser; E–G add the
+// column-reverse and rtl-row axis variants.
+// ============================================================================
+
+#[test]
+fn probe_a_row_reverse_margin_left_auto_border_box_left() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-left", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("probe A item should expose a box model");
+    let plans = take_staged_layer_paint_plans(&root);
+    let paint_left = plans[0].rects[1].position_px[0];
+    println!(
+        "[probe A row-reverse margin-left:auto] border_box.left={} border_box.right={} \
+         margin.left={} margin.right={} paint.left={}",
+        box_.border_box.left_px,
+        box_.border_box.left_px + box_.border_box.width_px,
+        box_.margin.left_px,
+        box_.margin.right_px,
+        paint_left,
+    );
+    assert_close(
+        box_.border_box.left_px,
+        150.0,
+        "probe A border-box left (browser: 150)",
+    );
+    assert_close(paint_left, 150.0, "probe A paint left (browser: 150)");
+}
+
+#[test]
+fn probe_b_row_reverse_margin_right_auto_border_box_left() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-right", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("probe B item should expose a box model");
+    let plans = take_staged_layer_paint_plans(&root);
+    let paint_left = plans[0].rects[1].position_px[0];
+    println!(
+        "[probe B row-reverse margin-right:auto] border_box.left={} border_box.right={} \
+         margin.left={} margin.right={} paint.left={}",
+        box_.border_box.left_px,
+        box_.border_box.left_px + box_.border_box.width_px,
+        box_.margin.left_px,
+        box_.margin.right_px,
+        paint_left,
+    );
+    assert_close(
+        box_.border_box.left_px,
+        0.0,
+        "probe B border-box left (browser: 0)",
+    );
+    assert_close(paint_left, 0.0, "probe B paint left (browser: 0)");
+}
+
+#[test]
+fn probe_c_row_margin_right_auto_border_box_left() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-right", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("probe C item should expose a box model");
+    let plans = take_staged_layer_paint_plans(&root);
+    let paint_left = plans[0].rects[1].position_px[0];
+    println!(
+        "[probe C row margin-right:auto] border_box.left={} border_box.right={} \
+         margin.left={} margin.right={} paint.left={}",
+        box_.border_box.left_px,
+        box_.border_box.left_px + box_.border_box.width_px,
+        box_.margin.left_px,
+        box_.margin.right_px,
+        paint_left,
+    );
+    assert_close(
+        box_.border_box.left_px,
+        0.0,
+        "probe C border-box left (browser: 0)",
+    );
+    assert_close(paint_left, 0.0, "probe C paint left (browser: 0)");
+}
+
+#[test]
+fn probe_d_row_reverse_non_auto_margins_border_box_left() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "flex-direction", "row-reverse");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-left", "10px");
+    assert_style_set(&mut root, item, "margin-right", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("probe D item should expose a box model");
+    let plans = take_staged_layer_paint_plans(&root);
+    let paint_left = plans[0].rects[1].position_px[0];
+    let border_box_left = box_.border_box.left_px;
+    let border_box_right = box_.border_box.left_px + box_.border_box.width_px;
+    println!(
+        "[probe D row-reverse margin-left:10px margin-right:20px] border_box.left={} \
+         border_box.right={} margin.left={} margin.right={} paint.left={}",
+        border_box_left, border_box_right, box_.margin.left_px, box_.margin.right_px, paint_left,
+    );
+    assert_close(
+        border_box_left,
+        130.0,
+        "probe D border-box left (browser: 130)",
+    );
+    assert_close(
+        border_box_right,
+        180.0,
+        "probe D border-box right (browser: 180)",
+    );
+}
+
+#[test]
+fn probe_e_column_reverse_margin_top_auto_border_box_top() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_column_container_size(&mut root, container, "50px", "200px");
+    assert_style_set(&mut root, container, "flex-direction", "column-reverse");
+    assert_set_inflexible_column_item(&mut root, item, "50px", "50px");
+    assert_style_set(&mut root, item, "margin-top", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("probe E item should expose a box model");
+    let plans = take_staged_layer_paint_plans(&root);
+    let paint_top = plans[0].rects[1].position_px[1];
+    println!(
+        "[probe E column-reverse margin-top:auto] border_box.top={} border_box.bottom={} \
+         margin.top={} margin.bottom={} paint.top={}",
+        box_.border_box.top_px,
+        box_.border_box.top_px + box_.border_box.height_px,
+        box_.margin.top_px,
+        box_.margin.bottom_px,
+        paint_top,
+    );
+    assert_close(
+        box_.border_box.top_px,
+        150.0,
+        "probe E border-box top (browser: 150)",
+    );
+    assert_close(paint_top, 150.0, "probe E paint top (browser: 150)");
+}
+
+#[test]
+fn probe_f_column_reverse_margin_bottom_auto_border_box_top() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_column_container_size(&mut root, container, "50px", "200px");
+    assert_style_set(&mut root, container, "flex-direction", "column-reverse");
+    assert_set_inflexible_column_item(&mut root, item, "50px", "50px");
+    assert_style_set(&mut root, item, "margin-bottom", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("probe F item should expose a box model");
+    let plans = take_staged_layer_paint_plans(&root);
+    let paint_top = plans[0].rects[1].position_px[1];
+    println!(
+        "[probe F column-reverse margin-bottom:auto] border_box.top={} border_box.bottom={} \
+         margin.top={} margin.bottom={} paint.top={}",
+        box_.border_box.top_px,
+        box_.border_box.top_px + box_.border_box.height_px,
+        box_.margin.top_px,
+        box_.margin.bottom_px,
+        paint_top,
+    );
+    assert_close(
+        box_.border_box.top_px,
+        0.0,
+        "probe F border-box top (browser: 0)",
+    );
+    assert_close(paint_top, 0.0, "probe F paint top (browser: 0)");
+}
+
+#[test]
+fn probe_g_rtl_row_margin_right_auto_border_box_left() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "direction", "rtl");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-right", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("probe G item should expose a box model");
+    let plans = take_staged_layer_paint_plans(&root);
+    let paint_left = plans[0].rects[1].position_px[0];
+    println!(
+        "[probe G rtl row margin-right:auto] border_box.left={} border_box.right={} \
+         margin.left={} margin.right={} paint.left={}",
+        box_.border_box.left_px,
+        box_.border_box.left_px + box_.border_box.width_px,
+        box_.margin.left_px,
+        box_.margin.right_px,
+        paint_left,
+    );
+    assert_close(
+        box_.border_box.left_px,
+        0.0,
+        "probe G border-box left (browser: 0)",
+    );
+    assert_close(paint_left, 0.0, "probe G paint left (browser: 0)");
+}

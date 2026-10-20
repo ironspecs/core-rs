@@ -3222,6 +3222,11 @@ where
         0.0,
         request.solve.main_size_px,
         resolved_main_axis_is_reversed(request.container_style),
+        // An excluded abs-pos/fixed child has no flex-item margins: its static
+        // position is a 0×0 placeholder, so the reversed flip has no own
+        // main-start/main-end margin to subtract.
+        0.0,
+        0.0,
     );
     let (content_left_px, content_top_px) = match request.container_style.main_axis {
         FlexAxis::Horizontal => (main_start_px, static_cross_px),
@@ -3512,6 +3517,15 @@ fn write_node_border_box_position(
 /// view, gated by the view's per-side auto flags: a non-auto edge reports 0.0
 /// so the write below leaves the block solver's already-resolved edge untouched
 /// (and the block solver is guarded to 0 for the auto edges).
+///
+/// The edge mapping is FIXED and physical (not reversal-aware), and that is
+/// correct for BOTH LTR and reversed containers: `main_start` maps to physical
+/// left (Horizontal) / top (Vertical) and `main_end` to physical right / bottom
+/// regardless of axis reversal. The reversal is handled downstream — the
+/// reversed flip in `resolved_flex_item_main_start_px` subtracts the item's
+/// full outer main size (both margins) to place its margin-box start, so a
+/// reversed axis needs no reversal-aware mapping here. Do NOT "fix" this
+/// mapping to follow the reversed axis.
 fn physical_absorbed_auto_margins(view: FlexItemView, main_axis: FlexAxis) -> (f32, f32, f32, f32) {
     let main_start = if view.margin_main_start_auto {
         view.margin_main_start_px
@@ -3867,6 +3881,11 @@ fn anonymous_inline_run_child_context(
         resolved_item.resolved_main_size_px,
         container_main_size_px,
         resolved_main_axis_is_reversed(container_style),
+        // A run item has no node style and therefore no authored/auto margins
+        // (CSS Flexbox §4: an anonymous run box carries no box model), so the
+        // reversed flip has no own margins to subtract.
+        0.0,
+        0.0,
     );
     let cross_start_px = resolved_item.cross_offset_px;
     match container_style.main_axis {
@@ -4008,6 +4027,8 @@ fn active_flex_resolved_child_context(
         resolved_item.resolved_main_size_px,
         container_main_size_px,
         resolved_main_axis_is_reversed(container_style),
+        view.margin_main_start_px,
+        view.margin_main_end_px,
     );
     let cross_start_px = resolved_item.cross_offset_px;
     // The absorbed auto START margins (physical left/top) shift the item's
@@ -4015,7 +4036,11 @@ fn active_flex_resolved_child_context(
     // write and its descendants both land at the absorbed origin. The block
     // auto-margin solver resolves a flex item's auto margins to 0 at relayout
     // (the double-absorption guard), so the layout's own margin application
-    // adds nothing on top of this shift — no double count.
+    // adds nothing on top of this shift — no double count. For REVERSED
+    // containers the main-axis flip above already subtracted the item's own
+    // margins (so the absorbed start margin re-enters here without a double
+    // count); the CROSS-start absorbed margin is unaffected by main-axis
+    // reversal and always shifts.
     let (absorbed_left, _, absorbed_top, _) =
         physical_absorbed_auto_margins(view, container_style.main_axis);
     let resolved_content_main_size_px =
@@ -4121,11 +4146,29 @@ fn resolved_flex_item_main_start_px(
     resolved_main_size_px: f32,
     container_main_size_px: f32,
     is_main_reversed: bool,
+    main_start_margin_px: f32,
+    main_end_margin_px: f32,
 ) -> f32 {
     if !is_main_reversed {
         return main_offset_px;
     }
-    container_main_size_px - main_offset_px - resolved_main_size_px
+    // The reversed flip places the item's MARGIN-BOX start against the physical
+    // main-start edge by subtracting the item's full outer main size — its own
+    // main-start AND main-end margins plus the border-box main size (CSS
+    // Flexbox §9.2: reversing the main axis swaps main-start/main-end, so the
+    // item's margin at the spec main-start side is our `main_end_margin_px` —
+    // under our fixed `main_axis_start/end` → left/right (Horizontal) / top/
+    // bottom (Vertical) mapping, "end" is the bottom/right physical side, which
+    // IS the reversed spec main-start). The two margins re-enter placement
+    // downstream unchanged: the non-auto main-end margin via the block solver
+    // (`local_left = flow_left + margin_left`), the auto one via the absorbed
+    // start shift — so subtracting both here is what keeps the item's own
+    // margins from drifting the border box (the old form dropped them entirely).
+    container_main_size_px
+        - main_offset_px
+        - main_start_margin_px
+        - main_end_margin_px
+        - resolved_main_size_px
 }
 
 fn active_flex_content_width_px(main_axis: FlexAxis, main_size_px: f32, cross_size_px: f32) -> f32 {
@@ -7454,12 +7497,18 @@ mod tests {
     #[test]
     fn resolved_flex_item_main_start_px_flips_reversed_axis_without_reordering_items() {
         assert_eq!(
-            resolved_flex_item_main_start_px(20.0, 10.0, 90.0, false),
+            resolved_flex_item_main_start_px(20.0, 10.0, 90.0, false, 0.0, 0.0),
             20.0,
         );
         assert_eq!(
-            resolved_flex_item_main_start_px(20.0, 10.0, 90.0, true),
+            resolved_flex_item_main_start_px(20.0, 10.0, 90.0, true, 0.0, 0.0),
             60.0,
+        );
+        // The reversed flip subtracts the item's full outer main size — both
+        // main margins plus the border-box size — to place its margin-box start.
+        assert_eq!(
+            resolved_flex_item_main_start_px(20.0, 10.0, 90.0, true, 15.0, 5.0),
+            40.0,
         );
     }
 
