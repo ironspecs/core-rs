@@ -44,7 +44,20 @@ actually computed (trace it; do not "unclamp" the child and leave the
 parent's margin uncombined — that is the failure mode where the child
 stops overflowing but the parent is not pulled up). The child's
 position when collapsed (at the parent's content edge) is the existing
-machinery and does not change. The delta function keeps its shape:
+machinery and does not change. **The consumer's timing (added
+2026-10-20):** the contribution is computed during the parent's CHILD
+LOOP from `child_style` (no lookahead) and stored on the flow
+(`first_collapsed_parent_top_margin_px`); the parent's EFFECTIVE margin
+combines at the parent's EXIT —
+`three_branch(entered.box_model.margin.top,
+flow.first_collapsed_parent_top_margin_px)` — in the parent's margin
+finalization (the box-model/`layout_flow_size` margin, wherever the
+parent's FlowSize margin is finalized). The empty-intermediary chain
+arrives bottom-up at the empty child's exit via the delta function —
+still inside the parent's child loop, before the parent's own exit — so
+it combines at the same consumer with the same rule. NO top-down
+lookahead is needed for ANY flag-true case; the positioning-time walk
+stays flag-false-only (D3's offset). The delta function keeps its shape:
 `delta = three_branch(child_margin, own_margin) − own_margin`
 (positive chains stay `max` — the
 `empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_max`
