@@ -154,6 +154,10 @@ mod tests {
             margin_main_end_px: 0.0,
             margin_cross_start_px: 0.0,
             margin_cross_end_px: 0.0,
+            margin_main_start_auto: false,
+            margin_main_end_auto: false,
+            margin_cross_start_auto: false,
+            margin_cross_end_auto: false,
         }
     }
 

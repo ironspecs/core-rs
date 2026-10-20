@@ -6155,23 +6155,322 @@ fn nested_flex_auto_basis_block_children_participate_in_flex_layout() {
 }
 
 #[test]
-// CSS Flexbox 1 §8.1 (aligning with auto margins) — on-spec for the pinned
-// case, held by an ACCIDENTAL solver path. Spec: a flex item's `margin: auto`
-// absorbs free space in its axis. In a COLUMN container the cross axis is the
-// inline axis, so `margin-left: auto; margin-right: auto` on a fixed-width
-// block item should center it in the container's cross size.
+// CSS Flexbox 1 §8.1: a flex item's `margin: auto` absorbs free space in its
+// axis before alignment. Closest WPT oracle: `css/css-flexbox/auto-margins-*`;
+// Blink distributes main-axis auto margins at positioning
+// (`flex_layout_algorithm.cc` `main_axis_auto_margin_count`), Gecko in
+// `MainAxisPositionTracker::ResolveAutoMarginsInMainAxis`.
 //
-// HOW THIS WORKS TODAY (accidental, §8.1-aligned for this simple case): a
-// block-level item in a COLUMN container gets its cross-axis auto margins
-// absorbed through the BLOCK §10.3.3 solver — `resolve_block_auto_margins`
-// (`src/domains/layout/flow.rs`) is reached via the Vertical branch of the
-// flex placed-child context (`src/domains/layout/flex.rs`), which leaves
-// `available_width_px` as the container's content width, so the free space is
-// non-zero and the pair splits it. Full §8.1 semantics (auto margins vs
-// `align-self`, and MAIN-axis absorption — which still computes to 0, pinned by
-// `flex_item_auto_margin_computes_to_zero_for_now`) await the named D6
-// admission. This pin exists so the accidental cross-axis behavior cannot drift
-// silently: it is NOT `off_spec_`-named because it is not divergent.
+// Relabeled from `flex_item_auto_margin_computes_to_zero_for_now` (the PR 1
+// item 7 S5 gate, formerly in `style/unsupported_values.rs`): a 50px item with
+// `margin-left/right: auto` in a 200px row now absorbs (75, 75) and centers.
+fn flex_item_main_auto_margins_absorb_free_space() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-left", "auto");
+    assert_style_set(&mut root, item, "margin-right", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("flex item should expose a box model");
+    assert_close(
+        box_.margin.left_px,
+        75.0,
+        "flex auto left margin absorbs half the free space",
+    );
+    assert_close(
+        box_.margin.right_px,
+        75.0,
+        "flex auto right margin absorbs half the free space",
+    );
+    assert_close(
+        box_.border_box.left_px,
+        75.0,
+        "flex item centers via absorbed auto margins",
+    );
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item.
+    assert_rect_op_geometry(&rects[1], 75.0, 0.0, 50.0, 10.0, "centered flex item");
+}
+
+#[test]
+// CSS Flexbox 1 §8.1: a single main-axis auto margin absorbs all of the line's
+// positive free space, pushing the item to the main-end edge. A 50px item with
+// only `margin-left: auto` in a 200px row absorbs the full 150px and lands at
+// left 150.
+fn flex_item_single_main_auto_margin_pushes_to_main_end() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "margin-left", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item.
+    assert_rect_op_geometry(
+        &rects[1],
+        150.0,
+        0.0,
+        50.0,
+        10.0,
+        "item pushed to main-end by a single start auto margin",
+    );
+}
+
+#[test]
+// CSS Flexbox 1 §8.1: when auto main margins absorb free space, justify-content
+// has no effect — the auto margins take all of it. A single 10px item with
+// `margin-left: auto` in a 100px row under `justify-content: space-between`
+// absorbs the 90px free space (left 90); space-between alone would leave the
+// single item at left 0, proving the justify offset is suppressed.
+fn flex_auto_margins_override_justify_content() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, container, "justify-content", "space-between");
+    assert_set_inflexible_row_item(&mut root, item, "10px", "10px");
+    assert_style_set(&mut root, item, "margin-left", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item.
+    assert_rect_op_geometry(
+        &rects[1],
+        90.0,
+        0.0,
+        10.0,
+        10.0,
+        "auto margin overrides space-between (single item) and pushes to main-end",
+    );
+}
+
+#[test]
+// CSS Flexbox 1 §8.1: negative free space leaves auto margins at 0. A 50px item
+// with `margin: auto` in a 30px row has −20px of free space, so the margins
+// stay 0 and the item overflows from the (default flex-start) main edge.
+fn flex_auto_margins_compute_to_zero_with_negative_free_space() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "30px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "10px");
+    assert_style_set(&mut root, item, "margin", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("flex item should expose a box model");
+    assert_close(
+        box_.margin.left_px,
+        0.0,
+        "negative free space leaves the auto left margin at 0",
+    );
+    assert_close(
+        box_.margin.right_px,
+        0.0,
+        "negative free space leaves the auto right margin at 0",
+    );
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        50.0,
+        10.0,
+        "overflowing item stays at flex-start with no absorption",
+    );
+}
+
+#[test]
+// CSS Flexbox 1 §8.1 (cross axis): a flex item's auto CROSS margins absorb the
+// line's remaining cross space, and align-items/align-self has no effect on that
+// item. Closest WPT oracle: `css/css-flexbox/auto-margins-*`; Gecko
+// `SingleLineCrossAxisPositionTracker::ResolveAutoMarginsInCrossAxis`.
+//
+// A 20px-cross item with `margin-top/bottom: auto` in a 100px-cross row absorbs
+// (40, 40) and centers at top 40, overriding `align-items: flex-end` (which
+// would otherwise place it at top 80).
+fn flex_cross_auto_margins_center_and_override_align_items() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "60px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, container, "align-items", "flex-end");
+    assert_set_inflexible_row_item(&mut root, item, "10px", "20px");
+    assert_style_set(&mut root, item, "margin-top", "auto");
+    assert_style_set(&mut root, item, "margin-bottom", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("flex item should expose a box model");
+    assert_close(
+        box_.margin.top_px,
+        40.0,
+        "cross auto top margin absorbs half the cross free space",
+    );
+    assert_close(
+        box_.margin.bottom_px,
+        40.0,
+        "cross auto bottom margin absorbs half the cross free space",
+    );
+    assert_close(
+        box_.border_box.top_px,
+        40.0,
+        "flex item centers via absorbed cross auto margins",
+    );
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = item.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        40.0,
+        10.0,
+        20.0,
+        "cross-centered item overrides align-items flex-end",
+    );
+}
+
+#[test]
+// CSS Flexbox 1 §8.1 per-side share arithmetic: positive free space splits
+// equally across EVERY auto main margin on the line (two auto margins per item,
+// summed over the line). Two 10px items with `margin-left/right: auto` in a
+// 100px row have 80px free over four auto margins → 20px each, so the first
+// item sits at left 20 and the second at left 70. The control (a single
+// `margin-left: auto` on the second item) absorbs the whole 80px into one margin
+// and pushes the second item to left 90.
+fn flex_multi_item_auto_margins_distribute_free_space_equally_per_side() {
+    // Primary: two auto margins per item, four shares total.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let first = assert_append_div_to(&mut root, container);
+    let second = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "10px");
+    for child in [first, second] {
+        assert_set_inflexible_row_item(&mut root, child, "10px", "10px");
+        assert_style_set(&mut root, child, "margin-left", "auto");
+        assert_style_set(&mut root, child, "margin-right", "auto");
+    }
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let first_box = node_box(&root, first).expect("first item should expose a box model");
+    let second_box = node_box(&root, second).expect("second item should expose a box model");
+    assert_close(
+        first_box.margin.left_px,
+        20.0,
+        "first left auto margin share",
+    );
+    assert_close(
+        first_box.margin.right_px,
+        20.0,
+        "first right auto margin share",
+    );
+    assert_close(
+        second_box.margin.left_px,
+        20.0,
+        "second left auto margin share",
+    );
+    assert_close(
+        second_box.margin.right_px,
+        20.0,
+        "second right auto margin share",
+    );
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
+        20.0,
+        0.0,
+        10.0,
+        10.0,
+        "first item after its leading auto margin share",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        70.0,
+        0.0,
+        10.0,
+        10.0,
+        "second item after inter-item auto margin shares",
+    );
+
+    // Control: one auto margin absorbs the whole free space.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let first = assert_append_div_to(&mut root, container);
+    let second = assert_append_div_to(&mut root, container);
+
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "10px");
+    assert_set_inflexible_row_item(&mut root, first, "10px", "10px");
+    assert_set_inflexible_row_item(&mut root, second, "10px", "10px");
+    assert_style_set(&mut root, second, "margin-left", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    // rects[0] = container, rects[1] = first, rects[2] = second.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        10.0,
+        10.0,
+        "control first item stays at main-start",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        90.0,
+        0.0,
+        10.0,
+        10.0,
+        "control second item pushed to main-end by the single auto margin",
+    );
+}
+
+#[test]
+// CSS Flexbox 1 §8.1 (aligning with auto margins) — on-spec, now via the flex
+// §8.1 CROSS-axis path (D3, flex arc step 10), NOT the former accidental block
+// path. Spec: a flex item's `margin: auto` absorbs free space in its axis. In a
+// COLUMN container the cross axis is the inline axis, so
+// `margin-left: auto; margin-right: auto` on a fixed-width block item centers it
+// in the container's cross size.
+//
+// UNIFICATION (flex arc step 10): this pin formerly documented an ACCIDENTAL
+// solver path — a block-level item in a COLUMN container absorbed its cross-axis
+// auto margins through the BLOCK §10.3.3 solver (`resolve_block_auto_margins`),
+// because the flex placed-child context's Vertical branch left
+// `auto_margin_reference_width_px` unset. That accidental path is removed: the
+// vertical branch now sets the same double-absorption guard as the horizontal
+// branch, so the block solver resolves flex-item auto margins to 0 and the flex
+// solver's D3 cross-axis distribution owns the absorption. The geometry is
+// unchanged (centered, left 20 in the 60px container) — only the solver path
+// changed.
 fn column_flex_block_item_cross_auto_margins_absorb_free_space() {
     // Primary: a 20px-wide block item with both cross-axis margins auto in a
     // 60px column container centers at left (60 − 20) / 2 = 20.

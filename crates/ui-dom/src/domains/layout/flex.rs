@@ -23,8 +23,8 @@
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs
 
 use crate::domains::style::computed::{
-    AlignContentKw, AlignItemsKw, FlexBasisKw, FlexDirectionKw, FlexWrapKw, JustifyContentKw,
-    OverflowKw,
+    AlignContentKw, AlignItemsKw, BoxLength, FlexBasisKw, FlexDirectionKw, FlexWrapKw,
+    JustifyContentKw, OverflowKw,
 };
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
 use crate::numeric::usize_to_f32;
@@ -163,6 +163,7 @@ struct FlexContainerStyle {
 /// run item (no node record) they carry the run's widest segment / max-content
 /// sum, the 3a cursors.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // the §8.1 auto-margin flags are four named side bits (D1); a bitmask would obscure the per-side reads
 pub(crate) struct FlexItemView {
     pub(crate) source: FlexItemSource,
     pub(crate) order: i32,
@@ -198,6 +199,16 @@ pub(crate) struct FlexItemView {
     pub(crate) margin_main_end_px: f32,
     pub(crate) margin_cross_start_px: f32,
     pub(crate) margin_cross_end_px: f32,
+    /// CSS Flexbox §8.1 auto-margin flags (D1, flex arc step 10): one bit per
+    /// axis side, read from the node's computed box group at item-view
+    /// assembly (`BoxLength::Auto`). Auto margins are NOT resolved at
+    /// measure/style time — they need free space, which exists only after §9.7
+    /// — so the resolved `margin_*_px` fields carry a 0.0 placeholder here and
+    /// the absorption phases (D2 main, D3 cross) overwrite them.
+    pub(crate) margin_main_start_auto: bool,
+    pub(crate) margin_main_end_auto: bool,
+    pub(crate) margin_cross_start_auto: bool,
+    pub(crate) margin_cross_end_auto: bool,
 }
 
 /// The transient resolved-item bundle placement assembles per child from the
@@ -604,6 +615,11 @@ fn anonymous_inline_run_item_view(
         margin_main_end_px: 0.0,
         margin_cross_start_px: 0.0,
         margin_cross_end_px: 0.0,
+        // A run has no node style, so it carries no auto margins.
+        margin_main_start_auto: false,
+        margin_main_end_auto: false,
+        margin_cross_start_auto: false,
+        margin_cross_end_auto: false,
     }
 }
 
@@ -765,6 +781,15 @@ where
     let margin_main_end_px = main_axis_end_margin(child_style, main_axis);
     let margin_cross_start_px = cross_axis_start_margin(child_style, main_axis);
     let margin_cross_end_px = cross_axis_end_margin(child_style, main_axis);
+    // D1 (flex arc step 10): read the auto-margin flags from the node's computed
+    // box group at item-view assembly (no new resolution) — a side is auto iff
+    // its computed margin is `BoxLength::Auto`.
+    let (
+        margin_main_start_auto,
+        margin_main_end_auto,
+        margin_cross_start_auto,
+        margin_cross_end_auto,
+    ) = auto_margin_sides(node.computed_box().margin, main_axis);
     let outer_hypothetical_main_size_px =
         hypothetical_main_size_px + margin_main_start_px + margin_main_end_px;
     Ok(FlexItemView {
@@ -792,6 +817,10 @@ where
         margin_main_end_px,
         margin_cross_start_px,
         margin_cross_end_px,
+        margin_main_start_auto,
+        margin_main_end_auto,
+        margin_cross_start_auto,
+        margin_cross_end_auto,
     })
 }
 
@@ -2036,6 +2065,10 @@ where
         container_style,
         container_cross_size_px,
     );
+    // D3 (flex arc step 10): after the post-resolution line cross, distribute
+    // each item's remaining cross space equally among its auto cross margins
+    // (align-items/align-self then has no effect on that item).
+    resolve_flex_item_cross_auto_margins(&mut root_dom.layout_scratch, order_range, line_range);
     line_cross_offsets_px(
         &mut root_dom.layout_scratch,
         line_range,
@@ -2260,6 +2293,61 @@ fn resolved_line_cross_sizes(
     }
 }
 
+/// CSS Flexbox §8.1 (D3, flex arc step 10): after the post-resolution line
+/// cross, each item's remaining cross space distributes equally among that
+/// item's auto CROSS margins (`free_cross = line_cross − item.outer_cross`;
+/// `outer_cross` includes the cross margins, still auto=0 here). Negative/zero
+/// free space leaves the auto cross margins at their 0.0 placeholder and
+/// align-items/align-self proceeds as today. Placement reads the absorbed
+/// values (via the auto flags) for the item's cross position and box model.
+fn resolve_flex_item_cross_auto_margins(
+    scratch: &mut LayoutScratch,
+    order_range: LaneRange,
+    line_range: LaneRange,
+) {
+    let order_entries = scratch.order.slice(order_range);
+    let line_count = usize::try_from(line_range.len).expect("line range len should fit into usize");
+    let mut line_pos = 0usize;
+    while line_pos < line_count {
+        let line = *scratch
+            .lines
+            .get(line_range.start + u32::try_from(line_pos).expect("line pos fits u32"));
+        let start = usize::try_from(line.first_order_index - order_range.start)
+            .expect("line first order index should fall within the container's order range");
+        let count =
+            usize::try_from(line.item_count).expect("line item count should fit into usize");
+        for order_entry in &order_entries[start..start + count] {
+            let view = scratch.items.get(order_entry.dom_index).view;
+            let mut auto_count = 0usize;
+            if view.margin_cross_start_auto {
+                auto_count += 1;
+            }
+            if view.margin_cross_end_auto {
+                auto_count += 1;
+            }
+            if auto_count == 0 {
+                continue;
+            }
+            let free_cross_px = line.resolved_cross_size_px
+                - (view.resolved_cross_size_px
+                    + view.margin_cross_start_px
+                    + view.margin_cross_end_px);
+            if free_cross_px <= 0.0 {
+                continue;
+            }
+            let share_px = free_cross_px / non_negative_f32_from_usize(auto_count);
+            let view = &mut scratch.items.get_mut(order_entry.dom_index).view;
+            if view.margin_cross_start_auto {
+                view.margin_cross_start_px += share_px;
+            }
+            if view.margin_cross_end_auto {
+                view.margin_cross_end_px += share_px;
+            }
+        }
+        line_pos += 1;
+    }
+}
+
 fn line_cross_offsets_px(
     scratch: &mut LayoutScratch,
     line_range: LaneRange,
@@ -2459,17 +2547,50 @@ fn assign_flex_line_main_offsets(
     let gap_between_items_px = container_style.gap_sizes.between_items_px;
     let line_main_size_px =
         resolved_flex_line_main_size_px(line_order, items, line_resolution, gap_between_items_px);
-    let remaining_main_space_px = container_main_size_px - line_main_size_px;
-    let mut main_offset_px = initial_main_axis_alignment_offset_px(
-        container_style,
-        remaining_main_space_px,
-        line_order.len(),
-    );
-    let extra_space_between_items_px = extra_main_axis_space_between_items_px(
-        resolved_main_axis_alignment(container_style.justify_content, container_style),
-        remaining_main_space_px,
-        line_order.len(),
-    );
+    let free_space_px = container_main_size_px - line_main_size_px;
+    // CSS Flexbox §8.1 (D2, flex arc step 10): after §9.7, positive free space
+    // distributes EQUALLY among the line's auto MAIN margins, and
+    // justify-content has no effect (the auto margins take all of it). The free
+    // space is the §9.7 value above (auto margins are still 0 here), reused
+    // without recompute. Negative/zero free space leaves the auto margins at
+    // their 0.0 placeholder and justify proceeds as today.
+    let mut auto_main_margin_count = 0usize;
+    for order_entry in line_order {
+        let view = items.get(order_entry.dom_index).view;
+        if view.margin_main_start_auto {
+            auto_main_margin_count += 1;
+        }
+        if view.margin_main_end_auto {
+            auto_main_margin_count += 1;
+        }
+    }
+    let absorbs_free_space = free_space_px > 0.0 && auto_main_margin_count > 0;
+    if absorbs_free_space {
+        let share_px = free_space_px / non_negative_f32_from_usize(auto_main_margin_count);
+        for order_entry in line_order {
+            let view = &mut items.get_mut(order_entry.dom_index).view;
+            if view.margin_main_start_auto {
+                view.margin_main_start_px += share_px;
+            }
+            if view.margin_main_end_auto {
+                view.margin_main_end_px += share_px;
+            }
+        }
+    }
+    let mut main_offset_px = if absorbs_free_space {
+        0.0
+    } else {
+        initial_main_axis_alignment_offset_px(container_style, free_space_px, line_order.len())
+    };
+    let extra_space_between_items_px = if absorbs_free_space {
+        0.0
+    } else {
+        extra_main_axis_space_between_items_px(
+            resolved_main_axis_alignment(container_style.justify_content, container_style),
+            free_space_px,
+            line_order.len(),
+        )
+    };
     for (index, order_entry) in line_order.iter().enumerate() {
         let view = items.get(order_entry.dom_index).view;
         let resolved_main_size_px = line_resolution[index].resolved_main_size_px;
@@ -3329,7 +3450,12 @@ fn excluded_flex_child_static_cross_px(
         cross_offset_px: 0.0,
     };
     line.cross_offset_px
-        + cross_axis_alignment_offset_px(dummy_item, container_style, line.resolved_cross_size_px)
+        + cross_axis_alignment_offset_px(
+            dummy_item,
+            container_style,
+            line.resolved_cross_size_px,
+            false,
+        )
 }
 
 /// Writes a node's retained border-box origin (the positioned-layer offset
@@ -3366,6 +3492,103 @@ fn write_node_border_box_position(
     Ok(())
 }
 
+/// The physical `(left, right, top, bottom)` absorbed auto margins for one item
+/// view, gated by the view's per-side auto flags: a non-auto edge reports 0.0
+/// so the write below leaves the block solver's already-resolved edge untouched
+/// (and the block solver is guarded to 0 for the auto edges).
+fn physical_absorbed_auto_margins(view: FlexItemView, main_axis: FlexAxis) -> (f32, f32, f32, f32) {
+    let main_start = if view.margin_main_start_auto {
+        view.margin_main_start_px
+    } else {
+        0.0
+    };
+    let main_end = if view.margin_main_end_auto {
+        view.margin_main_end_px
+    } else {
+        0.0
+    };
+    let cross_start = if view.margin_cross_start_auto {
+        view.margin_cross_start_px
+    } else {
+        0.0
+    };
+    let cross_end = if view.margin_cross_end_auto {
+        view.margin_cross_end_px
+    } else {
+        0.0
+    };
+    match main_axis {
+        FlexAxis::Horizontal => (main_start, main_end, cross_start, cross_end),
+        FlexAxis::Vertical => (cross_start, cross_end, main_start, main_end),
+    }
+}
+
+/// Writes a flex item's absorbed auto margins into its retained box model
+/// (CSS Flexbox §8.1): the absorbed START margins shift the border-box origin
+/// (the flex placement context already positioned the item at its margin-box
+/// start, with the block auto-margin solver guarded to 0), and all four
+/// absorbed edges add into the corresponding `box_model.margin` edges for
+/// paint/hit-test. Run items have no node box (and no auto margins), so this is
+/// a no-op for them; a view with no absorbed edges is likewise a no-op.
+fn write_flex_item_absorbed_auto_margins(
+    root_dom: &mut RootDom,
+    source: FlexItemSource,
+    main_axis: FlexAxis,
+    view: FlexItemView,
+) -> Result<(), DomError> {
+    let FlexItemSource::BlockItem(key) = source else {
+        return Ok(());
+    };
+    let (absorbed_left, absorbed_right, absorbed_top, absorbed_bottom) =
+        physical_absorbed_auto_margins(view, main_axis);
+    if absorbed_left == 0.0
+        && absorbed_right == 0.0
+        && absorbed_top == 0.0
+        && absorbed_bottom == 0.0
+    {
+        return Ok(());
+    }
+    let node = root_dom
+        .nodes
+        .get_mut(key)
+        .ok_or(DomError::InvalidNodeKey)?;
+    match node {
+        DomNode::Document(document) => {
+            document.base.box_model.border_box.left_px += absorbed_left;
+            document.base.box_model.border_box.top_px += absorbed_top;
+            document.base.box_model.margin.left_px += absorbed_left;
+            document.base.box_model.margin.right_px += absorbed_right;
+            document.base.box_model.margin.top_px += absorbed_top;
+            document.base.box_model.margin.bottom_px += absorbed_bottom;
+        }
+        DomNode::DocumentFragment(fragment) => {
+            fragment.base.box_model.border_box.left_px += absorbed_left;
+            fragment.base.box_model.border_box.top_px += absorbed_top;
+            fragment.base.box_model.margin.left_px += absorbed_left;
+            fragment.base.box_model.margin.right_px += absorbed_right;
+            fragment.base.box_model.margin.top_px += absorbed_top;
+            fragment.base.box_model.margin.bottom_px += absorbed_bottom;
+        }
+        DomNode::Element(element) => {
+            element.base.box_model.border_box.left_px += absorbed_left;
+            element.base.box_model.border_box.top_px += absorbed_top;
+            element.base.box_model.margin.left_px += absorbed_left;
+            element.base.box_model.margin.right_px += absorbed_right;
+            element.base.box_model.margin.top_px += absorbed_top;
+            element.base.box_model.margin.bottom_px += absorbed_bottom;
+        }
+        DomNode::Text(text) => {
+            text.base.box_model.border_box.left_px += absorbed_left;
+            text.base.box_model.border_box.top_px += absorbed_top;
+            text.base.box_model.margin.left_px += absorbed_left;
+            text.base.box_model.margin.right_px += absorbed_right;
+            text.base.box_model.margin.top_px += absorbed_top;
+            text.base.box_model.margin.bottom_px += absorbed_bottom;
+        }
+    }
+    Ok(())
+}
+
 fn place_active_flex_resolved_children<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
@@ -3396,10 +3619,18 @@ where
             main_offset_px: item_entry.main_offset_px,
             cross_offset_px: line.cross_offset_px,
         };
+        // D3 (flex arc step 10): an item whose auto cross margins absorbed a
+        // positive share has its align-items/align-self offset suppressed (the
+        // margins own the free space). The share is positive iff an auto cross
+        // margin was mutated away from its 0.0 placeholder.
+        let cross_auto_margins_absorbed = (view.margin_cross_start_auto
+            && view.margin_cross_start_px > 0.0)
+            || (view.margin_cross_end_auto && view.margin_cross_end_px > 0.0);
         let aligned_resolved_item = aligned_resolved_flex_item(
             resolved_item,
             request.container_style,
             line.resolved_cross_size_px,
+            cross_auto_margins_absorbed,
         );
         let placed_resolved_item = relayout_resolved_flex_child(
             root_dom,
@@ -3413,6 +3644,16 @@ where
                 resolved_item: aligned_resolved_item,
             },
             resolver,
+        )?;
+        // The block auto-margin solver is guarded to 0 inside a flex item, so
+        // the absorbed auto margins land here, in the item's retained box model
+        // (border-box origin shifted by the start margins; all four margin
+        // edges written for paint/hit-test).
+        write_flex_item_absorbed_auto_margins(
+            root_dom,
+            view.source,
+            request.container_style.main_axis,
+            view,
         )?;
         let line_slot = usize::try_from(item_entry.line_index - solve.line_range.start)
             .expect("line index should fall within the container's line range");
@@ -3441,10 +3682,16 @@ fn aligned_resolved_flex_item(
     resolved_item: ResolvedFlexItem,
     container_style: FlexContainerStyle,
     line_cross_size_px: f32,
+    cross_auto_margins_absorbed: bool,
 ) -> ResolvedFlexItem {
     ResolvedFlexItem {
         cross_offset_px: resolved_item.cross_offset_px
-            + cross_axis_alignment_offset_px(resolved_item, container_style, line_cross_size_px),
+            + cross_axis_alignment_offset_px(
+                resolved_item,
+                container_style,
+                line_cross_size_px,
+                cross_auto_margins_absorbed,
+            ),
         ..resolved_item
     }
 }
@@ -3636,7 +3883,15 @@ fn cross_axis_alignment_offset_px(
     resolved_item: ResolvedFlexItem,
     container_style: FlexContainerStyle,
     line_cross_size_px: f32,
+    cross_auto_margins_absorbed: bool,
 ) -> f32 {
+    // CSS Flexbox §8.1 (D3): when the item's auto cross margins absorbed the
+    // line's free cross space, align-items/align-self has no effect on that
+    // item — the absorbed margins own the free space and the alignment offset
+    // is 0.
+    if cross_auto_margins_absorbed {
+        return 0.0;
+    }
     let alignment = resolved_flex_item_cross_axis_alignment(resolved_item, container_style);
     let remaining_cross_space_px = line_cross_size_px - resolved_item.resolved_cross_size_px;
     let is_cross_reversed = resolved_cross_axis_is_reversed(container_style);
@@ -3700,10 +3955,15 @@ fn non_negative_f32_from_usize(value: usize) -> f32 {
 ///   §percentages for the whole width family (`width`, `min-width`,
 ///   `max-width`, `margin×4`, `padding×4`, `left`, `right`). It is NOT the
 ///   item's resolved main size.
-/// - `auto_margin_reference_width_px` is the DEDICATED auto-margin reference —
-///   the ITEM's own resolved content main size — so the block §10.3.3 solver
-///   in `enter_node` sees `free = item_content − item_border_box ≤ 0` and the
-///   deferred §8.1 main-axis `margin: auto` admission stays at 0.
+/// - `auto_margin_reference_width_px` is the DOUBLE-ABSORPTION GUARD (D4, flex
+///   arc step 10): it gives the block §10.3.3 solver a reference width ≤ the
+///   item's own resolved content size on the axis the block solver would
+///   otherwise absorb, so `free = item_content − item_border_box ≤ 0` and the
+///   block solver's `resolve_block_auto_margins` resolves flex-item auto
+///   margins ONLY to 0 — never twice. This is the guard that keeps the flex and
+///   block auto-margin solvers disjoint (§8.1 landed in the flex solver, so the
+///   flex solver owns absorption: D2 main, D3 cross). `None` (every non-flex
+///   context) preserves the block solver's normal fallback.
 ///
 /// Verification enumeration (D2 obligation): the item context's
 /// `available_width_px` is read by (1) the item's `NodeStyle` width-family
@@ -3735,6 +3995,9 @@ fn active_flex_resolved_child_context(
     let cross_start_px = resolved_item.cross_offset_px;
     let resolved_content_main_size_px =
         resolved_flex_item_content_main_size_px(resolved_item).max(0.0);
+    let resolved_content_cross_size_px = (resolved_item.resolved_cross_size_px
+        - cross_axis_border_padding_size_px(child_style.sides, container_style.main_axis))
+    .max(0.0);
     let stretched_content_cross_size_px = stretched_flex_item_content_cross_size_px(
         child_style,
         container_style,
@@ -3756,7 +4019,7 @@ fn active_flex_resolved_child_context(
             flow_left_px: child_context.flow_left_px + cross_start_px,
             flow_top_px: child_context.flow_top_px + main_start_px,
             available_height_px: Some(resolved_content_main_size_px),
-            auto_margin_reference_width_px: None,
+            auto_margin_reference_width_px: Some(resolved_content_cross_size_px),
             node_content_width_override_px: stretched_content_cross_size_px,
             node_content_height_override_px: Some(resolved_content_main_size_px),
             ..child_context
@@ -3896,17 +4159,31 @@ fn cross_axis_border_padding_size_px(sides: BoxSides, main_axis: FlexAxis) -> f3
     }
 }
 
+/// The item's four auto-margin flags (D1, flex arc step 10), read from the
+/// computed box group's margin `BoxLength` fields: a side is auto iff its
+/// computed margin is `BoxLength::Auto`. The computed box group's margin array
+/// is `[top, right, bottom, left]` (group order); the return maps to
+/// `(main_start, main_end, cross_start, cross_end)` per the item's main axis.
+fn auto_margin_sides(margin: [BoxLength; 4], main_axis: FlexAxis) -> (bool, bool, bool, bool) {
+    let top = matches!(margin[0], BoxLength::Auto);
+    let right = matches!(margin[1], BoxLength::Auto);
+    let bottom = matches!(margin[2], BoxLength::Auto);
+    let left = matches!(margin[3], BoxLength::Auto);
+    match main_axis {
+        FlexAxis::Horizontal => (left, right, top, bottom),
+        FlexAxis::Vertical => (top, bottom, left, right),
+    }
+}
+
 fn main_axis_start_margin(style: NodeStyle, main_axis: FlexAxis) -> f32 {
-    // Flexbox §8.1 auto-margin free-space absorption is deferred for the MAIN
-    // axis (PR 1 item 7 scope boundary,
-    // `flex_item_auto_margin_computes_to_zero_for_now`): a flex item's main-axis
-    // `margin: auto` computes to 0 here. `node_style` already resolves an auto
-    // margin edge to a 0.0 placeholder, and this solver reads that resolved
-    // edge without distributing free space. The cross-axis block-item case in a
-    // COLUMN container absorbs through the block §10.3.3 solver (accidental,
-    // §8.1-aligned; pinned by
-    // `column_flex_block_item_cross_auto_margins_absorb_free_space`). Full §8.1
-    // semantics await the named D6 admission.
+    // `node_style` resolves an auto margin edge to a 0.0 placeholder; this
+    // solver reads that placeholder as the PRE-absorption value. The flex
+    // solver owns §8.1 (flex arc step 10): D2 distributes the line's positive
+    // main-axis free space into the item view's auto main margins and D3 does
+    // the same per item on the cross axis, both at positioning time — never at
+    // measure/style time (the free space does not exist yet). The resolved
+    // edges here stay 0 for auto margins and carry the authored value for
+    // non-auto margins.
     main_axis_start_margin_from_sides(style.sides, main_axis)
 }
 
@@ -4073,6 +4350,10 @@ mod tests {
             margin_main_end_px: 0.0,
             margin_cross_start_px: 0.0,
             margin_cross_end_px: 0.0,
+            margin_main_start_auto: false,
+            margin_main_end_auto: false,
+            margin_cross_start_auto: false,
+            margin_cross_end_auto: false,
         }
     }
 
@@ -4146,6 +4427,10 @@ mod tests {
             margin_main_end_px: box_edges.main_end_margin,
             margin_cross_start_px: box_edges.cross_start_margin,
             margin_cross_end_px: box_edges.cross_end_margin,
+            margin_main_start_auto: false,
+            margin_main_end_auto: false,
+            margin_cross_start_auto: false,
+            margin_cross_end_auto: false,
         }
     }
 
@@ -6308,7 +6593,7 @@ mod tests {
         container_style.align_items = super::FlexCrossAxisAlignment::FlexStart;
 
         assert_eq!(
-            cross_axis_alignment_offset_px(resolved_item, container_style, 50.0),
+            cross_axis_alignment_offset_px(resolved_item, container_style, 50.0, false),
             40.0,
         );
     }
@@ -7046,7 +7331,7 @@ mod tests {
         container_style.align_items = super::FlexCrossAxisAlignment::FlexStart;
 
         assert_eq!(
-            cross_axis_alignment_offset_px(resolved_item, container_style, 50.0),
+            cross_axis_alignment_offset_px(resolved_item, container_style, 50.0, false),
             20.0,
         );
     }
@@ -7067,7 +7352,7 @@ mod tests {
         container_style.align_items = super::FlexCrossAxisAlignment::FlexEnd;
 
         assert_eq!(
-            cross_axis_alignment_offset_px(resolved_item, container_style, 50.0),
+            cross_axis_alignment_offset_px(resolved_item, container_style, 50.0, false),
             0.0,
         );
     }

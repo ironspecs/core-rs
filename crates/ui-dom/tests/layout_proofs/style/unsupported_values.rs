@@ -1171,40 +1171,6 @@ fn margin_zero_auto_centers_a_fixed_width_block() {
 }
 
 #[test]
-// UNIMPLEMENTED (class: unimplemented — Flexbox §8.1 deferred, PR 1 item 7
-// scope boundary): a flex item's `margin: auto` does NOT absorb free space; it
-// computes to 0 for now. The block auto-margin solver (§10.3.3) never applies —
-// the flex placement context gives the item its own resolved content size as
-// the containing-block width, so the free space is zero and the margin stays 0.
-// See the `main_axis_start_margin` deferral note in `flex.rs`.
-fn flex_item_auto_margin_computes_to_zero_for_now() {
-    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
-    let document_root = root.document_node().0;
-    let container = assert_append_div_to(&mut root, document_root);
-    assert_style_set(&mut root, container, "display", "flex");
-    assert_style_set(&mut root, container, "width", "200px");
-    let item = assert_append_div_to(&mut root, container);
-    assert_style_set(&mut root, item, "width", "50px");
-    assert_style_set(&mut root, item, "margin-left", "auto");
-    assert_style_set(&mut root, item, "margin-right", "auto");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    assert_eq!(
-        root.computed_style(item).expect("item").as_box().margin[3],
-        BoxLength::Auto,
-        "flex item margin-left: auto stays symbolic in the computed group",
-    );
-    let box_ = ui_dom::node_box(&root, item).expect("box");
-    assert_eq!(
-        box_.margin.left_px, 0.0,
-        "flex auto left margin computes to 0 for now",
-    );
-    assert_eq!(
-        box_.margin.right_px, 0.0,
-        "flex auto right margin computes to 0 for now",
-    );
-}
-
-#[test]
 // UNSUPPORTED (class: unimplemented — D6 admission-gated): the `auto` keyword
 // is invalid for padding, border widths, and font sizes (they are NOT in the
 // closed `AUTO_ADMISSIBLE` table), so each drops + counts and the computed
