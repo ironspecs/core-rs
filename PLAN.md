@@ -228,8 +228,8 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 426 layout proofs (418 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 3c);
-the off-spec registry (19 divergent proofs in 15 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 4);
+the off-spec registry (15 divergent proofs in 11 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1363,6 +1363,28 @@ an f32 basis.
   recorded with it: design-first makes errors reviewable BEFORE they
   are invisible — it does not make the designer infallible; the
   third-party read of the arithmetic is what caught this one.
+
+- **2026-10-19 — flex arc step 4 LANDED (`28bc799`): auto-min by fold,
+  and the recursive walk is dead.** The engines' derivation
+  (`auto_min = min(min_content, definite)`), shape-general and
+  grow-blind by construction, replaced the entire recursive auto-min
+  machinery (ten functions + both graceful gates, deleted). Two
+  transcription STOPs produced three adjudicated corrections: **D2a**
+  (the flex container's §9.9 intrinsic main sizes — the record carried
+  stretched width for nested containers, and beneath it an
+  UNREGISTERED divergence: auto-basis nested items sized by available
+  width instead of max-content per §9.2 — corrected with documented
+  proof moves); **D4** (floor the OUTER hypothetical only — the field
+  floors at step 5 with the seed switch, per the transcription's
+  regression catch, adopted and credited); **D6 row (b)** (misattributed
+  to step 4; it is step 5's inflexible-seed scenario, cross-referenced).
+  Four registry rows moved on-spec (nowrap full-run, both gates, the
+  hypothetical floor in two parts); row (b) stays off-spec until step
+  5. Perf IMPROVED by the walk's death: the (d1) text layout-phase
+  window 1014 → 830 allocations, node Get 145 → 143. Divergent registry
+  19-in-15 → 15-in-11. Next: step 5 — §9.7 on the resolution lane
+  (hypothetical seed + one-class freeze by signed total), designed
+  first.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
