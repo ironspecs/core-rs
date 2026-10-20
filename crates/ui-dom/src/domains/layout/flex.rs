@@ -177,6 +177,21 @@ pub(crate) struct FlexItemView {
     pub(crate) main_axis_border_padding_px: f32,
     pub(crate) outer_hypothetical_main_size_px: f32,
     pub(crate) measured_cross_size_input_px: f32,
+    /// Whether this item is a replaced element with an intrinsic aspect ratio
+    /// (`record.flags.replaced_ratio`). `stretch` must not distort it — the
+    /// cross follows the ratio from the resolved main size, not the line cross.
+    pub(crate) replaced_ratio: bool,
+    /// Whether the item's subtree is flagged `main_influences_cross` — its
+    /// cross size may change when its main size changes (text wraps, percentage
+    /// cross forms). A flagged item whose resolved main differs from its
+    /// hypothetical main refolds at item-cross-at-resolved-main (D1.2).
+    pub(crate) main_influences_cross: bool,
+    /// The item's resolved cross size (item cross at resolved main, flex arc
+    /// step 7 D1.2). Seeded to the measured cross at assembly; the resolve
+    /// phase overwrites it for replaced-ratio and flagged-and-width-changed
+    /// (refolded) items before line cross sizing. Placement reads this for the
+    /// cross-axis alignment offset and the stretch decision.
+    pub(crate) resolved_cross_size_px: f32,
     pub(crate) h_min_content_px: f32,
     pub(crate) h_max_content_px: f32,
     pub(crate) margin_main_start_px: f32,
@@ -197,6 +212,7 @@ struct ResolvedFlexItem {
     resolved_main_size_px: f32,
     main_axis_border_padding_px: f32,
     resolved_cross_size_px: f32,
+    replaced_ratio: bool,
     main_offset_px: f32,
     cross_offset_px: f32,
 }
@@ -332,12 +348,15 @@ where
     let resolved_container_main_size_px =
         container_main_size_px.unwrap_or(measured_solve.main_size_px);
     let resolved_solve = resolve_active_flex_container(
-        &mut root_dom.layout_scratch,
+        root_dom,
+        tree_size,
+        &child_context,
         measured_solve,
         container_style,
         resolved_container_main_size_px,
         container_cross_size_px,
-    );
+        resolver,
+    )?;
     exit_active_flex_container(
         root_dom,
         tree_size,
@@ -574,6 +593,9 @@ fn anonymous_inline_run_item_view(
         main_axis_border_padding_px: 0.0,
         outer_hypothetical_main_size_px: flex_base_size_px,
         measured_cross_size_input_px,
+        replaced_ratio: false,
+        main_influences_cross: false,
+        resolved_cross_size_px: measured_cross_size_input_px,
         // D2a: a run's inline min/max-content are the 3a cursors (widest
         // segment / max-content sum), axis- and wrap-agnostic.
         h_min_content_px: min_content_width_px,
@@ -642,6 +664,7 @@ where
             tree_size,
             current_child_key,
             &next_child_context,
+            None,
             child_style,
             child_inherited_style,
             resolver,
@@ -689,6 +712,7 @@ where
         tree_size,
         child_key,
         child_context,
+        None,
         child_style,
         child_inherited_style,
         resolver,
@@ -757,6 +781,9 @@ where
         main_axis_border_padding_px,
         outer_hypothetical_main_size_px,
         measured_cross_size_input_px: measured_cross_size_px,
+        replaced_ratio: record.flags.replaced_ratio(),
+        main_influences_cross: record.flags.main_influences_cross(),
+        resolved_cross_size_px: measured_cross_size_px,
         // D2a: the item's record inline min/max-content, carried into the view
         // for the inner container's §9.9 intrinsic fold.
         h_min_content_px: record.h_min_content_px,
@@ -785,11 +812,13 @@ fn blockified_flex_item_style(mut style: NodeStyle) -> NodeStyle {
     style
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure_tree_walker_node_without_layout_write<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
     key: DomNodeSlotKey,
     context: &LayoutContext,
+    wrap_width_override: Option<f32>,
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
@@ -810,6 +839,7 @@ where
                 tree_size,
                 key,
                 context,
+                wrap_width_override,
                 style,
                 inherited_style,
                 resolver,
@@ -820,6 +850,7 @@ where
             tree_size,
             key,
             context,
+            wrap_width_override,
             style,
             inherited_style,
             resolver,
@@ -836,6 +867,7 @@ where
             tree_size,
             key,
             context,
+            wrap_width_override,
             style,
             inherited_style,
             resolver,
@@ -844,11 +876,13 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure_flex_node_without_layout_write<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
     key: DomNodeSlotKey,
     context: &LayoutContext,
+    _wrap_width_override: Option<f32>,
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
@@ -894,7 +928,7 @@ where
         tree_size,
         &StagedMeasurementRequest {
             key,
-            child_context,
+            child_context: child_context.clone(),
             container_style,
             container_main_size_px,
         },
@@ -903,12 +937,15 @@ where
     let resolved_container_main_size_px =
         container_main_size_px.unwrap_or(measured_solve.main_size_px);
     let resolved_solve = resolve_active_flex_container(
-        &mut root_dom.layout_scratch,
+        root_dom,
+        tree_size,
+        &child_context,
         measured_solve,
         container_style,
         resolved_container_main_size_px,
         entered_container_cross_size(&entered, container_style.main_axis),
-    );
+        resolver,
+    )?;
     let content_width_px = active_flex_content_width_px(
         container_style.main_axis,
         resolved_solve.main_size_px,
@@ -1028,11 +1065,13 @@ fn flex_container_intrinsic_inline_sizes(
     (h_min, h_max)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure_block_node_without_layout_write<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
     key: DomNodeSlotKey,
     context: &LayoutContext,
+    wrap_width_override: Option<f32>,
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
@@ -1063,6 +1102,7 @@ where
             tree_size,
             current_child_key,
             &next_child_context,
+            wrap_width_override,
             child_style,
             child_inherited_style,
             resolver,
@@ -1092,11 +1132,13 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn measure_inline_node_without_layout_write<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
     key: DomNodeSlotKey,
     context: &LayoutContext,
+    wrap_width_override: Option<f32>,
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
@@ -1126,6 +1168,7 @@ where
             tree_size,
             current_child_key,
             &next_child_context,
+            wrap_width_override,
             child_style,
             child_inherited_style,
             resolver,
@@ -1139,7 +1182,7 @@ where
     }
     let min_content_width_px = measured_inline_min_content_width(&entered, flow);
     let max_content_width_px = measured_inline_max_content_width(&entered, flow);
-    let auto_content_width_px = measured_inline_content_width(&entered, flow);
+    let auto_content_width_px = measured_inline_content_width(&entered, flow, wrap_width_override);
     let auto_content_height_px = if flow.has_children {
         non_negative_auto_content_height(flow.line_height_px)
     } else {
@@ -1164,6 +1207,45 @@ fn measure_exited_node_flow_size(
     auto_content_height_px: f32,
 ) -> Result<FlowSize, DomError> {
     let (auto_min_content_width_px, auto_max_content_width_px) = auto_content_width_contribution_px;
+    // Record-serving placement (flex arc step 7, D3): a width-unchanged text
+    // node's record was written this pass at the same width by the outer fold
+    // (fresh by construction). Placement's re-entry into the nested flex
+    // solver reads the record instead of re-shaping the text — no shape, no
+    // record recompute, no work counter. The refold path (a flagged item whose
+    // width changed) re-measures at a different width, so the width mismatch
+    // routes it through the normal measure below.
+    if entered.is_text_node {
+        let node = node_for_key(root_dom, key)?;
+        let record = node_measurement_of(node);
+        let current_pass = root_dom.layout_scratch.layout_pass();
+        if record.measure_pass == current_pass
+            && flex_axis_sizes_match(
+                record.content_height_measured_at_width_px,
+                auto_content_width_px,
+            )
+        {
+            let content_height_px = record.content_height_at_width_px;
+            let content_size = resolved_content_size_px(
+                entered_content_size_property_style(entered),
+                entered.img_intrinsic_aspect_ratio,
+                None,
+                auto_content_width_px,
+                content_height_px,
+            );
+            let (min_content_width_px, max_content_width_px) = content_width_contribution_for_exit(
+                entered,
+                content_size.width_px,
+                auto_min_content_width_px,
+                auto_max_content_width_px,
+            );
+            return Ok(layout_flow_size(
+                entered.style,
+                measured_box_model(entered.box_model, entered.style, content_size),
+                min_content_width_px,
+                max_content_width_px,
+            ));
+        }
+    }
     let content_height_px = measured_auto_content_height(
         root_dom,
         key,
@@ -1205,6 +1287,16 @@ fn measure_exited_node_flow_size(
     next_record.v_min_content_px = Some(super::measurement_record::compute_v_min_content_px(
         root_dom, key, entered,
     ));
+    // Flex arc step 7, D2/D3: stamp the measure pass and measure width on the
+    // record (the record-serving placement freshness keys), and propagate the
+    // `main_influences_cross` flag bottom-up — a container whose in-flow child
+    // is flagged is text-bearing/percentage-cross, so its own cross is
+    // width-dependent too.
+    next_record.measure_pass = root_dom.layout_scratch.layout_pass();
+    next_record.content_height_measured_at_width_px = auto_content_width_px;
+    if !entered.is_text_node && node_has_main_influences_cross_child(root_dom, key)? {
+        next_record.flags = next_record.flags.with_main_influences_cross();
+    }
     // FlexNodesMeasured is a work counter, so it increments per COMPUTE, not
     // per record write: an unchanged record below still costs one compute on
     // the flex measure path.
@@ -1216,6 +1308,30 @@ fn measure_exited_node_flow_size(
         min_content_width_px,
         max_content_width_px,
     ))
+}
+
+/// Whether a node has any in-flow child whose record carries
+/// `main_influences_cross` (wrapping text / percentage cross) or
+/// `replaced_ratio`. The flag is propagated bottom-up so a container's own
+/// record inherits the width-dependence of its content.
+fn node_has_main_influences_cross_child(
+    root_dom: &RootDom,
+    key: DomNodeSlotKey,
+) -> Result<bool, DomError> {
+    let mut child_key = first_child_key(root_dom, key)?;
+    while let Some(current_child_key) = child_key {
+        let current_node = node_for_key(root_dom, current_child_key)?;
+        if node_is_excluded_flex_child(current_node) {
+            child_key = next_sibling_key(root_dom, current_child_key)?;
+            continue;
+        }
+        let flags = node_measurement_of(current_node).flags;
+        if flags.main_influences_cross() || flags.replaced_ratio() {
+            return Ok(true);
+        }
+        child_key = next_sibling_key(root_dom, current_child_key)?;
+    }
+    Ok(false)
 }
 
 fn measured_auto_content_height(
@@ -1362,8 +1478,19 @@ fn measured_block_max_content_width(
     entered.max_content_width_px
 }
 
-fn measured_inline_content_width(entered: &EnteredNodeLayout, flow: InlineFlowState) -> f32 {
+fn measured_inline_content_width(
+    entered: &EnteredNodeLayout,
+    flow: InlineFlowState,
+    wrap_width_override: Option<f32>,
+) -> f32 {
     if !flow.has_children && entered.is_text_node {
+        // A bare text node's content width is its intrinsic (max-content)
+        // width in the normal measure fold. The refold (flex arc step 7, D1.2)
+        // passes a wrap-width override so a shrunk item's text re-shapes at the
+        // resolved width instead of the unshrunk max-content.
+        if let Some(override_px) = wrap_width_override {
+            return override_px.max(0.0);
+        }
         return intrinsic_content_width(entered.box_model);
     }
     auto_content_width_for_exit(
@@ -1862,46 +1989,66 @@ fn resolve_measured_flex_container(
     }
 }
 
-fn resolve_active_flex_container(
-    scratch: &mut LayoutScratch,
+#[allow(clippy::too_many_arguments)]
+fn resolve_active_flex_container<R>(
+    root_dom: &mut RootDom,
+    tree_size: (f32, f32),
+    child_context: &LayoutContext,
     mut measured_solve: FlexContainerSolve,
     container_style: FlexContainerStyle,
     container_main_size_px: f32,
     container_cross_size_px: Option<f32>,
-) -> FlexContainerSolve {
+    resolver: &mut R,
+) -> Result<FlexContainerSolve, DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
     let order_range = measured_solve.order_range;
     let line_range = measured_solve.line_range;
-    // Claim the resolution range parallel to the order range, then resolve the
-    // line cross sizes and offsets into the line lane before the §9.7 loop.
-    let resolution_range = claim_resolution_range(scratch, order_range);
+    // Claim the resolution range parallel to the order range. Per-line order
+    // (flex arc step 7, D1): main resolve (§9.7) → item cross at the resolved
+    // main (ratio / refold / measured) → line cross = max item outer cross →
+    // align-content packs the lines. The pre-flex line-cross sizing has moved
+    // AFTER main resolution and item cross sizing.
+    let resolution_range = claim_resolution_range(&mut root_dom.layout_scratch, order_range);
     measured_solve.resolution_range = resolution_range;
-    resolved_line_cross_sizes(
-        scratch,
-        line_range,
-        container_style,
-        container_cross_size_px,
-    );
-    line_cross_offsets_px(
-        scratch,
-        line_range,
-        container_style,
-        container_cross_size_px,
-    );
     resolve_flex_lines(
-        scratch,
+        &mut root_dom.layout_scratch,
         order_range,
         resolution_range,
         line_range,
         container_main_size_px,
         container_style,
     );
+    resolve_item_cross_sizes(
+        root_dom,
+        tree_size,
+        child_context,
+        order_range,
+        resolution_range,
+        line_range,
+        container_style,
+        resolver,
+    )?;
+    resolved_line_cross_sizes(
+        &mut root_dom.layout_scratch,
+        line_range,
+        container_style,
+        container_cross_size_px,
+    );
+    line_cross_offsets_px(
+        &mut root_dom.layout_scratch,
+        line_range,
+        container_style,
+        container_cross_size_px,
+    );
     measured_solve.main_size_px = container_main_size_px;
     measured_solve.cross_size_px = total_line_cross_size_px_from_lane(
-        scratch,
+        &root_dom.layout_scratch,
         line_range,
         container_style.gap_sizes.between_lines_px,
     );
-    measured_solve
+    Ok(measured_solve)
 }
 
 fn claim_resolution_range(scratch: &mut LayoutScratch, order_range: LaneRange) -> LaneRange {
@@ -1914,6 +2061,152 @@ fn claim_resolution_range(scratch: &mut LayoutScratch, order_range: LaneRange) -
         });
     }
     scratch.resolution.finish_range(start)
+}
+
+/// Flex arc step 7, D1.2/D1.3: item cross at the resolved main, then the line
+/// cross = max item outer cross. For each item in order-modified sequence, the
+/// resolved cross is: a replaced-ratio item keeps its measured cross (the
+/// ratio-derived cross lands at placement via the width override + no height
+/// override); a `main_influences_cross`-flagged item whose resolved main
+/// differs from its hypothetical main REFOLDS (re-measures its subtree at the
+/// resolved main width, counted by `FlexNodesRefolded`); everything else keeps
+/// the measured cross. The line lane's measured `cross_size_px` is then
+/// overwritten with the max resolved item cross + cross margins.
+#[allow(clippy::too_many_arguments)]
+fn resolve_item_cross_sizes<R>(
+    root_dom: &mut RootDom,
+    tree_size: (f32, f32),
+    child_context: &LayoutContext,
+    order_range: LaneRange,
+    resolution_range: LaneRange,
+    line_range: LaneRange,
+    container_style: FlexContainerStyle,
+    resolver: &mut R,
+) -> Result<(), DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    // Phase 1: refold flagged + width-changed items. Per-item scoped borrows —
+    // read the item's info, drop the scratch borrow, re-measure the subtree,
+    // then write the resolved cross back. The resolution lane is parallel to
+    // the order lane (same relative position), NOT the same absolute index.
+    let order_len =
+        usize::try_from(order_range.len).expect("order range len should fit into usize");
+    let mut order_pos = 0usize;
+    while order_pos < order_len {
+        let (dom_index, needs_refold, source, resolved_main_content_px) = {
+            let order_entries = root_dom.layout_scratch.order.slice(order_range);
+            let order_entry = order_entries[order_pos];
+            let item_entry = root_dom.layout_scratch.items.get(order_entry.dom_index);
+            let view = item_entry.view;
+            let resolution_index = resolution_range.start
+                + u32::try_from(order_pos).expect("order position should fit into u32");
+            let resolved_main = root_dom
+                .layout_scratch
+                .resolution
+                .get(resolution_index)
+                .resolved_main_size_px;
+            let needs = view.main_influences_cross
+                && !flex_axis_sizes_match(resolved_main, view.hypothetical_main_size_px);
+            (
+                order_entry.dom_index,
+                needs,
+                view.source,
+                resolved_main - view.main_axis_border_padding_px,
+            )
+        };
+        order_pos += 1;
+        if !needs_refold {
+            continue;
+        }
+        let refolded_cross = refold_item_at_resolved_main(
+            root_dom,
+            tree_size,
+            child_context,
+            source,
+            resolved_main_content_px,
+            container_style.main_axis,
+            resolver,
+        )?;
+        root_dom
+            .layout_scratch
+            .items
+            .get_mut(dom_index)
+            .view
+            .resolved_cross_size_px = refolded_cross;
+        root_dom.increment_metric(RootDomMetricName::FlexNodesRefolded);
+    }
+    // Phase 2: line cross = max resolved item cross + cross margins.
+    update_line_cross_sizes(&mut root_dom.layout_scratch, order_range, line_range);
+    Ok(())
+}
+
+/// Flex arc step 7, D1.3: overwrites each line's measured `cross_size_px` with
+/// the max resolved item cross + cross margins (the item cross is
+/// `view.resolved_cross_size_px`, seeded to the measured cross and overwritten
+/// by the refold for flagged + width-changed items).
+fn update_line_cross_sizes(
+    scratch: &mut LayoutScratch,
+    order_range: LaneRange,
+    line_range: LaneRange,
+) {
+    let order_entries = scratch.order.slice(order_range);
+    let line_count = usize::try_from(line_range.len).expect("line range len should fit into usize");
+    let mut line_pos = 0usize;
+    while line_pos < line_count {
+        let line = *scratch
+            .lines
+            .get(line_range.start + u32::try_from(line_pos).expect("line pos fits u32"));
+        let start = usize::try_from(line.first_order_index - order_range.start)
+            .expect("line first order index should fall within the container's order range");
+        let count =
+            usize::try_from(line.item_count).expect("line item count should fit into usize");
+        let mut max_cross_px = 0.0f32;
+        for order_entry in &order_entries[start..start + count] {
+            let view = scratch.items.get(order_entry.dom_index).view;
+            max_cross_px = max_cross_px.max(
+                view.resolved_cross_size_px + view.margin_cross_start_px + view.margin_cross_end_px,
+            );
+        }
+        scratch.lines.slice_mut(line_range)[line_pos].cross_size_px = max_cross_px;
+        line_pos += 1;
+    }
+}
+
+/// Re-measures one flagged flex item's subtree at its resolved main content
+/// width (the D1.2 refold): text re-shapes at the new width and the subtree's
+/// records update (equality-gated). Returns the item's resolved cross content
+/// size (the flow's cross-axis size), before cross border/padding.
+fn refold_item_at_resolved_main<R>(
+    root_dom: &mut RootDom,
+    tree_size: (f32, f32),
+    child_context: &LayoutContext,
+    source: FlexItemSource,
+    resolved_main_content_px: f32,
+    main_axis: FlexAxis,
+    resolver: &mut R,
+) -> Result<f32, DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    let key = source.key();
+    let (child_style, child_inherited_style) = resolved_node_style(root_dom, key, child_context)?;
+    let child_style = blockified_flex_item_style(child_style);
+    let refold_context = LayoutContext {
+        available_width_px: Some(resolved_main_content_px.max(0.0)),
+        ..child_context.clone()
+    };
+    let child_flow = measure_tree_walker_node_without_layout_write(
+        root_dom,
+        tree_size,
+        key,
+        &refold_context,
+        Some(resolved_main_content_px.max(0.0)),
+        child_style,
+        child_inherited_style,
+        resolver,
+    )?;
+    Ok(cross_axis_flow_size(main_axis, child_flow))
 }
 
 fn resolved_line_cross_sizes(
@@ -3033,6 +3326,7 @@ fn excluded_flex_child_static_cross_px(
         resolved_main_size_px: 0.0,
         main_axis_border_padding_px: 0.0,
         resolved_cross_size_px: 0.0,
+        replaced_ratio: false,
         main_offset_px: 0.0,
         cross_offset_px: 0.0,
     };
@@ -3099,7 +3393,8 @@ where
             align_self: view.align_self,
             resolved_main_size_px,
             main_axis_border_padding_px: view.main_axis_border_padding_px,
-            resolved_cross_size_px: view.measured_cross_size_input_px,
+            resolved_cross_size_px: view.resolved_cross_size_px,
+            replaced_ratio: view.replaced_ratio,
             main_offset_px: item_entry.main_offset_px,
             cross_offset_px: line.cross_offset_px,
         };
@@ -3134,10 +3429,6 @@ where
         placed_item_count,
         usize::try_from(solve.item_range.len).expect("item range length should fit into usize"),
         "active flex placement should write each resolved child exactly once",
-    );
-    assert_wrapped_line_cross_sizes_match_measurement(
-        request.container_style.wrap_mode,
-        root_dom.layout_scratch.lines.slice(solve.line_range),
     );
     Ok(PlacedFlexChildren {
         container_cross_size_px: total_line_cross_size_px_from_lane(
@@ -3385,21 +3676,6 @@ fn resolved_flex_item_cross_axis_alignment(
     )
 }
 
-fn assert_wrapped_line_cross_sizes_match_measurement(
-    wrap_mode: FlexWrapMode,
-    lines: &[FlexLineEntry],
-) {
-    if !wrap_mode.is_wrapping() {
-        return;
-    }
-    for line in lines {
-        assert!(
-            flex_axis_sizes_match(line.cross_size_px, line.placed_cross_size_px),
-            "wrapped active flex placement should preserve measured line cross sizes",
-        );
-    }
-}
-
 fn flex_axis_sizes_match(left_px: f32, right_px: f32) -> bool {
     (left_px - right_px).abs() <= f32::EPSILON
 }
@@ -3466,6 +3742,7 @@ fn active_flex_resolved_child_context(
         container_style,
         cross_axis_alignment,
         line_cross_size_px,
+        resolved_item.replaced_ratio,
     );
     match container_style.main_axis {
         FlexAxis::Horizontal => LayoutContext {
@@ -3494,8 +3771,15 @@ fn stretched_flex_item_content_cross_size_px(
     container_style: FlexContainerStyle,
     cross_axis_alignment: FlexCrossAxisAlignment,
     line_cross_size_px: f32,
+    replaced_ratio: bool,
 ) -> Option<f32> {
+    // CSS Flexbox §8.3 + CSS 2.1 §10.6.2: stretch applies only to a cross size
+    // that is `auto`. A replaced element with an intrinsic ratio has a non-auto
+    // cross size (its used height follows the ratio from its used width), so
+    // stretch must NOT override it — returning `None` leaves the item's ratio-
+    // derived cross intact (flex arc step 7 D1.2/D5).
     if cross_axis_alignment != FlexCrossAxisAlignment::Stretch
+        || replaced_ratio
         || style_has_definite_cross_axis_size(child_style, container_style.main_axis)
     {
         return None;
@@ -3782,6 +4066,9 @@ mod tests {
             main_axis_border_padding_px: 0.0,
             outer_hypothetical_main_size_px: flex_base_size_px,
             measured_cross_size_input_px,
+            replaced_ratio: false,
+            main_influences_cross: false,
+            resolved_cross_size_px: measured_cross_size_input_px,
             h_min_content_px: automatic_min_main_size_px,
             h_max_content_px: flex_base_size_px,
             margin_main_start_px: 0.0,
@@ -3852,6 +4139,9 @@ mod tests {
                 + box_edges.main_start_margin
                 + box_edges.main_end_margin,
             measured_cross_size_input_px: box_edges.cross_size,
+            replaced_ratio: false,
+            main_influences_cross: false,
+            resolved_cross_size_px: box_edges.cross_size,
             h_min_content_px: box_edges.main_size,
             h_max_content_px: box_edges.main_size,
             margin_main_start_px: box_edges.main_start_margin,
@@ -4023,6 +4313,53 @@ mod tests {
         cross_size_px: f32,
     }
 
+    /// The scratch-only resolve reorder the synthetic-item tests drive (the
+    /// production `resolve_active_flex_container` adds the refold before the
+    /// line-cross update). Synthetic items never refold (no flag, no ratio), so
+    /// this wrapper runs main resolve → item cross (measured) → line cross →
+    /// align-content without a `RootDom`.
+    fn resolve_active_flex_container_test(
+        scratch: &mut LayoutScratch,
+        measured_solve: FlexContainerSolve,
+        container_style: FlexContainerStyle,
+        container_main_size_px: f32,
+        container_cross_size_px: Option<f32>,
+    ) -> FlexContainerSolve {
+        let order_range = measured_solve.order_range;
+        let line_range = measured_solve.line_range;
+        let resolution_range = claim_resolution_range(scratch, order_range);
+        let mut solve = measured_solve;
+        solve.resolution_range = resolution_range;
+        resolve_flex_lines(
+            scratch,
+            order_range,
+            resolution_range,
+            line_range,
+            container_main_size_px,
+            container_style,
+        );
+        update_line_cross_sizes(scratch, order_range, line_range);
+        super::resolved_line_cross_sizes(
+            scratch,
+            line_range,
+            container_style,
+            container_cross_size_px,
+        );
+        line_cross_offsets_px(
+            scratch,
+            line_range,
+            container_style,
+            container_cross_size_px,
+        );
+        solve.main_size_px = container_main_size_px;
+        solve.cross_size_px = total_line_cross_size_px_from_lane(
+            scratch,
+            line_range,
+            container_style.gap_sizes.between_lines_px,
+        );
+        solve
+    }
+
     fn item_views_in_dom_order(
         scratch: &LayoutScratch,
         solve: FlexContainerSolve,
@@ -4065,7 +4402,8 @@ mod tests {
                     align_self: view.align_self,
                     resolved_main_size_px: resolution.resolved_main_size_px,
                     main_axis_border_padding_px: view.main_axis_border_padding_px,
-                    resolved_cross_size_px: view.measured_cross_size_input_px,
+                    resolved_cross_size_px: view.resolved_cross_size_px,
+                    replaced_ratio: view.replaced_ratio,
                     main_offset_px: item_entry.main_offset_px,
                     cross_offset_px: line.cross_offset_px,
                 }
@@ -5474,7 +5812,7 @@ mod tests {
             ],
         );
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             wrap_row_container_style(),
@@ -5534,7 +5872,7 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::Center;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5580,7 +5918,7 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::FlexEnd;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5626,7 +5964,7 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::SpaceBetween;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5664,7 +6002,7 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::FlexEnd;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5707,7 +6045,7 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::SpaceBetween;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5750,7 +6088,7 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::SpaceAround;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5795,7 +6133,7 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::SpaceAround;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5838,7 +6176,7 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::SpaceEvenly;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5883,7 +6221,7 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::SpaceEvenly;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5936,7 +6274,7 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.align_content = super::FlexLineCrossAxisAlignment::Stretch;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -5963,6 +6301,7 @@ mod tests {
             resolved_main_size_px: 10.0,
             main_axis_border_padding_px: 0.0,
             resolved_cross_size_px: 10.0,
+            replaced_ratio: false,
             main_offset_px: 0.0,
             cross_offset_px: 0.0,
         };
@@ -5993,6 +6332,7 @@ mod tests {
             resolved_main_size_px: 14.0,
             main_axis_border_padding_px: 0.0,
             resolved_cross_size_px: 14.0,
+            replaced_ratio: false,
             main_offset_px: 0.0,
             cross_offset_px: 0.0,
         };
@@ -6038,7 +6378,7 @@ mod tests {
             }],
         );
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             row_container_style(),
@@ -6085,7 +6425,7 @@ mod tests {
             }],
         );
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             row_container_style(),
@@ -6132,7 +6472,7 @@ mod tests {
             }],
         );
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             row_container_style(),
@@ -6179,7 +6519,7 @@ mod tests {
             }],
         );
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             row_container_style(),
@@ -6229,7 +6569,7 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.gap_sizes.between_items_px = 2.0;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -6363,7 +6703,7 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.gap_sizes.between_items_px = 5.0;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -6507,7 +6847,7 @@ mod tests {
         let mut container_style = wrap_row_container_style();
         container_style.gap_sizes.between_lines_px = 5.0;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -6548,7 +6888,7 @@ mod tests {
             }],
         );
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             row_container_style(),
@@ -6595,7 +6935,7 @@ mod tests {
             }],
         );
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             row_container_style(),
@@ -6636,7 +6976,7 @@ mod tests {
                 cross_size_px: 10.0,
             }],
         );
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             row_container_style(),
@@ -6674,7 +7014,7 @@ mod tests {
         let mut container_style = row_container_style();
         container_style.justify_content = super::FlexMainAxisAlignment::Center;
 
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut scratch,
             measured_solve,
             container_style,
@@ -6699,6 +7039,7 @@ mod tests {
             resolved_main_size_px: 10.0,
             main_axis_border_padding_px: 0.0,
             resolved_cross_size_px: 10.0,
+            replaced_ratio: false,
             main_offset_px: 0.0,
             cross_offset_px: 0.0,
         };
@@ -6719,6 +7060,7 @@ mod tests {
             resolved_main_size_px: 10.0,
             main_axis_border_padding_px: 0.0,
             resolved_cross_size_px: 10.0,
+            replaced_ratio: false,
             main_offset_px: 0.0,
             cross_offset_px: 0.0,
         };
@@ -6769,7 +7111,7 @@ mod tests {
             .expect("order should set");
 
         let measured_solve = build_solve_for_container(&mut root, container, context);
-        let solve = resolve_active_flex_container(
+        let solve = resolve_active_flex_container_test(
             &mut root.layout_scratch,
             measured_solve,
             row_container_style(),
@@ -6814,6 +7156,7 @@ mod tests {
             resolved_main_size_px: 30.0,
             main_axis_border_padding_px: 0.0,
             resolved_cross_size_px: 12.0,
+            replaced_ratio: false,
             main_offset_px: 18.0,
             cross_offset_px: 7.0,
         };

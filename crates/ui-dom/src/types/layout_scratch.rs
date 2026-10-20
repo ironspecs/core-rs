@@ -55,16 +55,29 @@ pub(crate) struct LayoutScratch {
     pub(crate) order: FlexOrderLane,
     pub(crate) lines: FlexLineLane,
     pub(crate) resolution: FlexResolutionLane,
+    /// The per-update layout pass generation, incremented once per
+    /// `reset_for_update`. The flex measure fold stamps each record it writes
+    /// with this value (flex arc step 7, D3); the record-serving placement
+    /// freshness check compares it against the current pass to distinguish the
+    /// outer fold's first measure (stale record) from a placement re-entry
+    /// (fresh record at the same width).
+    pub(crate) layout_pass: u32,
 }
 
 impl LayoutScratch {
     /// Clears all four lanes for the next update, keeping each lane's backing
-    /// capacity at its high-water mark.
+    /// capacity at its high-water mark, and advances the layout pass generation.
     pub(crate) fn reset_for_update(&mut self) {
         self.items.reset();
         self.order.reset();
         self.lines.reset();
         self.resolution.reset();
+        self.layout_pass = self.layout_pass.wrapping_add(1);
+    }
+
+    /// The current per-update layout pass generation (flex arc step 7, D3).
+    pub(crate) fn layout_pass(&self) -> u32 {
+        self.layout_pass
     }
 
     /// The item lane's retained backing capacity (high-water mark).
@@ -132,6 +145,9 @@ mod tests {
             main_axis_border_padding_px: 0.0,
             outer_hypothetical_main_size_px: 0.0,
             measured_cross_size_input_px: 0.0,
+            replaced_ratio: false,
+            main_influences_cross: false,
+            resolved_cross_size_px: 0.0,
             h_min_content_px: 0.0,
             h_max_content_px: 0.0,
             margin_main_start_px: 0.0,

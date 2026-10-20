@@ -2902,7 +2902,8 @@ mod tests {
                 content_height_at_width_px: text_node.layout().content_height_px,
                 v_min_content_px: None,
                 v_max_content_px: None,
-                flags: MeasurementFlags::empty(),
+                flags: MeasurementFlags::empty().with_main_influences_cross(),
+                ..MeasurementRecord::default()
             },
         );
     }
@@ -2945,7 +2946,7 @@ mod tests {
                 content_height_at_width_px: 50.0,
                 v_min_content_px: None,
                 v_max_content_px: None,
-                flags: MeasurementFlags::empty(),
+                ..MeasurementRecord::default()
             },
         );
     }
@@ -2982,7 +2983,7 @@ mod tests {
                 content_height_at_width_px: span_node.layout().content_height_px,
                 v_min_content_px: None,
                 v_max_content_px: None,
-                flags: MeasurementFlags::empty(),
+                ..MeasurementRecord::default()
             },
         );
     }
@@ -3018,6 +3019,7 @@ mod tests {
                 v_min_content_px: None,
                 v_max_content_px: None,
                 flags: MeasurementFlags::empty().with_replaced_ratio(),
+                ..MeasurementRecord::default()
             },
         );
     }
@@ -3047,7 +3049,7 @@ mod tests {
                 content_height_at_width_px: intrinsic.height_px,
                 v_min_content_px: None,
                 v_max_content_px: None,
-                flags: MeasurementFlags::empty(),
+                ..MeasurementRecord::default()
             },
         );
     }
@@ -3090,7 +3092,7 @@ mod tests {
                 content_height_at_width_px: 10.0,
                 v_min_content_px: None,
                 v_max_content_px: None,
-                flags: MeasurementFlags::empty(),
+                ..MeasurementRecord::default()
             },
         );
     }

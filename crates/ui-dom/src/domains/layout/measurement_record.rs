@@ -54,6 +54,15 @@ pub struct MeasurementRecord {
     pub h_max_content_px: f32,
     /// Content height at this pass's laid-out width.
     pub content_height_at_width_px: f32,
+    /// The width at which `content_height_at_width_px` was measured (the flex
+    /// measure fold's wrap width for a text node). This is the record-serving
+    /// placement freshness key (D3): a width match lets placement read the
+    /// wrapped height instead of re-shaping.
+    pub content_height_measured_at_width_px: f32,
+    /// The per-update layout pass in which this record was written (the flex
+    /// measure fold's `LayoutScratch::layout_pass`). Zero for the block world's
+    /// `exit_node` writes, which the flex freshness check never reads.
+    pub measure_pass: u32,
     /// Min-content block size. Uncomputed in step 1; lands with its named
     /// consumer in flex step 4.
     pub v_min_content_px: Option<f32>,
@@ -140,13 +149,20 @@ pub(super) fn write_measurement_if_changed(
 /// leaves it `None` (nothing reads it). `v_max` stays `None` everywhere (no
 /// consumer; D6 discipline).
 ///
-/// Flags are the two fixed measurement class bits read from the entered node:
+/// Flags are the fixed measurement class bits read from the entered node:
 /// `PRESERVE_MODE` from the node's effective white-space class (preserve =
 /// `pre`/`pre-wrap`/`break-spaces`; collapse = everything else), and
 /// `REPLACED_RATIO` from an img's intrinsic aspect ratio. The effective
 /// white-space is read from `entered.inherited_style`, which for an element is
 /// its own computed text group and for a text node is the inherited group —
 /// the value that actually applies at the node.
+///
+/// `MAIN_INFLUENCES_CROSS` (bit 2) is set here for a text node whose
+/// white-space mode wraps (`pre`/`nowrap` suppress soft wrap, so their
+/// cross size is width-independent). The two node-dependent halves of the
+/// flag — percentage cross-axis forms and containment propagation — are
+/// OR'd in by the flex measure fold (`measure_exited_node_flow_size`,
+/// `flex.rs`), which has the node at hand.
 pub(super) fn compute_node_measurement(
     entered: &EnteredNodeLayout,
     content_width_contribution_px: (f32, f32),
@@ -161,10 +177,15 @@ pub(super) fn compute_node_measurement(
     if entered.img_intrinsic_aspect_ratio.is_some() {
         flags = flags.with_replaced_ratio();
     }
+    if entered.is_text_node && white_space_wraps(entered.inherited_style.effective_white_space()) {
+        flags = flags.with_main_influences_cross();
+    }
     MeasurementRecord {
         h_min_content_px: min_content_width_px,
         h_max_content_px: max_content_width_px,
         content_height_at_width_px,
+        content_height_measured_at_width_px: 0.0,
+        measure_pass: 0,
         v_min_content_px: None,
         v_max_content_px: None,
         flags,
@@ -280,6 +301,14 @@ fn white_space_is_preserve_mode(white_space: DomWhiteSpace) -> bool {
         white_space,
         DomWhiteSpace::Pre | DomWhiteSpace::PreWrap | DomWhiteSpace::BreakSpaces
     )
+}
+
+/// Whether a white-space mode admits soft wrapping (`pre`/`nowrap` suppress
+/// it — the same predicate as the text shaping path's
+/// `white_space_suppresses_soft_wrap`). A wrapping text node's cross size
+/// depends on its width, so it carries `MAIN_INFLUENCES_CROSS`.
+fn white_space_wraps(white_space: DomWhiteSpace) -> bool {
+    !matches!(white_space, DomWhiteSpace::Nowrap | DomWhiteSpace::Pre)
 }
 
 #[cfg(test)]
@@ -457,6 +486,8 @@ mod tests {
                 h_min_content_px: 0.0,
                 h_max_content_px: 0.0,
                 content_height_at_width_px: 0.0,
+                content_height_measured_at_width_px: 0.0,
+                measure_pass: 0,
                 v_min_content_px: None,
                 v_max_content_px: None,
                 flags: MeasurementFlags { bits: 0 },
@@ -465,6 +496,7 @@ mod tests {
         assert_eq!(record.v_min_content_px, None);
         assert_eq!(record.v_max_content_px, None);
         assert_eq!(record.flags.bits, 0);
+        assert_eq!(record.measure_pass, 0);
     }
 
     #[test]
@@ -473,6 +505,8 @@ mod tests {
             h_min_content_px: 10.0,
             h_max_content_px: 20.0,
             content_height_at_width_px: 15.0,
+            content_height_measured_at_width_px: 0.0,
+            measure_pass: 0,
             v_min_content_px: None,
             v_max_content_px: None,
             flags: MeasurementFlags { bits: 1 },
@@ -490,6 +524,8 @@ mod tests {
             h_min_content_px: 10.0,
             h_max_content_px: 20.0,
             content_height_at_width_px: 15.0,
+            content_height_measured_at_width_px: 0.0,
+            measure_pass: 0,
             v_min_content_px: None,
             v_max_content_px: None,
             flags: MeasurementFlags { bits: 2 },
@@ -521,6 +557,8 @@ mod tests {
             h_min_content_px: 10.0,
             h_max_content_px: 20.0,
             content_height_at_width_px: 15.0,
+            content_height_measured_at_width_px: 0.0,
+            measure_pass: 0,
             v_min_content_px: None,
             v_max_content_px: None,
             flags: MeasurementFlags { bits: 1 },
@@ -552,6 +590,8 @@ mod tests {
             h_min_content_px: 10.0,
             h_max_content_px: 20.0,
             content_height_at_width_px: 15.0,
+            content_height_measured_at_width_px: 0.0,
+            measure_pass: 0,
             v_min_content_px: None,
             v_max_content_px: None,
             flags: MeasurementFlags { bits: 2 },
@@ -600,5 +640,16 @@ mod tests {
         assert!(!white_space_is_preserve_mode(DomWhiteSpace::Normal));
         assert!(!white_space_is_preserve_mode(DomWhiteSpace::Nowrap));
         assert!(!white_space_is_preserve_mode(DomWhiteSpace::PreLine));
+    }
+
+    #[test]
+    fn white_space_wraps_class_matches_soft_wrap_suppression() {
+        // `pre`/`nowrap` suppress soft wrap; every other admitted mode wraps.
+        assert!(white_space_wraps(DomWhiteSpace::Normal));
+        assert!(white_space_wraps(DomWhiteSpace::PreWrap));
+        assert!(white_space_wraps(DomWhiteSpace::PreLine));
+        assert!(white_space_wraps(DomWhiteSpace::BreakSpaces));
+        assert!(!white_space_wraps(DomWhiteSpace::Pre));
+        assert!(!white_space_wraps(DomWhiteSpace::Nowrap));
     }
 }

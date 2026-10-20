@@ -43,8 +43,8 @@
 //! died with the recursive auto-min walk.
 
 use ui_dom::{
-    DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom, TextAlign,
-    node_box,
+    DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey, DomPointerUpdate, RootDom,
+    RootDomMetricName, TextAlign, node_box,
 };
 
 use crate::layout_proofs::support::{
@@ -10166,8 +10166,8 @@ fn flex_auto_min_nowrap_text_floors_at_full_run_width() {
 // `flex_layout_algorithm.cc` replaced-item measurement) both size the replaced
 // item from its intrinsic ratio. Closest WPT oracles:
 // `css/css-flexbox/flexbox-replaced-*`, `css/replaced-element-*`. The
-// cross-axis STRETCH case is divergent and pinned separately by
-// `off_spec_flex_stretch_distorts_replaced_img`.
+// cross-axis STRETCH case keeps the ratio (moved on-spec in flex arc step 7)
+// and is pinned separately by `flex_stretch_keeps_replaced_img_ratio`.
 #[test]
 fn flex_item_replaced_images() {
     let rows: [ReplacedImageRow; 4] = [
@@ -10222,12 +10222,13 @@ fn assert_img_intrinsic_row_base(name: &str) {
 // intrinsic size, so `Stretch` is a no-op). Closest WPT oracles:
 // `css/css-flexbox/flexbox_stretch-image.html`.
 //
-// OFF-SPEC: the cross-axis stretch path stretches ANY auto-cross-size item to
-// the line cross size, including a replaced `img`, so the img's height becomes
-// the line cross size (120px, or 100px through a nested flex) instead of its
-// 90px ratio height — the image is distorted.
+// ON-SPEC (moved in flex arc step 7, FLEX_STEP7_DESIGN.md D5): the cross-axis
+// stretch path no longer overrides a replaced-ratio item's cross size — the
+// stretched-content override returns `None` for `replaced_ratio`, so the img's
+// height stays the ratio-derived 90px from its resolved main 160px instead of
+// the line cross size.
 #[test]
-fn off_spec_flex_stretch_distorts_replaced_img() {
+fn flex_stretch_keeps_replaced_img_ratio() {
     let rows: [ReplacedStretchRow; 2] = [
         ("direct_stretch", assert_replaced_img_direct_stretch),
         (
@@ -10257,11 +10258,11 @@ fn assert_replaced_img_direct_stretch(name: &str) {
         IMG_PLACEHOLDER_WIDTH_PX,
         &format!("{name}: img width"),
     );
-    // Divergent: stretched to the line cross size (spec: 90px ratio height).
+    // On-spec: stretch does not distort — the img's height follows the ratio.
     assert_close(
         assert_node_layout(&root, img).height_px,
-        120.0,
-        &format!("{name}: img height stretched to line cross size"),
+        IMG_PLACEHOLDER_HEIGHT_PX,
+        &format!("{name}: img height keeps the ratio instead of the line cross"),
     );
 }
 
@@ -10280,11 +10281,103 @@ fn assert_replaced_img_nested_flex_stretch(name: &str) {
         IMG_PLACEHOLDER_WIDTH_PX,
         &format!("{name}: nested img width"),
     );
-    // Divergent: stretched through the nested flex's cross size (spec: 90px).
+    // On-spec: stretch through the nested flex does not distort the ratio.
     assert_close(
         assert_node_layout(&root, img).height_px,
-        100.0,
-        &format!("{name}: nested img height stretched to 100px"),
+        IMG_PLACEHOLDER_HEIGHT_PX,
+        &format!("{name}: nested img height keeps the ratio instead of 100px"),
+    );
+}
+
+#[test]
+// CSS Flexbox §8.3: the replaced-ratio exemption must not leak to non-replaced
+// items. A block item with an auto cross size still stretches to the line cross
+// size (its cross IS `auto`), while a replaced-ratio img keeps its ratio.
+fn flex_stretch_applies_to_non_replaced_auto_cross_items() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "120px");
+    // default align-items: stretch.
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "10px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, item).height_px,
+        120.0,
+        "non-replaced auto-cross block item stretches to the line cross size",
+    );
+}
+
+#[test]
+// CSS Flexbox §9.4 + §9.7: line cross sizes resolve AFTER main resolution. A
+// text-bearing block item that shrinks re-wraps at the resolved width (taller),
+// and the line cross reflects that resolved cross rather than the unshrunk
+// measured cross. Gecko flags this `CanMainSizeInfluenceCrossSize`; Blink
+// re-lays-out items at the flexed size for the cross determination.
+fn flex_line_cross_reflects_resolved_text_wrap_height() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "40px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "auto");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    let text = assert_append_text_to(&mut root, item, "aa bb cc dd ee");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The item shrinks to its min-content (the widest word) and the text wraps
+    // into multiple lines: the container's cross size is the resolved wrapped
+    // height, taller than a single line.
+    let container_height_px = assert_node_layout(&root, container).height_px;
+    let single_line_height_px = assert_text_intrinsic(&root, text).fragment_line_height_max_px;
+    assert!(
+        container_height_px > single_line_height_px,
+        "line cross should reflect the resolved wrapped height ({container_height_px}), \
+         not the single-line measured height ({single_line_height_px})",
+    );
+}
+
+#[test]
+// Flex arc step 7, D4: `FlexNodesRefolded` counts one per flagged-and-width-
+// changed re-measure. A shrinking text-bearing item refolds once; a width-
+// unchanged text-bearing item does not refold.
+fn flex_nodes_refolded_counts_flagged_width_changed_items() {
+    // Changed: a text-bearing block item that shrinks (flagged + width changed).
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "40px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "auto");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_append_text_to(&mut root, item, "aa bb cc dd ee");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.metrics().count(RootDomMetricName::FlexNodesRefolded),
+        1,
+        "a shrinking text-bearing item refolds once",
+    );
+
+    // Unchanged: a text-bearing block item whose resolved main equals its
+    // measured main (no shrink) never refolds.
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "400px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "auto");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_append_text_to(&mut root, item, "aa bb cc dd ee");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.metrics().count(RootDomMetricName::FlexNodesRefolded),
+        0,
+        "a width-unchanged text-bearing item does not refold",
     );
 }
 

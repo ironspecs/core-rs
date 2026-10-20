@@ -111,9 +111,15 @@ pub enum RootDomMetricName {
     /// increment per `relayout_active_flex_child` call, i.e. per child the
     /// placement walk relayouts).
     FlexNodesPlaced,
+    /// Number of flagged-and-width-changed flex items re-measured at their
+    /// resolved main size during the item-cross-at-resolved-main step (one
+    /// increment per refold — D1.2's `main_influences_cross` re-measure, flex
+    /// arc step 7). Width-unchanged items never refold, so an unchanged
+    /// scenario's refold fraction is zero by construction.
+    FlexNodesRefolded,
 }
 
-pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 40] = [
+pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 41] = [
     RootDomMetricName::HoverPseudoStateSet,
     RootDomMetricName::HoverPseudoStateCleared,
     RootDomMetricName::StyleUpdated,
@@ -154,6 +160,7 @@ pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 40] = [
     RootDomMetricName::StylePassNodeChanged,
     RootDomMetricName::FlexNodesMeasured,
     RootDomMetricName::FlexNodesPlaced,
+    RootDomMetricName::FlexNodesRefolded,
 ];
 
 impl RootDomMetricName {
@@ -204,6 +211,7 @@ impl RootDomMetricName {
             Self::StylePassNodeChanged => 37,
             Self::FlexNodesMeasured => 38,
             Self::FlexNodesPlaced => 39,
+            Self::FlexNodesRefolded => 40,
         }
     }
 }

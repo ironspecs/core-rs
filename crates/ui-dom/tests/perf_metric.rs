@@ -523,7 +523,14 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // the §9.9 intrinsic fold reads the item lane (D2a), neither of which walks
     // the DOM child list. Documented cause: auto-min by fold
     // (FLEX_STEP4_DESIGN.md D0/D2a).
-    assert_node_counts(&root, 143, 29, 0, "flex relayout");
+    // flex arc step 7 main_influences_cross propagation (+2 Get from 143/29/0):
+    // the measure fold reads each measured item's first-child link once to
+    // propagate the `main_influences_cross` flag bottom-up (a container whose
+    // in-flow child is flagged is text-bearing, so its own cross is width-
+    // dependent). The two `flex: 0 0 50px` items are childless, so the read is
+    // one `first_child_key` lookup each. Documented cause: D2's flag
+    // propagation (FLEX_STEP7_DESIGN.md D2).
+    assert_node_counts(&root, 145, 29, 0, "flex relayout");
 }
 
 /// Builds the (d1) scenario (`FLEX_DEBATE_BRIEF.md` (d1)(v), ratified): a
@@ -565,10 +572,11 @@ fn flex_step1_scenario_setup() -> (World, RootDom, DomNodeSlotKey, DomNodeSlotKe
 /// anonymous inline run and measures each of its members for the run's cross
 /// (D4, 12 measured nodes), plus 4 nested flex items (two each: the item's
 /// text child via its inner fold, and the nested container's own record), so
-/// the fold measures 20 nodes. The staged double-layout then re-measures each
-/// nested item's text child once more when placement re-enters the flex solver
-/// (`relayout_active_flex_child` → `relayout_tree_walker_node` →
-/// `relayout_flex_node`), adding 4. Total measured = 24.
+/// the fold measures 20 nodes. The staged double-layout formerly re-measured
+/// each nested item's text child once more when placement re-entered the flex
+/// solver; the record-serving placement (flex arc step 7, D3) reads the fresh
+/// wrapped-text-height record for width-unchanged items instead of re-shaping,
+/// so the 4 placement re-measures are gone. Total measured = 20.
 ///
 /// `FlexNodesPlaced` is one per flex ITEM the placement walk relayouts
 /// (`relayout_active_flex_child` for a block item, `relayout_anonymous_inline_run`
@@ -580,10 +588,11 @@ fn flex_step1_scenario_setup() -> (World, RootDom, DomNodeSlotKey, DomNodeSlotKe
 /// Documented cause: anonymous inline-run merging (CSS Flexbox §4) — the item
 /// count replaces the child count.
 ///
-/// The double-layout is the pre-mechanism cost shape: every ITEM is relaid out
-/// during placement (the ≡100% refold analog), and the nested text child is
-/// measured twice (fold + placement) — this is the (d2) baseline the ≤50%
-/// refold-fraction ceiling later binds against.
+/// `FlexNodesRefolded` is the step-7 counter for flagged-and-width-changed
+/// re-measures. The scenario's items resolve at their measured widths
+/// (content-driven auto sizes; wrapping is line-level, not item shrink), so the
+/// observed refold fraction is 0 by construction — the ≤50% ceiling is not
+/// breached, and the within-update memo stays designed-not-built.
 #[test]
 fn flex_step1_scenario_measure_place_counts_stay_pinned() {
     let (mut world, mut root, _container, first_text) = flex_step1_scenario_setup();
@@ -604,8 +613,9 @@ fn flex_step1_scenario_measure_place_counts_stay_pinned() {
             (PaintUpdated, 1),
             (PaintPlanBuilt, 1),
             (LayerPainted, 1),
-            (FlexNodesMeasured, 24),
+            (FlexNodesMeasured, 20),
             (FlexNodesPlaced, 9),
+            (FlexNodesRefolded, 0),
         ],
         "flex step 1 scenario",
     );

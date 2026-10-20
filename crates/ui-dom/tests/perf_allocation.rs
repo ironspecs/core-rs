@@ -430,9 +430,14 @@ fn allocation_windows_match_baseline_after_warmup() {
             // reads and one `min` (D1) plus the §9.9 intrinsic fold (D2a),
             // neither of which allocates. Documented cause: auto-min by fold
             // (FLEX_STEP4_DESIGN.md D0/D2a).
-            allocations: 830,
-            deallocations: 830,
-            reallocations: 37,
+            // Re-pinned in flex arc step 7 (allocations 830 → 738, reallocs
+            // 37 → 33): the record-serving placement reads the fresh wrapped-
+            // text-height record for width-unchanged items instead of re-
+            // shaping each nested text child a second time during placement —
+            // the shaping elimination at placement, FLEX_STEP7_DESIGN.md D3/D4.
+            allocations: 738,
+            deallocations: 738,
+            reallocations: 33,
         },
         region.change(),
     );
