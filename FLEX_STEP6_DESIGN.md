@@ -74,35 +74,54 @@ container's width as basis (correct); PLACEMENT
 item's `NodeStyle` is re-resolved against it — overriding the correct
 measure-time values for `margin-%`/`padding-%`.
 
-The fix (the two-basis separation): the placement item-context's
-`available_width_px` (the basis the item's `NodeStyle` percentages
-resolve against) is the CONTAINER's content-box width (carried from the
-container's entered record), NOT the item's resolved main size. The
-item's resolved main size continues to arrive via the content-size
-OVERRIDE (`node_content_width_override_px` — unchanged, separate
-channel). The item's CHILDREN still resolve against the item's content
-box via the child context derived from the item's ENTERED record (that
-path does not consult the context `available_width_px` field being
-changed — see the verification obligation).
+**D2 AMENDED (2026-10-20, the transcription's STOP — the fourth
+reader).** The verification found `resolve_block_auto_margins`
+(`flow.rs:1795`, reached via `available_width_px_for_node`,
+`flow.rs:1658-1660`) reads the SAME field, and its
+`free = item_content − item_border_box ≤ 0` outcome IS the deferred
+§8.1 auto-margin admission's mechanism (documented at
+`flow.rs:1780-1794`; the gate row
+`flex_item_auto_margin_computes_to_zero_for_now`). Changing the general
+field to the container width would smuggle the §8.1 admission (step
+10's scope) and flip that gate — forbidden. The amended shape:
 
-**Verification obligation (binding, listed because the brief may not
-guess):** enumerate every reader of `available_width_px` in the
-placement item-context and its descendants of the same context value:
-(1) the item's `NodeStyle` resolution (the fix's target — now
-container-based, correct); (2) `resolve_node_content_width` for the
-item's own box (must remain driven by the override, not this field —
-verify and cite); (3) the derivation of the children's context (must
-come from the entered record's content size, not this field — verify
-and cite). Any reader whose behavior changes beyond the margin/padding
-percentages is a STOP unless it is also spec-correct per the same
-containing-block rule.
+- The placement item-context's GENERAL percentage basis (the value
+  `node_style_basis` resolves the WIDTH FAMILY against — `width`,
+  `min-width`, `max-width`, `margin×4`, `padding×4`, `left`, `right`)
+  becomes the CONTAINER's content-box width, matching measure time and
+  CSS Values §percentages for the whole family (not merely
+  margin/padding).
+- `resolve_block_auto_margins` is re-pointed to a DEDICATED reference:
+  `LayoutContext.auto_margin_reference_width_px: Option<f32>`, set to
+  the item's resolved content main size at the flex placement site;
+  when `None` it falls back to the general field (preserving
+  block-world behavior). Its free-space outcome stays `≤ 0` by
+  construction — the deferred §8.1 admission is preserved exactly, with
+  a comment at the site naming the preservation.
+- **Controls that must NOT move:** the 5 on-spec B2 rows, AND
+  `flex_item_auto_margin_computes_to_zero_for_now` (the gate's proof —
+  if it moves, the re-point is wrong; STOP).
+
+**Verification obligation (binding, extended):** enumerate every reader
+of `available_width_px` in the placement item-context and confirm with
+file:line evidence: (1) the item's `NodeStyle` width-family resolution
+(the fix's target); (2) `resolve_node_content_width` for the item's own
+box is override-driven, not this field; (3) the children's context
+derives from the entered record's content size, not this field;
+(4) `resolve_block_auto_margins` reads the DEDICATED field after the
+re-point (not the general field); (5) any other reader whose behavior
+changes beyond the width-family target is a STOP unless it is also
+spec-correct per the containing-block rule.
 
 **Rows flipped** (`off_spec_percentage_resolution_against_flex_container`,
 2 divergent rows + 5 on-spec controls): `row_item_margin_left_percent`
 → 20px (container-basis, was 5px item-basis); `row_item_padding_left_percent`
-→ 20px border-box accordingly (was 5px). The 5 on-spec rows (width %,
-height %, column width %, column height %, wrapped-line break) must NOT
-move. Family moves on-spec.
+→ 20px border-box accordingly (was 5px). NEW rows per the amendment:
+`min-width: %`, `max-width: %`, and `left: %` on a flex item resolve
+against the container (the same latent divergence, now pinned
+correct). The 5 on-spec rows (width %, height %, column width %,
+column height %, wrapped-line break) must NOT move; the auto-margin
+gate proof must NOT move. Family moves on-spec.
 
 ## D3. Explicitly untouched
 
