@@ -1626,6 +1626,36 @@ an f32 basis.
   browser values green; the LTR auto-margin family and the batch-4
   reversed directional proofs are unmoved. Proofs 447 → 454.
 
+- **2026-10-20 — grid's admission begins: corpus fetched, the mapping
+  document landed (`a0580ad`).** The grid engine corpus is in place at
+  the flex corpus's pinned revisions (29 Blink `layout/grid/` files +
+  `nsGridContainerFrame.cpp/.h`, manifest-pinned). `GRID_MAPPING.md`
+  adjudicates the field/phase research into the admission design:
+  no new debate (grid was adopted 2026-10-19; it rides on settled
+  doctrine — two folds, zero-allocation, proof per landing). The one
+  genuinely new decision, made and justified there: **track lists are
+  fixed-capacity `ArrayVec<[GridTrackSize; 12]>` inline in
+  `ComputedGridGroup`** (the transition-longhands capacity precedent —
+  `Copy`, value-compared, zero-allocation — rejecting the
+  interned-text/lazy-parse model, which fails on triple-read-per-pass
+  consumption); more than 12 expanded tracks drops at admission with a
+  counted report and a registered gate (named in MIGRATION.md when it
+  lands; larger is a D6-gated follow-up). Reuse: the record fold
+  (replaces both engines' intrinsic caches), the lane discipline (+1
+  track lane + Gecko's `CellMap` for occupancy), the 3a run formation,
+  the abs-pos pattern with the static-position model swapped to grid's
+  area rectangle (§8.4), and the whole admission pipeline. New in cost
+  order: the track sizing algorithm (both engines corroborate
+  in-corpus; port Gecko's phase order), auto-placement (§8.5,
+  `CellMap`), line resolution, the §12.1 re-run gate, the capacity
+  decision. Slicing: T0 display routing + T1 properties parse-and-hold;
+  T1 the card wall (track sizing + sparse auto-placement + placement);
+  T2 spans/rows/auto-flow/justify-*; T3 areas/`grid-area`/named lines;
+  T3.5 auto-fill/auto-fit as its own landing; T4 shorthand sugar.
+  Deferred, named: baselines, subgrid, fragmentation, gap-decoration.
+  Next: `GRID_STEP1_DESIGN.md` (T0/T1's design) per the task
+  discipline.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
