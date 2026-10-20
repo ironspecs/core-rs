@@ -3659,8 +3659,11 @@ where
         )?;
         // The block auto-margin solver is guarded to 0 inside a flex item, so
         // the absorbed auto margins land here, in the item's retained box model
-        // (border-box origin shifted by the start margins; all four margin
-        // edges written for paint/hit-test).
+        // (all four margin edges written for paint/hit-test). The border-box
+        // origin is NOT shifted here — the placement context applies the
+        // absorbed start margins to the flow origin before the subtree relayout
+        // (`active_flex_resolved_child_context`), so this call writes only the
+        // margin edges.
         write_flex_item_absorbed_auto_margins(
             root_dom,
             view.source,
@@ -4026,6 +4029,7 @@ fn active_flex_resolved_child_context(
         cross_axis_alignment,
         line_cross_size_px,
         resolved_item.replaced_ratio,
+        view.margin_cross_start_auto || view.margin_cross_end_auto,
     );
     match container_style.main_axis {
         FlexAxis::Horizontal => LayoutContext {
@@ -4055,15 +4059,21 @@ fn stretched_flex_item_content_cross_size_px(
     cross_axis_alignment: FlexCrossAxisAlignment,
     line_cross_size_px: f32,
     replaced_ratio: bool,
+    cross_margins_auto: bool,
 ) -> Option<f32> {
     // CSS Flexbox §8.3 + CSS 2.1 §10.6.2: stretch applies only to a cross size
     // that is `auto`. A replaced element with an intrinsic ratio has a non-auto
     // cross size (its used height follows the ratio from its used width), so
     // stretch must NOT override it — returning `None` leaves the item's ratio-
-    // derived cross intact (flex arc step 7 D1.2/D5).
+    // derived cross intact (flex arc step 7 D1.2/D5). CSS Flexbox §9.4 (used
+    // cross size) additionally requires that neither of the item's cross-axis
+    // margins is auto: when either cross margin is auto, the used cross size is
+    // the item's hypothetical cross size and the auto margin(s) absorb the free
+    // space, so stretch must not override it either.
     if cross_axis_alignment != FlexCrossAxisAlignment::Stretch
         || replaced_ratio
         || style_has_definite_cross_axis_size(child_style, container_style.main_axis)
+        || cross_margins_auto
     {
         return None;
     }

@@ -6434,6 +6434,129 @@ fn flex_cross_auto_margins_center_and_override_align_items() {
 }
 
 #[test]
+// CSS Flexbox 1 §9.4 (used cross size): `align-items`/`align-self: stretch`
+// applies ONLY when "neither of its cross-axis margins are auto" — otherwise
+// the used cross size is the item's HYPOTHETICAL cross size. A row container at
+// 100px cross with an auto-height item (20px measured cross) and
+// `margin-top/bottom: auto` must therefore keep the item at 20px, with the auto
+// margins absorbing the free space (40/40) and centering the item (border box
+// top 40, margin box 100). The former gate omitted the auto-margin condition,
+// so the item stretched to 100 ON TOP of the absorbed 40/40 margins → margin
+// box 180, overflowing the container.
+fn align_items_stretch_suppressed_by_cross_auto_margins() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+    let child = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, child, "width", "10px");
+    assert_style_set(&mut root, child, "height", "20px");
+
+    assert_set_flex_row_container_width(&mut root, container, "60px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, item, "flex-basis", "10px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "margin-top", "auto");
+    assert_style_set(&mut root, item, "margin-bottom", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("flex item should expose a box model");
+    assert_close(
+        assert_node_layout(&root, item).height_px,
+        20.0,
+        "cross auto margins keep the item at its hypothetical cross size, not the 100px line cross",
+    );
+    assert_close(
+        box_.margin.top_px,
+        40.0,
+        "cross auto top margin absorbs half the cross free space",
+    );
+    assert_close(
+        box_.margin.bottom_px,
+        40.0,
+        "cross auto bottom margin absorbs half the cross free space",
+    );
+    assert_close(
+        box_.border_box.top_px,
+        40.0,
+        "item centers via absorbed cross auto margins",
+    );
+    assert_close(
+        box_.margin.top_px + box_.border_box.height_px + box_.margin.bottom_px,
+        100.0,
+        "margin box total stays at the 100px container cross, not 180",
+    );
+}
+
+#[test]
+// CSS Flexbox 1 §9.4 control: with NO cross-axis auto margins, the
+// stretch-behaving `normal` initial still applies — an auto-height item (20px
+// measured cross) stretches to the 100px line cross. This is the no-auto control
+// that discriminates the new auto-margin gate: the stretch override must still
+// fire when neither cross margin is auto, and only be suppressed when one is.
+fn align_items_stretch_still_applies_without_cross_auto_margins() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+    let child = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, child, "width", "10px");
+    assert_style_set(&mut root, child, "height", "20px");
+
+    assert_set_flex_row_container_width(&mut root, container, "60px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, item, "flex-basis", "10px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        assert_node_layout(&root, item).height_px,
+        100.0,
+        "stretch still applies with no cross-axis auto margins",
+    );
+}
+
+#[test]
+// CSS Flexbox 1 §9.4 (either-side rule): stretch is suppressed as soon as EITHER
+// cross-axis margin is auto ("neither ... are auto" fails when one side is
+// auto). With only `margin-top: auto`, the single auto top margin absorbs the
+// whole 80px free space (100 − 20 hypothetical) and the item sits at top 80 with
+// its 20px cross intact — not stretched to 100 on top of the 80px margin.
+fn align_items_stretch_suppressed_by_single_side_cross_auto_margin() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+    let child = assert_append_div_to(&mut root, item);
+    assert_style_set(&mut root, child, "width", "10px");
+    assert_style_set(&mut root, child, "height", "20px");
+
+    assert_set_flex_row_container_width(&mut root, container, "60px");
+    assert_style_set(&mut root, container, "height", "100px");
+    assert_style_set(&mut root, item, "flex-basis", "10px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "0");
+    assert_style_set(&mut root, item, "margin-top", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = node_box(&root, item).expect("flex item should expose a box model");
+    assert_close(
+        assert_node_layout(&root, item).height_px,
+        20.0,
+        "a single cross auto margin suppresses stretch, keeping the hypothetical cross",
+    );
+    assert_close(
+        box_.margin.top_px,
+        80.0,
+        "the single cross auto margin absorbs the whole cross free space",
+    );
+    assert_close(
+        box_.border_box.top_px,
+        80.0,
+        "item pushed to the cross end by the absorbed margin",
+    );
+}
+
+#[test]
 // CSS Flexbox 1 §8.1 per-side share arithmetic: positive free space splits
 // equally across EVERY auto main margin on the line (two auto margins per item,
 // summed over the line). Two 10px items with `margin-left/right: auto` in a
