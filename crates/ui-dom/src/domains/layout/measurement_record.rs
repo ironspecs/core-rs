@@ -28,6 +28,7 @@
 
 use crate::domains::layout::measurement_flags::MeasurementFlags;
 use crate::domains::style::computed::FlexDirectionKw;
+use crate::numeric::usize_to_f32;
 use crate::types::dom_node::{DomIntrinsic, DomNode, DomNodeSlotKey};
 use crate::types::root_dom_nodes::RootDomNodes;
 use crate::types::{DomError, DomWhiteSpace, RootDom};
@@ -209,14 +210,18 @@ pub(super) fn compute_v_min_content_px(
 }
 
 /// A nested flex container's min-content block size (D3): a row's is the
-/// tallest item's (items share one line), a column's is the sum (items stack).
-/// Read from the in-flow child records at the inner container's exit.
+/// tallest item's (items share one line), a column's is the sum (items stack)
+/// plus the inter-item `row-gap` × (`item_count` − 1) (CSS Box Alignment §8:
+/// the min-content block size includes the gaps between stacked items). Read
+/// from the in-flow child records at the inner container's exit.
 fn flex_container_v_min_content_px(root_dom: &RootDom, node: &DomNode) -> f32 {
+    let flex = node.computed_flex();
     let is_row = matches!(
-        node.computed_flex().direction,
+        flex.direction,
         FlexDirectionKw::Row | FlexDirectionKw::RowReverse
     );
     let mut result: f32 = 0.0;
+    let mut item_count: usize = 0;
     let mut child_key = node.first_child_key_for_store();
     while let Some(key) = child_key {
         let Some(child) = root_dom.nodes.get(key) else {
@@ -233,7 +238,14 @@ fn flex_container_v_min_content_px(root_dom: &RootDom, node: &DomNode) -> f32 {
         } else {
             result += child_v_min;
         }
+        item_count += 1;
         child_key = next;
+    }
+    // Row containers take the max over children (no gap term); column items
+    // stack, so the block-direction gap (`row_gap`, flex.gap[0]) separates each
+    // adjacent pair.
+    if !is_row {
+        result += flex.gap[0] * usize_to_f32(item_count.saturating_sub(1));
     }
     result
 }
@@ -356,6 +368,82 @@ mod tests {
         let sum = child_v_min_content_sum_px(&root, node);
 
         assert_eq!(sum, 12.0);
+    }
+
+    /// Sets the computed flex direction/gap directly on `container` (no style
+    /// pass in this unit test), mirroring the fold's read surface, then appends
+    /// in-flow div children with the given `v_min` values.
+    fn flex_container_with_child_v_mins(
+        root: &mut RootDom,
+        direction: FlexDirectionKw,
+        gap: [f32; 2],
+        child_v_mins: impl IntoIterator<Item = f32>,
+    ) -> DomNodeSlotKey {
+        let document = root.document_node().0;
+        let container = root
+            .create_element(DomTag::Div)
+            .expect("container should insert");
+        root.append_child(document, container)
+            .expect("container should append");
+        match root
+            .nodes
+            .get_mut(container)
+            .expect("container node should exist")
+        {
+            DomNode::Element(element) => {
+                element.base.presentation.computed.flex.direction = direction;
+                element.base.presentation.computed.flex.gap = gap;
+            }
+            _ => panic!("container should be an element"),
+        }
+        for child_v_min in child_v_mins {
+            let child = root
+                .create_element(DomTag::Div)
+                .expect("child should insert");
+            root.append_child(container, child)
+                .expect("child should append");
+            node_measurement_mut(root.nodes.get_mut(child).expect("child node should exist"))
+                .v_min_content_px = Some(child_v_min);
+        }
+        container
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // the fold is exact arithmetic (10 + 20 + 10)
+    fn flex_column_v_min_sums_children_with_row_gap() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let container = flex_container_with_child_v_mins(
+            &mut root,
+            FlexDirectionKw::Column,
+            [10.0, 0.0],
+            [10.0, 20.0],
+        );
+
+        let node = root.nodes.get(container).expect("container node");
+        let v_min = flex_container_v_min_content_px(&root, node);
+
+        // §9.9/CSS Box Alignment §8: a column's min-content block size includes
+        // the row-gap between each adjacent stacked pair — 10 + 20 + 10 = 40.
+        assert_eq!(v_min, 40.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // the fold is exact arithmetic (max(10, 20))
+    fn flex_row_v_min_takes_max_without_gap() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let container = flex_container_with_child_v_mins(
+            &mut root,
+            FlexDirectionKw::Row,
+            [10.0, 0.0],
+            [10.0, 20.0],
+        );
+
+        let node = root.nodes.get(container).expect("container node");
+        let v_min = flex_container_v_min_content_px(&root, node);
+
+        // A row's v_min is the tallest item's (items share one line) — no sum,
+        // and the row-gap is a cross-direction gap, so it never enters.
+        assert_eq!(v_min, 20.0);
     }
 
     #[test]

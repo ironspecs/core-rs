@@ -6345,6 +6345,19 @@ fn next_sibling_key(root: &RootDom, key: DomNodeSlotKey) -> Option<DomNodeSlotKe
         .map(|(sibling_key, _)| sibling_key)
 }
 
+/// The retained measurement record for an element node (the flex measure
+/// fold's pass output). Elements only: text/image/control nodes carry records
+/// too, but these proofs read the flex container's own intrinsic sizes.
+fn element_measurement_record(
+    root: &RootDom,
+    key: DomNodeSlotKey,
+) -> ui_dom::domains::layout::MeasurementRecord {
+    match root.node(key).expect("flex layout proof node should exist") {
+        DomNode::Element(node) => node.base.measurement,
+        _ => panic!("flex layout proof node should be an element"),
+    }
+}
+
 struct AutoWidthTitlebarFlexMutationScenario {
     world: bevy::prelude::World,
     root: RootDom,
@@ -7924,6 +7937,191 @@ fn assert_non_growing_control_keeps_content_based_auto_min(name: &str) {
         assert_node_layout(&root, item).width_px,
         text_min_width_px,
         &format!("{name}: non-growing item keeps content-based auto-min"),
+    );
+}
+
+// CSS Flexbox 1 §9.9.3: a flex item's intrinsic contribution is floored by its
+// flex base size only when the item is inflexible (won't shrink below base).
+// The floor applies to the intrinsic MAIN size — for a column container the
+// flex base is vertical and never belongs in the container's HORIZONTAL
+// intrinsic sizes. A shrink:0 child's `height: 100px; width: 40px` must
+// therefore leave the column's h_min/h_max at 40, not inflate them to 100.
+#[test]
+fn column_container_intrinsic_sizes_ignore_vertical_flex_base_floor() {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let column_item = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, column_item, "display", "flex");
+    assert_style_set(&mut root, column_item, "flex-direction", "column");
+    let child = assert_append_div_to(&mut root, column_item);
+    assert_style_set(&mut root, child, "width", "40px");
+    assert_style_set(&mut root, child, "height", "100px");
+    assert_style_set(&mut root, child, "flex-shrink", "0");
+    assert_style_set(&mut root, child, "flex-grow", "0");
+    let sibling = assert_append_div_to(&mut root, outer);
+    assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The column's horizontal intrinsics are the child's width (40), not the
+    // child's vertical flex base (100).
+    let record = element_measurement_record(&root, column_item);
+    assert_close(
+        record.h_min_content_px,
+        40.0,
+        "column item h_min_content_px",
+    );
+    assert_close(
+        record.h_max_content_px,
+        40.0,
+        "column item h_max_content_px",
+    );
+
+    // Derived auto-basis base / auto-min both read the 40px intrinsic, so the
+    // column item floors at 40 and the sibling sits immediately after it.
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 40.0, 20.0, "column item at 40px");
+    assert_rect_op_geometry(
+        &rects[3],
+        40.0,
+        0.0,
+        10.0,
+        20.0,
+        "sibling after 40px column item",
+    );
+}
+
+// Row-axis control for the §9.9.3 gate: the floor still applies for ROW
+// containers (horizontal main axis). A shrink:0 child whose flex base is 100px
+// floors the row item's h_min at 100 even though its empty content contributes
+// 0 — the gate removes the floor for column containers only, not row ones.
+#[test]
+fn row_container_intrinsic_sizes_floor_at_horizontal_flex_base() {
+    let (mut world, mut root, outer) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, outer, "200px");
+    assert_style_set(&mut root, outer, "height", "20px");
+    let row_item = assert_append_div_to(&mut root, outer);
+    assert_style_set(&mut root, row_item, "display", "flex");
+    let child = assert_append_div_to(&mut root, row_item);
+    assert_style_set(&mut root, child, "flex-basis", "100px");
+    assert_style_set(&mut root, child, "height", "10px");
+    assert_style_set(&mut root, child, "flex-shrink", "0");
+    assert_style_set(&mut root, child, "flex-grow", "0");
+    let sibling = assert_append_div_to(&mut root, outer);
+    assert_set_inflexible_row_item(&mut root, sibling, "10px", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The row's h_min/h_max floor at the child's 100px horizontal flex base.
+    let record = element_measurement_record(&root, row_item);
+    assert_close(record.h_min_content_px, 100.0, "row item h_min_content_px");
+    assert_close(record.h_max_content_px, 100.0, "row item h_max_content_px");
+
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 100.0, 20.0, "row item at 100px");
+    assert_rect_op_geometry(
+        &rects[3],
+        100.0,
+        0.0,
+        10.0,
+        20.0,
+        "sibling after 100px row item",
+    );
+}
+
+// CSS Flexbox §4.5: the automatic minimum is a CONTENT-BOX size; when applied
+// as a shrink floor against the border-box resolved main size it must add the
+// item's own border+padding. A shrinkable item with `padding: 20px` (40px
+// horizontal) and unbreakable text of min-content ~140 therefore floors at a
+// ~180px border box (140 content + 40 padding), keeping the text un-wrapped.
+#[test]
+fn padded_visible_overflow_flex_item_floors_shrink_at_content_plus_padding() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    let item = assert_append_div_to(&mut root, container);
+    let text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
+
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_style_set(&mut root, item, "padding", "20px");
+    assert_style_set(&mut root, item, "height", "10px");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "flex-basis", "auto");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let text_min_px = assert_text_intrinsic(&root, text).min_content_width_px;
+    let item_layout = assert_node_layout(&root, item);
+    let item_box = node_box(&root, item).expect("item box should exist");
+    let content_width_px =
+        item_box.border_box.width_px - item_box.padding.left_px - item_box.padding.right_px;
+
+    assert!(
+        text_min_px > 20.0,
+        "padded auto-min proof requires unbreakable text wider than the container; got {text_min_px}",
+    );
+    // Border-box floor = min-content (content) + 40px horizontal padding.
+    assert_close(
+        item_layout.width_px,
+        text_min_px + 40.0,
+        "padded item border-box width",
+    );
+    // Content box keeps the full min-content — the text does NOT over-wrap.
+    assert_close(
+        content_width_px,
+        text_min_px,
+        "padded item content-box width",
+    );
+}
+
+// CSS Flexbox §4.5/§9.2 (D4 floor): the OUTER hypothetical main size floors at
+// the automatic minimum converted to border-box terms (auto-min is content-box).
+// With `padding: 20px`, a wrapping item whose unbreakable text min-content
+// exceeds the container floors at min-content + 40px padding, so it still breaks
+// onto its own line but at the padded border-box width.
+#[test]
+fn wrapping_line_break_floor_includes_padding() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "height", "60px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "overflow", "visible");
+    // Horizontal-only padding: 40px on the MAIN axis (the D4 floor), without
+    // changing the item's cross (height) size and muddying the line geometry.
+    assert_style_set(&mut root, first, "padding-left", "20px");
+    assert_style_set(&mut root, first, "padding-right", "20px");
+    assert_style_set(&mut root, first, "height", "20px");
+    let first_text = assert_append_text_to(&mut root, first, "UnbreakableFlexLabel");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "height", "20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let content_min_px = assert_text_intrinsic(&root, first_text).min_content_width_px;
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "container + two items");
+    // The first item's floored outer hypothetical is content-min + 40px
+    // horizontal padding (still > 100px), so it occupies line 1 at the padded
+    // border-box width and the second item wraps to line 2 (y=30, stretched).
+    assert_close(
+        rects[1].size_px[0],
+        content_min_px + 40.0,
+        "first item padded border-box width",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        30.0,
+        10.0,
+        20.0,
+        "second item wraps to line 2",
     );
 }
 

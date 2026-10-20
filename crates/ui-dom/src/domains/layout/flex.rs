@@ -728,13 +728,18 @@ where
     // `hypothetical_main_size_px` stays clamped only, so the §9.7 inflexibility
     // check (base < hypothetical) keeps its pre-floor semantics — the §9.7 seed
     // switch is step 5's, not this step's.
+    //
+    // The automatic minimum is CONTENT-BOX while `hypothetical_main_size_px` is
+    // border-box, so the floor adds the main-axis border+padding to convert
+    // auto-min into the border-box terms of the value it floors.
     let hypothetical_main_size_px = clamp_main_axis_size(child_style, main_axis, flex_base_size_px);
     let (min_main_size_px, max_main_size_px) = main_axis_limits(child_style, main_axis);
     let margin_main_start_px = main_axis_start_margin(child_style, main_axis);
     let margin_main_end_px = main_axis_end_margin(child_style, main_axis);
     let margin_cross_start_px = cross_axis_start_margin(child_style, main_axis);
     let margin_cross_end_px = cross_axis_end_margin(child_style, main_axis);
-    let outer_hypothetical_main_size_px = hypothetical_main_size_px.max(automatic_min_main_size_px)
+    let outer_hypothetical_main_size_px = hypothetical_main_size_px
+        .max(automatic_min_main_size_px + main_axis_border_padding_px)
         + margin_main_start_px
         + margin_main_end_px;
     Ok(FlexItemView {
@@ -979,14 +984,19 @@ fn flex_container_intrinsic_inline_sizes(
         };
         // §9.9.3 flex item intrinsic contribution: floored by the flex base
         // size if the item is not shrinkable (an inflexible item won't shrink
-        // below its base). Content-box flex base, matching `h_min`/`h_max`.
+        // below its base). The floor applies to the intrinsic MAIN size; for a
+        // column container the flex base is vertical and never belongs in a
+        // horizontal contribution, so the floor is gated to the horizontal
+        // main axis. Content-box flex base, matching `h_min`/`h_max`.
+        let flex_base_floored =
+            container_style.main_axis == FlexAxis::Horizontal && view.flex_shrink_factor == 0.0;
         let flex_base_content_px = view.flex_base_size_px - view.main_axis_border_padding_px;
-        let contribution_min = if view.flex_shrink_factor == 0.0 {
+        let contribution_min = if flex_base_floored {
             view.h_min_content_px.max(flex_base_content_px)
         } else {
             view.h_min_content_px
         };
-        let contribution_max = if view.flex_shrink_factor == 0.0 {
+        let contribution_max = if flex_base_floored {
             view.h_max_content_px.max(flex_base_content_px)
         } else {
             view.h_max_content_px
@@ -2470,8 +2480,13 @@ fn freeze_flex_line_main_size_violations(
 }
 
 fn clamped_main_size_after_flex_constraints(item: FlexItemView, resolved_main_size_px: f32) -> f32 {
+    // The automatic minimum is CONTENT-BOX while `resolved_main_size_px` is
+    // border-box, so the floor adds the main-axis border+padding to convert
+    // auto-min into the border-box terms of the value it floors. The separate
+    // `.max(border_padding)` stays: it guards the content box at zero (a
+    // negative-content resolution), independent of the auto-min floor.
     let mut clamped_main_size_px = resolved_main_size_px
-        .max(item.automatic_min_main_size_px)
+        .max(item.automatic_min_main_size_px + item.main_axis_border_padding_px)
         .max(item.main_axis_border_padding_px);
     if let Some(min_main_size_px) = item.min_main_size_px {
         clamped_main_size_px = clamped_main_size_px.max(min_main_size_px);
