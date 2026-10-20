@@ -577,10 +577,10 @@ fn anonymous_inline_run_item_view(
 /// the available width by the used line width). Returns the folded accumulator,
 /// the key of the first run-breaker after the run (`None` at the end of the
 /// siblings), and the run's joint laid-out height at the measure width (the
-/// D4 wrapper's `flow.line_height_px` — max child height, wrapping-aware). A
-/// shrunk run wraps and its joint height exceeds the single-line strut; an
-/// unshrunk run's joint height equals the strut. `first_child_key` is a run
-/// member (the caller classified it); subsequent siblings are classified here.
+/// D4 wrapper's `flow.line_height_px` — the max child height, the existing
+/// inline accumulation). Joint line-breaking happens in the placement path,
+/// not here. `first_child_key` is a run member (the caller classified it);
+/// subsequent siblings are classified here.
 fn measure_inline_run<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),

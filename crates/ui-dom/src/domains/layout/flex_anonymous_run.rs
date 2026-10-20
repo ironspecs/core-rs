@@ -121,6 +121,7 @@ pub(super) fn empty_run(first_child_key: DomNodeSlotKey) -> RunAccumulator {
 /// wrapping). Under `nowrap`/`pre` `mode_allows_wrapping` is false, so
 /// whitespace boundaries never break and the whole run joins into one
 /// unbreakable segment (D7).
+#[allow(clippy::float_cmp)] // min == max is the exact single-vs-multi fragment discriminator: a single-fragment member carries them bit-identically, never a rounded near-miss
 pub(super) fn accumulate_run(run: &mut RunAccumulator, member: MemberMetrics, mode: DomWhiteSpace) {
     let this_leading_break = member.leading_edge_is_element_break
         || edge_is_break(member.starts_with_wrap_opportunity, mode);
@@ -136,7 +137,17 @@ pub(super) fn accumulate_run(run: &mut RunAccumulator, member: MemberMetrics, mo
             .widest_segment_px
             .max(run.trailing_fragment_px + member.leading_fragment_px)
             .max(member.min_content_px);
-        run.trailing_fragment_px += member.trailing_fragment_px;
+        // The joined segment terminates at the member's first internal break.
+        // A single-fragment member (min == max, one unbreakable fragment)
+        // continues the segment through its whole width; a multi-fragment
+        // member (min < max always — total width exceeds the widest segment)
+        // replaces the trailing fragment with its own trailing segment. The
+        // `min == max` test is exact, not approximate.
+        if member.min_content_px == member.max_content_px {
+            run.trailing_fragment_px += member.trailing_fragment_px;
+        } else {
+            run.trailing_fragment_px = member.trailing_fragment_px;
+        }
     } else {
         run.widest_segment_px = run.widest_segment_px.max(member.min_content_px);
         run.trailing_fragment_px = member.trailing_fragment_px;
@@ -383,6 +394,90 @@ mod tests {
         assert_eq!(run.widest_segment_px, 8.0);
         assert_eq!(run.max_content_sum_px, 8.0);
         assert_eq!(run.widest_segment_px, run.max_content_sum_px);
+    }
+
+    #[test]
+    fn multi_fragment_member_join_terminates_at_its_own_trailing_segment() {
+        // Reviewer's trace: "x" (1px) + "aa bbb" (leading 2, trailing 3,
+        // min 3) + "y" (1px), no boundary whitespace anywhere. The joined
+        // segment prev-trailing + member-leading ("xaa" = 3) terminates at the
+        // member's FIRST internal wrap opportunity, so the next join's trailing
+        // fragment must be the member's OWN trailing segment ("bbb" = 3), not
+        // the sum. Correct min-content = max(w("xaa") = 3, w("bbby") = 4) = 4.
+        let first = text_member(1.0, 1.0, 1.0, 1.0, false, false, false);
+        let middle = text_member(3.0, 5.0, 2.0, 3.0, false, false, false);
+        let last = text_member(1.0, 1.0, 1.0, 1.0, false, false, false);
+
+        let mut run = new_empty_run();
+        accumulate_run(&mut run, first, DomWhiteSpace::Normal);
+        accumulate_run(&mut run, middle, DomWhiteSpace::Normal);
+        accumulate_run(&mut run, last, DomWhiteSpace::Normal);
+
+        // w("bbby") = the middle member's trailing fragment + "y".
+        let expected = middle.trailing_fragment_px + last.leading_fragment_px;
+        assert_eq!(run.widest_segment_px, expected);
+        // NOT w("x" + "bbb" + "y"): the stale-trailing sum is the over-estimate.
+        assert_ne!(
+            run.widest_segment_px,
+            first.trailing_fragment_px + middle.trailing_fragment_px + last.trailing_fragment_px
+        );
+    }
+
+    #[test]
+    fn single_fragment_members_join_through_the_whole_width() {
+        // "x" + "aa" + "y", all single-fragment (min == max): every join
+        // extends the segment through the member's whole width, so the widest
+        // segment is the full sum.
+        let first = text_member(1.0, 1.0, 1.0, 1.0, false, false, false);
+        let middle = text_member(2.0, 2.0, 2.0, 2.0, false, false, false);
+        let last = text_member(1.0, 1.0, 1.0, 1.0, false, false, false);
+
+        let mut run = new_empty_run();
+        accumulate_run(&mut run, first, DomWhiteSpace::Normal);
+        accumulate_run(&mut run, middle, DomWhiteSpace::Normal);
+        accumulate_run(&mut run, last, DomWhiteSpace::Normal);
+
+        assert_eq!(run.widest_segment_px, 4.0);
+        assert_eq!(
+            run.widest_segment_px,
+            first.trailing_fragment_px + middle.trailing_fragment_px + last.trailing_fragment_px
+        );
+    }
+
+    #[test]
+    fn equal_fragment_widths_do_not_fool_the_multi_fragment_arm() {
+        // "aa bb" has EQUAL leading and trailing fragment widths (2 == 2) but
+        // min (2) < max (4): it is a two-fragment member. Joined at its leading
+        // edge after a nonzero trailing ("x" = 1), the new trailing must be the
+        // member's own trailing segment (2), not the sum (1 + 2 = 3). This pins
+        // that the implementation keys on min == max, never leading == trailing.
+        let first = text_member(1.0, 1.0, 1.0, 1.0, false, false, false);
+        let middle = text_member(2.0, 4.0, 2.0, 2.0, false, false, false);
+
+        let mut run = new_empty_run();
+        accumulate_run(&mut run, first, DomWhiteSpace::Normal);
+        accumulate_run(&mut run, middle, DomWhiteSpace::Normal);
+
+        assert_eq!(middle.leading_fragment_px, middle.trailing_fragment_px);
+        assert!(middle.min_content_px < middle.max_content_px);
+        assert_eq!(run.trailing_fragment_px, middle.trailing_fragment_px);
+    }
+
+    #[test]
+    fn boundary_break_resets_the_trailing_fragment_to_the_members_own() {
+        // The else branch: a wrap-opportunity boundary break means no join, so
+        // the new trailing fragment is the member's OWN trailing segment (not a
+        // join continuation). "foo " + "aa bb": the trailing space breaks the
+        // boundary, so the trailing fragment becomes "bb" (2).
+        let first = text_member(3.0, 4.0, 3.0, 3.0, false, true, false);
+        let second = text_member(2.0, 4.0, 2.0, 2.0, false, false, false);
+
+        let mut run = new_empty_run();
+        accumulate_run(&mut run, first, DomWhiteSpace::Normal);
+        accumulate_run(&mut run, second, DomWhiteSpace::Normal);
+
+        assert_eq!(run.trailing_fragment_px, second.trailing_fragment_px);
+        assert_eq!(run.widest_segment_px, 3.0);
     }
 
     #[test]
