@@ -226,11 +226,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-441 layout proofs (433 in
+444 layout proofs (436 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 10);
-the off-spec registry (6 divergent proofs in 5 divergent-class rows, 5
-deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-20 after the post-sequence
+review fixes); the off-spec registry (6 divergent proofs in 5
+divergent-class rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1560,6 +1560,29 @@ an f32 basis.
   Next per the arc: grid's admission (the debate's adopted decision:
   grid enters immediately after the fix sequence, before PR 4), then
   PR 4 (the text seam), then PR 5 (the `RootDom` decomposition).
+
+- **2026-10-20 — third-party review of the fix sequence found two
+  bugs (architect-verified, fixed `a5776eb` and `0310bca`).** (1)
+  `refold_item_at_resolved_main` returned the FlowSize OUTER value
+  (margin box) into `resolved_cross_size_px`, which is seeded and
+  consumed as border-box everywhere — a refolded item with a
+  cross-axis margin double-counted it (line cross and cross free space
+  inflated); fixed by subtracting the cross margins so the refolded
+  value stays border-box, pinned by a shrinking text item with
+  `margin-bottom: 10px` (revert produces 62, fix produces 52). (2)
+  `write_flex_item_absorbed_auto_margins` shifted the item's
+  `border_box` by absorbed auto margins AFTER the subtree was laid out
+  at the margin-box start — descendants (layer-space absolute) stayed
+  at the container edge while the item's background/border moved;
+  fixed per the review's direction by placing the item's content origin
+  at the absorbed start margin in `active_flex_resolved_child_context`
+  BEFORE relayout (the layout write lands the border box; the margin
+  edges are written for paint/hit-test; the no-double-count evidence is
+  traced through all four sites), pinned by an auto-margin item WITH a
+  child (children now stage at the absorbed origin, 150, not 0). Both
+  bugs were uncaught because the original pins used margin-free and
+  child-free leaves — the new pins close exactly those shapes. Proofs
+  441 → 444.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
