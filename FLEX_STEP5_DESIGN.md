@@ -70,8 +70,17 @@ loop (bounded by items-per-line):
     for each item: if !frozen { resolved = hypothetical }         // reset to hypothetical
     recompute: total_flex_factor (unfrozen, mode factor);
                free_space = line_main_inner_size
-                 − Σ frozen (hypothetical + margins + gap)
+                 − Σ frozen (CURRENT resolved value + margins + gap)
                  − Σ unfrozen (base + margins + gap)
+    // FROZEN CONTRIBUTION CORRECTION (2026-10-19, caught by the
+    // transcription's hand-trace, adopted): frozen items contribute
+    // their CURRENT value — hypothetical for ctor-frozen items, the
+    // CLAMPED-AT-FREEZE value for loop-frozen items (Blink
+    // `FlexedMarginBoxSize()`, line_flexer.cc:64) — not hypothetical
+    // for both, as an earlier draft of this line said. Frozen items
+    // keep their current value across iterations (the distribution
+    // skips them); the D5 mixed-violation values only reproduce under
+    // this reading.
     fractional factor-sum clamp (0 < total_factor < 1 → scale free space)   // unchanged
     early exit: grow && free_space ≤ 0 → break; shrink && free_space ≥ 0 → break   // unchanged shape
     // ResolveFlexibleLengths (Blink :90-182):
