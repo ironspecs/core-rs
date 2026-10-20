@@ -1492,6 +1492,25 @@ an f32 basis.
   Next: step 8 — the alignment negative 0-clamp (one row), then
   step 9 (the flow.rs trio), then step 10 (auto margins §8.1).
 
+- **2026-10-20 — flex arc step 8 LANDED (`60bf6c8`): the alignment
+  negative 0-clamp, wider than the registered row.** The verification
+  found the divergence reached beyond `space-evenly`: `Center` and
+  `SpaceAround` also lacked the negative clamp, and Run A's
+  `space-around` −10 "on-spec control" was itself engine-divergent
+  (Blink clamps center's negative to 0 at TWO sites,
+  `flex_layout_algorithm.cc:1678/1684`). All three arms now clamp
+  negative remaining main space to 0 (flex-start, both engines'
+  behavior; `SpaceBetween`/`FlexEnd` already correct); the cross side
+  was already engine-matching via the existing `.max(0.0)`. The around
+  control re-pinned −10 → 0 with the engine-divergence note in its
+  header; the registry row's spec claim corrected on both axes; a new
+  `center`-negative row; zero positive-space movement; perf pins
+  untouched. Registry 10-in-9 → 9-in-8 (the space-evenly row moved
+  on-spec). Next: step 9 — the flow.rs trio (two three-branch
+  replacements per PR 1 item 2's shape, plus the flex-item boundary
+  containment with a verification-first gate), then step 10 (auto
+  margins §8.1, the clients' top ask).
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
