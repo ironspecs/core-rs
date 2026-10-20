@@ -370,13 +370,15 @@ fn first_block_child_top_margin_collapses_with_parent_top_boundary() {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
 
-    // rects[0] = container, rects[1] = parent (both 180x16 at the origin;
-    // DFS pre-order keeps container first), rects[2] = child.
-    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 180.0, 16.0, "parent border box");
+    // rects[0] = container, rects[1] = parent, rects[2] = child. The child's
+    // 20px top margin collapses with the parent's top boundary, pushing the
+    // parent down by 20 (parent and child both at top 20); the bottom border
+    // keeps the separate last-child bottom collapse out of this proof.
+    assert_rect_op_geometry(&rects[1], 0.0, 20.0, 180.0, 16.0, "parent border box");
     assert_rect_op_geometry(
         &rects[2],
         0.0,
-        0.0,
+        20.0,
         180.0,
         10.0,
         "first block child after parent-child top margin collapse",
@@ -678,29 +680,29 @@ fn mixed_sign_adjacent_block_margins_sum_to_used_gap() {
 // and the damage-rect model. The escape hatch is an unclipped (Normal) layer —
 // see `normal_layer_paints_spillover_escape_hatch`.
 //
-// Split pin: this proof guards the integration-visible half — the container is
-// classified as a Clipped layer (`layer_kind_for_node`), its border box is the
-// bounded surface (100×100), and the negative-margin child's rect is staged
-// ABOVE that bound (top −20px). The actual clip is the composite stage's
-// `clip_world` (the layer's border box for Clipped layers), which is pub(crate)
-// and pinned in `src/domains/composite/mod.rs::
-// nested_clipped_layer_clip_world_uses_layer_tree_world_offset`. The staged
-// paint plan is NOT itself clipped: it carries the spilled rect at −20px, the
-// same as the Normal-layer escape hatch below — the clip is applied at draw
-// time, never by the paint plan.
+// Re-scoped (flex arc step 9): a FIRST-child negative margin now pulls the layer
+// up with it (see `first_child_negative_margin_pulls_clipped_layer_up`), so this
+// pin uses a MIDDLE sibling with a negative top margin — a first in-flow child
+// with a zero bottom margin keeps the clipped layer stationary, and the
+// following sibling's −20px top margin collapses with it, shifting the sibling
+// up to overlap the first child (still inside the layer's bounded surface). The
+// composite `clip_world` stays at the layer's border box.
 fn layer_bounds_clip_spillover_by_design() {
     let (mut world, mut root) =
         crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let clipped = assert_append_div_to(&mut root, document_root);
-    let child = assert_append_div_to(&mut root, clipped);
+    let spacer = assert_append_div_to(&mut root, clipped);
+    let sibling = assert_append_div_to(&mut root, clipped);
 
     assert_style_set(&mut root, clipped, "width", "100px");
     assert_style_set(&mut root, clipped, "height", "100px");
     assert_style_set(&mut root, clipped, "overflow", "hidden");
-    assert_style_set(&mut root, child, "width", "100px");
-    assert_style_set(&mut root, child, "height", "20px");
-    assert_style_set(&mut root, child, "margin-top", "-20px");
+    assert_style_set(&mut root, spacer, "width", "100px");
+    assert_style_set(&mut root, spacer, "height", "20px");
+    assert_style_set(&mut root, sibling, "width", "100px");
+    assert_style_set(&mut root, sibling, "height", "20px");
+    assert_style_set(&mut root, sibling, "margin-top", "-20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -724,42 +726,85 @@ fn layer_bounds_clip_spillover_by_design() {
         "clipped layer border-box height (the bounded surface)",
     );
 
-    // The staged paint plan carries the child's border box at its negative
-    // offset (top −20px), above the layer's top bound; the composite clip_world
-    // trims that spilled region at draw time.
+    // The middle sibling's −20px top margin collapses with the first child's
+    // zero bottom margin, shifting it up to overlap the first child — while the
+    // clipped layer stays put at its border box.
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_rect_op_geometry(&rects[0], 0.0, 0.0, 100.0, 100.0, "clipped layer container");
     assert_rect_op_geometry(
-        &rects[1],
+        &rects[2],
         0.0,
-        -20.0,
+        0.0,
         100.0,
         20.0,
-        "negative-margin child staged above the clipped layer bounds",
+        "middle sibling shifted up",
+    );
+}
+
+#[test]
+// ON-SPEC (flex arc step 9): a first in-flow child's negative top margin now
+// collapses with the parent's top boundary (three-branch rule), pulling the
+// layer up with it — the clipped layer's border box top moves to −20 and the
+// child sits at its content edge (−20), no longer spilling above a stationary
+// layer.
+fn first_child_negative_margin_pulls_clipped_layer_up() {
+    let (mut world, mut root) =
+        crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let clipped = assert_append_div_to(&mut root, document_root);
+    let child = assert_append_div_to(&mut root, clipped);
+
+    assert_style_set(&mut root, clipped, "width", "100px");
+    assert_style_set(&mut root, clipped, "height", "100px");
+    assert_style_set(&mut root, clipped, "overflow", "hidden");
+    assert_style_set(&mut root, child, "width", "100px");
+    assert_style_set(&mut root, child, "height", "20px");
+    assert_style_set(&mut root, child, "margin-top", "-20px");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let clipped_box = node_box(&root, clipped).expect("clipped layer should expose a box");
+    assert_close(
+        clipped_box.border_box.top_px,
+        -20.0,
+        "clipped layer pulled up to -20 with its first child",
+    );
+    // The child's stored border-box top is in the clipped layer's LOCAL frame:
+    // it sits at the layer's content edge (0), which is −20 in document
+    // coordinates once the layer is pulled up. The child's −20 top margin
+    // collapsed out through the layer's boundary, so the child is flush at the
+    // edge rather than spilling above a stationary layer.
+    let child_box = node_box(&root, child).expect("child should expose a box");
+    assert_close(
+        child_box.border_box.top_px,
+        0.0,
+        "first child flush at the pulled-up layer content edge (layer-local 0 == -20 absolute)",
     );
 }
 
 #[test]
 // CSS 2.1 §9.4.3 plus the layer-spillover escape hatch: an unclipped (Normal)
 // layer paints content that spills outside its border box. A `position:
-// relative` container is a Normal layer (`node_has_unclipped_layer`), so its
-// −20px-top child's border box is staged at its negative offset and paints —
-// the deliberate clipped-layer divergence (see `layer_bounds_clip_spillover_by_design`)
-// does NOT apply here. This is on-spec: a browser paints the spill.
+// relative` container is a Normal layer (`node_has_unclipped_layer`). Re-scoped
+// (flex arc step 9) to a MIDDLE sibling with a negative top margin, so the
+// relative layer stays put and the sibling shifts up to overlap the first child.
 fn normal_layer_paints_spillover_escape_hatch() {
     let (mut world, mut root) =
         crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
     let normal = assert_append_div_to(&mut root, document_root);
-    let child = assert_append_div_to(&mut root, normal);
+    let spacer = assert_append_div_to(&mut root, normal);
+    let sibling = assert_append_div_to(&mut root, normal);
 
     assert_style_set(&mut root, normal, "position", "relative");
     assert_style_set(&mut root, normal, "width", "100px");
     assert_style_set(&mut root, normal, "height", "100px");
-    assert_style_set(&mut root, child, "width", "100px");
-    assert_style_set(&mut root, child, "height", "20px");
-    assert_style_set(&mut root, child, "margin-top", "-20px");
+    assert_style_set(&mut root, spacer, "width", "100px");
+    assert_style_set(&mut root, spacer, "height", "20px");
+    assert_style_set(&mut root, sibling, "width", "100px");
+    assert_style_set(&mut root, sibling, "height", "20px");
+    assert_style_set(&mut root, sibling, "margin-top", "-20px");
 
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
@@ -769,50 +814,44 @@ fn normal_layer_paints_spillover_escape_hatch() {
         "relative container should classify as a Normal (unclipped) layer",
     );
 
-    // The child's rect op exists at its negative-offset position: the spill
-    // paints through the unclipped escape hatch.
+    // The middle sibling's −20px top margin collapses with the first child's
+    // zero bottom margin, shifting it up to overlap the first child.
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_rect_op_geometry(&rects[0], 0.0, 0.0, 100.0, 100.0, "normal layer container");
     assert_rect_op_geometry(
-        &rects[1],
+        &rects[2],
         0.0,
-        -20.0,
+        0.0,
         100.0,
         20.0,
-        "negative-margin child paints at its negative offset",
+        "middle sibling shifted up",
     );
 }
 
 #[test]
-// CSS 2.1 §8.3.1 (collapsing margins) — OFF-SPEC divergent pin. Closest WPT:
-// the CSS21 margin-collapse suite (css/CSS2/normal-flow/margin-collapse-*.xht);
-// no single WPT covers the parent-child NEGATIVE-margin boundary shape, so this
-// pins the exact current divergence against the spec's three-branch rule.
-// Gecko: layout/generic/nsBlockFrame.cpp margin-collapse path. Blink:
+// CSS 2.1 §8.3.1 (collapsing margins) — ON-SPEC (relabeled from
+// off_spec_parent_boundary_negative_margins_clamp in flex arc step 9). Closest
+// WPT: the CSS21 margin-collapse suite
+// (css/CSS2/normal-flow/margin-collapse-*.xht). Gecko:
+// layout/generic/nsBlockFrame.cpp margin-collapse path. Blink:
 // third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc /
 // third_party/blink/renderer/core/layout/block_layout_algorithm.cc.
 //
-// SPEC: a first in-flow child's top margin (last in-flow child's bottom margin)
+// A first in-flow child's top margin (last in-flow child's bottom margin)
 // adjoins the parent's and collapses by the SAME three-branch rule as siblings
-// — a negative child margin passes through the boundary (parent 0 + child −20
-// → −20), so the child pulls the parent's boundary up by the collapsed value.
+// — a negative child margin passes through the boundary (parent 0 + child −20 →
+// −20), so the child pulls the parent's boundary up by the collapsed value. The
+// three-branch replacements in `collapsed_parent_top_margin_px` /
+// `collapsed_parent_bottom_margin_px` / `propagated_collapsed_margin_delta_px`
+// (src/domains/layout/flow.rs) landed this; the generalized leading-chain walk
+// positions the parent at the collapsed value.
 //
-// CURRENT (pinned): `collapsed_parent_top_margin_px` /
-// `collapsed_parent_bottom_margin_px` (src/domains/layout/flow.rs) clamp the
-// child margin with `.max(0.0)`, and
-// `propagated_empty_intermediary_block_margin_height_px` clamps the
-// intermediary's own and child boundary margins the same way — a negative
-// margin is treated as 0 and the boundary does not move.
-//
-// Spec-correct per row: (a) parent top −20 (child flush at −20); (b) parent
-// border-box height 11 (content 10); (c) outer border-box height 11 (content
-// 10). The proof asserts the CURRENT values, so it fails if behavior moves in
-// EITHER direction.
-fn off_spec_parent_boundary_negative_margins_clamp() {
-    // (a) first child negative top margin: the adjoined pair should collapse to
-    // the negative value and pull the parent's top boundary up by 20 — instead
-    // the clamp keeps the parent at top 0 and the child overflows above it.
+// Per row: (a) parent top −20 (child flush at −20); (b) parent border-box height
+// 11 (content 10); (c) outer border-box height 11 (content 10).
+fn parent_boundary_negative_margins_collapse_three_branch() {
+    // (a) first child negative top margin: the adjoined pair collapses to the
+    // negative value and pulls the parent's top boundary up by 20.
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
     assert_style_set(&mut root, container, "width", "180px");
     assert_style_set(&mut root, parent, "width", "180px");
@@ -829,10 +868,10 @@ fn off_spec_parent_boundary_negative_margins_clamp() {
     assert_rect_op_geometry(
         &rects[1],
         0.0,
-        0.0,
+        -20.0,
         180.0,
         40.0,
-        "(a) parent stays at top 0",
+        "(a) parent pulled up to top -20",
     );
     assert_rect_op_geometry(
         &rects[2],
@@ -840,12 +879,11 @@ fn off_spec_parent_boundary_negative_margins_clamp() {
         -20.0,
         180.0,
         10.0,
-        "(a) child overflows above the un-moved parent boundary",
+        "(a) child flush at the pulled-up parent content edge",
     );
 
-    // (b) last child negative bottom margin: the adjoined pair should collapse
-    // to −20 and pull the parent's bottom boundary up (auto height 10 + border
-    // 1 = 11) — instead the clamp keeps the parent height at just its border.
+    // (b) last child negative bottom margin: the adjoined pair collapses to −20
+    // and pulls the parent's bottom boundary up (auto height 10 + border 1 = 11).
     let (mut world, mut root, container, parent, child) = nested_parent_child_setup();
     assert_style_set(&mut root, container, "width", "180px");
     assert_style_set(&mut root, parent, "width", "180px");
@@ -860,33 +898,24 @@ fn off_spec_parent_boundary_negative_margins_clamp() {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     // rects[0] = container, rects[1] = parent, rects[2] = child.
-    assert_rect_op_geometry(
-        &rects[1],
-        0.0,
-        0.0,
-        180.0,
-        1.0,
-        "(b) parent collapses to its border",
-    );
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 180.0, 11.0, "(b) parent border box 11");
     assert_rect_op_geometry(
         &rects[2],
         0.0,
         1.0,
         180.0,
         10.0,
-        "(b) child overflows below the un-moved parent bottom boundary",
+        "(b) child at the parent content edge",
     );
     assert_close(
         parent_layout.height_px,
-        1.0,
-        "(b) parent border-box height after the bottom-boundary clamp",
+        11.0,
+        "(b) parent border-box height after the bottom-boundary collapse",
     );
 
     // (c) negative margin propagated through an empty intermediary: the
-    // grandchild's −20 bottom margin should propagate through the empty middle
-    // to the outer's bottom boundary (outer auto height 10 + border 1 = 11) —
-    // instead `propagated_empty_intermediary_block_margin_height_px` clamps the
-    // propagated bottom margin with `.max(0.0)`.
+    // grandchild's −20 bottom margin propagates through the empty middle to the
+    // outer's bottom boundary (outer auto height 10 + border 1 = 11).
     let (mut world, mut root, container, outer, middle) = nested_parent_child_setup();
     let grandchild = assert_append_div_to(&mut root, middle);
     assert_style_set(&mut root, container, "width", "180px");
@@ -904,52 +933,39 @@ fn off_spec_parent_boundary_negative_margins_clamp() {
     let rects = &plans[0].rects;
     // rects[0] = container, rects[1] = outer, rects[2] = grandchild (the empty
     // middle is zero-height and emits no rect).
-    assert_rect_op_geometry(
-        &rects[1],
-        0.0,
-        0.0,
-        180.0,
-        1.0,
-        "(c) outer collapses to its border",
-    );
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 180.0, 11.0, "(c) outer border box 11");
     assert_rect_op_geometry(
         &rects[2],
         0.0,
         1.0,
         180.0,
         10.0,
-        "(c) grandchild overflows below the un-moved outer boundary",
+        "(c) grandchild at the outer content edge",
     );
     assert_close(
         outer_layout.height_px,
-        1.0,
-        "(c) outer border-box height after the empty-intermediary clamp",
+        11.0,
+        "(c) outer border-box height after the empty-intermediary collapse",
     );
 }
 
 #[test]
-// CSS 2.1 §8.3.1 (collapsing margins) — OFF-SPEC divergent pin. Closest WPT:
-// the CSS21 margin-collapse suite (css/CSS2/normal-flow/margin-collapse-*.xht);
-// no single WPT covers an empty block whose own margins are BOTH negative, so
-// this pins the exact current divergence against the spec's three-branch rule.
-// Gecko: layout/generic/nsBlockFrame.cpp margin-collapse path. Blink:
+// CSS 2.1 §8.3.1 (collapsing margins) — ON-SPEC (relabeled from
+// off_spec_empty_block_negative_margins_collapse_to_max_not_most_negative in
+// flex arc step 9). Closest WPT: the CSS21 margin-collapse suite
+// (css/CSS2/normal-flow/margin-collapse-*.xht). Gecko:
+// layout/generic/nsBlockFrame.cpp margin-collapse path. Blink:
 // third_party/blink/renderer/core/layout/ng/ng_margin_collapse.cc.
 //
-// SPEC: an empty block's own adjoining top and bottom margins collapse by the
-// same three-branch rule — two negative margins collapse to the MOST NEGATIVE
-// (−10, −5 → −10), and a mixed pair sums (10, −5 → 5).
-//
-// CURRENT (pinned): the empty-block self-collapse in `layout_flow_size`
-// (src/domains/layout/flow.rs) predates PR 1 item 2's three-branch rule and
-// uses plain `max` — (−10, −5 → −5) and (10, −5 → 10).
-//
-// The proof asserts the CURRENT values, so it fails if behavior moves in EITHER
-// direction.
-fn off_spec_empty_block_negative_margins_collapse_to_max_not_most_negative() {
-    // (both_negative) empty block `margin: -10px 0 -5px`: current `max` flow
-    // height −5 pulls the following sibling up by 5 (top −4) and leaves the
-    // parent content at 5 (border box 7); spec −10 would pull it to −9 and
-    // leave content 0 (border box 2).
+// An empty block's own adjoining top and bottom margins collapse by the same
+// three-branch rule — two negative margins collapse to the MOST NEGATIVE (−10,
+// −5 → −10), and a mixed pair sums (10, −5 → 5). The empty-block self-collapse
+// in `layout_flow_size` (src/domains/layout/flow.rs) now uses the three-branch
+// rule instead of plain `max`.
+fn empty_block_negative_margins_collapse_to_most_negative() {
+    // (both_negative) empty block `margin: -10px 0 -5px`: the three-branch
+    // self-collapse −10 pulls the following sibling up by 10 (top −9) and leaves
+    // the parent content 0 (border box 2).
     let (mut world, mut root) =
         crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
     let document_root = root.document_node().0;
@@ -972,17 +988,16 @@ fn off_spec_empty_block_negative_margins_collapse_to_max_not_most_negative() {
     let after_box = node_box(&root, after).expect("after block should expose a box model");
     assert_close(
         parent_layout.height_px,
-        7.0,
-        "(both_negative) parent border-box height after `max` self-collapse",
+        2.0,
+        "(both_negative) parent border-box height after three-branch self-collapse",
     );
     assert_close(
         after_box.border_box.top_px,
-        -4.0,
-        "(both_negative) following sibling pulled up by the −5 `max` flow height",
+        -9.0,
+        "(both_negative) following sibling pulled up by the −10 three-branch flow height",
     );
 
-    // (mixed_sign_control) empty block `margin: 10px 0 -5px`: current `max`
-    // flow height 10 (parent content 10, border box 12); spec mixed-sign sum 5
+    // (mixed_sign_control) empty block `margin: 10px 0 -5px`: mixed-sign sum 5
     // (content 5, border box 7).
     let (mut world, mut root) =
         crate::layout_proofs::support::attached_gpu_root_dom_default_viewport_setup();
@@ -1002,7 +1017,7 @@ fn off_spec_empty_block_negative_margins_collapse_to_max_not_most_negative() {
     let parent_layout = assert_node_layout(&root, parent);
     assert_close(
         parent_layout.height_px,
-        12.0,
-        "(mixed_sign_control) parent border-box height after `max` self-collapse",
+        7.0,
+        "(mixed_sign_control) parent border-box height after mixed-sign self-collapse",
     );
 }

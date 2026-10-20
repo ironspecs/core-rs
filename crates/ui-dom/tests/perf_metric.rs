@@ -202,7 +202,12 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
     // GetMut from 117/21/0): the legacy attr-projection channel is deleted —
     // style_mut writes the inline block and marks dirty only, and the style
     // pass writes the seven computed groups directly on the node record.
-    assert_node_counts(&root, 106, 16, 0, "hover recompute");
+    // flex arc step 9 leading-margin-chain walk (+1 Get from 106/16/0): the
+    // collapsed leading-margin chain reads the first in-flow block child of the
+    // one positioned chip (a `first_child_key` lookup that returns none) — one
+    // node-store read per positioned container, style-read-only, bounded by the
+    // empty-run length (FLEX_STEP9_DESIGN.md D1 cost model).
+    assert_node_counts(&root, 107, 16, 0, "hover recompute");
 }
 
 /// Post style-dirty propagation fix pin: one append now arms the layer
@@ -269,7 +274,12 @@ fn append_then_update_metric_deltas_match_baseline() {
     // GetMut from 124/29/1): the legacy attr-projection channel is deleted —
     // style_mut writes the inline block and marks dirty only, and the style
     // pass writes the seven computed groups directly on the node record.
-    assert_node_counts(&root, 103, 21, 1, "append+update");
+    // flex arc step 9 leading-margin-chain walk (+1 Get from 103/21/1): the
+    // collapsed leading-margin chain reads the first in-flow block child of the
+    // first positioned chip only (the second chip is not a first block child) —
+    // one node-store read per positioned container, style-read-only, bounded by
+    // the empty-run length (FLEX_STEP9_DESIGN.md D1 cost model).
+    assert_node_counts(&root, 104, 21, 1, "append+update");
 }
 
 fn assert_second_append_then_update_history(root: &RootDom) {
@@ -390,7 +400,12 @@ fn stylesheet_apply_metric_deltas_stay_pinned() {
     // deleted; the typed winners fold resolves the seven groups + transition
     // slot directly on the node record, and the baseline layer-membership
     // re-evaluation replaces the write-path layer queueing.
-    assert_node_counts(&root, 69, 14, 0, "stylesheet apply");
+    // flex arc step 9 leading-margin-chain walk (+1 Get from 69/14/0): the
+    // collapsed leading-margin chain reads the first in-flow block child of the
+    // one positioned chip (a `first_child_key` lookup that returns none) — one
+    // node-store read per positioned container, style-read-only, bounded by the
+    // empty-run length (FLEX_STEP9_DESIGN.md D1 cost model).
+    assert_node_counts(&root, 70, 14, 0, "stylesheet apply");
 }
 
 #[test]
@@ -686,7 +701,13 @@ fn text_rewrap_metric_deltas_stay_pinned() {
     // spine step 3.3d (−1 Get from 78/14/0): `set_text_content`'s ancestor
     // seed stops at the nearest element instead of climbing the full chain
     // (the legacy first-set-wins climb never completed for an attr-less block).
-    assert_node_counts(&root, 77, 14, 0, "text rewrap");
+    // flex arc step 9 leading-margin-chain walk (+3 Get from 77/14/0): the
+    // collapsed leading-margin chain walks the one positioned block's first
+    // in-flow block child — `first_child_key`, the inline text child's style
+    // read (skipped as inline), then `next_sibling_key` returning none — one
+    // node-store read per leading-descendant level, style-read-only, bounded by
+    // the empty-run length (FLEX_STEP9_DESIGN.md D1 cost model).
+    assert_node_counts(&root, 80, 14, 0, "text rewrap");
 }
 
 // The four `root_node_store_metrics_*` tests below were relocated from

@@ -10989,45 +10989,33 @@ fn assert_subtree_grandchild_width_percent(name: &str) {
 }
 
 // CSS 2.1 §8.3.1 (margin collapsing) composed with CSS Flexbox 1 §4 (flex
-// items), re-adjudicated 2026-10-19. RELABELED from
-// `off_spec_flex_item_subtree_first_child_margin_lost_at_boundary`: engine
-// research corrected the spec claim. Blink reads only the item's OWN margins
-// (`FlexItem::initial_margins`, flex_layout_algorithm.cc) and Gecko likewise
-// (`FlexItem::mMargin`, nsFlexContainerFrame.cpp) — the flex cross-axis
-// placement never sees a descendant's margin, so the ITEM must NOT offset.
-// That half is ON-SPEC (row a); the prior "item offsets by 20px" claim was a
-// misreading of CSS Flexbox §4, which gives each flex item an independent
-// formatting context.
+// items) — ON-SPEC (relabeled from
+// off_spec_flex_item_subtree_first_child_margin_containment in flex arc step 9).
+// Blink reads only the item's OWN margins (`FlexItem::initial_margins`,
+// flex_layout_algorithm.cc) and Gecko likewise (`FlexItem::mMargin`,
+// nsFlexContainerFrame.cpp) — the flex cross-axis placement never sees a
+// descendant's margin, so the ITEM must NOT offset (row a). CSS 2.1 §8.3.1: a
+// box establishing a new block formatting context does NOT collapse margins with
+// its in-flow children, so the grandchild's 20px first-child top margin is
+// CONTAINED inside the item — the grandchild sits 20px below the item's
+// content-box top (row b, now on-spec). Row (c) is the plain-block control
+// (collapse-out is correct there). Closest WPT: the CSS21 margin-collapse suite
+// (`css/CSS2/normal-flow/margin-collapse-*.xht`).
 //
-// CSS 2.1 §8.3.1: a box establishing a new block formatting context does NOT
-// collapse margins with its in-flow children. Because the flex item
-// establishes an independent formatting context, a descendant's 20px
-// first-child top margin is CONTAINED inside the item — the grandchild sits
-// 20px below the item's content-box top, never collapsed out, never lost.
-// Row (b) pins the actual disposition: the margin is swallowed (grandchild at
-// 0px inside), which is the corrected divergence. Row (c) is the plain-block
-// (non-flex) control documenting the positive normal-flow collapse-out
-// reference that the flex item must NOT follow. Closest WPT: the CSS21
-// margin-collapse suite (`css/CSS2/normal-flow/margin-collapse-*.xht`).
-//
-// OFF-SPEC (row b): the item's block subtree is solved by the plain block
-// solver, which never models the flex item as a formatting-context boundary.
-// `collapsed_parent_top_margin_px` (`flow.rs:1017`) collapses the grandchild's
-// margin into the empty intermediary's internal content edge, and
-// `propagated_empty_intermediary_block_margin_height_px` (`flow.rs:1086`)
-// converts the collapsed margin into phantom empty-block height — the
-// grandchild sits at the item's content top (0px) instead of being contained
-// 20px inside the item. The item-at-cross-start half is on-spec.
+// The flex item's entered flag is now false (its flex-container parent marks it
+// as an independent formatting context), so the leading-margin-chain walk
+// (`collapsed_leading_margin_chain_px`, flow.rs) contains the chain as the first
+// in-flow child's offset inside the item.
 #[test]
-fn off_spec_flex_item_subtree_first_child_margin_containment() {
+fn flex_item_subtree_first_child_margin_containment() {
     let rows: [FlexItemSubtreeFirstChildMarginRow; 3] = [
         (
             "a_item_stays_at_flex_cross_start",
             assert_item_stays_at_flex_cross_start,
         ),
         (
-            "b_grandchild_margin_swallowed_at_item_content_top",
-            assert_grandchild_margin_swallowed_at_item_content_top,
+            "b_grandchild_contained_at_item_content_top_plus_20",
+            assert_grandchild_contained_at_item_content_top_plus_20,
         ),
         (
             "c_block_control_positive_margin_collapses_out",
@@ -11069,12 +11057,10 @@ fn assert_item_stays_at_flex_cross_start(name: &str) {
 }
 
 /// Row (b): the internal disposition of the same flex scenario. The grandchild's
-/// border box sits at the item's CONTENT-box top (0px inside) — the 20px margin
-/// is swallowed, not contained. Spec-correct per CSS 2.1 §8.3.1: the item's
-/// independent formatting context contains the margin, so the grandchild sits
-/// 20px below the item's content-box top. The swallowed 20px becomes phantom
-/// item content height instead of a real 20px offset.
-fn assert_grandchild_margin_swallowed_at_item_content_top(name: &str) {
+/// border box sits 20px below the item's CONTENT-box top — the 20px margin is
+/// CONTAINED inside the item (its independent formatting context) as a real
+/// first-in-flow offset, not swallowed into phantom height.
+fn assert_grandchild_contained_at_item_content_top_plus_20(name: &str) {
     let (mut world, mut root, outer) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, outer, "200px");
     assert_style_set(&mut root, outer, "height", "40px");
@@ -11090,17 +11076,15 @@ fn assert_grandchild_margin_swallowed_at_item_content_top(name: &str) {
     let item_box = node_box(&root, item).expect("item box");
     let item_content_top_px =
         item_box.border_box.top_px + item_box.border.top_px + item_box.padding.top_px;
-    // Divergent: the grandchild sits at the item's content top (0px inside);
-    // spec-correct is 20px (the margin contained inside the item's context).
     assert_close(
         grandchild_box.border_box.top_px,
-        item_content_top_px,
-        &format!("{name}: grandchild sits at the item content top (margin swallowed)"),
+        item_content_top_px + 20.0,
+        &format!("{name}: grandchild sits 20px below the item content top (contained)"),
     );
     assert_close(
         assert_node_layout(&root, item).content_height_px,
         20.0,
-        &format!("{name}: the swallowed 20px becomes phantom item content height"),
+        &format!("{name}: the contained 20px is a real first-in-flow offset"),
     );
 }
 

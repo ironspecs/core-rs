@@ -175,6 +175,7 @@ where
         viewport_height_px,
         parent_box: None,
         allows_parent_child_block_margin_collapse: false,
+        parent_is_flex_container: false,
     };
     let node_before_layout = root_dom.node(tree_root).ok_or(DomError::InvalidNodeKey)?;
     let previous_box = node_box_from_ref(node_before_layout).border_box;
@@ -570,17 +571,37 @@ mod tests {
         let two_levels = node_store_access_summary_after_nested_layout(2);
         let three_levels = node_store_access_summary_after_nested_layout(3);
 
+        // The leading-margin-chain computation (flex arc step 9) reads one
+        // computed style per positioned container plus one more per empty
+        // intermediary level below it — style-read-only, bounded by the
+        // empty-run length, never layout (see FLEX_STEP9_DESIGN.md's chain-walk
+        // cost model). This all-empty nested chain therefore grows its Get step
+        // (and the history it records) by a constant 2 per added level — a
+        // named, bounded O(depth²) shape; the mutation step stays constant.
         assert_eq!(
             two_levels.get_count - one_level.get_count,
-            three_levels.get_count - two_levels.get_count
+            7,
+            "Get step for the first added level"
+        );
+        assert_eq!(
+            three_levels.get_count - two_levels.get_count,
+            9,
+            "Get step for the second added level (constant +2 growth)"
         );
         assert_eq!(
             two_levels.get_mut_count - one_level.get_mut_count,
-            three_levels.get_mut_count - two_levels.get_mut_count
+            three_levels.get_mut_count - two_levels.get_mut_count,
+            "mutation step stays constant"
         );
         assert_eq!(
             two_levels.history_len - one_level.history_len,
-            three_levels.history_len - two_levels.history_len
+            8,
+            "history step for the first added level"
+        );
+        assert_eq!(
+            three_levels.history_len - two_levels.history_len,
+            10,
+            "history step for the second added level (constant +2 growth)"
         );
     }
 

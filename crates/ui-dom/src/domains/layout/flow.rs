@@ -104,6 +104,11 @@ pub(super) struct LayoutContext {
     pub viewport_height_px: f32,
     pub parent_box: Option<DomBoxModel>,
     pub allows_parent_child_block_margin_collapse: bool,
+    /// Whether this node's PARENT is a flex container (i.e. this node is a flex
+    /// item — an independent formatting context per CSS Flexbox §4). Set fresh by
+    /// `child_layout_context` from the parent's presented display; never
+    /// propagated beyond one level.
+    pub parent_is_flex_container: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -290,12 +295,22 @@ where
             } else {
                 0.0
             };
+        let leading_margin_offset_px = leading_margin_offset_px(
+            root_dom,
+            current_child_key,
+            child_style,
+            child_participates_in_flow,
+            flow,
+            &child_context,
+            entered.allows_parent_child_block_margin_collapse,
+        )?;
         let next_child_context = if child_participates_in_flow {
             next_block_child_context(
                 child_context.clone(),
                 flow,
                 child_style.display,
                 child_style,
+                leading_margin_offset_px,
             )
         } else {
             child_context.clone()
@@ -458,7 +473,20 @@ where
             node_content_width_contribution(node, measured_box);
         (
             measured_box,
-            matches!(node, DomNode::Element(_)) && style.position == PositionMode::Static,
+            // D3 (flex arc step 9): the entered flag respects the context's
+            // per-parentage gate (computed fresh by `child_layout_context` from
+            // the parent's presented display AND position) instead of recomputing
+            // blindly from the node's own element/static shape. A flex item's
+            // context reads `false` (its flex-container parent marks it as an
+            // independent formatting context), and an absolutely/fixed positioned
+            // node reads `false` (it establishes a block formatting context per
+            // CSS 2.1 §9.4.1) — neither collapses margins with its children.
+            matches!(node, DomNode::Element(_))
+                && matches!(
+                    style.position,
+                    PositionMode::Static | PositionMode::Relative
+                )
+                && !context.parent_is_flex_container,
             node.as_text().is_some(),
             intrinsic_content_height_px(node, measured_box),
             img_intrinsic_aspect_ratio(node),
@@ -727,6 +755,7 @@ fn next_block_child_context(
     flow: BlockFlowState,
     child_display: LayoutDisplay,
     child_style: NodeStyle,
+    leading_margin_offset_px: f32,
 ) -> LayoutContext {
     if display_is_inline_outer(child_display) {
         LayoutContext {
@@ -746,7 +775,8 @@ fn next_block_child_context(
             collapsed_parent_top_margin_px(&parent, flow, child_style);
         let next_block_top_px = flow.block_top_px + flow.line_height_px
             - collapsed_margin_overlap_px
-            - collapsed_parent_top_margin_px;
+            - collapsed_parent_top_margin_px
+            + leading_margin_offset_px;
         LayoutContext {
             flow_left_px: parent.flow_left_px,
             flow_top_px: parent.flow_top_px + next_block_top_px,
@@ -866,9 +896,29 @@ pub(super) fn child_layout_context(
         viewport_width_px: parent.viewport_width_px,
         viewport_height_px: parent.viewport_height_px,
         parent_box,
+        // D3 (flex arc step 9): the flag is computed per DIRECT parentage — not
+        // copied from the parent context (the `..parent`-equivalent fields above
+        // never carry it forward). A child collapses its top margin with its
+        // parent only when the parent is a non-flex, static/relative element; a
+        // flex CONTAINER's direct-child context reads `false` (its children are
+        // flex items, independent formatting contexts per CSS Flexbox §4), and an
+        // absolutely/fixed or non-element parent (the document) reads `false`
+        // too.
         allows_parent_child_block_margin_collapse: entered
-            .allows_parent_child_block_margin_collapse,
+            .allows_parent_child_block_margin_collapse
+            && !parent_is_flex_container(&entered),
+        parent_is_flex_container: parent_is_flex_container(&entered),
     }
+}
+
+/// Whether the entered node is a flex container (CSS Flexbox §4): `display:
+/// flex` or `inline-flex`. Its direct children are flex items and establish
+/// independent formatting contexts, so they must not collapse margins with it.
+fn parent_is_flex_container(entered: &EnteredNodeLayout) -> bool {
+    matches!(
+        entered.style.display,
+        LayoutDisplay::Flex | LayoutDisplay::InlineFlex
+    )
 }
 
 fn style_with_node_content_size_overrides(
@@ -1024,6 +1074,23 @@ fn update_block_flow(
     flow.has_block_children = true;
 }
 
+/// CSS 2.1 §8.3.1 (collapsing margins): the used margin between two adjoining
+/// vertical margins is the larger of two positive margins, the more negative of
+/// two negative margins, and the sum of a positive and a negative margin. This
+/// is PR 1 item 2's landed three-branch rule (Gecko `nsBlockFrame.cpp`, Blink
+/// `block_layout_algorithm.cc`); it is the single collapse primitive reused by
+/// the sibling overlap, the parent-boundary clamps, the empty-block
+/// self-collapse, and the D3 leading-chain walk.
+fn collapse_margin_px(a: f32, b: f32) -> f32 {
+    if a >= 0.0 && b >= 0.0 {
+        a.max(b)
+    } else if a < 0.0 && b < 0.0 {
+        a.min(b)
+    } else {
+        a + b
+    }
+}
+
 fn collapsed_sibling_margin_overlap_px(flow: BlockFlowState, child_style: NodeStyle) -> f32 {
     // CSS 2.1 8.3.1 (collapsing margins): the used margin between adjoining
     // vertical margins is the larger of two positive margins, the more
@@ -1038,13 +1105,7 @@ fn collapsed_sibling_margin_overlap_px(flow: BlockFlowState, child_style: NodeSt
     }
     let a = flow.previous_block_margin_bottom_px;
     let b = child_style.sides.margin.top_px;
-    let used_margin_px = if a >= 0.0 && b >= 0.0 {
-        a.max(b)
-    } else if a < 0.0 && b < 0.0 {
-        a.min(b)
-    } else {
-        a + b
-    };
+    let used_margin_px = collapse_margin_px(a, b);
     a + b - used_margin_px
 }
 
@@ -1056,7 +1117,11 @@ fn collapsed_parent_top_margin_px(
     if !parent_top_boundary_collapses_with_first_block_child(parent, flow, child_style) {
         return 0.0;
     }
-    child_style.sides.margin.top_px.max(0.0)
+    // D1 (flex arc step 9): the CHILD's collapsed contribution to the parent's
+    // effective margin, returned UNCLAMPED (a negative child margin passes).
+    // The parent's effective margin is `three_branch(parent's own margin, this
+    // contribution)` combined at the parent's exit (the margin finalization).
+    child_style.sides.margin.top_px
 }
 
 fn parent_top_boundary_collapses_with_first_block_child(
@@ -1081,6 +1146,134 @@ fn flow_is_at_first_block_child(flow: BlockFlowState) -> bool {
         && flow.line_height_px <= 0.0
         && flow.block_top_px <= 0.0
         && flow.inline_left_px <= 0.0
+}
+
+/// D3 (flex arc step 9, generalized chain walk): computes the collapsed leading
+/// margin chain of a container's first in-flow block child TOP-DOWN from
+/// computed styles (no layout). The chain is the first child's top margin folded
+/// with each empty intermediary's top margin, stopping at the first non-empty or
+/// border/padding-barriered descendant (whose top margin is the terminal fold),
+/// per CSS 2.1 §8.3.1. The container's OWN top margin is NOT part of the chain —
+/// the flag-true consumer combines it via `three_branch(container.margin.top,
+/// chain)` and the flag-false consumer uses the bare chain as the contained
+/// offset.
+fn collapsed_leading_margin_chain_px(
+    root_dom: &RootDom,
+    container_key: DomNodeSlotKey,
+    container_style: NodeStyle,
+) -> Result<f32, DomError> {
+    // A container with a top border/padding cannot collapse its top margin with
+    // its first child's, so the leading chain is empty.
+    if container_style.sides.border.top_px > 0.0 || container_style.sides.padding.top_px > 0.0 {
+        return Ok(0.0);
+    }
+    // A flex container's children are flex items (each an independent formatting
+    // context per CSS Flexbox §4), so their top margins do NOT collapse with it —
+    // the leading chain is empty.
+    if matches!(
+        container_style.display,
+        LayoutDisplay::Flex | LayoutDisplay::InlineFlex
+    ) {
+        return Ok(0.0);
+    }
+    let Some((mut current_key, mut current_style)) =
+        first_in_flow_block_child(root_dom, container_key)?
+    else {
+        return Ok(0.0);
+    };
+    let mut collapsed_margin_px = current_style.sides.margin.top_px;
+    while empty_intermediary_style_can_collapse_through(&current_style) {
+        match first_in_flow_block_child(root_dom, current_key)? {
+            Some((next_key, next_style)) => {
+                collapsed_margin_px =
+                    collapse_margin_px(collapsed_margin_px, next_style.sides.margin.top_px);
+                current_key = next_key;
+                current_style = next_style;
+            }
+            None => break,
+        }
+    }
+    Ok(collapsed_margin_px)
+}
+
+/// D3 (flex arc step 9, generalized chain walk): the collapsed leading margin
+/// chain of the first in-flow block child, consumed at BOTH boundary kinds:
+/// - flag-false (FC/flex-item boundary): the chain is CONTAINED as the first
+///   in-flow child's top offset inside the boundary (`content_top + chain`).
+/// - flag-true (plain container): the child's EFFECTIVE top margin is
+///   `three_branch(child.margin.top, chain)`; its `flow_top` offset is that
+///   effective margin minus the authored margin (the pull-up/push).
+///   Exception: when the first child is an empty intermediary, its OWN top
+///   margin collapses through with the chain (CSS 2.1 §8.3.1), so the whole
+///   leading chain escapes to the container's boundary and the child positions
+///   at the container's content edge (offset 0) — otherwise the chain would be
+///   double-counted (the plain-block control's collapse-out would break).
+fn leading_margin_offset_px(
+    root_dom: &RootDom,
+    child_key: DomNodeSlotKey,
+    child_style: NodeStyle,
+    child_participates_in_flow: bool,
+    flow: BlockFlowState,
+    child_context: &LayoutContext,
+    allows_parent_child_block_margin_collapse: bool,
+) -> Result<f32, DomError> {
+    if !child_participates_in_flow
+        || display_is_inline_outer(child_style.display)
+        || !flow_is_at_first_block_child(flow)
+        || child_style.position != PositionMode::Static
+        || child_context
+            .parent_box
+            .is_none_or(|b| b.border.top_px > 0.0 || b.padding.top_px > 0.0)
+    {
+        return Ok(0.0);
+    }
+    let chain = collapsed_leading_margin_chain_px(root_dom, child_key, child_style)?;
+    Ok(if !allows_parent_child_block_margin_collapse {
+        chain
+    } else if empty_intermediary_style_can_collapse_through(&child_style) {
+        0.0
+    } else {
+        collapse_margin_px(child_style.sides.margin.top_px, chain) - child_style.sides.margin.top_px
+    })
+}
+
+/// The first in-flow block-level child of `key` (skipping `display: none` and
+/// absolutely/fixed positioned children), read from computed styles only —
+/// returns the key AND its style in a single style read.
+fn first_in_flow_block_child(
+    root_dom: &RootDom,
+    key: DomNodeSlotKey,
+) -> Result<Option<(DomNodeSlotKey, NodeStyle)>, DomError> {
+    let mut child_key = first_child_key(root_dom, key)?;
+    while let Some(child) = child_key {
+        let node = root_dom.nodes.get(child).ok_or(DomError::InvalidNodeKey)?;
+        let style = node_style(node, 0.0, None)?;
+        if node_participates_in_normal_flow(style) && !display_is_inline_outer(style.display) {
+            return Ok(Some((child, style)));
+        }
+        child_key = next_sibling_key(root_dom, child)?;
+    }
+    Ok(None)
+}
+
+/// Whether a descendant's own margins collapse through it as an empty
+/// intermediary (CSS 2.1 §8.3.1): a static block with no top/bottom
+/// border/padding, no definite height, and no positive min-height. Read from
+/// computed styles only (the layout-dependent line-box check is intentionally
+/// absent — the chain walk runs before layout).
+fn empty_intermediary_style_can_collapse_through(style: &NodeStyle) -> bool {
+    style.position == PositionMode::Static
+        && !display_is_inline_outer(style.display)
+        && !matches!(
+            style.display,
+            LayoutDisplay::Flex | LayoutDisplay::InlineFlex
+        )
+        && style.sides.border.top_px <= 0.0
+        && style.sides.border.bottom_px <= 0.0
+        && style.sides.padding.top_px <= 0.0
+        && style.sides.padding.bottom_px <= 0.0
+        && style.height_px.is_none()
+        && style.min_height_px.is_none_or(|px| px <= 0.0)
 }
 
 fn child_context_layer_height_px(entered: &EnteredNodeLayout) -> f32 {
@@ -1114,7 +1307,14 @@ fn collapsed_parent_bottom_margin_px(entered: &EnteredNodeLayout, flow: BlockFlo
     if entered.box_model.border.bottom_px > 0.0 || entered.box_model.padding.bottom_px > 0.0 {
         return 0.0;
     }
-    flow.previous_block_margin_bottom_px.max(0.0)
+    // CSS 2.1 §8.3.1 + PR 1 item 2: the parent's own bottom margin edge and
+    // the last child's bottom margin are the adjoining pair; collapse them by
+    // the three-branch rule (the former `.max(0.0)` clamp admitted only the
+    // non-negative child margin).
+    collapse_margin_px(
+        entered.box_model.margin.bottom_px,
+        flow.previous_block_margin_bottom_px,
+    )
 }
 
 fn propagated_empty_intermediary_block_margin_height_px(
@@ -1134,7 +1334,11 @@ fn propagated_empty_intermediary_block_margin_height_px(
 }
 
 fn propagated_collapsed_margin_delta_px(own_margin_px: f32, child_margin_px: f32) -> f32 {
-    child_margin_px.max(own_margin_px.max(0.0)) - own_margin_px.max(0.0)
+    // CSS 2.1 §8.3.1 + PR 1 item 2: the empty-intermediary delta keeps its
+    // delta shape but computes the collapsed value with the three-branch rule
+    // instead of the non-negative `max` — the child boundary margin's collapsed
+    // contribution over the intermediary's own margin.
+    collapse_margin_px(own_margin_px, child_margin_px) - own_margin_px
 }
 
 fn empty_intermediary_block_can_propagate_child_boundary_margins(
@@ -1324,7 +1528,11 @@ pub(super) fn layout_flow_size(
     }
     let horizontal_edges_px = horizontal_non_content_px(style.sides);
     let flow_height_px = if empty_block_self_collapses_vertical_margins(style, box_model) {
-        box_model.margin.top_px.max(box_model.margin.bottom_px)
+        // CSS 2.1 §8.3.1 + PR 1 item 2: an empty block's own adjoining top and
+        // bottom margins collapse by the three-branch rule (the former plain
+        // `max` admitted only the both-positive branch: (−10, −5) → −10, not
+        // −5; mixed (10, −5) → 5, not 10).
+        collapse_margin_px(box_model.margin.top_px, box_model.margin.bottom_px)
     } else {
         box_model.border_box.height_px + box_model.margin.top_px + box_model.margin.bottom_px
     };
@@ -2260,6 +2468,7 @@ mod tests {
             viewport_height_px: 200.0,
             parent_box: None,
             allows_parent_child_block_margin_collapse: false,
+            parent_is_flex_container: false,
         }
     }
 

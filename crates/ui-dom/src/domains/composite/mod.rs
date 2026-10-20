@@ -2633,6 +2633,7 @@ mod tests {
         let mut root = RootDom::new(RootDomContext::new_gpu());
         let parent_layer = root.create_element(DomTag::Div).expect("parent layer");
         let clipped_child = root.create_element(DomTag::Div).expect("clipped child");
+        let spacer = root.create_element(DomTag::Div).expect("spacer");
         let negative_margin_child = root
             .create_element(DomTag::Div)
             .expect("negative-margin child");
@@ -2640,6 +2641,8 @@ mod tests {
             .expect("append parent layer");
         root.append_child(parent_layer, clipped_child)
             .expect("append clipped child");
+        root.append_child(clipped_child, spacer)
+            .expect("append spacer");
         root.append_child(clipped_child, negative_margin_child)
             .expect("append negative-margin child");
         root.style_mut(parent_layer)
@@ -2672,6 +2675,17 @@ mod tests {
         root.style_mut(clipped_child)
             .set("height", "100px")
             .expect("clipped child height");
+        // The deliberate spill is now produced by a MIDDLE sibling (flex arc
+        // step 9 re-scoping): a first in-flow child with a zero bottom margin
+        // keeps the clipped layer stationary, and the following sibling's
+        // negative top margin collapses with it (shifting the sibling up inside
+        // the layer) rather than pulling the layer itself up.
+        root.style_mut(spacer)
+            .set("width", "100px")
+            .expect("spacer width");
+        root.style_mut(spacer)
+            .set("height", "20px")
+            .expect("spacer height");
         root.style_mut(negative_margin_child)
             .set("width", "100px")
             .expect("negative-margin child width");

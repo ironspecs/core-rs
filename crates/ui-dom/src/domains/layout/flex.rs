@@ -4198,6 +4198,7 @@ mod tests {
             viewport_height_px: 320.0,
             parent_box: None,
             allows_parent_child_block_margin_collapse: false,
+            parent_is_flex_container: false,
         }
     }
 
