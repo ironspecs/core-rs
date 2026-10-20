@@ -226,10 +226,14 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-432 layout proofs (424 in
+435 layout proofs (427 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 6);
-the off-spec registry (11 divergent proofs in 7 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 7);
+the off-spec registry (10 divergent proofs in 9 divergent-class rows —
+the count now INCLUDES rows whose class cell carries a qualifier, e.g.
+"step-5 follower"/"documented"/"internal-disposition"; the last few
+censuses used the unqualified grep and were low by 2–3, corrected here —
+5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1451,6 +1455,42 @@ an f32 basis.
   mapping's §3.3 names, and its deadness is already documented).
   Next: step 7 — cross-after-main (the replaced-ratio exemption; the
   staged double-layout dies), designed first.
+
+- **2026-10-20 — flex arc step 7 LANDED (`406d775`): cross-after-main,
+  and the double-layout's real substance is dead.** The per-line order
+  is now the engines' (main resolve → item cross at resolved main →
+  line cross → align-content packs → placement); the pre-flex
+  line-cross assert is retired (line cross is post-resolution); the
+  stretch-img divergence closes (replaced items derive cross from ratio
+  given resolved main — stretch no longer distorts, and the exemption
+  does not leak to non-replaced items, pinned). The record-serving
+  placement eliminates placement re-shaping for width-unchanged items:
+  `FlexNodesMeasured` 24 → 20, the (d1) text layout-phase window
+  830 → 738 allocations — all re-pinned with documented causes. The
+  refold mechanism lands with `FlexNodesRefolded` (four-site change)
+  and the (d2) gate observation: **refold fraction = 0** on the (d1)
+  scenario (items resolve at measured widths; the mechanism correctly
+  does nothing when widths are stable) — recorded in the pin, so the
+  ≤50% ceiling is unbreached by construction and the within-update memo
+  stays designed-not-built. Adjudications folded in: (a) the D2 flag
+  category "percentage cross-axis forms" was analytically over-broad —
+  a %-cross child resolves against the container's HEIGHT, not its own
+  main size, so it cannot be main-influenced; the flag's real
+  categories are text-wrap and replaced-ratio (+ bottom-up
+  propagation), and the design text is corrected accordingly
+  (`FLEX_STEP7_DESIGN.md`). (b) The D2-detection gap named by the
+  transcription is the same over-broad category, closed by the
+  correction. Named follow-ups (latent, registered here): the
+  resolve-time ratio cross is not recomputed for GROWN/SHRUNK img items
+  (placement derives it correctly; the line-cross contribution can
+  carry the measured cross — owed a pin or small fix); the refold's
+  width override does not thread through nested flex items
+  (unimplemented; latent while nested widths don't change). File-map
+  staleness recurred (the `layout_pass` counter's home and two test
+  literals — corrected in the design map). Census methodology
+  correction (see §2.6: qualified-class rows now counted).
+  Next: step 8 — the alignment negative 0-clamp (one row), then
+  step 9 (the flow.rs trio), then step 10 (auto margins §8.1).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

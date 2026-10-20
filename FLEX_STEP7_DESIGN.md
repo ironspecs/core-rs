@@ -60,13 +60,19 @@ Per line, in this order:
 ## D2. The flag (record bit 2, finally set)
 
 `MeasurementFlags` bit 2 (`MAIN_INFLUENCES_CROSS`) is SET in the up
-fold for: text-bearing nodes (their content wraps — the existing
-white-space class in bit 0 distinguishes wrap vs nowrap), any node
-with percentage cross-axis forms, and any replaced-ratio node
-(bit 1 — reused, no second flag). The flag's semantics: the subtree's
-cross size may change when its main size changes. It is set at record
-write (compute-time, from data the assembly already has) — no new
-measurement.
+fold for: text-bearing nodes whose content can wrap (bit 0's
+white-space class distinguishes wrap vs nowrap), any replaced-ratio
+node (bit 1 — reused, no second flag), and bottom-up propagation from
+flagged children. The flag's semantics: the subtree's cross size may
+change when its main size changes. It is set at record write
+(compute-time, from data the assembly already has) — no new
+measurement. (The original draft also listed "percentage cross-axis
+forms" — corrected 2026-10-20: a percentage CROSS-axis form resolves
+against the containing block's HEIGHT, not the item's own main size, so
+it cannot be main-influenced by definition. The category was
+analytically over-broad; its removal also closes the detection gap the
+transcription reported, since the two real categories are computable at
+record-write time.)
 
 ## D3. The record-serving placement (the double-layout's death)
 
