@@ -2517,7 +2517,7 @@ fn initial_main_axis_alignment_offset_px(
         }
         FlexMainAxisAlignment::FlexStart => 0.0,
         FlexMainAxisAlignment::FlexEnd => remaining_main_space_px,
-        FlexMainAxisAlignment::Center => remaining_main_space_px / 2.0,
+        FlexMainAxisAlignment::Center => remaining_main_space_px.max(0.0) / 2.0,
         FlexMainAxisAlignment::SpaceBetween => {
             if item_count <= 1 || remaining_main_space_px <= 0.0 {
                 return 0.0;
@@ -2528,16 +2528,14 @@ fn initial_main_axis_alignment_offset_px(
             if item_count == 0 {
                 return 0.0;
             }
-            if remaining_main_space_px <= 0.0 {
-                return remaining_main_space_px / 2.0;
-            }
-            remaining_main_space_px / (2.0 * non_negative_f32_from_usize(item_count))
+            remaining_main_space_px.max(0.0) / (2.0 * non_negative_f32_from_usize(item_count))
         }
         FlexMainAxisAlignment::SpaceEvenly => {
             if item_count == 0 {
                 return 0.0;
             }
-            remaining_main_space_px / non_negative_f32_from_usize(item_count.saturating_add(1))
+            remaining_main_space_px.max(0.0)
+                / non_negative_f32_from_usize(item_count.saturating_add(1))
         }
     }
 }

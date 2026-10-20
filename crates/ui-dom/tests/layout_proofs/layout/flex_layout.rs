@@ -7056,42 +7056,51 @@ fn assert_zero_basis_grows(name: &str) {
     assert_rect_op_geometry(&rects[1], 0.0, 0.0, 200.0, 20.0, &format!("{name}: item"));
 }
 
-// CSS Flexbox 1 §8.2 (main axis) and §8.4 (cross axis): with negative free
-// space, `space-between` falls back to flex-start and `space-around` /
-// `space-evenly` fall back to center (offset = remaining/2). Closest WPT
-// oracle: `css/css-flexbox/justify-content-*` and `align-content-*` negative
-// free-space cases; Gecko and Blink both implement the fallback (Blink's
-// `flex_layout_algorithm.cc` content-position step, Gecko's
-// `MainAxisPositionTracker`/`CrossAxisPositionTracker` in
-// `nsFlexContainerFrame.cpp`).
+// CSS Align 3 §5.6 (distributed alignment fallback) × CSS Flexbox 1 §8.2/§8.4:
+// with negative free space, `space-between` falls back to flex-start and
+// `center`/`space-around`/`space-evenly` clamp to 0 (Blink
+// `InitialContentPositionOffset` `ClampNegativeToZero`; Gecko safe-center
+// collapses to start at ≤0). Closest WPT oracle:
+// `css/css-flexbox/justify-content-*` and `align-content-*` negative free-space
+// cases; Blink `flex_layout_algorithm.cc:1678/1684`
+// (`(free/2).ClampNegativeToZero()`) and Gecko
+// `nsFlexContainerFrame.cpp:3553-3581, 3736-3762` implement the clamp.
 //
-// OFF-SPEC (space-evenly rows only): `initial_main_axis_alignment_offset_px`
-// (`flex.rs:1952`) computes space-evenly as `remaining/(n+1)` (`flex.rs:1981`)
-// with no negative-free-space fallback, so two 60px items in a 100px container
-// shift to −6.667px instead of centering at −10px; and
-// `initial_cross_axis_line_pack_offset_px` (`flex.rs:1766`) pairs the same
-// `remaining/(n+1)` with `remaining_cross_axis_line_pack_space_px`
-// (`flex.rs:1750`) clamping negative cross space to 0 (`flex.rs:1763`), so
-// overflowing lines pack at flex-start instead of centering. The space-between
-// (b) and space-around (c) rows are on-spec controls.
+// ON-SPEC (relabeled from
+// `off_spec_space_evenly_negative_free_space_does_not_fall_back_to_center` in
+// flex arc step 8): `initial_main_axis_alignment_offset_px` (`flex.rs`) clamps
+// negative remaining main space to 0 for `Center`/`SpaceAround`/`SpaceEvenly`
+// (`remaining.max(0.0)`), so the initial offset is 0 = flex-start. The cross
+// side already clamped via `remaining_cross_axis_line_pack_space_px`'s
+// `.max(0.0)` — engine-matching, no change. The former `space-around` "on-spec
+// control" (pinned at −10) was itself engine-divergent (Blink clamps center's
+// negative to 0) and is re-pinned to 0.
 #[test]
-fn off_spec_space_evenly_negative_free_space_does_not_fall_back_to_center() {
-    let rows: [SpaceEvenlyRow; 4] = [
+fn space_distribution_negative_free_space_clamps_to_flex_start() {
+    let rows: [SpaceDistributionRow; 6] = [
         (
             "justify_space_evenly_negative_free_space",
             assert_justify_space_evenly_negative_free_space,
         ),
         (
-            "justify_space_between_negative_free_space_on_spec",
-            assert_justify_space_between_negative_free_space_on_spec,
+            "justify_space_around_negative_free_space",
+            assert_justify_space_around_negative_free_space,
         ),
         (
-            "justify_space_around_negative_free_space_on_spec",
-            assert_justify_space_around_negative_free_space_on_spec,
+            "justify_space_between_negative_free_space",
+            assert_justify_space_between_negative_free_space,
+        ),
+        (
+            "justify_center_negative_free_space",
+            assert_justify_center_negative_free_space,
         ),
         (
             "align_content_space_evenly_negative_cross_space",
             assert_align_content_space_evenly_negative_cross_space,
+        ),
+        (
+            "align_content_space_around_negative_cross_space",
+            assert_align_content_space_around_negative_cross_space,
         ),
     ];
     for (name, run) in rows {
@@ -7099,8 +7108,8 @@ fn off_spec_space_evenly_negative_free_space_does_not_fall_back_to_center() {
     }
 }
 
-/// A named space-evenly negative-free-space probe: row name plus a runner.
-type SpaceEvenlyRow = (&'static str, fn(&str));
+/// A named negative-free-space distribution probe: row name plus a runner.
+type SpaceDistributionRow = (&'static str, fn(&str));
 
 fn assert_justify_space_evenly_negative_free_space(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
@@ -7117,36 +7126,8 @@ fn assert_justify_space_evenly_negative_free_space(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // Divergent: −20px free space divides by (2+1) → −6.667px instead of the
-    // spec's center fallback −10px.
-    assert_close(
-        rects[1].position_px[0],
-        -6.666_666_5,
-        &format!("{name}: first item left"),
-    );
-    assert_close(
-        rects[2].position_px[0],
-        53.333_332,
-        &format!("{name}: second item left"),
-    );
-}
-
-fn assert_justify_space_between_negative_free_space_on_spec(name: &str) {
-    let (mut world, mut root, container) = flex_row_container_setup();
-    assert_set_flex_row_container_width(&mut root, container, "100px");
-    assert_style_set(&mut root, container, "height", "20px");
-    assert_style_set(&mut root, container, "justify-content", "space-between");
-    for basis in ["60px", "60px"] {
-        let item = assert_append_div_to(&mut root, container);
-        assert_style_set(&mut root, item, "flex-basis", basis);
-        assert_style_set(&mut root, item, "flex-shrink", "0");
-        assert_style_set(&mut root, item, "height", "20px");
-    }
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    let plans = take_staged_layer_paint_plans(&root);
-    let rects = &plans[0].rects;
-    assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // On-spec control: space-between falls back to flex-start (0px).
+    // 0-clamp: −20px free space clamps to 0, so the initial offset is 0
+    // (flex-start) instead of the former −6.667px.
     assert_close(
         rects[1].position_px[0],
         0.0,
@@ -7159,7 +7140,7 @@ fn assert_justify_space_between_negative_free_space_on_spec(name: &str) {
     );
 }
 
-fn assert_justify_space_around_negative_free_space_on_spec(name: &str) {
+fn assert_justify_space_around_negative_free_space(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "100px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -7174,15 +7155,73 @@ fn assert_justify_space_around_negative_free_space_on_spec(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // On-spec control: space-around falls back to center (−10px).
+    // 0-clamp (re-pinned from the −10 "on-spec control," which was
+    // engine-divergent per Blink's center clamp): −20px free space clamps to 0.
     assert_close(
         rects[1].position_px[0],
-        -10.0,
+        0.0,
         &format!("{name}: first item left"),
     );
     assert_close(
         rects[2].position_px[0],
-        50.0,
+        60.0,
+        &format!("{name}: second item left"),
+    );
+}
+
+fn assert_justify_space_between_negative_free_space(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "justify-content", "space-between");
+    for basis in ["60px", "60px"] {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "flex-basis", basis);
+        assert_style_set(&mut root, item, "flex-shrink", "0");
+        assert_style_set(&mut root, item, "height", "20px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // Correct control: space-between falls back to flex-start (0px).
+    assert_close(
+        rects[1].position_px[0],
+        0.0,
+        &format!("{name}: first item left"),
+    );
+    assert_close(
+        rects[2].position_px[0],
+        60.0,
+        &format!("{name}: second item left"),
+    );
+}
+
+fn assert_justify_center_negative_free_space(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "height", "20px");
+    assert_style_set(&mut root, container, "justify-content", "center");
+    for basis in ["60px", "60px"] {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "flex-basis", basis);
+        assert_style_set(&mut root, item, "flex-shrink", "0");
+        assert_style_set(&mut root, item, "height", "20px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // 0-clamp: Blink clamps center's negative free space to 0, so the initial
+    // offset is 0 (flex-start) instead of the center fallback −10px.
+    assert_close(
+        rects[1].position_px[0],
+        0.0,
+        &format!("{name}: first item left"),
+    );
+    assert_close(
+        rects[2].position_px[0],
+        60.0,
         &format!("{name}: second item left"),
     );
 }
@@ -7202,9 +7241,38 @@ fn assert_align_content_space_evenly_negative_cross_space(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // Divergent: the −10px cross space is clamped to 0 before space-evenly
-    // (`remaining_cross_axis_line_pack_space_px`), so the lines pack at 0px
-    // instead of centering at −5px.
+    // 0-clamp: the −10px cross space is already clamped to 0 before
+    // space-evenly (`remaining_cross_axis_line_pack_space_px`), so the lines
+    // pack at 0px — engine-matching, no change.
+    assert_close(
+        rects[1].position_px[1],
+        0.0,
+        &format!("{name}: first line top"),
+    );
+    assert_close(
+        rects[2].position_px[1],
+        20.0,
+        &format!("{name}: second line top"),
+    );
+}
+
+fn assert_align_content_space_around_negative_cross_space(name: &str) {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "50px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "height", "30px");
+    assert_style_set(&mut root, container, "align-content", "space-around");
+    for basis in ["30px", "30px"] {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "flex-basis", basis);
+        assert_style_set(&mut root, item, "height", "20px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "{name}: container + two items");
+    // 0-clamp control: the −10px cross space is already clamped to 0
+    // (`remaining_cross_axis_line_pack_space_px`), so the lines pack at 0px.
     assert_close(
         rects[1].position_px[1],
         0.0,
