@@ -226,7 +226,7 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-426 layout proofs (418 in
+430 layout proofs (422 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
 cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 4);
 the off-spec registry (15 divergent proofs in 11 rows, 5 deliberate,
@@ -1385,6 +1385,25 @@ an f32 basis.
   19-in-15 → 15-in-11. Next: step 5 — §9.7 on the resolution lane
   (hypothetical seed + one-class freeze by signed total), designed
   first.
+
+- **2026-10-19 — third-party review of step 4 found three spec bugs
+  (architect-verified, fixed `901b2ee`).** (1) The D2a §9.9.3 floor was
+  applied with a MAIN-AXIS flex base against HORIZONTAL intrinsic
+  content for column containers (a height flooring a width — the
+  `flex.rs:983-993` dimensional inconsistency; a column item with a
+  `shrink:0; height:100; width:40` child inflated to 100); fixed with
+  the horizontal-only axis gate on both contribution sides. (2) The
+  step-4 auto-min derivation returns content-box but was applied as a
+  border-box floor at both consumers (the D4 line-break floor and the
+  shrink violation clamp) — a padded item's content box could shrink
+  below its min-content; fixed by applying `auto_min +
+  main_axis_border_padding` at both sites (the old derivation returned
+  border-box; the consumers were never updated). (3) Column `v_min`
+  sums omitted the inter-item row-gap (CSS Box Alignment §8); fixed.
+  Six discriminating pins landed (including both row-axis controls);
+  proofs 426 → 430; no existing pin moved. All three were
+  architect-verified firsthand before acceptance — the review's
+  concrete traces reproduce exactly.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
