@@ -226,10 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-430 layout proofs (422 in
+432 layout proofs (424 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 4);
-the off-spec registry (15 divergent proofs in 11 rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-19 after flex arc step 5);
+the off-spec registry (13 divergent proofs in 9 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1404,6 +1404,28 @@ an f32 basis.
   proofs 426 → 430; no existing pin moved. All three were
   architect-verified firsthand before acceptance — the review's
   concrete traces reproduce exactly.
+
+- **2026-10-19 — flex arc step 5 LANDED (`c4acfd8`): §9.7 in the
+  engines' exact shape.** Seed at the (now-floored) hypothetical with
+  the constructor freeze AT hypothetical (the inflexible-clamp fix,
+  including step 4's deferred row (b)); the loop resets unfrozen items,
+  distributes from base + share, records per-item violation classes,
+  and freezes ONE class per iteration by signed total — replacing
+  seed-at-base, freeze-at-base, and freeze-both-classes. Two more
+  adjudications folded in along the way: the frozen-contribution
+  correction (frozen items contribute their CURRENT value —
+  hypothetical for ctor-frozen, clamped-at-freeze for loop-frozen,
+  Blink `FlexedMarginBoxSize()` — caught by the transcription's
+  hand-trace, which the brief's hand-check obligation produced), and a
+  file-map defect (`layout_scratch.rs` constructs resolution entries in
+  its test; added to D7). The cleanest possible validation: all 23
+  `resolve_active_flex_container_*` unit tests pass with their ORIGINAL
+  values (each hand-verified a no-op under the new loop — synthetic
+  items with `hypothetical == base`), and the perf pins did not move.
+  Proofs 430 → 432; divergent registry 15-in-11 → 13-in-9 (the
+  inflexible and mixed-violation rows moved on-spec). Next: step 6 —
+  down-fold context bases (container used sizes; container-basis
+  percentages), designed first.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
