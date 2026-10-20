@@ -44,20 +44,49 @@ actually computed (trace it; do not "unclamp" the child and leave the
 parent's margin uncombined — that is the failure mode where the child
 stops overflowing but the parent is not pulled up). The child's
 position when collapsed (at the parent's content edge) is the existing
-machinery and does not change. **The consumer's timing (added
-2026-10-20):** the contribution is computed during the parent's CHILD
-LOOP from `child_style` (no lookahead) and stored on the flow
-(`first_collapsed_parent_top_margin_px`); the parent's EFFECTIVE margin
-combines at the parent's EXIT —
-`three_branch(entered.box_model.margin.top,
-flow.first_collapsed_parent_top_margin_px)` — in the parent's margin
-finalization (the box-model/`layout_flow_size` margin, wherever the
-parent's FlowSize margin is finalized). The empty-intermediary chain
-arrives bottom-up at the empty child's exit via the delta function —
-still inside the parent's child loop, before the parent's own exit — so
-it combines at the same consumer with the same rule. NO top-down
-lookahead is needed for ANY flag-true case; the positioning-time walk
-stays flag-false-only (D3's offset). The delta function keeps its shape:
+machinery and does not change. **The D1 generalization (2026-10-20, the transcription's pull-up
+failure and the spillover interaction — architect's correction of the
+earlier "no top-down lookahead for flag-true" claim, which was
+WRONG).** Pulling the parent up requires the collapsed leading margin
+chain AT THE PARENT'S POSITIONING TIME (its grandparent positions it
+before its children are laid out), so the top-down chain computation
+`collapsed_leading_margin_chain_px(container)` — the container's
+margin.top collapsed with the first-in-flow chain through
+empty/barrier-free descendants (three-branch per level, barriers stop),
+from computed styles — is GENERAL, used at both boundary kinds:
+
+- **flag-true (plain container):** the container's EFFECTIVE margin for
+  positioning = `three_branch(container.margin.top, chain)` — used in
+  its `flow_top` within its parent (the pull-up). The child's collapsed
+  position (at the parent's content edge) is existing machinery.
+  D1-(a): parent margin 0, direct child −20 → chain = −20 → effective
+  margin −20 → parent top 0 → −20 (pulled up); the child sits at the
+  parent's content edge (−20 absolute, at the edge — no longer
+  overflowing above a stationary parent).
+- **flag-false (FC/flex-item):** the chain does NOT escape (the item's
+  margin to the flex container stays its authored margin); instead the
+  chain offsets the first in-flow child inside (`content_top + chain`).
+
+**The spillover re-scoping (deliberate decision stands; its scenario
+adapts).** The 2026-10-18 layer-spillover pins
+(`layer_bounds_clip_spillover_by_design`,
+`normal_layer_paints_spillover_escape_hatch`, and the composite
+`negative_margin_child_does_not_expand_clip_world`) use a FIRST-CHILD
+negative margin to produce the spill — a scenario that only spills
+while the clamp keeps the layer stationary. With correct first-child
+collapse, the layer is pulled up WITH the child (layer top 0 → −20,
+child at −20 at the content edge): the spill premise for that scenario
+shape disappears. The deliberate DECISION (layers clip; spillover is a
+layering decision, never a surface-expansion decision) is unchanged.
+The pins are RE-SCOPED so the deliberate spill exists under correct
+margins: a MIDDLE sibling with a negative margin (a first child with
+zero/positive bottom, then a sibling with `margin-top: −20` — the
+sibling collapse shifts it above the layer while the layer stays put).
+The first-child variant becomes a separate ON-SPEC expectation (the
+layer pulled up with its first child: layer top == child top == −20,
+child at the content edge). The registry's deliberate row gains the
+scenario note; the composite `clip_world` assertion keeps its
+stationary-layer scenario via the same re-scoping. The delta function keeps its shape:
 `delta = three_branch(child_margin, own_margin) − own_margin`
 (positive chains stay `max` — the
 `empty_intermediate_block_collapses_own_margins_with_descendant_boundaries_by_max`
