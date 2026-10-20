@@ -44,7 +44,24 @@ actually computed (trace it; do not "unclamp" the child and leave the
 parent's margin uncombined — that is the failure mode where the child
 stops overflowing but the parent is not pulled up). The child's
 position when collapsed (at the parent's content edge) is the existing
-machinery and does not change. **The D1 generalization (2026-10-20, the transcription's pull-up
+machinery and does not change. **The chain walk's cost model and the walker pin (2026-10-20, the
+transcription's perf STOP, adjudicated).** The chain includes the
+direct first child's margin in ONE style read; the walk descends ONLY
+while descendants are empty, static, border/padding-free blocks (one
+more read per such level, bounded by the empty-run length). A
+non-empty first child therefore costs exactly ONE node-store style
+read per positioned container per pass — a CONSTANT per-level step,
+which is what the walker's constant-step pin measures (its scenario's
+four levels each pay one read: 10 → 14). The walker pin re-pins with
+the documented cause: "the leading-margin-chain computation adds one
+node-store style read per positioned container (constant per level;
+all-empty chains are bounded by the empty-run length and read styles
+only, never layout)." No restructuring: the O(depth²) shape arises
+only in the pathological all-empty-deep case, which is style-read-only
+and bounded by the empty run — a named, bounded shape, not a hidden
+one. If a proof ever constructs that case, it documents the bound
+rather than redesigning around it.
+**The D1 generalization (2026-10-20, the transcription's pull-up
 failure and the spillover interaction — architect's correction of the
 earlier "no top-down lookahead for flag-true" claim, which was
 WRONG).** Pulling the parent up requires the collapsed leading margin
