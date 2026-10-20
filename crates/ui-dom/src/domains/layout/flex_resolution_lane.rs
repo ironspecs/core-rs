@@ -22,10 +22,11 @@
 //! - update-scoped: `reset()` clears entries, keeping the retained backing
 //!   capacity at its high-water mark so steady state is zero-allocation
 //!
-//! Step-1 shape note: the entry carries `resolved_main_size_px` and
-//! `is_frozen`; flex step 5 adds `violation: ViolationClass`. That addition
-//! is free because the lane is transient — update-scoped, reconstructed every
-//! update — so this shape is not a retained layout contract.
+//! Step-5 shape note: the entry carries `resolved_main_size_px`, `is_frozen`,
+//! and the transient `violation: ViolationClass` scratch the §9.7 clamp phase
+//! writes and the one-class freeze selection reads. The addition is free
+//! because the lane is transient — update-scoped, reconstructed every update —
+//! so this shape is not a retained layout contract.
 //!
 //! The `#![allow(dead_code)]` is temporary infrastructure allowance: the lane
 //! is written and mutated by the flex resolve loop in step 4 (T4). Until that
@@ -33,11 +34,25 @@
 
 use crate::types::LaneRange;
 
-/// One flex item's main-axis resolution: its resolved size and frozen flag.
+/// The per-item violation class the §9.7 clamp phase records and the freeze
+/// selection reads (flex arc step 5, D4): `None` when the clamped size equals
+/// the distribution candidate, `Min` when the clamp RAISED the candidate
+/// (clamped > candidate), `Max` when the clamp LOWERED it (clamped < candidate).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ViolationClass {
+    None,
+    Min,
+    Max,
+}
+
+/// One flex item's main-axis resolution: its resolved size, frozen flag, and
+/// transient violation class (step-5 scratch, written in the clamp phase and
+/// read at the one-class freeze selection; never a retained layout contract).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FlexResolutionEntry {
     pub(crate) resolved_main_size_px: f32,
     pub(crate) is_frozen: bool,
+    pub(crate) violation: ViolationClass,
 }
 
 /// Vec-backed storage for per-item resolutions, sliced per container via
@@ -91,7 +106,8 @@ impl FlexResolutionLane {
     }
 
     /// Returns the resolutions claimed by `range` for in-place mutation (the
-    /// §9.7 resolve loop writes resolved sizes and the frozen flag here).
+    /// §9.7 resolve loop writes resolved sizes, the frozen flag, and the
+    /// transient violation class here).
     pub(crate) fn slice_mut(&mut self, range: LaneRange) -> &mut [FlexResolutionEntry] {
         let start = usize::try_from(range.start)
             .expect("resolution lane range start should fit into usize");
@@ -132,6 +148,7 @@ mod tests {
         FlexResolutionEntry {
             resolved_main_size_px,
             is_frozen: false,
+            violation: ViolationClass::None,
         }
     }
 

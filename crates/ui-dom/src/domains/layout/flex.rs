@@ -44,7 +44,7 @@ use super::flex_item_lane::FlexItemLane;
 use super::flex_item_source::FlexItemSource;
 use super::flex_line_lane::{FlexLineEntry, FlexLineLane};
 use super::flex_order_lane::FlexOrderLaneEntry;
-use super::flex_resolution_lane::FlexResolutionEntry;
+use super::flex_resolution_lane::{FlexResolutionEntry, ViolationClass};
 use super::flex_wrap_mode::FlexWrapMode;
 use super::flow::{
     EnteredNodeLayout, FlowSize, InlineFlowState, LayoutContext, auto_content_width_for_exit,
@@ -719,29 +719,29 @@ where
     // consumer may drift into reading end-of-pass values.
     let automatic_min_main_size_px =
         automatic_min_main_size_px(node, child_style, main_axis, record);
-    // D4 (flex arc step 4): the hypothetical main size's OUTER form gains the
-    // automatic minimum floor — `clamp(base, min, max).max(auto_min)` — equivalent
-    // to the engines' clamp with `min' = max(min, auto_min)` (including the
+    // D1 (flex arc step 5): the hypothetical main size FIELD gains the automatic
+    // minimum floor — `clamp(base, min, max).max(auto_min + bp)` — equivalent to
+    // the engines' clamp with `min' = max(min, auto_min)` (including the
     // `auto_min > max` case, where the floor wins exactly as `min > max` wins
-    // today). The floor is applied to the OUTER hypothetical, which governs line
-    // breaking (killing the wrap-point half of the divergence); the inner
-    // `hypothetical_main_size_px` stays clamped only, so the §9.7 inflexibility
-    // check (base < hypothetical) keeps its pre-floor semantics — the §9.7 seed
-    // switch is step 5's, not this step's.
+    // today). The floor is now on the field itself, so the §9.7 seed (step 5's
+    // hypothetical-seed switch) and the inflexibility check (base < hypothetical)
+    // both see the floored value — the entire fix for
+    // `off_spec_inflexible_items_skip_hypothetical_clamps`. The OUTER form below
+    // simplifies to `field + margins` (the former outer-site `max()` is a no-op
+    // once the field floors).
     //
     // The automatic minimum is CONTENT-BOX while `hypothetical_main_size_px` is
     // border-box, so the floor adds the main-axis border+padding to convert
     // auto-min into the border-box terms of the value it floors.
-    let hypothetical_main_size_px = clamp_main_axis_size(child_style, main_axis, flex_base_size_px);
+    let hypothetical_main_size_px = clamp_main_axis_size(child_style, main_axis, flex_base_size_px)
+        .max(automatic_min_main_size_px + main_axis_border_padding_px);
     let (min_main_size_px, max_main_size_px) = main_axis_limits(child_style, main_axis);
     let margin_main_start_px = main_axis_start_margin(child_style, main_axis);
     let margin_main_end_px = main_axis_end_margin(child_style, main_axis);
     let margin_cross_start_px = cross_axis_start_margin(child_style, main_axis);
     let margin_cross_end_px = cross_axis_end_margin(child_style, main_axis);
-    let outer_hypothetical_main_size_px = hypothetical_main_size_px
-        .max(automatic_min_main_size_px + main_axis_border_padding_px)
-        + margin_main_start_px
-        + margin_main_end_px;
+    let outer_hypothetical_main_size_px =
+        hypothetical_main_size_px + margin_main_start_px + margin_main_end_px;
     Ok(FlexItemView {
         source,
         order,
@@ -1894,6 +1894,7 @@ fn claim_resolution_range(scratch: &mut LayoutScratch, order_range: LaneRange) -
         scratch.resolution.push(FlexResolutionEntry {
             resolved_main_size_px: 0.0,
             is_frozen: false,
+            violation: ViolationClass::None,
         });
     }
     scratch.resolution.finish_range(start)
@@ -2266,19 +2267,21 @@ fn resolve_flex_line_item_resolution_states(
     container_main_size_px: f32,
     gap_between_items_px: f32,
 ) {
-    // CSS Flexbox 9.7 (#resolve-flexible-lengths): freeze inflexible items,
-    // then loop the free-space distribution (scaled by grow factors, or by
-    // shrink factors times base size) with min/max/auto-min violation
-    // clamping and refreezing until every item is frozen. Blink mirrors this
-    // in `LineFlexer::ResolveFlexibleLengths`/`FreezeItems` (line_flexer.cc)
-    // and Gecko in `FlexLine::ResolveFlexibleLengths`
-    // (nsFlexContainerFrame.cpp).
+    // CSS Flexbox 9.7 (#resolve-flexible-lengths): seed at the floored
+    // hypothetical, freeze the constructor's inflexible items AT hypothetical,
+    // then loop the free-space distribution with per-item min/max/auto-min
+    // violation clamping and a ONE-CLASS freeze per iteration chosen by the
+    // signed total violation. Blink mirrors this in
+    // `LineFlexer::ResolveFlexibleLengths`/`FreezeItems` (line_flexer.cc) and
+    // Gecko in `FlexLine::ResolveFlexibleLengths` (nsFlexContainerFrame.cpp).
     let is_using_flex_grow = flex_line_uses_flex_grow(
         line_order,
         items,
         container_main_size_px,
         gap_between_items_px,
     );
+    // D2: seed at hypothetical, then the constructor freeze (factor-0 + entry
+    // violations) marks items frozen AT that hypothetical (never base).
     initialize_flex_line_resolution(line_order, items, line_resolution);
     freeze_flex_line_inflexible_items(line_order, items, line_resolution, is_using_flex_grow);
     let initial_free_space_px = remaining_flex_line_free_space(
@@ -2289,10 +2292,16 @@ fn resolve_flex_line_item_resolution_states(
         gap_between_items_px,
     );
     loop {
-        freeze_flex_line_inflexible_items(line_order, items, line_resolution, is_using_flex_grow);
+        // D2.3: a fully-ctor-frozen line resolves to its seeded hypotheticals —
+        // the violation clamp IS the constructor freeze, nothing is skipped.
         if line_resolution.iter().all(|entry| entry.is_frozen) {
             return;
         }
+        // D3 FreezeItems reset: unfrozen items return to hypothetical before
+        // the next distribution; frozen items keep their current (clamped)
+        // value, which the free-space recompute below reads as their
+        // contribution (Blink `FlexedMarginBoxSize`, line_flexer.cc:64).
+        reset_unfrozen_flex_line_resolution(line_order, items, line_resolution);
         let remaining_free_space_px = remaining_flex_line_free_space(
             line_order,
             items,
@@ -2308,6 +2317,13 @@ fn resolve_flex_line_item_resolution_states(
             remaining_free_space_px,
             is_using_flex_grow,
         );
+        // D3 no-free-space early exits (engine shape).
+        if is_using_flex_grow && remaining_free_space_px <= 0.0 {
+            return;
+        }
+        if !is_using_flex_grow && remaining_free_space_px >= 0.0 {
+            return;
+        }
         if !distribute_flex_line_free_space(
             line_order,
             items,
@@ -2317,10 +2333,12 @@ fn resolve_flex_line_item_resolution_states(
         ) {
             return;
         }
-        if freeze_flex_line_main_size_violations(line_order, items, line_resolution) {
-            continue;
+        // D3 clamp phase + one-class freeze: `false` means the total violation
+        // is zero (every remaining item fits its candidate) — resolve and stop.
+        if !freeze_flex_line_violation_class(line_order, items, line_resolution) {
+            return;
         }
-        freeze_flex_line_unfrozen_items(line_resolution);
+        // One class froze; re-iterate.
     }
 }
 
@@ -2349,10 +2367,35 @@ fn initialize_flex_line_resolution(
     items: &FlexItemLane,
     line_resolution: &mut [FlexResolutionEntry],
 ) {
+    // D2 (flex arc step 5): seed every item at its (D1-floored) hypothetical
+    // main size, NOT the flex base. The constructor freeze below marks factor-0
+    // and entry-violation items frozen AT this hypothetical, so the §9.7 step-3
+    // clamp the hypothetical carries is never skipped.
     for (entry, resolution) in line_order.iter().zip(line_resolution.iter_mut()) {
         let item = items.get(entry.dom_index).view;
-        resolution.resolved_main_size_px = item.flex_base_size_px;
+        resolution.resolved_main_size_px = item.hypothetical_main_size_px;
         resolution.is_frozen = false;
+        resolution.violation = ViolationClass::None;
+    }
+}
+
+/// D3's `FreezeItems` reset (Blink `line_flexer.cc:69`): unfrozen items return to
+/// their hypothetical main size before the next distribution. The reset is
+/// transient — the free-space recompute reads BASE for unfrozen items and the
+/// distribution overwrites the value with `base + share` — but keeping it here
+/// preserves the engine's loop shape so a future change to the free-space
+/// computation cannot silently read a stale clamped value for an unfrozen item.
+fn reset_unfrozen_flex_line_resolution(
+    line_order: &[FlexOrderLaneEntry],
+    items: &FlexItemLane,
+    line_resolution: &mut [FlexResolutionEntry],
+) {
+    for (entry, resolution) in line_order.iter().zip(line_resolution.iter_mut()) {
+        if resolution.is_frozen {
+            continue;
+        }
+        let item = items.get(entry.dom_index).view;
+        resolution.resolved_main_size_px = item.hypothetical_main_size_px;
     }
 }
 
@@ -2456,27 +2499,50 @@ fn remaining_flex_line_free_space_limited_by_factor_sum(
     remaining_free_space_px
 }
 
-fn freeze_flex_line_main_size_violations(
+fn freeze_flex_line_violation_class(
     line_order: &[FlexOrderLaneEntry],
     items: &FlexItemLane,
     line_resolution: &mut [FlexResolutionEntry],
 ) -> bool {
-    let mut froze_violation = false;
+    // The §9.7 clamp phase + one-class freeze (Blink line_flexer.cc:140-181):
+    // clamp every unfrozen item's distribution candidate, record its violation
+    // class (`None` | `Min` | `Max`), sum the signed violations, and freeze
+    // exactly ONE class by the total's sign (Min when ≥ 0, Max when < 0).
+    // Returns `false` when the total violation is zero — every remaining item
+    // fits its candidate, so the line is resolved; `true` when one class froze
+    // (re-iterate).
+    let mut total_violation_px = 0.0f32;
     for (entry, resolution) in line_order.iter().zip(line_resolution.iter_mut()) {
         if resolution.is_frozen {
             continue;
         }
         let item = items.get(entry.dom_index).view;
-        let clamped_main_size_px =
-            clamped_main_size_after_flex_constraints(item, resolution.resolved_main_size_px);
-        if flex_axis_sizes_match(clamped_main_size_px, resolution.resolved_main_size_px) {
-            continue;
-        }
-        resolution.resolved_main_size_px = clamped_main_size_px;
-        resolution.is_frozen = true;
-        froze_violation = true;
+        let candidate = resolution.resolved_main_size_px;
+        let clamped = clamped_main_size_after_flex_constraints(item, candidate);
+        resolution.resolved_main_size_px = clamped;
+        resolution.violation = if clamped > candidate {
+            ViolationClass::Min
+        } else if clamped < candidate {
+            ViolationClass::Max
+        } else {
+            ViolationClass::None
+        };
+        total_violation_px += clamped - candidate;
     }
-    froze_violation
+    if flex_axis_sizes_match(total_violation_px, 0.0) {
+        return false;
+    }
+    let freeze_class = if total_violation_px >= 0.0 {
+        ViolationClass::Min
+    } else {
+        ViolationClass::Max
+    };
+    for resolution in line_resolution.iter_mut() {
+        if !resolution.is_frozen && resolution.violation == freeze_class {
+            resolution.is_frozen = true;
+        }
+    }
+    true
 }
 
 fn clamped_main_size_after_flex_constraints(item: FlexItemView, resolved_main_size_px: f32) -> f32 {
@@ -2541,12 +2607,6 @@ fn flex_line_flex_factor(item: FlexItemView, is_using_flex_grow: bool) -> f32 {
         return item.flex_grow_factor;
     }
     item.flex_shrink_factor * item.flex_base_size_px
-}
-
-fn freeze_flex_line_unfrozen_items(line_resolution: &mut [FlexResolutionEntry]) {
-    for resolution in line_resolution {
-        resolution.is_frozen = true;
-    }
 }
 
 fn exit_active_flex_container<R>(

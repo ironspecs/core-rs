@@ -8129,37 +8129,37 @@ fn wrapping_line_break_floor_includes_padding() {
 // (zero flex factor, or base size on the "wrong" side of its hypothetical)
 // freezes at its HYPOTHETICAL main size — the flex base clamped by min/max and
 // floored by the used automatic minimum size (§4.5). No single WPT oracle
-// pairs the downstream mis-positioning, so this is cited from §9.7 directly;
+// pairs the downstream positioning, so this is cited from §9.7 directly;
 // Gecko (`FlexLine::ResolveFlexibleLengths`, `nsFlexContainerFrame.cpp`) and
 // Blink (`LineFlexer::ResolveFlexibleLengths`, `line_flexer.cc`) both freeze
 // inflexible items at the clamped base before the free-space loop.
 //
-// OFF-SPEC: `initial_flex_line_item_resolution_states` (`flex.rs:2082`) seeds
-// `resolved_main_size_px = flex_base_size_px` (the unclamped base), and the
-// all-frozen early return (`flex.rs:2040`) exits before
-// `freeze_flex_line_main_size_violations` (`flex.rs:2185`) can clamp. The
-// item's own painted size is then clamped by the block relayout, but later
-// items are positioned from the unclamped flex-level base, so a 10px-base /
-// 20px-min-width inflexible item paints 20px wide yet pushes the next item to
-// 10px (spec: 20px). Row (b) is the automatic-minimum interaction with C5.
+// ON-SPEC (relabeled from `off_spec_inflexible_items_skip_hypothetical_clamps`
+// in flex arc step 5): the §9.7 loop now SEEDS at the D1-floored hypothetical
+// main size (`initialize_flex_line_resolution`, `flex.rs`) and the constructor
+// freeze keeps that hypothetical, so an inflexible item's §9.7 step-3 clamp is
+// never skipped — a 10px-base / 20px-min-width item now pushes the next item to
+// 20px (row a), a visible item's content-based automatic minimum now applies
+// (row b), a max-width clamp freezes at max (row c), and the column min-height
+// mirror freezes at min-height (row d). Row (e) is the no-clamp control.
 #[test]
-fn off_spec_inflexible_items_skip_hypothetical_clamps() {
+fn inflexible_items_freeze_at_hypothetical_main_size() {
     let rows: [InflexibleRow; 5] = [
         (
-            "min_width_clamp_mispositions_next_item",
-            assert_min_width_clamp_mispositions_next_item,
+            "min_width_clamp_freezes_at_min",
+            assert_min_width_clamp_freezes_at_min,
         ),
         (
-            "visible_content_auto_min_not_applied_to_inflexible_item",
-            assert_auto_min_not_applied_to_inflexible_item,
+            "visible_inflexible_item_freezes_at_auto_min",
+            assert_visible_inflexible_item_freezes_at_auto_min,
         ),
         (
-            "max_width_clamp_mispositions_next_item",
-            assert_max_width_clamp_mispositions_next_item,
+            "max_width_clamp_freezes_at_max",
+            assert_max_width_clamp_freezes_at_max,
         ),
         (
-            "column_min_height_clamp_mispositions_next_item",
-            assert_column_min_height_clamp_mispositions_next_item,
+            "column_min_height_clamp_freezes_at_min",
+            assert_column_min_height_clamp_freezes_at_min,
         ),
         (
             "no_clamp_control_freezes_at_base",
@@ -8174,7 +8174,7 @@ fn off_spec_inflexible_items_skip_hypothetical_clamps() {
 /// A named inflexible-item clamp probe: row name plus a runner.
 type InflexibleRow = (&'static str, fn(&str));
 
-fn assert_min_width_clamp_mispositions_next_item(name: &str) {
+fn assert_min_width_clamp_freezes_at_min(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -8193,8 +8193,8 @@ fn assert_min_width_clamp_mispositions_next_item(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // The first item paints at its clamped 20px, but the flex-level resolved
-    // size stays 10px, so the second item overlaps it at 10px (spec: 20px).
+    // On-spec: the first item freezes at its 20px min-width hypothetical, so
+    // the second item sits at 20px (not the 10px base).
     assert_rect_op_geometry(
         &rects[1],
         0.0,
@@ -8205,7 +8205,7 @@ fn assert_min_width_clamp_mispositions_next_item(name: &str) {
     );
     assert_rect_op_geometry(
         &rects[2],
-        10.0,
+        20.0,
         0.0,
         30.0,
         20.0,
@@ -8213,7 +8213,7 @@ fn assert_min_width_clamp_mispositions_next_item(name: &str) {
     );
 }
 
-fn assert_auto_min_not_applied_to_inflexible_item(name: &str) {
+fn assert_visible_inflexible_item_freezes_at_auto_min(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -8223,17 +8223,23 @@ fn assert_auto_min_not_applied_to_inflexible_item(name: &str) {
     assert_style_set(&mut root, item, "flex-grow", "0");
     assert_style_set(&mut root, item, "overflow", "visible");
     assert_style_set(&mut root, item, "height", "20px");
-    let _text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
+    let text = assert_append_text_to(&mut root, item, "UnbreakableFlexLabel");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let content_min_px = assert_text_intrinsic(&root, text).min_content_width_px;
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 2, "{name}: container + item");
-    // Divergent: the content-based automatic minimum (> 10px for this text)
-    // is skipped, so the inflexible visible item stays at its 10px base.
-    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 10.0, 20.0, &format!("{name}: item"));
+    // On-spec: the inflexible visible item freezes at its content-based
+    // automatic minimum — the D1 field floor raises the hypothetical above the
+    // 10px base, so the item paints at the content min (not the base).
+    assert_close(
+        rects[1].size_px[0],
+        content_min_px,
+        &format!("{name}: item"),
+    );
 }
 
-fn assert_max_width_clamp_mispositions_next_item(name: &str) {
+fn assert_max_width_clamp_freezes_at_max(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "200px");
     assert_style_set(&mut root, container, "height", "20px");
@@ -8252,8 +8258,8 @@ fn assert_max_width_clamp_mispositions_next_item(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // The first item paints at its clamped 20px, but the flex-level resolved
-    // size stays 50px, so the second item sits at 50px (spec: 20px).
+    // On-spec: the first item freezes at its 20px max-width hypothetical, so
+    // the second item sits at 20px (not the 50px base).
     assert_rect_op_geometry(
         &rects[1],
         0.0,
@@ -8264,7 +8270,7 @@ fn assert_max_width_clamp_mispositions_next_item(name: &str) {
     );
     assert_rect_op_geometry(
         &rects[2],
-        50.0,
+        20.0,
         0.0,
         30.0,
         20.0,
@@ -8272,7 +8278,7 @@ fn assert_max_width_clamp_mispositions_next_item(name: &str) {
     );
 }
 
-fn assert_column_min_height_clamp_mispositions_next_item(name: &str) {
+fn assert_column_min_height_clamp_freezes_at_min(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_column_container_size(&mut root, container, "200px", "200px");
     let first = assert_append_div_to(&mut root, container);
@@ -8290,8 +8296,8 @@ fn assert_column_min_height_clamp_mispositions_next_item(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // Column-axis mirror: the first item paints at its clamped 20px height,
-    // but the second item sits at 10px top (spec: 20px).
+    // Column-axis mirror: the first item freezes at its 20px min-height
+    // hypothetical, so the second item sits at 20px top (not the 10px base).
     assert_rect_op_geometry(
         &rects[1],
         0.0,
@@ -8303,7 +8309,7 @@ fn assert_column_min_height_clamp_mispositions_next_item(name: &str) {
     assert_rect_op_geometry(
         &rects[2],
         0.0,
-        10.0,
+        20.0,
         20.0,
         30.0,
         &format!("{name}: second item"),
@@ -8652,15 +8658,15 @@ fn assert_static_position_at_end_slot(name: &str) {
 // distribution; the expectation is cited from §9.7 directly (the two
 // implementation files confirm the one-class-at-a-time shape).
 //
-// OFF-SPEC: `freeze_flex_line_main_size_violations` (`flex.rs:2185`) freezes
-// BOTH classes at once — every item whose clamped size differs from its
-// resolved size is frozen in the same pass. That is usually equivalent, but
-// not when one pass carries a min-violation AND a max-violation: the spec
-// leaves the minority class unfrozen to re-absorb the redistributed free
-// space, while the solver locks it at its clamp. Three rows observe the
-// divergent distribution; each also names the spec-correct result.
+// ON-SPEC (relabeled from `off_spec_mixed_violation_freeze_ordering` in flex
+// arc step 5): `freeze_flex_line_violation_class` (`flex.rs`) now records each
+// item's violation class and freezes exactly ONE class per iteration by the
+// signed total — so a grow pass with a max-clamped A and a min-clamped B
+// re-absorbs the freed space into B (190px, row a), the shrink mirror
+// re-absorbs into A (70px, row b), and the three-item chain re-distributes
+// once more (B 140px, row c).
 #[test]
-fn off_spec_mixed_violation_freeze_ordering() {
+fn mixed_violations_freeze_one_class_per_pass() {
     let rows: [FreezeOrderRow; 3] = [
         (
             "grow_mixed_violations",
@@ -8700,20 +8706,12 @@ fn assert_grow_mixed_violation_freeze_order(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // Divergent: the total violation is −30 (A −40 max + B +10 min), so the
+    // On-spec: the total violation is −30 (A −40 max + B +10 min), so the
     // spec freezes only A (max) and lets B re-absorb the 90px freed up, ending
-    // at 190px; the solver freezes B at its 160px min in the same pass.
+    // at 190px.
     assert_close(rects[1].size_px[0], 110.0, &format!("{name}: A width"));
-    assert_close(
-        rects[2].size_px[0],
-        160.0,
-        &format!("{name}: B width (spec-correct 190)"),
-    );
-    assert_close(
-        rects[2].position_px[0],
-        110.0,
-        &format!("{name}: B left (spec-correct 110)"),
-    );
+    assert_close(rects[2].size_px[0], 190.0, &format!("{name}: B width"));
+    assert_close(rects[2].position_px[0], 110.0, &format!("{name}: B left"));
 }
 
 fn assert_shrink_mixed_violation_freeze_order(name: &str) {
@@ -8736,20 +8734,12 @@ fn assert_shrink_mixed_violation_freeze_order(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 3, "{name}: container + two items");
-    // Divergent: the total violation is +10 (A −5 max + B +15 min), so the
-    // spec freezes only B (min) and lets A re-absorb the −30px freed up,
-    // ending at 70px; the solver freezes A at its 80px max in the same pass.
-    assert_close(
-        rects[1].size_px[0],
-        80.0,
-        &format!("{name}: A width (spec-correct 70)"),
-    );
+    // On-spec: the total violation is +10 (A −5 max + B +15 min), so the spec
+    // freezes only B (min) and lets A re-absorb the −30px freed up, ending at
+    // 70px.
+    assert_close(rects[1].size_px[0], 70.0, &format!("{name}: A width"));
     assert_close(rects[2].size_px[0], 70.0, &format!("{name}: B width"));
-    assert_close(
-        rects[2].position_px[0],
-        80.0,
-        &format!("{name}: B left (spec-correct 70)"),
-    );
+    assert_close(rects[2].position_px[0], 70.0, &format!("{name}: B left"));
 }
 
 fn assert_chained_refreeze_freeze_order(name: &str) {
@@ -8774,21 +8764,121 @@ fn assert_chained_refreeze_freeze_order(name: &str) {
     let plans = take_staged_layer_paint_plans(&root);
     let rects = &plans[0].rects;
     assert_eq!(rects.len(), 4, "{name}: container + three items");
-    // Divergent: the total violation is −20 (A −40 max + B +20 min), so the
+    // On-spec: the total violation is −20 (A −40 max + B +20 min), so the
     // spec freezes A (max) then re-distributes the freed 90px to B (still
-    // unfrozen, ending at 140px); the solver freezes B at its 120px min in the
-    // same first pass, leaving the inflexible C at its 100px basis either way.
+    // unfrozen, ending at 140px); the inflexible C stays at its 100px basis
+    // either way.
     assert_close(rects[1].size_px[0], 60.0, &format!("{name}: A width"));
-    assert_close(
-        rects[2].size_px[0],
-        120.0,
-        &format!("{name}: B width (spec-correct 140)"),
-    );
+    assert_close(rects[2].size_px[0], 140.0, &format!("{name}: B width"));
     assert_close(rects[3].size_px[0], 100.0, &format!("{name}: C width"));
+    assert_close(rects[3].position_px[0], 200.0, &format!("{name}: C left"));
+}
+
+// CSS Flexbox 1 §9.7 step 3 composed with the all-frozen resolution (flex arc
+// step 5 D2.3): when every item in a line freezes in the constructor pass (all
+// inflexible), the line resolves to each item's seeded HYPOTHETICAL main size —
+// the violation clamp IS the constructor freeze, so nothing is skipped and no
+// distribution happens. Cited from §9.7 directly; Gecko
+// (`FlexLine::ResolveFlexibleLengths`) and Blink (`LineFlexer` constructor,
+// `line_flexer.cc`) both freeze the whole line at hypothetical before the
+// free-space loop.
+#[test]
+fn all_inflexible_line_resolves_to_hypotheticals() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "200px");
+    assert_style_set(&mut root, container, "height", "20px");
+    let a = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, a, "flex-basis", "10px");
+    assert_style_set(&mut root, a, "flex-shrink", "0");
+    assert_style_set(&mut root, a, "flex-grow", "0");
+    assert_style_set(&mut root, a, "min-width", "20px");
+    assert_style_set(&mut root, a, "height", "20px");
+    let b = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, b, "flex-basis", "50px");
+    assert_style_set(&mut root, b, "flex-shrink", "0");
+    assert_style_set(&mut root, b, "flex-grow", "0");
+    assert_style_set(&mut root, b, "max-width", "30px");
+    assert_style_set(&mut root, b, "height", "20px");
+    let c = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, c, "flex-basis", "40px");
+    assert_style_set(&mut root, c, "flex-shrink", "0");
+    assert_style_set(&mut root, c, "flex-grow", "0");
+    assert_style_set(&mut root, c, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 4, "container + three items");
+    // On-spec: all three items are inflexible, so the whole line freezes at
+    // their clamped hypotheticals (20, 30, 40) — the 110px leftover free space
+    // is never distributed, and the min/max clamps are not skipped.
+    assert_rect_op_geometry(
+        &rects[1],
+        0.0,
+        0.0,
+        20.0,
+        20.0,
+        "A at min-width hypothetical",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        20.0,
+        0.0,
+        30.0,
+        20.0,
+        "B at max-width hypothetical",
+    );
+    assert_rect_op_geometry(&rects[3], 50.0, 0.0, 40.0, 20.0, "C at base hypothetical");
+}
+
+// CSS Flexbox 1 §9.2 + §4.5 (flex arc step 5 D1): after the hypothetical FIELD
+// gains the automatic-minimum floor, the outer hypothetical simplifies to
+// `field + margins` (the former outer-site `.max(auto_min + bp)` is a no-op
+// once the field floors). This pin re-asserts an existing floor scenario — a
+// wrapping row whose first item's content minimum exceeds the container, with
+// non-zero main margins — and shows the outer floor (`field + margins`) still
+// drives line breaking. It must NOT move under the simplification.
+#[test]
+fn outer_hypothetical_floor_is_field_plus_margins() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "100px");
+    assert_style_set(&mut root, container, "flex-wrap", "wrap");
+    assert_style_set(&mut root, container, "height", "60px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "flex-basis", "10px");
+    assert_style_set(&mut root, first, "overflow", "visible");
+    assert_style_set(&mut root, first, "height", "20px");
+    assert_style_set(&mut root, first, "margin-left", "5px");
+    assert_style_set(&mut root, first, "margin-right", "5px");
+    let first_text = assert_append_text_to(&mut root, first, "UnbreakableFlexLabel");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "flex-basis", "10px");
+    assert_style_set(&mut root, second, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let content_min_px = assert_text_intrinsic(&root, first_text).min_content_width_px;
+    let plans = take_staged_layer_paint_plans(&root);
+    let rects = &plans[0].rects;
+    assert_eq!(rects.len(), 3, "container + two items");
+    // On-spec: the first item's field floors at its content min and its outer
+    // hypothetical is field (content min) + 10px margins — still > 100px, so
+    // the item occupies line 1 at the floored border-box width (its border-box
+    // origin after the 5px leading margin) and the second item wraps to line 2.
     assert_close(
-        rects[3].position_px[0],
-        180.0,
-        &format!("{name}: C left (spec-correct 200)"),
+        rects[1].size_px[0],
+        content_min_px,
+        "first item border-box width",
+    );
+    assert_close(
+        rects[1].position_px[0],
+        5.0,
+        "first item border-box left after the leading margin",
+    );
+    assert_rect_op_geometry(
+        &rects[2],
+        0.0,
+        30.0,
+        10.0,
+        20.0,
+        "second item wraps to line 2",
     );
 }
 

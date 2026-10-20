@@ -32,6 +32,7 @@ use crate::domains::layout::{FlexItemLane, FlexLineLane, FlexOrderLane, FlexReso
 #[cfg(test)]
 use crate::domains::layout::{
     FlexItemSource, FlexItemView, FlexLineEntry, FlexOrderLaneEntry, FlexResolutionEntry,
+    ViolationClass,
 };
 #[cfg(test)]
 use crate::types::DomNodeSlotKey;
@@ -180,6 +181,7 @@ mod tests {
             scratch.resolution.push(FlexResolutionEntry {
                 resolved_main_size_px: size,
                 is_frozen: false,
+                violation: ViolationClass::None,
             });
         }
         let _ = scratch.resolution.finish_range(resolution_start);

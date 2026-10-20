@@ -64,7 +64,7 @@ pub(crate) use flex_line_lane::{FlexLineEntry, FlexLineLane};
 #[allow(unused_imports)]
 pub(crate) use flex_order_lane::{FlexOrderLane, FlexOrderLaneEntry};
 #[allow(unused_imports)]
-pub(crate) use flex_resolution_lane::{FlexResolutionEntry, FlexResolutionLane};
+pub(crate) use flex_resolution_lane::{FlexResolutionEntry, FlexResolutionLane, ViolationClass};
 
 pub use walker::{node_box, node_layout_dirty, node_paint_dirty, root_key};
 
