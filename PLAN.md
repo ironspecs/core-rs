@@ -226,9 +226,9 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-436 layout proofs (428 in
+441 layout proofs (433 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 9);
+cross-cutting `robustness.rs`; updated 2026-10-20 after flex arc step 10);
 the off-spec registry (6 divergent proofs in 5 divergent-class rows, 5
 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
@@ -1534,6 +1534,32 @@ an f32 basis.
   unconsumed, break-spaces, range pill, line-height normal) plus
   box-sizing min/max. Next: step 10 — auto margins §8.1, the clients'
   top ask and the final step of the fix sequence.
+
+- **2026-10-20 — flex arc step 10 LANDED (`99b142b`): auto margins
+  §8.1, and THE FIX SEQUENCE IS COMPLETE.** The clients' top ask:
+  `margin: auto` on a flex item absorbs free space in its axis
+  (Blink/Gecko's positioning-time absorption, structurally identical).
+  Main axis: positive free space distributes equally among the line's
+  auto main margins and justify-content has no effect; cross axis: per
+  item, the line's remaining cross space distributes equally among that
+  item's auto cross margins and align-items/align-self has no effect on
+  it; negative free space computes to 0. The zero-placeholder gate dies
+  (the 200px/50px case now centers at 75/75), the accidental
+  column-cross slice unified to the flex path with identical geometry,
+  and the step-6 `auto_margin_reference_width_px` field is re-roled as
+  the double-absorption guard (the block solver never absorbs inside a
+  flex item — proven: the block-context `margin: 0 auto` centering
+  pins did not move). Six new pins plus the relabeled gate row.
+  **All ten steps of FLEX_MAPPING §4 are landed**: the fix sequence
+  closes with the divergent registry at 6 proofs in 5 rows — none
+  flex-specific (font-family/weight/style unconsumed, break-spaces,
+  range pill, line-height normal, box-sizing min/max). Carried to the
+  backlog: reversal (row-reverse/rtl/column-reverse) with auto margins
+  (currently LTR-only pins), and the stale pre-§8.1 comments in
+  `flow.rs`'s auto-margin docs (comment-only correction owed).
+  Next per the arc: grid's admission (the debate's adopted decision:
+  grid enters immediately after the fix sequence, before PR 4), then
+  PR 4 (the text seam), then PR 5 (the `RootDom` decomposition).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
