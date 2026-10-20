@@ -120,15 +120,30 @@ while current is a static block with no border/padding whose margins
 m = three_branch(m, current.margin.top)   // the chain's terminal margin
 ```
 
-(`three_branch` is D1's rule: both-positive → `max`, both-negative →
-`min`, mixed → `a + b`.) The chain stops at the first non-empty or
-border/padding-barriered descendant (a barrier per §8.3.1) — those
-margins do not collapse through. The same `m` then accounts the
-child's margin-box height at flow accumulation (position and height
-share one computed value — no phantom). The flag-true case (plain
-container) is unchanged: the chain's value propagates out to the
-parent's own margin handling (the current escape path). Chain-walk
-reads only computed styles — zero layout, zero allocation. The empty
+**Reconciliation (2026-10-20, the transcription's chain-scope tension —
+answered):** the chain walk is flag-FALSE-only. The three cases are
+mechanically distinct: **D1-(a)** is the direct first child (no chain —
+`collapsed_parent_top_margin_px` with the three-branch rule handles it);
+**D1-(c)** is the ESCAPE case through an empty intermediary — the
+existing bottom-up delta mechanism
+(`propagated_collapsed_margin_delta_px`) already carries the chain at
+the empty child's exit; it needs only the three-branch rule instead of
+the non-negative `max` (D1's stated fix: `delta = three_branch(child,
+own) − own`, so a negative chain passes out as a negative margin, e.g.
+−20 → parent border box 11, the spec value); **D3** is the CONTAINMENT
+case — the offset needs the value AT POSITIONING TIME (before the
+child's exit produces it), so the top-down chain walk computes the same
+chain value early, flag-false only. "Flag-true unchanged" means
+unchanged MECHANISM (bottom-up delta), never unchanged rule. The
+top-down walk and the bottom-up delta must agree on any input (same
+chain, same rule) — pin that agreement on a two-empty-intermediary
+chain at a flag-false boundary.
+
+The same `m` then accounts the child's margin-box height at flow
+accumulation (position and height share one computed value — no
+phantom). The chain stops at the first non-empty or
+border/padding-barriered descendant (a barrier per CSS 2.1 §8.3.1).
+Chain-walk reads only computed styles — zero layout, zero allocation. The empty
 intermediary's own margin-height propagation is unaffected (it is the
 realization of the same margin, positioned correctly by the offset).
 
