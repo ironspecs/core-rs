@@ -2208,8 +2208,10 @@ fn update_line_cross_sizes(
 
 /// Re-measures one flagged flex item's subtree at its resolved main content
 /// width (the D1.2 refold): text re-shapes at the new width and the subtree's
-/// records update (equality-gated). Returns the item's resolved cross content
-/// size (the flow's cross-axis size), before cross border/padding.
+/// records update (equality-gated). Returns the item's resolved cross size in
+/// BORDER-BOX terms — content + border/padding, no cross margins — matching
+/// the measured seed (`measured_cross_size_px` in `measure_one_flex_item`) and
+/// every cross-size consumer, which add the cross margins on top.
 fn refold_item_at_resolved_main<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
@@ -2225,6 +2227,15 @@ where
     let key = source.key();
     let (child_style, child_inherited_style) = resolved_node_style(root_dom, key, child_context)?;
     let child_style = blockified_flex_item_style(child_style);
+    // `cross_axis_flow_size` returns the folded `FlowSize`'s cross axis, which
+    // `layout_flow_size` defines as the OUTER size (border box + cross margins).
+    // The seed and every cross consumer treat `resolved_cross_size_px` as
+    // border-box (they add the cross margins themselves), so subtract the cross
+    // margins the flow included to keep the terms consistent and avoid
+    // double-counting them (refold cross stays border-box, consistent with the
+    // measured seed).
+    let cross_margins_px = cross_axis_start_margin_from_sides(child_style.sides, main_axis)
+        + cross_axis_end_margin_from_sides(child_style.sides, main_axis);
     let refold_context = LayoutContext {
         available_width_px: Some(resolved_main_content_px.max(0.0)),
         ..child_context.clone()
@@ -2239,7 +2250,7 @@ where
         child_inherited_style,
         resolver,
     )?;
-    Ok(cross_axis_flow_size(main_axis, child_flow))
+    Ok(cross_axis_flow_size(main_axis, child_flow) - cross_margins_px)
 }
 
 fn resolved_line_cross_sizes(

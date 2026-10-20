@@ -10748,6 +10748,50 @@ fn flex_nodes_refolded_counts_flagged_width_changed_items() {
     );
 }
 
+#[test]
+// Flex arc step 7, D1.2: the refold's returned cross size stays BORDER-BOX
+// (content + border/padding, no cross margins), matching the measured seed, so
+// the line-cross and cross-free-space consumers add the cross margin exactly
+// once. A shrinking text-bearing item with `margin-bottom: 10px` refolds: the
+// line cross is the item's border-box cross (its wrapped text height) PLUS the
+// single 10px cross margin — never +20px, which is what the former refold
+// (returning the outer cross with the margin already inside) produced.
+fn flex_refolded_item_cross_size_excludes_cross_margins() {
+    let (mut world, mut root, container) = flex_row_container_setup();
+    assert_set_flex_row_container_width(&mut root, container, "40px");
+    // `flex-start` keeps the item's height at its natural wrapped content
+    // height (content + border/padding, no margin) so the item's border-box
+    // cross is directly observable and the line cross is that height + margin.
+    assert_style_set(&mut root, container, "align-items", "flex-start");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "flex-basis", "auto");
+    assert_style_set(&mut root, item, "flex-grow", "0");
+    assert_style_set(&mut root, item, "flex-shrink", "1");
+    assert_style_set(&mut root, item, "overflow", "visible");
+    assert_style_set(&mut root, item, "margin-bottom", "10px");
+    assert_append_text_to(&mut root, item, "aa bb cc dd ee");
+
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        root.metrics().count(RootDomMetricName::FlexNodesRefolded),
+        1,
+        "a shrinking text-bearing item refolds once",
+    );
+
+    let item_cross_px = assert_node_layout(&root, item).height_px;
+    let container_cross_px = assert_node_layout(&root, container).height_px;
+    // The line cross is the item's border-box cross (content + border/padding,
+    // no margins) plus the single 10px cross margin. The former refold double-
+    // counted the margin (line cross = item cross + 20), so this pin guards
+    // against re-adding it.
+    assert_close(
+        container_cross_px,
+        item_cross_px + 10.0,
+        "line cross counts the refolded item's cross margin exactly once",
+    );
+}
+
 fn assert_img_shrink_context(name: &str) {
     let (mut world, mut root, container) = flex_row_container_setup();
     assert_set_flex_row_container_width(&mut root, container, "100px");
