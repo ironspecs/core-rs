@@ -1343,6 +1343,27 @@ an f32 basis.
   nowrap mode-aware min-content; both graceful gates die), designed
   first per the task discipline.
 
+- **2026-10-19 — a third party caught a genuine correctness bug in the
+  run cursor (architect-verified, fixed `3a9877b`).** `accumulate_run`'s
+  joined branch added the member's trailing fragment unconditionally —
+  correct only for single-fragment members. A multi-fragment member
+  joining at its leading edge terminates the joined segment at its
+  FIRST internal break, so the new trailing fragment must be the
+  member's own trailing segment; the unconditional form over-sizes the
+  run's min-content (the exact quantity the cursors exist to compute).
+  The defect was the architect's, in `FLEX_STEP3A_DESIGN.md`'s
+  pseudocode justification ("single-fragment child IS its whole width…
+  no special casing" — written without the multi-fragment case);
+  the transcription implemented it faithfully and the tests used only
+  single-fragment members. Fixed per the architect's specification
+  (`min == max` as the exact single-fragment discriminator) with four
+  discriminating tests (the reviewer's trace, join-through control,
+  the equal-widths coincidence case, the break control); the design
+  doc's arithmetic corrected in the same round. The process lesson is
+  recorded with it: design-first makes errors reviewable BEFORE they
+  are invisible — it does not make the designer infallible; the
+  third-party read of the arithmetic is what caught this one.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
