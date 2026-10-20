@@ -100,22 +100,35 @@ container's reads `true`.
   item's subtree context (the flex placement builds it), so the margin
   cannot escape the item; the existing contained geometry then places
   the descendant correctly. Pins prove containment.
-**Case (b) geometry (confirmed necessary by the transcription's trace,
-2026-10-20).** With the flag mechanism in place, the empty block child's
-margin escapes into the flex item (correct — the item's first in-flow
-chain collapses through it), and the item boundary blocks the escape
-(correct — CSS Flexbox §4's independent formatting context). But the
-blocked margin currently has nowhere to go: the boundary gate zeroes
-`collapsed_parent_top_margin_px`, and the first in-flow child's
-position does not include the collapsed margin (the sibling-overlap
-early-return is 0 for the first child), so the margin degrades to
-phantom height without offsetting the descendant. The containment: the
-margin the boundary gate blocks is CONTAINED as the first in-flow
-child's top offset INSIDE the boundary container — at the first-child
-positioning path, when the boundary container is an FC (the flag is
-false), the first in-flow child's `flow_top` includes the collapsed
-first-in-flow margin (`content_top + collapsed_margin`), instead of the
-margin propagating out (the flag-true case) or vanishing. The empty
+**Case (b) — the containment geometry (option A, decided 2026-10-20
+over the post-relayout alternative).** The escaped margin's value is
+computed during the child's relayout — after the parent positions it —
+so no post-hoc adjustment is acceptable (it would violate the
+single-pass doctrine). Instead, compute the collapsed leading margin
+chain TOP-DOWN at positioning time from computed styles (no layout
+needed): when the parent is an FC boundary (the per-parentage flag is
+false), the first in-flow child's `flow_top` includes
+`collapsed_leading_margin_chain_px(first_child)`:
+
+```text
+m = first_child.margin.top
+current = first_child's first in-flow child
+while current is a static block with no border/padding whose margins
+      may collapse through (an empty intermediary per CSS 2.1 §8.3.1):
+    m = three_branch(m, current.margin.top)
+    current = current's first in-flow child
+m = three_branch(m, current.margin.top)   // the chain's terminal margin
+```
+
+(`three_branch` is D1's rule: both-positive → `max`, both-negative →
+`min`, mixed → `a + b`.) The chain stops at the first non-empty or
+border/padding-barriered descendant (a barrier per §8.3.1) — those
+margins do not collapse through. The same `m` then accounts the
+child's margin-box height at flow accumulation (position and height
+share one computed value — no phantom). The flag-true case (plain
+container) is unchanged: the chain's value propagates out to the
+parent's own margin handling (the current escape path). Chain-walk
+reads only computed styles — zero layout, zero allocation. The empty
 intermediary's own margin-height propagation is unaffected (it is the
 realization of the same margin, positioned correctly by the offset).
 
