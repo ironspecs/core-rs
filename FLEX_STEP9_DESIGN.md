@@ -100,13 +100,24 @@ container's reads `true`.
   item's subtree context (the flex placement builds it), so the margin
   cannot escape the item; the existing contained geometry then places
   the descendant correctly. Pins prove containment.
-- **Case (b) — the containment geometry is missing:** additionally
-  apply the collapsed first-in-flow margin as an offset to the first
-  in-flow descendant's position inside the boundary container (the
-  container's first block child chain positions at
-  `content_top + collapsed_margin`), contained — never propagated out.
-  Specify the exact site from the probe's evidence (the first-child
-  positioning path in `next_block_child_context`/`update_block_flow`).
+**Case (b) geometry (confirmed necessary by the transcription's trace,
+2026-10-20).** With the flag mechanism in place, the empty block child's
+margin escapes into the flex item (correct — the item's first in-flow
+chain collapses through it), and the item boundary blocks the escape
+(correct — CSS Flexbox §4's independent formatting context). But the
+blocked margin currently has nowhere to go: the boundary gate zeroes
+`collapsed_parent_top_margin_px`, and the first in-flow child's
+position does not include the collapsed margin (the sibling-overlap
+early-return is 0 for the first child), so the margin degrades to
+phantom height without offsetting the descendant. The containment: the
+margin the boundary gate blocks is CONTAINED as the first in-flow
+child's top offset INSIDE the boundary container — at the first-child
+positioning path, when the boundary container is an FC (the flag is
+false), the first in-flow child's `flow_top` includes the collapsed
+first-in-flow margin (`content_top + collapsed_margin`), instead of the
+margin propagating out (the flag-true case) or vanishing. The empty
+intermediary's own margin-height propagation is unaffected (it is the
+realization of the same margin, positioned correctly by the offset).
 
 **Rows flipped** (`off_spec_flex_item_subtree_first_child_margin_containment`):
 (b) grandchild sits 20px below the item's content-box top (contained;
