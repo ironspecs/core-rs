@@ -74,6 +74,26 @@ the containment geometry itself missing (the phantom-height shape from
 the T2 probe: margin realized as content height without offsetting the
 descendant)?
 
+**The flag mechanism (added 2026-10-20 under the transcription's
+blocker — the doc's "set the flag in the flex placement" model was
+inert, and naive context threading propagates).** The flag is computed
+per DIRECT parentage, not threaded:
+(1) `child_layout_context` computes
+`allows_parent_child_block_margin_collapse = !parent_is_flex_container`
+from the PARENT's presented display (already available in the entered
+record — NO extra node-store read). Non-flex parents → `true`
+(current behavior for element children preserved exactly).
+(2) `enter_node`'s flag becomes `matches!(Element) &&
+context.allows_parent_child_block_margin_collapse` (it now RESPECTS
+the context instead of recomputing blindly at `flow.rs:461`).
+(3) No propagation: verify and cite that `child_layout_context` does
+NOT copy this field from the parent context (`..parent` must not carry
+it forward — each child context computes it fresh from its own parent,
+so the root context's value never reaches grandchildren). A flex
+container's direct-child context then reads `false` — flex items are
+independent formatting contexts (CSS Flexbox §4) — and every other
+container's reads `true`.
+
 **The fix by case:**
 - **Case (a) — only the flag is wrong:** set
   `allows_parent_child_block_margin_collapse = false` for the flex
