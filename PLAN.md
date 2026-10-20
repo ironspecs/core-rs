@@ -226,10 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-447 layout proofs (439 in
+454 layout proofs (446 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after the stretch
-suppression fix); the off-spec registry (6 divergent proofs in 5
+cross-cutting `robustness.rs`; updated 2026-10-20 after the reversed
+placement fix); the off-spec registry (6 divergent proofs in 5
 divergent-class rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
@@ -1601,6 +1601,30 @@ an f32 basis.
   un-gated with "should be 20, got 100"; a no-margin control still
   stretches; single-side auto also suppresses). A stale call-site
   comment corrected in the same commit. Proofs 444 → 447.
+
+- **2026-10-20 — the reversed-axis auto-margin defect (probe-confirmed,
+  fixed `662c439`).** Flagged as an AREA in the step-10 backlog
+  (reversal-with-auto-margins unpinned); a probe-first trace then
+  confirmed the defect is real and worse than suspected: three of four
+  scenarios failed against the browser oracle — row-reverse
+  `margin-left: auto` 150 → 300 (the flip placed correctly, then the
+  absorbed-start shift added the margin AGAIN), row-reverse
+  `margin-right: auto` 0 → 150 (mirrored side), and non-auto reversed
+  margins [130,180] → [160,210] (the reversed flip ignored the item's
+  own main-start margin entirely). The fix: the reversed flip accounts
+  for the item's FULL outer main size (`container_main − main_offset −
+  margin_main_start − margin_main_end − resolved_main`), with the
+  mapping cited (for reversed axes the spec main-start side is our
+  `margin_main_end`). The transcription escalated a real arithmetic
+  error in the architect's specified single-margin formula + gated
+  shift (it double-counted the non-auto physical-start margin through
+  the block solver's `local_left = flow_left + margin.left` — probe D
+  would have landed at 140): the two-margin form with the ungated
+  shift is correct, and auto margins are exactly once-counted because
+  the double-absorption guard zeroes them in the block solver. Seven
+  regression pins (A–G incl. column-reverse and rtl-row) all assert
+  browser values green; the LTR auto-margin family and the batch-4
+  reversed directional proofs are unmoved. Proofs 447 → 454.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
