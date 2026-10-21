@@ -22,8 +22,8 @@
 //!   file's free functions
 //! - the D2 track sizing phases operate in place on the track lane's column
 //!   range, exactly: init → maximize (minmax tracks with finite limits) → fr
-//!   expand (the §7.2 `fraction = free × min(Σfr, 1) / Σfr` rule) → stretch
-//!   auto (auto tracks absorb leftover equally)
+//!   expand (CSS Grid 1 §7.2.4's freeze-and-redistribute loop, with the sum<1
+//!   cap) → stretch auto (auto tracks absorb leftover equally)
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs/flex.rs
 
 use crate::domains::style::computed::{BoxLength, GridTrackSize, TrackBreadth, TrackMaxBreadth};
@@ -701,24 +701,74 @@ fn run_track_sizing_phases(
         }
     }
 
-    // Fr expand (Gecko FindUsedFlexFraction / §7.2): fraction = free ×
-    // min(Σfr, 1) / Σfr; each fr track = max(base, factor × fraction).
+    // Fr expand (CSS Grid 1 §7.2.4 "Find the Size of an fr"): the
+    // iterate-and-freeze loop (Gecko `FindUsedFlexFraction`,
+    // `nsGridContainerFrame.cpp`; Blink `FindFrSize`, which sorts by base/factor
+    // and restarts). A flexible track whose content base exceeds its fr share is
+    // treated as inflexible (frozen at its base) and removed from the pool; the
+    // remaining space redistributes among the still-flexible tracks. The sum<1
+    // cap (step 3) scales the leftover space by `min(Σfr, 1)` ONCE up front,
+    // where Σfr is over ALL flexible tracks, frozen or not; the restart is per
+    // remaining tracks. The loop terminates because each pass freezes ≥1 track
+    // or breaks.
     if remaining > 0.0 {
         let flex_sum: f32 = entries
             .iter()
-            .filter(|entry| entry.is_flexible)
+            .filter(|entry| entry.flex_factor > 0.0)
             .map(|entry| entry.flex_factor)
             .sum();
         if flex_sum > 0.0 {
-            let fraction = remaining * flex_sum.min(1.0) / flex_sum;
-            for entry in entries.iter_mut() {
-                if entry.is_flexible {
-                    let size = entry.base_px.max(entry.flex_factor * fraction);
-                    remaining -= size - entry.base_px;
-                    entry.base_px = size;
+            // The spec's leftover space is the free space PLUS the flexible
+            // tracks' content bases (`remaining` already subtracted every
+            // track's base); freezing a track charges its base back out of the
+            // redistributable pool.
+            let flex_base_sum: f32 = entries
+                .iter()
+                .filter(|entry| entry.flex_factor > 0.0)
+                .map(|entry| entry.base_px)
+                .sum();
+            let mut free = (remaining + flex_base_sum) * flex_sum.min(1.0);
+            // A frozen bitmap marks tracks removed from the pool (indexed by
+            // slice position; `entries.len()` is bounded by the track-list
+            // capacity, so a fixed bitmap is zero-allocation).
+            let mut frozen = [false; GRID_TRACK_LIST_CAPACITY];
+            loop {
+                let mut factor_sum = 0.0f32;
+                for (index, entry) in entries.iter().enumerate() {
+                    if entry.flex_factor > 0.0 && !frozen[index] {
+                        factor_sum += entry.flex_factor;
+                    }
+                }
+                if factor_sum <= 0.0 {
+                    break;
+                }
+                let fraction = free / factor_sum;
+                let mut froze_any = false;
+                for (index, entry) in entries.iter_mut().enumerate() {
+                    if entry.flex_factor <= 0.0 || frozen[index] {
+                        continue;
+                    }
+                    if entry.base_px > entry.flex_factor * fraction {
+                        // Treated as inflexible: its base exceeds its fr share.
+                        free -= entry.base_px;
+                        frozen[index] = true;
+                        froze_any = true;
+                    }
+                }
+                if !froze_any {
+                    for (index, entry) in entries.iter_mut().enumerate() {
+                        if entry.flex_factor > 0.0 && !frozen[index] {
+                            entry.base_px = entry.base_px.max(entry.flex_factor * fraction);
+                        }
+                    }
+                    break;
                 }
             }
         }
+        // Recompute the leftover for the stretch-auto phase from the post-fr
+        // base sizes (the loop sized in place; `remaining` is now stale).
+        let sized_base_sum: f32 = entries.iter().map(|entry| entry.base_px).sum();
+        remaining = container_width_px - sized_base_sum - gap_total;
     }
 
     // Stretch auto: auto tracks absorb any remaining free space equally.
@@ -1543,13 +1593,27 @@ mod tests {
     }
 
     fn size_tracks(tracks: &[GridTrackSize], container_width: f32, gap: f32) -> Vec<f32> {
+        size_tracks_with_contributions(tracks, &[], &[], container_width, gap)
+    }
+
+    /// `size_tracks` with per-column `h_min`/`h_max` item contributions (the
+    /// fr tracks' base is their `h_max`; the freeze pins need non-zero bases).
+    fn size_tracks_with_contributions(
+        tracks: &[GridTrackSize],
+        h_min: &[f32],
+        h_max: &[f32],
+        container_width: f32,
+        gap: f32,
+    ) -> Vec<f32> {
         let mut scratch = LayoutScratch::default();
         let mut column_tracks = empty_track_array();
         for (slot, t) in column_tracks.iter_mut().zip(tracks.iter()) {
             *slot = *t;
         }
-        let min = [0.0f32; GRID_TRACK_LIST_CAPACITY];
-        let max = [0.0f32; GRID_TRACK_LIST_CAPACITY];
+        let mut min = [0.0f32; GRID_TRACK_LIST_CAPACITY];
+        let mut max = [0.0f32; GRID_TRACK_LIST_CAPACITY];
+        min[..h_min.len()].copy_from_slice(h_min);
+        max[..h_max.len()].copy_from_slice(h_max);
         let range = size_column_tracks(
             &mut scratch,
             &column_tracks,
@@ -1616,5 +1680,31 @@ mod tests {
         for size in sizes {
             assert!((size - 280.0 / 3.0).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn fr_expand_freezes_over_base_tracks_and_redistributes() {
+        // CSS Grid §7.2.4: `1fr 1fr` in 400px with a 300px col-0 base → 300/100.
+        // The old closed form left 50px unfilled (300/50).
+        let tracks = [fr(1.0), fr(1.0)];
+        let sizes = size_tracks_with_contributions(&tracks, &[0.0, 0.0], &[300.0, 0.0], 400.0, 0.0);
+        assert_eq!(sizes[0], 300.0);
+        assert_eq!(sizes[1], 100.0);
+    }
+
+    #[test]
+    fn fr_expand_partial_freeze_redistributes_among_the_rest() {
+        // `1fr 1fr 1fr` in 400px, col-0 base 200 → 200 / 100 / 100.
+        let tracks = [fr(1.0), fr(1.0), fr(1.0)];
+        let sizes = size_tracks_with_contributions(
+            &tracks,
+            &[0.0, 0.0, 0.0],
+            &[200.0, 0.0, 0.0],
+            400.0,
+            0.0,
+        );
+        assert_eq!(sizes[0], 200.0);
+        assert_eq!(sizes[1], 100.0);
+        assert_eq!(sizes[2], 100.0);
     }
 }

@@ -514,3 +514,65 @@ fn grid_min_max_content_tracks() {
     assert!(min_width <= max_width, "min-content ≤ max-content");
     assert!(min_width > 0.0, "min-content track from item content");
 }
+
+#[test]
+// CSS Grid §7.2.4 (Gecko `FindUsedFlexFraction`, Blink `FindFrSize`): a
+// flexible track whose content base exceeds its fr share is frozen at its base
+// and the remaining space redistributes. `1fr 1fr` in a 400px container with a
+// 300px-wide item in column 0 → 300 / 100 (the old closed form left 50px
+// unfilled at 300/50).
+fn grid_fr_tracks_freeze_over_base_and_redistribute() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "1fr 1fr", "400px");
+    let wide = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, wide, "width", "300px");
+    assert_style_set(&mut root, wide, "height", "40px");
+    let narrow = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, narrow, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // Column 0 freezes at its 300px base; column 1 absorbs the full 100px
+    // remainder (the container fills).
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 300.0, 40.0, "frozen 300px item");
+    assert_rect_op_geometry(&rects[2], 300.0, 0.0, 100.0, 40.0, "item fills the rest");
+}
+
+#[test]
+// No-freeze control: `1fr 1fr` in a 400px container with two zero-content items
+// divides the width 200/200 (unchanged by the freeze loop).
+fn grid_fr_tracks_with_zero_content_stay_even() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "1fr 1fr", "400px");
+    for _ in 0..2 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 200.0, 40.0, "first item");
+    assert_rect_op_geometry(&rects[2], 200.0, 0.0, 200.0, 40.0, "second item");
+}
+
+#[test]
+// Partial freeze: `1fr 1fr 1fr` in a 400px container, one 200px-wide item in
+// column 0 → the over-base track at 200, the other two at 100 each
+// (400 = 200 + 100 + 100).
+fn grid_fr_tracks_partial_freeze_redistributes_among_the_rest() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "1fr 1fr 1fr", "400px");
+    let wide = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, wide, "width", "200px");
+    assert_style_set(&mut root, wide, "height", "40px");
+    for _ in 0..2 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 200.0, 40.0, "frozen 200px item");
+    assert_rect_op_geometry(&rects[2], 200.0, 0.0, 100.0, 40.0, "second 100px item");
+    assert_rect_op_geometry(&rects[3], 300.0, 0.0, 100.0, 40.0, "third 100px item");
+}

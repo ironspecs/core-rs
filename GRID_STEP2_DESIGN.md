@@ -141,11 +141,19 @@ formula, so contributions group by `index % column_count`.)
    (n−1)`; if `free > 0`, distribute to growable tracks up to their
    limits in track order (each takes `min(limit − base, remaining)`;
    remaining -= taken).
-4. **Fr expand** (Gecko's `FindUsedFlexFraction`): if any `Fr` track,
-   `fraction = remaining_free / Σ fr_factors` (clamped ≥ 0); each fr
-   track's size = `max(base, factor × fraction)`. If `Σ factors < 1`,
-   the free space is scaled by the sum first (the §7.2 rule — same as
-   flex's grow-sum<1 cap).
+4. **Fr expand** (CSS Grid §7.2.4 "Find the Size of an fr"; Gecko's
+   `FindUsedFlexFraction`, Blink's `FindFrSize`): the iterate-and-freeze
+   loop — `fraction = leftover / Σ fr_factors` over the still-flexible
+   tracks; a flexible track whose content base exceeds its fr share is
+   treated as inflexible (frozen at its base) and the leftover space
+   redistributes among the remaining tracks (the restart). If
+   `Σ factors < 1`, the leftover space is scaled by the sum first (the
+   §7.2.4 cap — same as flex's grow-sum<1 cap). (Corrected 2026-10-21
+   per third-party review of PR #25: the original closed-form
+   `max(base, factor × fraction)` omitted the freeze-and-redistribute
+   restart, so `1fr 1fr` with a 300px min-content item in a 400px
+   container left 50px unfilled instead of freezing the first track at
+   300 and growing the second to 100.)
 5. **Stretch auto**: `Auto` tracks absorb any remaining free space
    equally (after fr).
 Zero-size edge: `Σ base + gaps > container` → tracks overflow at their
