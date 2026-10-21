@@ -226,11 +226,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-454 layout proofs (446 in
+481 layout proofs (473 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after the reversed
-placement fix); the off-spec registry (6 divergent proofs in 5
-divergent-class rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-20 after grid T1);
+the off-spec registry (6 divergent proofs in 5 divergent-class rows, 5
+deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1655,6 +1655,33 @@ an f32 basis.
   Deferred, named: baselines, subgrid, fragmentation, gap-decoration.
   Next: `GRID_STEP1_DESIGN.md` (T0/T1's design) per the task
   discipline.
+
+- **2026-10-20 — grid T0 (`1cbca06`) and T1 (`b786e4b`) LANDED: the
+  card wall works.** T0 admitted `display: grid`/`inline-grid` routing
+  and the T1 property set (arena-keyed track lists with value-dedup
+  interning, the >12 capacity gate with counted drops, the FC-flag
+  generalization to grid items per CSS Grid §4). T1 is the real solver:
+  item formation via the 3a mechanics, track sizing in the engines'
+  corroborated phases (init → intrinsic resolution → maximize → fr
+  expand → stretch auto, with the grow-sum<1 cap and overflow-uses-
+  bases), row-major auto-placement over the order lane, refold-aware
+  implicit-row sizing, stretch-to-cell with definite/ratio exemptions,
+  per-cell auto-margin absorption, the abs-pos padding-box model, and
+  the container intrinsic contribution for nested grids. The
+  transcription's five-defect STOP produced adjudicated corrections:
+  the fr-cap scenario (`0.25fr 0.25fr` — my arithmetic error),
+  admitting `auto` as a minmax max bound (CSS Grid §7.2 — T0's grammar
+  was wrong-narrow), restructuring `GridTrackSize` to the spec's
+  uniform `{min, max}` minmax model (percent bounds preserved
+  end-to-end — a representation correction to T0 with a documented
+  cause), the inline-grid width rule (intrinsic; percent tracks
+  content-based at shrink-to-fit), and the grid item lane's home
+  (`grid_item_lane.rs`). Perf: `NodesRefolded` (renamed, shared),
+  `GridNodesMeasured`/`GridNodesPlaced` counters, the card-wall
+  allocation window green. Proofs 454 → 481; the D5 block-interim row
+  moved on-spec. Next: T2 — spans, `grid-template-rows` sizing,
+  `grid-auto-flow` (column/dense), `justify-items`/`justify-self`, and
+  the `CellMap` placement generalization, designed first.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
