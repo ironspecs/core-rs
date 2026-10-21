@@ -226,10 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-490 layout proofs (482 in
+512 layout proofs (504 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-21 after the PR-25 review
-fixes); the off-spec registry (6 divergent proofs in 5 divergent-class
+cross-cutting `robustness.rs`; updated 2026-10-21 after grid T2);
+the off-spec registry (6 divergent proofs in 5 divergent-class
 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
@@ -1704,6 +1704,30 @@ an f32 basis.
   (stretch width overestimating row height for auto-margin items with
   wrapping text) is recorded in the backlog. The grid T0/T1
   coverage-map rows gained the new pin names. Proofs 481 → 490.
+
+- **2026-10-21 — grid T2 LANDED (`f724bc9`, on `grid/t2-t4`), plus the
+  §7.2.4 cap-per-restart fix (`95703ab`) and the auto-placement wrap
+  fix (`1f470ec`).** T2 lands the four placement longhands and their
+  shorthands (`span N`, integer lines, negative-line translation per
+  both engines' `1 − min(start)`), explicit `grid-template-rows`
+  sizing, `grid-auto-flow` (row/column, sparse/dense),
+  `justify-items`/`justify-self` with the `place-items`/`place-self`
+  expansions corrected to write both sides, and the `CellMap`
+  occupancy with §8.5's exact three-phase order (both-definite →
+  locked-to-major → autos per flow). The §12.1 re-run is deferred,
+  named and registered. Two transcription STOPs adjudicated: the
+  file-map's four mechanical-pipeline files, and the D2 offset
+  scenario's off-by-one (my arithmetic; the implementation and both
+  engines were already right). The §7.2.4 residual the PR-25 reviewer
+  named is eliminated exactly (the flex-sum cap applies per restart
+  with the remaining factor sum, reproducing the spec's 62.5 case).
+  And the coverage probe caught a genuine production bug in the T2
+  landing itself: the auto-placement wrap bound ignored the
+  left-implicit offset (autos wrapped after explicit-count columns
+  instead of offset+explicit), fixed with before/after evidence
+  (item3: left 0 → left 200). Proofs 490 → 512. Next: T3 —
+  `grid-template-areas`, `grid-area`, named lines (the dashboard page
+  shells), designed first.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
