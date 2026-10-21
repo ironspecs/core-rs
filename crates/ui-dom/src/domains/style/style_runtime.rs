@@ -31,19 +31,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use arrayvec::ArrayVec;
 use slotmap::SlotMap;
 
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::StylesheetLoadReport;
 use super::decl_parse::parse_declaration_block;
-use super::decl_store::GRID_TRACK_LIST_CAPACITY;
 use super::{
-    CompiledRule, DeclBlockKey, DeclStore, Declaration, GridTrackListKey, GridTrackSize,
-    NodeLookup, NodeStyleIndex, PrecedenceTuple, PseudoStateCounts, RightMostSelector,
-    SelectorSpecificity, SimpleSelector, StyleRuleKey, StyleRuleOrigin, TextKey, append_rule_keys,
-    compute_rule_identity_hash, extract_right_most_selector, parse_css_blocks, parse_selector,
-    pseudo_state_counts, selector_matches_node, specificity_for_selector_parts,
+    CompiledRule, DeclBlockKey, DeclStore, Declaration, GridAreasKey, GridTemplateAreas,
+    GridTrackList, GridTrackListKey, NodeLookup, NodeStyleIndex, PrecedenceTuple,
+    PseudoStateCounts, RightMostSelector, SelectorSpecificity, SimpleSelector, StyleRuleKey,
+    StyleRuleOrigin, TextKey, append_rule_keys, compute_rule_identity_hash,
+    extract_right_most_selector, parse_css_blocks, parse_selector, pseudo_state_counts,
+    selector_matches_node, specificity_for_selector_parts,
 };
 use crate::types::{DomError, DomNodeSlotKey, DomPseudoState};
 
@@ -324,14 +323,19 @@ impl StyleRuntime {
         self.decl_store.resolve(key)
     }
 
-    /// Resolves a stylesheet-arena track-list key to its retained slice, so the
-    /// winners fold can re-intern it into the inline arena.
+    /// Resolves a stylesheet-arena track-list key to its retained `GridTrackList`,
+    /// so the winners fold can re-intern it into the inline arena.
     #[must_use]
-    pub(crate) fn resolve_track_list(
-        &self,
-        key: GridTrackListKey,
-    ) -> Option<&ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>> {
+    pub(crate) fn resolve_track_list(&self, key: GridTrackListKey) -> Option<&GridTrackList> {
         self.decl_store.resolve_track_list(key)
+    }
+
+    /// Resolves a stylesheet-arena areas-map key to its retained
+    /// `GridTemplateAreas`, so the winners fold can re-intern it into the inline
+    /// arena.
+    #[must_use]
+    pub(crate) fn resolve_grid_areas(&self, key: GridAreasKey) -> Option<&GridTemplateAreas> {
+        self.decl_store.resolve_grid_areas(key)
     }
 
     #[must_use]

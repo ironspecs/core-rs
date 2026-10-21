@@ -31,6 +31,7 @@ use super::display_kw::DisplayKw;
 use super::flex_basis_kw::FlexBasisKw;
 use super::flex_direction_kw::FlexDirectionKw;
 use super::flex_wrap_kw::FlexWrapKw;
+use super::grid_line::GridLine;
 use super::justify_content_kw::JustifyContentKw;
 use super::justify_items_kw::JustifyItemsKw;
 use super::justify_self_kw::JustifySelfKw;
@@ -117,7 +118,7 @@ pub(crate) fn resolve_declaration_into_groups(
         PresentationGroup::Flex => {
             resolve_flex_field(groups, property, value, context.own_font_size_px);
         }
-        PresentationGroup::Grid => resolve_grid_field(groups, property, value),
+        PresentationGroup::Grid => resolve_grid_field(groups, property, value, context),
         PresentationGroup::Visual => {
             resolve_visual_field(groups, property, value, context.own_font_size_px);
         }
@@ -522,13 +523,18 @@ fn resolve_flex_field(
 
 /// The grid group's field resolver: the `TrackList` variant copies the
 /// (already re-interned) inline-arena key straight into the template field; the
-/// `GridAutoFlow` and `TrackSize` variants copy their computed value into the
-/// corresponding field. No further resolution happens at T0 (track sizing is
-/// T1, `GRID_STEP2_DESIGN.md`).
+/// `GridAreas` variant copies the areas key; the `GridAutoFlow` and `TrackSize`
+/// variants copy their computed value into the corresponding field; the
+/// placement `GridLine` and `GridArea` values re-intern their name keys into
+/// the document computed-text interner (the resolver's `text_source` holds the
+/// scratch-relative names the winners fold produced). No further resolution
+/// happens here (track sizing is T1, placement/name resolution is D2/D4 in
+/// `grid.rs`).
 fn resolve_grid_field(
     groups: &mut ComputedGroups,
     property: PresentationProperty,
     value: DeclValue,
+    context: &mut ProjectionContext<'_>,
 ) {
     match property {
         PresentationProperty::GridTemplateColumns => {
@@ -539,6 +545,11 @@ fn resolve_grid_field(
         PresentationProperty::GridTemplateRows => {
             if let DeclValue::TrackList(key) = value {
                 groups.grid.template_rows = key;
+            }
+        }
+        PresentationProperty::GridTemplateAreas => {
+            if let DeclValue::GridAreas(key) = value {
+                groups.grid.template_areas = key;
             }
         }
         PresentationProperty::GridAutoFlow => {
@@ -558,22 +569,29 @@ fn resolve_grid_field(
         }
         PresentationProperty::GridColumnStart => {
             if let DeclValue::GridLine(line) = value {
-                groups.grid.column_start = line;
+                groups.grid.column_start = reintern_grid_line(line, context);
             }
         }
         PresentationProperty::GridColumnEnd => {
             if let DeclValue::GridLine(line) = value {
-                groups.grid.column_end = line;
+                groups.grid.column_end = reintern_grid_line(line, context);
             }
         }
         PresentationProperty::GridRowStart => {
             if let DeclValue::GridLine(line) = value {
-                groups.grid.row_start = line;
+                groups.grid.row_start = reintern_grid_line(line, context);
             }
         }
         PresentationProperty::GridRowEnd => {
             if let DeclValue::GridLine(line) = value {
-                groups.grid.row_end = line;
+                groups.grid.row_end = reintern_grid_line(line, context);
+            }
+        }
+        PresentationProperty::GridArea => {
+            if let DeclValue::Text(key) = value
+                && let Some(text) = context.text_source.resolve(key)
+            {
+                groups.grid.area_name = Some(context.computed_texts.intern(text));
             }
         }
         PresentationProperty::JustifyItems => {
@@ -591,6 +609,24 @@ fn resolve_grid_field(
             }
         }
         _ => {}
+    }
+}
+
+/// Re-interns a `GridLine`'s name keys (`Named`/`NamedSpan`) into the document
+/// computed-text interner, mirroring the font-family path: the winners fold
+/// re-interns names into the scratch interner, and the resolver moves them into
+/// the persistent `computed_texts` interner so placement can resolve them.
+fn reintern_grid_line(line: GridLine, context: &mut ProjectionContext<'_>) -> GridLine {
+    match line {
+        GridLine::Named(key) => match context.text_source.resolve(key) {
+            Some(text) => GridLine::Named(context.computed_texts.intern(text)),
+            None => line,
+        },
+        GridLine::NamedSpan(key, n) => match context.text_source.resolve(key) {
+            Some(text) => GridLine::NamedSpan(context.computed_texts.intern(text), n),
+            None => line,
+        },
+        other => other,
     }
 }
 

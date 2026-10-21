@@ -30,16 +30,19 @@ use super::grid_line::GridLine;
 use super::grid_track_size::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
 use super::justify_items_kw::JustifyItemsKw;
 use super::justify_self_kw::JustifySelfKw;
-use crate::domains::style::decl_value::GridTrackListKey;
+use crate::domains::style::decl_value::{GridAreasKey, GridTrackListKey, TextKey};
 
-/// Computed values of the non-inherited grid longhands (the T1 set plus the T2
-/// placement/alignment longhands).
+/// Computed values of the non-inherited grid longhands (the T1 set, the T2
+/// placement/alignment longhands, and the T3 areas/name fields).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComputedGridGroup {
     /// Interned explicit column track list; `null()` = the empty list.
     pub template_columns: GridTrackListKey,
     /// Interned explicit row track list; `null()` = the empty list.
     pub template_rows: GridTrackListKey,
+    /// Interned template-areas map; `null()` = the empty map (no authored
+    /// areas).
+    pub template_areas: GridAreasKey,
     /// `Row` is the CSS initial (`grid-auto-flow: row`).
     pub auto_flow: GridAutoFlowKw,
     /// `Auto` is the CSS initial (`grid-auto-columns: auto`).
@@ -54,6 +57,10 @@ pub struct ComputedGridGroup {
     pub row_start: GridLine,
     /// `Auto` is the CSS initial (`grid-row-end`).
     pub row_end: GridLine,
+    /// The item's `grid-area: <custom-ident>` name (T3, D2); `None` = no named
+    /// area. Placement-time resolution against the container's areas map and
+    /// named lines is D4, in `grid.rs`.
+    pub area_name: Option<TextKey>,
     /// `Normal` is the CSS initial (`justify-items`, container side).
     pub justify_items: JustifyItemsKw,
     /// `Auto` is the CSS initial (`justify-self`, item side).
@@ -62,14 +69,15 @@ pub struct ComputedGridGroup {
 
 impl ComputedGridGroup {
     /// The no-parent grid seed: every field at its CSS initial. The track-list
-    /// keys are `null()` — the empty-list sentinel, since `initial()` is a
-    /// static seed with no owning store (the T1 solver reads `null()` as "no
-    /// authored tracks").
+    /// and areas-map keys are `null()` — the empty sentinels, since `initial()`
+    /// is a static seed with no owning store (the solver reads `null()` as "no
+    /// authored value").
     #[must_use]
     pub fn initial() -> Self {
         Self {
             template_columns: GridTrackListKey::default(),
             template_rows: GridTrackListKey::default(),
+            template_areas: GridAreasKey::default(),
             auto_flow: GridAutoFlowKw::Row,
             auto_columns: GridTrackSize {
                 min: TrackBreadth::Auto,
@@ -83,6 +91,7 @@ impl ComputedGridGroup {
             column_end: GridLine::initial(),
             row_start: GridLine::initial(),
             row_end: GridLine::initial(),
+            area_name: None,
             justify_items: JustifyItemsKw::initial(),
             justify_self: JustifySelfKw::initial(),
         }
@@ -99,6 +108,7 @@ mod tests {
         let grid = ComputedGridGroup::initial();
         assert_eq!(grid.template_columns, GridTrackListKey::default());
         assert_eq!(grid.template_rows, GridTrackListKey::default());
+        assert_eq!(grid.template_areas, GridAreasKey::default());
         assert_eq!(grid.auto_flow, GridAutoFlowKw::Row);
         assert_eq!(grid.auto_columns.min, TrackBreadth::Auto);
         assert_eq!(grid.auto_columns.max, TrackMaxBreadth::Auto);
@@ -107,6 +117,7 @@ mod tests {
         assert_eq!(grid.column_end, GridLine::Auto);
         assert_eq!(grid.row_start, GridLine::Auto);
         assert_eq!(grid.row_end, GridLine::Auto);
+        assert_eq!(grid.area_name, None);
         assert_eq!(grid.justify_items, JustifyItemsKw::Normal);
         assert_eq!(grid.justify_self, JustifySelfKw::Auto);
     }

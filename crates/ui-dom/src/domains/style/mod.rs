@@ -66,9 +66,8 @@ use crate::types::{RootDom, RootDomContext};
 pub use cascade_tier::CascadeTier;
 pub use decl_block::DeclBlock;
 pub use decl_drop_report::{DeclDropReport, StylesheetLoadReport};
-pub(crate) use decl_store::GRID_TRACK_LIST_CAPACITY;
 pub use decl_store::{DeclBlockKey, DeclStore};
-pub use decl_value::{DeclLength, DeclValue, GridTrackListKey, Precedence, TextKey};
+pub use decl_value::{DeclLength, DeclValue, GridAreasKey, GridTrackListKey, Precedence, TextKey};
 pub use declaration::Declaration;
 pub use keyword::Keyword;
 pub(crate) use parsed_declaration::ParsedDeclaration;
@@ -87,6 +86,7 @@ pub use computed::{
     ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TrackBreadth, TrackMaxBreadth,
     TransitionLonghandProperty,
 };
+pub(crate) use computed::{GRID_TRACK_LIST_CAPACITY, GridTemplateAreas, GridTrackList};
 pub(crate) use decl_parse::{name_is_presentation, parse_declaration_block};
 pub(crate) use decl_value::{decl_value_to_css_string, decl_value_to_dom_value};
 
@@ -636,6 +636,10 @@ fn hash_decl_value(hasher: &mut std::collections::hash_map::DefaultHasher, value
             7u8.hash(hasher);
             key.hash(hasher);
         }
+        DeclValue::GridAreas(key) => {
+            11u8.hash(hasher);
+            key.hash(hasher);
+        }
         DeclValue::TrackSize(size) => {
             8u8.hash(hasher);
             hash_grid_track_size(hasher, *size);
@@ -663,6 +667,15 @@ fn hash_grid_line(hasher: &mut std::collections::hash_map::DefaultHasher, line: 
         }
         GridLine::Span(n) => {
             2u8.hash(hasher);
+            n.hash(hasher);
+        }
+        GridLine::Named(key) => {
+            3u8.hash(hasher);
+            key.0.hash(hasher);
+        }
+        GridLine::NamedSpan(key, n) => {
+            4u8.hash(hasher);
+            key.0.hash(hasher);
             n.hash(hasher);
         }
     }

@@ -52,6 +52,8 @@ mod flex_direction_kw;
 mod flex_wrap_kw;
 mod grid_auto_flow_kw;
 mod grid_line;
+mod grid_template_areas;
+mod grid_track_list;
 mod grid_track_size;
 mod group_dirty_classification;
 mod justify_content_kw;
@@ -83,6 +85,11 @@ pub use flex_direction_kw::FlexDirectionKw;
 pub use flex_wrap_kw::FlexWrapKw;
 pub use grid_auto_flow_kw::GridAutoFlowKw;
 pub use grid_line::GridLine;
+pub(crate) use grid_template_areas::{
+    AreaRect, GRID_AREA_COL_CAPACITY, GRID_AREA_NAME_CAPACITY, GRID_AREA_ROW_CAPACITY,
+    GridTemplateAreas,
+};
+pub(crate) use grid_track_list::{GRID_TRACK_LIST_CAPACITY, GridTrackList};
 pub use grid_track_size::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
 pub use group_dirty_classification::GroupDirtyClassification;
 pub use justify_content_kw::JustifyContentKw;

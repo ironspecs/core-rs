@@ -192,6 +192,7 @@ mod tests {
             column_end: GridLine::Auto,
             row_start: GridLine::Auto,
             row_end: GridLine::Auto,
+            area_name: None,
             justify_self: JustifySelfKw::Auto,
             align_self: None,
             col_span: 1,

@@ -813,6 +813,7 @@ impl DomNode {
             | DeclValue::Text(_)
             | DeclValue::Translate(_)
             | DeclValue::TrackList(_)
+            | DeclValue::GridAreas(_)
             | DeclValue::TrackSize(_)
             | DeclValue::GridAutoFlow(_)
             | DeclValue::GridLine(_) => None,

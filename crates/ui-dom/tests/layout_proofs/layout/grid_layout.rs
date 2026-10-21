@@ -1152,3 +1152,383 @@ fn grid_definite_then_locked_then_auto_order() {
     assert_close(definite_box.left_px, 100.0, "definite item at column 2");
     assert_close(definite_box.top_px, 40.0, "definite item at row 2");
 }
+
+#[test]
+// CSS Grid §7.3: `grid-template-areas` + explicit columns build the page shell
+// (`GRID_STEP4_DESIGN.md` D5 pin `grid_template_areas_page_shell`). The areas
+// define three rows; the items named via `grid-area` fill their rects.
+fn grid_template_areas_page_shell() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"header header\" \"sidebar main\" \"footer footer\"",
+    );
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 1fr");
+    assert_style_set(&mut root, container, "width", "300px");
+    let header = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, header, "grid-area", "header");
+    assert_style_set(&mut root, header, "height", "40px");
+    let sidebar = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, sidebar, "grid-area", "sidebar");
+    assert_style_set(&mut root, sidebar, "height", "40px");
+    let main = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, main, "grid-area", "main");
+    assert_style_set(&mut root, main, "height", "40px");
+    let footer = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, footer, "grid-area", "footer");
+    assert_style_set(&mut root, footer, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // Header spans both columns (300px) at row 0.
+    let header_box = border_box_of(&root, header);
+    assert_close(header_box.left_px, 0.0, "header left");
+    assert_close(header_box.width_px, 300.0, "header spans both columns");
+    assert_close(header_box.top_px, 0.0, "header top");
+    // Sidebar in column 1 (100px), main in column 2 (200px), both row 1.
+    let sidebar_box = border_box_of(&root, sidebar);
+    assert_close(sidebar_box.left_px, 0.0, "sidebar left");
+    assert_close(sidebar_box.width_px, 100.0, "sidebar width");
+    assert_close(sidebar_box.top_px, 40.0, "sidebar top");
+    let main_box = border_box_of(&root, main);
+    assert_close(main_box.left_px, 100.0, "main left");
+    assert_close(main_box.width_px, 200.0, "main width");
+    assert_close(main_box.top_px, 40.0, "main top");
+    // Footer spans both columns at row 2.
+    let footer_box = border_box_of(&root, footer);
+    assert_close(footer_box.left_px, 0.0, "footer left");
+    assert_close(footer_box.width_px, 300.0, "footer spans both columns");
+    assert_close(footer_box.top_px, 80.0, "footer top");
+}
+
+#[test]
+// CSS Grid §7.3.1: a dot-run names an empty cell (`grid_template_areas_empty_dot_cells`).
+fn grid_template_areas_empty_dot_cells() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\". main main\"",
+    );
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "100px 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let main = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, main, "grid-area", "main");
+    assert_style_set(&mut root, main, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // `main` occupies columns 2–3 (the dot-run left column 1 empty).
+    let main_box = border_box_of(&root, main);
+    assert_close(main_box.left_px, 100.0, "main starts at column 2");
+    assert_close(main_box.width_px, 200.0, "main spans columns 2-3");
+}
+
+#[test]
+// CSS Grid §7.4: `grid-area: <name>` fills the area's rect with stretch
+// (`grid_area_name_fills_its_area_rect`).
+fn grid_area_name_fills_its_area_rect() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"header header\"",
+    );
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "width", "200px");
+    let header = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, header, "grid-area", "header");
+    assert_style_set(&mut root, header, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let header_box = border_box_of(&root, header);
+    assert_close(header_box.left_px, 0.0, "header start");
+    assert_close(
+        header_box.width_px,
+        200.0,
+        "header stretches across the rect",
+    );
+    assert_close(header_box.top_px, 0.0, "header top");
+    assert_close(header_box.height_px, 40.0, "header height");
+}
+
+#[test]
+// CSS Grid §7.4: `grid-area: nosuch` (no matching area or line) falls back to
+// auto placement — documented, NOT a drop (`grid_area_unknown_name_becomes_auto`).
+fn grid_area_unknown_name_becomes_auto() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"header header\"",
+    );
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "width", "200px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-area", "nosuch");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        0.0,
+        "unknown name auto-places at column 1",
+    );
+    assert_close(item_box.width_px, 100.0, "unknown name auto width");
+    assert_close(item_box.top_px, 0.0, "unknown name auto row");
+}
+
+#[test]
+// CSS Grid §7.1: explicit `[name]` lines resolve `Named` references
+// (`grid_named_lines_in_track_lists`).
+fn grid_named_lines_in_track_lists() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px [aside] 1fr",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "grid-column", "main");
+    assert_style_set(&mut root, first, "height", "40px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "grid-column", "aside");
+    assert_style_set(&mut root, second, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let first_box = border_box_of(&root, first);
+    assert_close(first_box.left_px, 0.0, "main starts at line 1");
+    assert_close(first_box.width_px, 100.0, "main width");
+    let second_box = border_box_of(&root, second);
+    assert_close(second_box.left_px, 100.0, "aside starts at line 2");
+}
+
+#[test]
+// CSS Grid §7.3.1: the area-implied `<name>-end` line resolves
+// (`grid_area_implied_start_end_lines`).
+fn grid_area_implied_start_end_lines() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"header header\" \"footer footer\"",
+    );
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "width", "200px");
+    let header = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, header, "grid-area", "header");
+    assert_style_set(&mut root, header, "height", "40px");
+    let after = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, after, "grid-row-start", "header-end");
+    assert_style_set(&mut root, after, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let after_box = border_box_of(&root, after);
+    assert_close(
+        after_box.top_px,
+        40.0,
+        "header-end starts after the header area",
+    );
+}
+
+#[test]
+// CSS Grid §7.1: multiple same-name lines make `Named`/`NamedSpan` span the
+// count (`grid_multiple_same_name_lines_span_count`).
+fn grid_multiple_same_name_lines_span_count() {
+    // `grid-column: main` with two `main` lines spans 2.
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px [main] 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let bare = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, bare, "grid-column", "main");
+    assert_style_set(&mut root, bare, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, bare).width_px,
+        200.0,
+        "bare name spans 2",
+    );
+
+    // `grid-column: span main` spans 2.
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px [main] 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let span = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, span, "grid-column", "span main");
+    assert_style_set(&mut root, span, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, span).width_px,
+        200.0,
+        "span main spans 2",
+    );
+
+    // `grid-column: span main 3` spans 3 from the first match.
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px [main] 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let span_n = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, span_n, "grid-column", "span main 3");
+    assert_style_set(&mut root, span_n, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, span_n).width_px,
+        300.0,
+        "span main 3 spans 3",
+    );
+}
+
+#[test]
+// CSS Grid §7.1: `grid-column: nosuch` (no matching line) falls back to auto
+// (`grid_named_line_unknown_becomes_auto`).
+fn grid_named_line_unknown_becomes_auto() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "width", "200px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "nosuch");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        0.0,
+        "unknown line auto-places at column 1",
+    );
+    assert_close(item_box.width_px, 100.0, "unknown line auto width");
+}
+
+#[test]
+// CSS Grid §7.3: areas naming a subset of a larger explicit template — the
+// remaining tracks size and place normally (`grid_areas_and_explicit_template_tracks`).
+fn grid_areas_and_explicit_template_tracks() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-areas", "\"a a\"");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "100px 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let area_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, area_item, "grid-area", "a");
+    assert_style_set(&mut root, area_item, "height", "40px");
+    let auto_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, auto_item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let area_box = border_box_of(&root, area_item);
+    assert_close(area_box.width_px, 200.0, "area spans its two columns");
+    let auto_box = border_box_of(&root, auto_item);
+    assert_close(
+        auto_box.left_px,
+        200.0,
+        "auto item places in the third column",
+    );
+    assert_close(auto_box.width_px, 100.0, "auto item width");
+}
+
+#[test]
+// CSS Grid §8.4: an abs-pos child with `grid-area: <name>` resolves its static
+// position to the area rect (`grid_areas_definite_items_abs_pos_area_rect`).
+fn grid_areas_definite_items_abs_pos_area_rect() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"a a\" \"b b\"",
+    );
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "grid-template-rows", "40px 40px");
+    let abs = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, abs, "position", "absolute");
+    assert_style_set(&mut root, abs, "grid-area", "b");
+    assert_style_set(&mut root, abs, "width", "20px");
+    assert_style_set(&mut root, abs, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let abs_box = border_box_of(&root, abs);
+    assert_close(abs_box.left_px, 0.0, "abs static left (area b rect)");
+    assert_close(abs_box.top_px, 40.0, "abs static top (area b rect)");
+}
+
+#[test]
+// CSS Grid §7: the canonical style snapshot round-trips areas, named lines, and
+// `Named`/`NamedSpan` longhands (`grid_area_wire_round_trip`).
+fn grid_area_wire_round_trip() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"a a\" \"b b\"",
+    );
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px 100px",
+    );
+    assert_style_set(&mut root, container, "grid-column-start", "main");
+    assert_style_set(&mut root, container, "grid-column-end", "span main 2");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let snapshot = root.canonical_style_snapshot(container);
+    let replayed = snapshot
+        .styles
+        .iter()
+        .map(|(name, value)| {
+            let ui_dom::DomAttributeValue::String(text) = value else {
+                panic!("grid styles serialize to string values only");
+            };
+            format!("{name}: {text}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert_set_attr_str(&mut root, container, "style", &replayed);
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(root.canonical_style_snapshot(container), snapshot);
+}

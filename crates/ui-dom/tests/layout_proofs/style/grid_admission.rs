@@ -145,8 +145,19 @@ fn grid_track_list_over_capacity_drops() {
 }
 
 #[test]
-fn grid_line_name_tokens_drop_for_now() {
-    assert_decl_drop(".x { grid-template-columns: [main] 1fr [aside] }", 0, 1);
+fn grid_line_name_tokens_admit_and_round_trip_brackets() {
+    // The T3 gate inversion: `[name]` line-name brackets are ADMITTED and
+    // re-serialize with their brackets (the wire round-trip).
+    assert_grid_wire_value(
+        "grid-template-columns",
+        "[main] 100px [aside] 1fr",
+        "[main] 100px [aside] 1fr",
+    );
+    assert_grid_wire_value(
+        "grid-template-rows",
+        "[header] 40px [footer]",
+        "[header] 40px [footer]",
+    );
 }
 
 #[test]
@@ -403,9 +414,125 @@ fn grid_line_zero_drops() {
 }
 
 #[test]
-fn grid_named_lines_still_drop() {
-    // Named lines are the T3 gate (unchanged): `<custom-ident>` with or without
-    // `span` drops + counts.
-    assert_decl_drop(".x { grid-column-start: main }", 0, 1);
-    assert_decl_drop(".x { grid-column-start: span main }", 0, 1);
+fn grid_named_lines_admitted() {
+    // The T3 gate inversion: `<custom-ident>` and `span <custom-ident>`
+    // `<grid-line>` forms are ADMITTED (named lines).
+    for (property, value, expected) in [
+        ("grid-column-start", "main", "main"),
+        ("grid-column-start", "span main", "span main"),
+        ("grid-column-start", "span main 3", "span main 3"),
+        ("grid-row-start", "header-end", "header-end"),
+    ] {
+        assert_grid_wire_value(property, value, expected);
+    }
+}
+
+#[test]
+fn grid_template_areas_parse_and_round_trip() {
+    assert_grid_wire_value(
+        "grid-template-areas",
+        "\"header header\" \"sidebar main\" \"footer footer\"",
+        "\"header header\" \"sidebar main\" \"footer footer\"",
+    );
+    assert_grid_wire_value("grid-template-areas", "\". main main\"", "\". main main\"");
+}
+
+#[test]
+fn grid_template_areas_non_rectangular_name_drops() {
+    // `a` does not tile a rectangle (cells at (0,0),(0,1),(1,0)) → the WHOLE
+    // declaration drops + counts, the group stays initial.
+    assert_decl_drop(".x { grid-template-areas: \"a a\" \"a b\" }", 0, 1);
+}
+
+#[test]
+fn grid_template_areas_non_uniform_columns_drops() {
+    assert_decl_drop(".x { grid-template-areas: \"a a\" \"b\" }", 0, 1);
+}
+
+#[test]
+fn grid_template_areas_capacity_gates_drop() {
+    // > 8 rows.
+    let nine_rows = (0..9).map(|_| "\"a a\"").collect::<Vec<_>>().join(" ");
+    assert_decl_drop(&format!(".x {{ grid-template-areas: {nine_rows} }}"), 0, 1);
+    // > 12 columns.
+    let thirteen_cols = (0..13).map(|_| "a").collect::<Vec<_>>().join(" ");
+    assert_decl_drop(
+        &format!(".x {{ grid-template-areas: \"{thirteen_cols}\" }}"),
+        0,
+        1,
+    );
+    // > 12 distinct names (13 distinct names in one row).
+    let thirteen_names = (0..13)
+        .map(|i| format!("a{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_decl_drop(
+        &format!(".x {{ grid-template-areas: \"{thirteen_names}\" }}"),
+        0,
+        1,
+    );
+}
+
+#[test]
+fn grid_area_expands_per_d2() {
+    // A lone <custom-ident> writes the area-name longhand.
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "grid-area", "header");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let map = root.compute_style_map(target).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridArea),
+        Some(&DomAttributeValue::String("header".to_string())),
+        "grid-area: header writes the area name",
+    );
+
+    // 1–4 <grid-line> values write the four placement longhands per D2.
+    for (value, row_start, column_start, row_end, column_end) in [
+        ("2", "2", "auto", "auto", "auto"),
+        ("2 / 3", "2", "3", "auto", "auto"),
+        ("2 / 3 / 4", "2", "3", "4", "auto"),
+        ("2 / 3 / 4 / 5", "2", "3", "4", "5"),
+        ("span 2", "span 2", "auto", "auto", "auto"),
+    ] {
+        let (mut world, mut root, target) = attached_target();
+        assert_style_set(&mut root, target, "grid-area", value);
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        let map = root.compute_style_map(target).expect("style map");
+        for (property_name, expected) in [
+            ("grid-row-start", row_start),
+            ("grid-column-start", column_start),
+            ("grid-row-end", row_end),
+            ("grid-column-end", column_end),
+        ] {
+            let property = PresentationProperty::from_name(property_name).expect("longhand");
+            assert_eq!(
+                map.get(&property),
+                Some(&DomAttributeValue::String(expected.to_string())),
+                "grid-area: {value} → {property_name}",
+            );
+        }
+    }
+}
+
+#[test]
+fn grid_line_name_capacity_gates_drop() {
+    // A name labeling more than four lines drops + counts.
+    assert_decl_drop(
+        ".x { grid-template-columns: [m] 1fr [m] 1fr [m] 1fr [m] 1fr [m] 1fr }",
+        0,
+        1,
+    );
+    // More than eight name registrations drops + counts.
+    assert_decl_drop(
+        ".x { grid-template-columns: [a] 1fr [b] 1fr [c] 1fr [d] 1fr [e] 1fr [f] 1fr [g] 1fr [h] 1fr [i] 1fr }",
+        0,
+        1,
+    );
+}
+
+#[test]
+fn grid_template_and_grid_shorthands_still_drop() {
+    // The T4 shorthands stay gated (unchanged).
+    assert_decl_drop(".x { grid-template: \"a b\" 1fr / 1fr 1fr }", 0, 1);
+    assert_decl_drop(".x { grid: \"a b\" 1fr / 1fr 1fr }", 0, 1);
 }

@@ -58,11 +58,15 @@
 use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
-use super::computed::{GridAutoFlowKw, GridLine, GridTrackSize, TrackBreadth, TrackMaxBreadth};
+use super::computed::{
+    AreaRect, GRID_AREA_COL_CAPACITY, GRID_AREA_NAME_CAPACITY, GRID_AREA_ROW_CAPACITY,
+    GridAutoFlowKw, GridLine, GridTemplateAreas, GridTrackList, GridTrackSize, TrackBreadth,
+    TrackMaxBreadth,
+};
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::DeclDropReport;
-use super::decl_store::{DeclStore, GRID_TRACK_LIST_CAPACITY};
-use super::decl_value::{DeclLength, DeclValue, GridTrackListKey};
+use super::decl_store::DeclStore;
+use super::decl_value::{DeclLength, DeclValue, GridAreasKey, GridTrackListKey, TextKey};
 use super::declaration::Declaration;
 use super::keyword::Keyword;
 use super::parsed_declaration::ParsedDeclaration;
@@ -204,6 +208,7 @@ enum Shorthand {
     PlaceSelf,
     GridColumn,
     GridRow,
+    GridArea,
     Transition,
     BorderSide(BorderSide),
     Margin,
@@ -221,11 +226,21 @@ enum BorderSide {
 
 /// Resolves a property name to a longhand or a shorthand. Unknown names yield
 /// `None` (the caller drops or errors them).
+///
+/// Shorthand names resolve BEFORE longhand names: `grid-area` is a shorthand
+/// that expands to the `GridArea` area-name longhand (whose canonical name
+/// shares the shorthand's) or to the four placement longhands, so the shorthand
+/// must win the name lookup.
 fn property_shape(name: &str) -> Option<PropertyShape> {
-    if let Some(property) = PresentationProperty::from_name(name) {
-        return Some(PropertyShape::Longhand(property));
+    if let Some(shorthand) = shorthand_for_name(name) {
+        return Some(PropertyShape::Shorthand(shorthand));
     }
-    let shorthand = match name {
+    PresentationProperty::from_name(name).map(PropertyShape::Longhand)
+}
+
+/// The closed shorthand name table (`property_shape`'s first dispatch).
+fn shorthand_for_name(name: &str) -> Option<Shorthand> {
+    Some(match name {
         "border-radius" => Shorthand::BorderRadius,
         "border-color" => Shorthand::BorderColor,
         "gap" => Shorthand::Gap,
@@ -236,6 +251,7 @@ fn property_shape(name: &str) -> Option<PropertyShape> {
         "place-self" => Shorthand::PlaceSelf,
         "grid-column" => Shorthand::GridColumn,
         "grid-row" => Shorthand::GridRow,
+        "grid-area" => Shorthand::GridArea,
         "transition" => Shorthand::Transition,
         "border-top" => Shorthand::BorderSide(BorderSide::Top),
         "border-right" => Shorthand::BorderSide(BorderSide::Right),
@@ -244,8 +260,7 @@ fn property_shape(name: &str) -> Option<PropertyShape> {
         "margin" => Shorthand::Margin,
         "padding" => Shorthand::Padding,
         _ => return None,
-    };
-    Some(PropertyShape::Shorthand(shorthand))
+    })
 }
 
 /// Resolves a property name to the longhand set it writes (a longhand maps
@@ -253,7 +268,7 @@ fn property_shape(name: &str) -> Option<PropertyShape> {
 ///
 /// This is the `remove`-contract mirror of `expand_shape`: it names the
 /// longhands a write touches without parsing a value.
-pub(crate) fn longhands_for_name(name: &str) -> Option<SmallVec<[PresentationProperty; 4]>> {
+pub(crate) fn longhands_for_name(name: &str) -> Option<SmallVec<[PresentationProperty; 5]>> {
     let shape = property_shape(name)?;
     Some(match shape {
         PropertyShape::Longhand(property) => SmallVec::from_slice(&[property]),
@@ -261,8 +276,8 @@ pub(crate) fn longhands_for_name(name: &str) -> Option<SmallVec<[PresentationPro
     })
 }
 
-/// True when `name` is a presentation-property write: one of the 69 longhand
-/// names or one of the 15 shorthand names (the `longhands_for_name` admission
+/// True when `name` is a presentation-property write: one of the 71 longhand
+/// names or one of the 16 shorthand names (the `longhands_for_name` admission
 /// surface). The D5 enforcement gate (`set_attr_str`) consults this BEFORE
 /// `DomAttribute::try_from`, so a presentation name never reaches the content
 /// vocabulary's `Custom` fallthrough; `set_attr` applies the same check to
@@ -273,7 +288,7 @@ pub(crate) fn name_is_presentation(name: &str) -> bool {
 
 /// The longhand set a shorthand expands to, in expansion order. Names only;
 /// the value grammar is `expand_shorthand`'s concern.
-fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProperty; 4]> {
+fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProperty; 5]> {
     let longhands: &[PresentationProperty] = match shorthand {
         Shorthand::BorderRadius => &[
             PresentationProperty::BorderTopLeftRadius,
@@ -319,6 +334,13 @@ fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProper
         Shorthand::GridRow => &[
             PresentationProperty::GridRowStart,
             PresentationProperty::GridRowEnd,
+        ],
+        Shorthand::GridArea => &[
+            PresentationProperty::GridArea,
+            PresentationProperty::GridRowStart,
+            PresentationProperty::GridColumnStart,
+            PresentationProperty::GridRowEnd,
+            PresentationProperty::GridColumnEnd,
         ],
         Shorthand::Transition => &[
             PresentationProperty::TransitionProperty,
@@ -415,8 +437,9 @@ fn expand_shorthand(
         Shorthand::PlaceContent => expand_place_content(value),
         Shorthand::PlaceItems => expand_place_items(value),
         Shorthand::PlaceSelf => expand_place_self(value),
-        Shorthand::GridColumn => expand_grid_column(value),
-        Shorthand::GridRow => expand_grid_row(value),
+        Shorthand::GridColumn => expand_grid_column(value, store),
+        Shorthand::GridRow => expand_grid_row(value, store),
+        Shorthand::GridArea => expand_grid_area(value, store),
         Shorthand::Transition => expand_transition(value, store),
         Shorthand::BorderSide(side) => expand_border_side(side, value),
         Shorthand::Margin => expand_margin(value),
@@ -450,9 +473,10 @@ fn parse_value(grammar: DeclGrammar, value: &str, store: &mut DeclStore) -> Opti
         DeclGrammar::Text => parse_text(value, store),
         DeclGrammar::Keywords(set) => Keyword::from_name_in(set, value).map(DeclValue::Keyword),
         DeclGrammar::TrackList => parse_track_list(value, store).map(DeclValue::TrackList),
+        DeclGrammar::GridAreas => parse_grid_areas(value, store).map(DeclValue::GridAreas),
         DeclGrammar::GridAutoFlow => parse_grid_auto_flow(value).map(DeclValue::GridAutoFlow),
         DeclGrammar::TrackSize => parse_track_size(value).map(DeclValue::TrackSize),
-        DeclGrammar::GridLine => parse_grid_line(value).map(DeclValue::GridLine),
+        DeclGrammar::GridLine => parse_grid_line(value, store).map(DeclValue::GridLine),
         DeclGrammar::TransitionPropertyList => parse_transition_property_list(value, store),
         DeclGrammar::TransitionTimeList => parse_transition_time_list(value, store),
         DeclGrammar::TransitionSignedTimeList => parse_transition_signed_time_list(value, store),
@@ -641,27 +665,31 @@ fn parse_flex_basis_length(value: &str) -> Option<DeclLength> {
 // — Grid family — //
 
 /// Parses a grid track list (`grid-template-columns`/`rows`): space-separated
-/// `<track-size>` tokens with `repeat(<positive-integer>, <track-list>)`
-/// expanded at parse. The result interns value-deduped into the owning store's
-/// arena. Gates (each a counted drop, never a crash): a `[` line-name token
-/// (T3), `repeat(auto-fill|auto-fit, ...)` (T3.5), a nested `repeat()`, a
-/// non-positive/non-integer repeat count, and an expanded count over
-/// `GRID_TRACK_LIST_CAPACITY`.
+/// `<track-size>` tokens with `[name]` line-name brackets and
+/// `repeat(<positive-integer>, <track-list>)` expanded at parse. The result
+/// interns value-deduped into the owning store's arena. Gates (each a counted
+/// drop, never a crash): a name over `GRID_LINE_NAME_CAPACITY` registrations,
+/// a name over `GRID_LINE_NAME_PER_NAME_CAPACITY` lines, `repeat(auto-fill|
+/// auto-fit, ...)` (T3.5), a nested `repeat()`, a non-positive/non-integer
+/// repeat count, and an expanded count over `GRID_TRACK_LIST_CAPACITY`.
 fn parse_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
-    let mut tracks = ArrayVec::<GridTrackSize, GRID_TRACK_LIST_CAPACITY>::new();
-    expand_track_list_tokens(value, &mut tracks)?;
-    Some(store.intern_track_list(tracks.as_slice()))
+    let mut list = GridTrackList::default();
+    expand_track_list_tokens(value, store, &mut list)?;
+    Some(store.intern_track_list(&list))
 }
 
 /// Expands one space-separated track-list token slice into `out`, failing the
-/// whole list on any gate (the `?`-propagated `None`).
+/// whole list on any gate (the `?`-propagated `None`). `[name1 name2]` bracket
+/// groups register their names against the line at the current `tracks.len()`.
 fn expand_track_list_tokens(
     value: &str,
-    out: &mut ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>,
+    store: &mut DeclStore,
+    out: &mut GridTrackList,
 ) -> Option<()> {
     for token in split_ws_paren_aware(value) {
         if token.starts_with('[') {
-            return None; // line-name token — named lines are T3, never silent
+            register_line_names(token, store, out)?;
+            continue;
         }
         if let Some(inner) = strip_repeat(token) {
             let (count, list) = split_repeat_inner(inner)?;
@@ -671,16 +699,62 @@ fn expand_track_list_tokens(
             for _ in 0..count {
                 for inner_token in split_ws_paren_aware(list) {
                     if inner_token.starts_with('[') {
-                        return None;
+                        register_line_names(inner_token, store, out)?;
+                    } else {
+                        out.tracks.try_push(parse_track_size(inner_token)?).ok()?;
                     }
-                    out.try_push(parse_track_size(inner_token)?).ok()?;
                 }
             }
         } else {
-            out.try_push(parse_track_size(token)?).ok()?;
+            out.tracks.try_push(parse_track_size(token)?).ok()?;
         }
     }
     Some(())
+}
+
+/// Registers one `[name1 name2]` bracket group's names against the line at the
+/// current `tracks.len()` (the line BEFORE the following track; a trailing
+/// bracket names the final line). Fails the whole list on any capacity or
+/// per-name-count gate.
+fn register_line_names(
+    bracket: &str,
+    store: &mut DeclStore,
+    out: &mut GridTrackList,
+) -> Option<()> {
+    let inner = bracket.strip_prefix('[')?.strip_suffix(']')?;
+    if inner.trim().is_empty() {
+        return None;
+    }
+    let line_index = u8::try_from(out.tracks.len()).ok()?;
+    for name in inner.split_whitespace() {
+        if !is_custom_ident(name) {
+            return None;
+        }
+        let key = store.intern(name);
+        if !out.register_line_name(key, line_index) {
+            return None;
+        }
+    }
+    Some(())
+}
+
+/// True when `value` is a valid grid `<custom-ident>`: a non-empty identifier
+/// whose first character is alphabetic (or `-`/`_`) and whose remainder is
+/// alphanumeric/`-`/`_`, and NOT a signed integer (`-1` is a line, never a
+/// name). The `span`/`auto` keywords are handled by the callers before this
+/// check.
+fn is_custom_ident(value: &str) -> bool {
+    if value.parse::<i64>().is_ok() {
+        return false;
+    }
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '-') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 /// Strips a `repeat(...)` call, returning the inner `count, <track-list>` text.
@@ -862,21 +936,47 @@ fn parse_grid_auto_flow(value: &str) -> Option<GridAutoFlowKw> {
     })
 }
 
-/// Parses one `<grid-line>`: `auto | <nonzero-integer> | span <positive-integer>`
-/// (CSS Grid §7.1; `GRID_STEP3_DESIGN.md` D1). Gates (each a counted drop, never
-/// a crash): the integer line `0` (zero is not a line), `span 0`/`span -1` (a
-/// span is positive), bare `span` (no integer), and any `<custom-ident>` named
-/// line with or without `span` (the T3 gate, unchanged from T1's line-name
-/// gate). Negatives are admitted for `<integer>` and translated at placement
-/// (D2).
-fn parse_grid_line(value: &str) -> Option<GridLine> {
+/// Parses one `<grid-line>`: `auto | <nonzero-integer> | span <positive-integer>
+/// | <custom-ident> | span <custom-ident> [integer]` (CSS Grid §7.1;
+/// `GRID_STEP3_DESIGN.md` D1 + `GRID_STEP4_DESIGN.md` D2). Gates (each a counted
+/// drop, never a crash): the integer line `0` (zero is not a line), `span 0`/
+/// `span -1` (a span is positive), bare `span` (no integer/name), and any
+/// invalid `<custom-ident>` or multi-token form. Negatives are admitted for
+/// `<integer>` and translated at placement (D2). Names intern through `store`.
+fn parse_grid_line(value: &str, store: &mut DeclStore) -> Option<GridLine> {
     let tokens = split_ws_paren_aware(value);
     match tokens.as_slice() {
         ["auto"] => Some(GridLine::Auto),
-        ["span"] => None, // bare `span` (no integer) drops + counts
-        ["span", n] => parse_positive_line_integer(n).map(GridLine::Span),
-        [n] => parse_nonzero_line_integer(n).map(GridLine::Line),
-        _ => None, // named lines and multi-token forms drop + count (T3 gate)
+        ["span"] => None, // bare `span` (no integer/name) drops + counts
+        ["span", n] => {
+            if let Some(count) = parse_positive_line_integer(n) {
+                Some(GridLine::Span(count))
+            } else if is_custom_ident(n) {
+                Some(GridLine::NamedSpan(store.intern(n), 0))
+            } else {
+                None
+            }
+        }
+        ["span", name, n] => {
+            if is_custom_ident(name) && parse_positive_line_integer(n).is_some() {
+                Some(GridLine::NamedSpan(
+                    store.intern(name),
+                    parse_positive_line_integer(n)?,
+                ))
+            } else {
+                None
+            }
+        }
+        [n] => {
+            if let Some(line) = parse_nonzero_line_integer(n) {
+                Some(GridLine::Line(line))
+            } else if is_custom_ident(n) {
+                Some(GridLine::Named(store.intern(n)))
+            } else {
+                None
+            }
+        }
+        _ => None, // multi-token forms drop + count
     }
 }
 
@@ -895,6 +995,129 @@ fn parse_positive_line_integer(value: &str) -> Option<u32> {
         return None;
     }
     u32::try_from(parsed).ok()
+}
+
+// — Grid areas family — //
+
+/// Parses `grid-template-areas: <string>+` into a validated, interned
+/// `GridTemplateAreas` map (`GRID_STEP4_DESIGN.md` D1). Gates (each a counted
+/// drop, never a crash): > 8 rows, > 12 columns, > 12 distinct names, a
+/// non-uniform column count, a non-rectangular name, and any malformed cell
+/// token.
+fn parse_grid_areas(value: &str, store: &mut DeclStore) -> Option<GridAreasKey> {
+    let rows = split_grid_area_rows(value)?;
+    if rows.is_empty() || rows.len() > GRID_AREA_ROW_CAPACITY {
+        return None;
+    }
+
+    let mut cells: ArrayVec<
+        ArrayVec<Option<TextKey>, GRID_AREA_COL_CAPACITY>,
+        GRID_AREA_ROW_CAPACITY,
+    > = ArrayVec::new();
+    let mut col_count: Option<usize> = None;
+    for row in &rows {
+        let row_cells = parse_area_row(row, store)?;
+        match col_count {
+            None => col_count = Some(row_cells.len()),
+            Some(count) if count != row_cells.len() => return None, // non-uniform columns
+            Some(_) => {}
+        }
+        cells.push(row_cells);
+    }
+    let col_count = col_count.unwrap_or(0);
+
+    // Deduped name → bounding rect, in first-appearance order.
+    let mut names: ArrayVec<(TextKey, AreaRect), GRID_AREA_NAME_CAPACITY> = ArrayVec::new();
+    for (row_idx, row_cells) in cells.iter().enumerate() {
+        for (col_idx, cell) in row_cells.iter().enumerate() {
+            let Some(name_key) = cell else {
+                continue;
+            };
+            let row = u8::try_from(row_idx).expect("area row index fits u8");
+            let col = u8::try_from(col_idx).expect("area column index fits u8");
+            if let Some((_, rect)) = names.iter_mut().find(|(key, _)| key == name_key) {
+                rect.min_row = rect.min_row.min(row);
+                rect.min_col = rect.min_col.min(col);
+                rect.max_row = rect.max_row.max(row);
+                rect.max_col = rect.max_col.max(col);
+            } else {
+                if names.len() >= GRID_AREA_NAME_CAPACITY {
+                    return None; // > 12 distinct names
+                }
+                names.push((
+                    *name_key,
+                    AreaRect {
+                        min_row: row,
+                        min_col: col,
+                        max_row: row,
+                        max_col: col,
+                    },
+                ));
+            }
+        }
+    }
+
+    // Rectangularity: each name's cell count must equal its bounding-rect area
+    // (a name that does not tile a rectangle has fewer cells than its rect).
+    for (name_key, rect) in &names {
+        let area = usize::from(rect.max_row - rect.min_row + 1)
+            * usize::from(rect.max_col - rect.min_col + 1);
+        let mut count = 0usize;
+        for row_cells in &cells {
+            for cell in row_cells {
+                if cell == &Some(*name_key) {
+                    count += 1;
+                }
+            }
+        }
+        if count != area {
+            return None;
+        }
+    }
+
+    Some(store.intern_grid_areas(&GridTemplateAreas {
+        cells,
+        names,
+        row_count: u8::try_from(rows.len()).ok()?,
+        col_count: u8::try_from(col_count).ok()?,
+    }))
+}
+
+/// Splits a `<string>+` value into its unquoted row strings. Each row must be a
+/// single `"…"` token (quotes stripped); anything else fails.
+fn split_grid_area_rows(value: &str) -> Option<Vec<&str>> {
+    let mut rows = Vec::new();
+    let mut cursor = value.trim();
+    while !cursor.is_empty() {
+        let rest = cursor.strip_prefix('"')?;
+        let end = rest.find('"')?;
+        rows.push(&rest[..end]);
+        cursor = rest[end + 1..].trim_start();
+    }
+    Some(rows)
+}
+
+/// Parses one areas row string into its cell tokens: a dot-run → `None` (empty
+/// cell), a `<custom-ident>` → `Some(interned name)`. Over `GRID_AREA_COL_CAPACITY`
+/// cells or any malformed token fails the whole declaration.
+fn parse_area_row(
+    row: &str,
+    store: &mut DeclStore,
+) -> Option<ArrayVec<Option<TextKey>, GRID_AREA_COL_CAPACITY>> {
+    let mut cells = ArrayVec::<Option<TextKey>, GRID_AREA_COL_CAPACITY>::new();
+    for token in row.split_whitespace() {
+        if cells.len() >= GRID_AREA_COL_CAPACITY {
+            return None;
+        }
+        if token.bytes().all(|byte| byte == b'.') {
+            cells.push(None);
+        } else if is_custom_ident(token) {
+            cells.push(Some(store.intern(token)));
+        } else {
+            return None;
+        }
+    }
+    Some(cells)
 }
 
 // — Text/transform family — //
@@ -1053,15 +1276,16 @@ fn keyword_set(property: PresentationProperty) -> &'static [Keyword] {
     }
 }
 
-/// Splits on whitespace only at paren depth 0, so `rgb(255, 0, 0)` stays one
-/// token even when it contains spaces.
+/// Splits on whitespace only at paren/bracket depth 0, so `rgb(255, 0, 0)`
+/// stays one token even when it contains spaces, and a `[name1 name2]` line-name
+/// bracket stays one token.
 fn split_ws_paren_aware(value: &str) -> Vec<&str> {
     let mut tokens = Vec::new();
     let mut depth = 0usize;
     let mut token_start = 0usize;
     let mut in_token = false;
     for (index, ch) in value.char_indices() {
-        if ch == '(' {
+        if ch == '(' || ch == '[' {
             depth = depth.saturating_add(1);
             if !in_token {
                 token_start = index;
@@ -1069,7 +1293,7 @@ fn split_ws_paren_aware(value: &str) -> Vec<&str> {
             }
             continue;
         }
-        if ch == ')' {
+        if ch == ')' || ch == ']' {
             depth = depth.saturating_sub(1);
             if !in_token {
                 token_start = index;
@@ -1406,13 +1630,14 @@ fn expand_place_self(value: &str) -> Option<Vec<Declaration>> {
     ])
 }
 
-/// Expands the `grid-column`/`grid-row` shorthand per D1: a lone `span N`
-/// writes `Auto`/`Span(N)`; a lone other value writes value/`Auto`; two values
-/// write start/end in order.
+/// Expands the `grid-column`/`grid-row` shorthand per D1: a lone `span N` (or
+/// `span <name> [n]`) writes `Auto`/the span; a lone other value writes
+/// value/`Auto`; two values write start/end in order.
 fn expand_grid_placement_shorthand(
     value: &str,
     start_property: PresentationProperty,
     end_property: PresentationProperty,
+    store: &mut DeclStore,
 ) -> Option<Vec<Declaration>> {
     let mut parts = value.split('/');
     let start_text = parts.next()?.trim();
@@ -1420,13 +1645,14 @@ fn expand_grid_placement_shorthand(
     if parts.next().is_some() {
         return None; // more than one '/'
     }
-    let start = parse_grid_line(start_text)?;
+    let start = parse_grid_line(start_text, store)?;
     let (start_line, end_line) = match end_text {
         None => match start {
             GridLine::Span(n) => (GridLine::Auto, GridLine::Span(n)),
+            GridLine::NamedSpan(name, n) => (GridLine::Auto, GridLine::NamedSpan(name, n)),
             other => (other, GridLine::Auto),
         },
-        Some(end) => (start, parse_grid_line(end)?),
+        Some(end) => (start, parse_grid_line(end, store)?),
     };
     Some(vec![
         declaration(start_property, DeclValue::GridLine(start_line)),
@@ -1434,20 +1660,78 @@ fn expand_grid_placement_shorthand(
     ])
 }
 
-fn expand_grid_column(value: &str) -> Option<Vec<Declaration>> {
+fn expand_grid_column(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
     expand_grid_placement_shorthand(
         value,
         PresentationProperty::GridColumnStart,
         PresentationProperty::GridColumnEnd,
+        store,
     )
 }
 
-fn expand_grid_row(value: &str) -> Option<Vec<Declaration>> {
+fn expand_grid_row(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
     expand_grid_placement_shorthand(
         value,
         PresentationProperty::GridRowStart,
         PresentationProperty::GridRowEnd,
+        store,
     )
+}
+
+/// Expands the `grid-area` shorthand per D2: a lone `<custom-ident>` writes the
+/// `GridArea` longhand (the item's `area_name`); 1–4 `<grid-line>` values write
+/// the four placement longhands with the standard defaulting table
+/// (`row-start`, `column-start`, `row-end`, `column-end`).
+fn expand_grid_area(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
+    // A lone <custom-ident> is the area name (not a named line).
+    let tokens = split_ws_paren_aware(value);
+    if let [single] = tokens.as_slice()
+        && !single.contains('/')
+        && is_custom_ident(single)
+        && *single != "span"
+    {
+        return Some(vec![declaration(
+            PresentationProperty::GridArea,
+            DeclValue::Text(store.intern(single)),
+        )]);
+    }
+
+    let mut parts = value.split('/');
+    let first = parts.next()?.trim();
+    let mut lines = ArrayVec::<GridLine, 4>::new();
+    lines.push(parse_grid_line(first, store)?);
+    for part in parts {
+        if lines.len() >= 4 {
+            return None; // more than four <grid-line> values
+        }
+        lines.push(parse_grid_line(part.trim(), store)?);
+    }
+    let auto = GridLine::Auto;
+    let (row_start, column_start, row_end, column_end) = match lines.as_slice() {
+        [a] => (*a, auto, auto, auto),
+        [a, b] => (*a, *b, auto, auto),
+        [a, b, c] => (*a, *b, *c, auto),
+        [a, b, c, d] => (*a, *b, *c, *d),
+        _ => return None,
+    };
+    Some(vec![
+        declaration(
+            PresentationProperty::GridRowStart,
+            DeclValue::GridLine(row_start),
+        ),
+        declaration(
+            PresentationProperty::GridColumnStart,
+            DeclValue::GridLine(column_start),
+        ),
+        declaration(
+            PresentationProperty::GridRowEnd,
+            DeclValue::GridLine(row_end),
+        ),
+        declaration(
+            PresentationProperty::GridColumnEnd,
+            DeclValue::GridLine(column_end),
+        ),
+    ])
 }
 
 fn expand_transition(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
@@ -2983,21 +3267,43 @@ mod tests {
 
     #[test]
     fn grid_line_parses_auto_integer_span() {
-        assert_eq!(parse_grid_line("auto"), Some(GridLine::Auto));
-        assert_eq!(parse_grid_line("2"), Some(GridLine::Line(2)));
-        assert_eq!(parse_grid_line("-3"), Some(GridLine::Line(-3)));
-        assert_eq!(parse_grid_line("span 2"), Some(GridLine::Span(2)));
+        let mut store = DeclStore::default();
+        assert_eq!(parse_grid_line("auto", &mut store), Some(GridLine::Auto));
+        assert_eq!(parse_grid_line("2", &mut store), Some(GridLine::Line(2)));
+        assert_eq!(parse_grid_line("-3", &mut store), Some(GridLine::Line(-3)));
+        assert_eq!(
+            parse_grid_line("span 2", &mut store),
+            Some(GridLine::Span(2))
+        );
     }
 
     #[test]
-    fn grid_line_drops_zero_negative_span_bare_span_and_names() {
-        assert_eq!(parse_grid_line("0"), None);
-        assert_eq!(parse_grid_line("span"), None);
-        assert_eq!(parse_grid_line("span 0"), None);
-        assert_eq!(parse_grid_line("span -1"), None);
-        assert_eq!(parse_grid_line("main"), None);
-        assert_eq!(parse_grid_line("span main"), None);
-        assert_eq!(parse_grid_line("2 span"), None);
+    fn grid_line_parses_named_and_named_span_forms() {
+        let mut store = DeclStore::default();
+        // "main" dedups to the first interned key across the three forms.
+        assert_eq!(
+            parse_grid_line("main", &mut store),
+            Some(GridLine::Named(TextKey(0)))
+        );
+        assert_eq!(
+            parse_grid_line("span main", &mut store),
+            Some(GridLine::NamedSpan(TextKey(0), 0))
+        );
+        assert_eq!(
+            parse_grid_line("span main 3", &mut store),
+            Some(GridLine::NamedSpan(TextKey(0), 3))
+        );
+    }
+
+    #[test]
+    fn grid_line_drops_zero_negative_span_and_bare_span() {
+        let mut store = DeclStore::default();
+        assert_eq!(parse_grid_line("0", &mut store), None);
+        assert_eq!(parse_grid_line("span", &mut store), None);
+        assert_eq!(parse_grid_line("span 0", &mut store), None);
+        assert_eq!(parse_grid_line("span -1", &mut store), None);
+        assert_eq!(parse_grid_line("span main 0", &mut store), None);
+        assert_eq!(parse_grid_line("2 span", &mut store), None);
     }
 
     #[test]
@@ -3173,7 +3479,7 @@ mod tests {
         let key = parse_track_list("repeat(3, 1fr) 100px", &mut store).expect("track list");
         let list = store.resolve_track_list(key).expect("resolve");
         assert_eq!(
-            list.as_slice(),
+            list.tracks.as_slice(),
             &[
                 track_size(TrackBreadth::Auto, TrackMaxBreadth::Fr(1.0)),
                 track_size(TrackBreadth::Auto, TrackMaxBreadth::Fr(1.0)),
@@ -3181,6 +3487,25 @@ mod tests {
                 track_size(TrackBreadth::Px(100.0), TrackMaxBreadth::Px(100.0)),
             ]
         );
+        assert!(list.line_names.is_empty());
+    }
+
+    #[test]
+    fn grid_track_list_interns_line_names() {
+        let mut store = DeclStore::default();
+        let key = parse_track_list("[main] 1fr [aside]", &mut store).expect("track list");
+        let list = store.resolve_track_list(key).expect("resolve");
+        assert_eq!(list.tracks.len(), 1);
+        // `main` labels line 0 (before the track), `aside` labels line 1 (after).
+        assert_eq!(list.line_names.len(), 2);
+        assert_eq!(
+            store.resolve(list.line_names[0].0),
+            Some("main"),
+            "first registration is main"
+        );
+        assert_eq!(list.line_names[0].1, 0);
+        assert_eq!(store.resolve(list.line_names[1].0), Some("aside"));
+        assert_eq!(list.line_names[1].1, 1);
     }
 
     #[test]
@@ -3200,8 +3525,19 @@ mod tests {
             parse_track_list("repeat(2, repeat(3, 1fr))", &mut store),
             None
         );
-        // Line-name tokens.
-        assert_eq!(parse_track_list("[main] 1fr [aside]", &mut store), None);
+        // A name labeling more than four lines drops + counts (the D6 gate).
+        assert_eq!(
+            parse_track_list("[m] 1fr [m] 1fr [m] 1fr [m] 1fr [m] 1fr", &mut store),
+            None
+        );
+        // More than eight name registrations drops + counts.
+        assert_eq!(
+            parse_track_list(
+                "[a] 1fr [b] 1fr [c] 1fr [d] 1fr [e] 1fr [f] 1fr [g] 1fr [h] 1fr [i] 1fr",
+                &mut store
+            ),
+            None
+        );
         // A valid two-track list still interns (the control).
         assert!(parse_track_list("1fr 1fr", &mut store).is_some());
     }

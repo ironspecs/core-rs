@@ -31,16 +31,18 @@
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs/flex.rs
 
 use crate::domains::style::computed::{
-    AlignItemsKw, BoxLength, ComputedGridGroup, GridAutoFlowKw, GridLine, GridTrackSize,
-    JustifyItemsKw, JustifySelfKw, TrackBreadth, TrackMaxBreadth,
+    AlignItemsKw, BoxLength, ComputedGridGroup, GridAutoFlowKw, GridLine, GridTemplateAreas,
+    GridTrackList, GridTrackSize, JustifyItemsKw, JustifySelfKw, TrackBreadth, TrackMaxBreadth,
 };
-use crate::domains::style::{GRID_TRACK_LIST_CAPACITY, GridTrackListKey};
+use crate::domains::style::{GRID_TRACK_LIST_CAPACITY, TextKey};
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
 use crate::numeric::usize_to_f32;
 use crate::types::{
     DomBoxModel, DomError, DomNode, DomNodeSlotKey, DomRect, LaneRange, LayoutScratch, RootDom,
     RootDomMetricName,
 };
+
+use super::grid_line_context::{GridAxis, GridLineContext};
 
 use super::DomLayoutResolver;
 use super::flex::{
@@ -116,6 +118,10 @@ pub(crate) struct GridItemView {
     pub(crate) row_start: GridLine,
     /// The authored `grid-row-end` line (item side, D1).
     pub(crate) row_end: GridLine,
+    /// The item's `grid-area: <custom-ident>` name (T3, D2); `None` = no named
+    /// area. Resolved against the container's areas map and named lines at
+    /// placement (D4).
+    pub(crate) area_name: Option<TextKey>,
     /// The item's `justify-self` (inline axis, D5; `Auto` inherits the
     /// container's `justify-items`).
     pub(crate) justify_self: JustifySelfKw,
@@ -152,6 +158,17 @@ enum GridBlockAxisAlignment {
 enum ResolvedAxis {
     Definite(i32, i32),
     Auto(u32),
+}
+
+/// One side of a placement line, lowered from a `GridLine` after the D4 name
+/// resolution: a definite line, a plain span (no anchor), a definite range
+/// (from a multi-match name or a `NamedSpan`), or auto.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LoweredLine {
+    Auto,
+    Line(i32),
+    Span(u32),
+    Range(i32, i32),
 }
 
 /// The per-container grid solve: the three lane ranges plus the resolved
@@ -233,10 +250,20 @@ where
             flex.align_items,
         )
     };
+    // Resolve the explicit + areas dimensions (a short borrow: the areas map
+    // widens the count, the §7.3.1 implicit template).
     let mut column_tracks = empty_track_array();
-    let col_count = resolve_columns(root_dom, grid_group.template_columns, &mut column_tracks);
+    let col_count = {
+        let columns = root_dom.resolve_inline_track_list(grid_group.template_columns);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_columns(columns, areas, &mut column_tracks)
+    };
     let mut row_tracks = empty_track_array();
-    let explicit_row_count = resolve_rows(root_dom, grid_group.template_rows, &mut row_tracks);
+    let explicit_row_count = {
+        let rows = root_dom.resolve_inline_track_list(grid_group.template_rows);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_rows(rows, areas, &mut row_tracks)
+    };
 
     let entered = enter_node(
         root_dom,
@@ -260,14 +287,24 @@ where
     )?;
 
     // 2. Placement resolution (D2 + D4): resolve each item's cell and spans via
-    // the CellMap, writing cell starts and spans into the item lane / view.
-    let placement = resolve_grid_placement(
-        &mut root_dom.layout_scratch,
-        order_range,
-        col_count,
-        explicit_row_count,
-        grid_group.auto_flow,
-    );
+    // the CellMap, writing cell starts and spans into the item lane / view. The
+    // name-resolution context borrows only the interner/store (disjoint from the
+    // layout scratch) and drops before the sizing phases re-borrow `root_dom`.
+    let placement = {
+        let line_context = GridLineContext::new(
+            &root_dom.computed_texts,
+            &root_dom.inline_decl_store,
+            &grid_group,
+        );
+        resolve_grid_placement(
+            &mut root_dom.layout_scratch,
+            order_range,
+            col_count,
+            explicit_row_count,
+            grid_group.auto_flow,
+            &line_context,
+        )
+    };
 
     // 3. Per-column contributions (max h_min / h_max per explicit column, from
     // the resolved placement + spans).
@@ -366,6 +403,7 @@ where
         row_gap_px,
         col_count,
         explicit_row_count,
+        &grid_group,
         resolver,
     )?;
 
@@ -406,38 +444,43 @@ fn empty_track_array() -> [GridTrackSize; GRID_TRACK_LIST_CAPACITY] {
 }
 
 /// Copies the interned explicit column list into the caller's stack array and
-/// returns the real column count (1 for the empty template — D3).
+/// returns the real column count. With no authored template the count defaults
+/// to 1 (D3); a template-areas map widens the count to its column dimension
+/// (the §7.3.1 implicit template — areas beyond the explicit list size `auto`).
 fn resolve_columns(
-    root_dom: &RootDom,
-    key: GridTrackListKey,
+    columns: Option<&GridTrackList>,
+    areas: Option<&GridTemplateAreas>,
     column_tracks: &mut [GridTrackSize; GRID_TRACK_LIST_CAPACITY],
 ) -> usize {
     let mut count = 0;
-    if let Some(list) = root_dom.resolve_inline_track_list(key) {
-        for (slot, track) in column_tracks.iter_mut().zip(list.iter()) {
+    if let Some(list) = columns {
+        for (slot, track) in column_tracks.iter_mut().zip(list.tracks.iter()) {
             *slot = *track;
             count += 1;
         }
     }
-    count.max(1)
+    let areas_cols = areas.map_or(0, |areas| usize::from(areas.col_count));
+    count.max(areas_cols).max(1)
 }
 
 /// Copies the interned explicit ROW list into the caller's stack array and
 /// returns the real row count (0 for the empty template — all rows implicit,
-/// sized by `grid-auto-rows`, D3).
+/// sized by `grid-auto-rows`, D3). A template-areas map widens the count to its
+/// row dimension (the §7.3.1 implicit template).
 fn resolve_rows(
-    root_dom: &RootDom,
-    key: GridTrackListKey,
+    rows: Option<&GridTrackList>,
+    areas: Option<&GridTemplateAreas>,
     row_tracks: &mut [GridTrackSize; GRID_TRACK_LIST_CAPACITY],
 ) -> usize {
     let mut count = 0;
-    if let Some(list) = root_dom.resolve_inline_track_list(key) {
-        for (slot, track) in row_tracks.iter_mut().zip(list.iter()) {
+    if let Some(list) = rows {
+        for (slot, track) in row_tracks.iter_mut().zip(list.tracks.iter()) {
             *slot = *track;
             count += 1;
         }
     }
-    count
+    let areas_rows = areas.map_or(0, |areas| usize::from(areas.row_count));
+    count.max(areas_rows)
 }
 
 /// Resolves a definite integer line to a 0-based line index against the
@@ -459,41 +502,142 @@ fn normalize_line_range(start: i32, end: i32) -> (i32, i32) {
     }
 }
 
-/// Resolves one axis's `(start, end)` `GridLine`s to a `ResolvedAxis` (D2):
-/// definite when at least one side is a `Line` (a lone `Auto` side defaults to
-/// span 1; a `Span` side resolves from the definite line), auto with the span
-/// otherwise (`span N / auto`, `auto / span N`, or `span N / span M` — the
-/// second span is ignored per §8.3.1).
+/// Resolves one item's placement in `axis` (D4 order): rule 1 — an `area_name`
+/// matching a named area occupies that rect (definite both axes); a name
+/// matching a line resolves as `Named` per rule 2; a name matching nothing
+/// falls back to `Auto`. Otherwise the authored longhands resolve per D2/D4.
+fn resolve_item_axis(
+    view: &GridItemView,
+    explicit_count: usize,
+    context: &GridLineContext<'_>,
+    axis: GridAxis,
+) -> ResolvedAxis {
+    resolve_placement_axis(
+        view.area_name,
+        view.column_start,
+        view.column_end,
+        view.row_start,
+        view.row_end,
+        explicit_count,
+        context,
+        axis,
+    )
+}
+
+/// The shared D4 per-axis resolution over one item's placement lines (used for
+/// in-flow items and the abs-pos static-position model alike).
+#[allow(clippy::too_many_arguments)]
+fn resolve_placement_axis(
+    area_name: Option<TextKey>,
+    column_start: GridLine,
+    column_end: GridLine,
+    row_start: GridLine,
+    row_end: GridLine,
+    explicit_count: usize,
+    context: &GridLineContext<'_>,
+    axis: GridAxis,
+) -> ResolvedAxis {
+    if let Some(name) = area_name {
+        if let Some(rect) = context.resolve_area(name) {
+            return match axis {
+                GridAxis::Column => {
+                    ResolvedAxis::Definite(i32::from(rect.min_col), i32::from(rect.max_col) + 1)
+                }
+                GridAxis::Row => {
+                    ResolvedAxis::Definite(i32::from(rect.min_row), i32::from(rect.max_row) + 1)
+                }
+            };
+        }
+        return resolve_axis_range(
+            GridLine::Named(name),
+            GridLine::Auto,
+            explicit_count,
+            context,
+            axis,
+        );
+    }
+    let (start, end) = match axis {
+        GridAxis::Column => (column_start, column_end),
+        GridAxis::Row => (row_start, row_end),
+    };
+    resolve_axis_range(start, end, explicit_count, context, axis)
+}
+
+/// Resolves one axis's `(start, end)` `GridLine`s to a `ResolvedAxis` (D2/D4):
+/// definite when at least one side resolves to a definite line or range, auto
+/// with the span otherwise. Name references (`Named`/`NamedSpan`) resolve
+/// against the container's named-line maps (explicit `[name]` lines then the
+/// area-implied `<name>-start`/`<name>-end` lines) per D4 rules 2–3; a name
+/// with no match falls back to `Auto` (documented, pinned).
 #[allow(clippy::unnested_or_patterns)] // the three span-only forms share one arm
-fn resolve_axis_range(start: GridLine, end: GridLine, explicit_count: usize) -> ResolvedAxis {
+fn resolve_axis_range(
+    start: GridLine,
+    end: GridLine,
+    explicit_count: usize,
+    context: &GridLineContext<'_>,
+    axis: GridAxis,
+) -> ResolvedAxis {
+    let start = lower_grid_line(start, explicit_count, context, axis);
+    let end = lower_grid_line(end, explicit_count, context, axis);
     match (start, end) {
-        (GridLine::Line(s), GridLine::Line(e)) => {
-            let range = normalize_line_range(
-                resolve_grid_line(s, explicit_count),
-                resolve_grid_line(e, explicit_count),
-            );
+        (LoweredLine::Range(s, e), _) | (_, LoweredLine::Range(s, e)) => {
+            // A multi-match name or `NamedSpan` determines both edges; the
+            // other side defaults to `Auto` (the tested D5 forms).
+            ResolvedAxis::Definite(s, e)
+        }
+        (LoweredLine::Line(s), LoweredLine::Line(e)) => {
+            let range = normalize_line_range(s, e);
             ResolvedAxis::Definite(range.0, range.1)
         }
-        (GridLine::Line(s), GridLine::Auto) => {
-            let line = resolve_grid_line(s, explicit_count);
-            ResolvedAxis::Definite(line, line + 1)
+        (LoweredLine::Line(s), LoweredLine::Auto) => ResolvedAxis::Definite(s, s + 1),
+        (LoweredLine::Line(s), LoweredLine::Span(n)) => {
+            ResolvedAxis::Definite(s, s + i32::try_from(n).expect("span fits i32"))
         }
-        (GridLine::Line(s), GridLine::Span(n)) => {
-            let line = resolve_grid_line(s, explicit_count);
-            ResolvedAxis::Definite(line, line + i32::try_from(n).expect("span fits i32"))
+        (LoweredLine::Span(n), LoweredLine::Line(e)) => {
+            ResolvedAxis::Definite(e - i32::try_from(n).expect("span fits i32"), e)
         }
-        (GridLine::Span(n), GridLine::Line(e)) => {
-            let line = resolve_grid_line(e, explicit_count);
-            ResolvedAxis::Definite(line - i32::try_from(n).expect("span fits i32"), line)
-        }
-        (GridLine::Auto, GridLine::Line(e)) => {
-            let line = resolve_grid_line(e, explicit_count);
-            ResolvedAxis::Definite(line - 1, line)
-        }
-        (GridLine::Span(n), GridLine::Auto)
-        | (GridLine::Auto, GridLine::Span(n))
-        | (GridLine::Span(n), GridLine::Span(_)) => ResolvedAxis::Auto(n),
-        (GridLine::Auto, GridLine::Auto) => ResolvedAxis::Auto(1),
+        (LoweredLine::Auto, LoweredLine::Line(e)) => ResolvedAxis::Definite(e - 1, e),
+        (LoweredLine::Span(n), LoweredLine::Auto)
+        | (LoweredLine::Auto, LoweredLine::Span(n))
+        | (LoweredLine::Span(n), LoweredLine::Span(_)) => ResolvedAxis::Auto(n),
+        (LoweredLine::Auto, LoweredLine::Auto) => ResolvedAxis::Auto(1),
+    }
+}
+
+/// Lowers one `GridLine` into its D4-resolved canonical side: `Line`/`Span`/
+/// `Auto` pass through (with the D2 negative-line translation); `Named`
+/// resolves to a definite line (single match), a definite range (multiple
+/// matches, spanning the count), or `Auto` (no match); `NamedSpan` resolves to
+/// a definite range spanning `n` (or the match count when the integer is
+/// absent) from the first matching line, or `Auto` (no match).
+fn lower_grid_line(
+    line: GridLine,
+    explicit_count: usize,
+    context: &GridLineContext<'_>,
+    axis: GridAxis,
+) -> LoweredLine {
+    match line {
+        GridLine::Auto => LoweredLine::Auto,
+        GridLine::Line(k) => LoweredLine::Line(resolve_grid_line(k, explicit_count)),
+        GridLine::Span(n) => LoweredLine::Span(n),
+        GridLine::Named(name) => match context.resolve_named(name, axis) {
+            (None, _) => LoweredLine::Auto,
+            (Some(first), 1) => {
+                LoweredLine::Line(i32::try_from(first).expect("line index fits i32"))
+            }
+            (Some(first), count) => {
+                let first = i32::try_from(first).expect("line index fits i32");
+                LoweredLine::Range(first, first + i32::try_from(count).expect("count fits i32"))
+            }
+        },
+        GridLine::NamedSpan(name, n) => match context.resolve_named(name, axis) {
+            (None, _) => LoweredLine::Auto,
+            (Some(first), count) => {
+                let span = if n == 0 { count } else { n };
+                let first = i32::try_from(first).expect("line index fits i32");
+                LoweredLine::Range(first, first + i32::try_from(span).expect("span fits i32"))
+            }
+        },
     }
 }
 
@@ -550,6 +694,7 @@ fn resolve_grid_placement(
     col_count: usize,
     explicit_row_count: usize,
     auto_flow: GridAutoFlowKw,
+    context: &GridLineContext<'_>,
 ) -> GridPlacement {
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
 
@@ -563,12 +708,12 @@ fn resolve_grid_placement(
             .get(order_entry_dom_index(scratch, order_range, order_pos))
             .view;
         if let ResolvedAxis::Definite(start, _) =
-            resolve_axis_range(view.column_start, view.column_end, col_count)
+            resolve_item_axis(&view, col_count, context, GridAxis::Column)
         {
             min_col = min_col.min(start);
         }
         if let ResolvedAxis::Definite(start, _) =
-            resolve_axis_range(view.row_start, view.row_end, explicit_row_count)
+            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row)
         {
             min_row = min_row.min(start);
         }
@@ -583,11 +728,11 @@ fn resolve_grid_placement(
         let dom_index = order_entry_dom_index(scratch, order_range, order_pos);
         let view = scratch.grid_items.get(dom_index).view;
         let col = translate_axis(
-            resolve_axis_range(view.column_start, view.column_end, col_count),
+            resolve_item_axis(&view, col_count, context, GridAxis::Column),
             col_offset,
         );
         let row = translate_axis(
-            resolve_axis_range(view.row_start, view.row_end, explicit_row_count),
+            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row),
             row_offset,
         );
         if let (ResolvedAxis::Definite(cs, ce), ResolvedAxis::Definite(rs, re)) = (col, row) {
@@ -601,11 +746,11 @@ fn resolve_grid_placement(
         let dom_index = order_entry_dom_index(scratch, order_range, order_pos);
         let view = scratch.grid_items.get(dom_index).view;
         let col = translate_axis(
-            resolve_axis_range(view.column_start, view.column_end, col_count),
+            resolve_item_axis(&view, col_count, context, GridAxis::Column),
             col_offset,
         );
         let row = translate_axis(
-            resolve_axis_range(view.row_start, view.row_end, explicit_row_count),
+            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row),
             row_offset,
         );
         match (col, row) {
@@ -682,6 +827,7 @@ fn resolve_grid_placement(
         col_count,
         explicit_row_count,
         auto_flow,
+        context,
     );
     let grid_width = implicit_grid_width_bound(
         scratch.cell_map.width(),
@@ -705,6 +851,7 @@ fn resolve_grid_placement(
         auto_flow,
         grid_width,
         grid_height,
+        context,
     );
 
     GridPlacement {
@@ -766,6 +913,7 @@ fn max_auto_spans(
     col_count: usize,
     explicit_row_count: usize,
     auto_flow: GridAutoFlowKw,
+    context: &GridLineContext<'_>,
 ) -> (usize, usize) {
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
     let mut max_col = 1usize;
@@ -775,8 +923,8 @@ fn max_auto_spans(
             .grid_items
             .get(order_entry_dom_index(scratch, order_range, order_pos))
             .view;
-        let col = resolve_axis_range(view.column_start, view.column_end, col_count);
-        let row = resolve_axis_range(view.row_start, view.row_end, explicit_row_count);
+        let col = resolve_item_axis(&view, col_count, context, GridAxis::Column);
+        let row = resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row);
         // Pass-3 items have an auto major axis; pass-1 (both definite) and
         // pass-2 (definite major) items are excluded.
         if is_row_major(auto_flow) {
@@ -892,6 +1040,7 @@ fn place_remaining_autos(
     auto_flow: GridAutoFlowKw,
     grid_width: usize,
     grid_height: usize,
+    context: &GridLineContext<'_>,
 ) {
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
     let row_major = is_row_major(auto_flow);
@@ -903,11 +1052,11 @@ fn place_remaining_autos(
         let dom_index = order_entry_dom_index(scratch, order_range, order_pos);
         let view = scratch.grid_items.get(dom_index).view;
         let col = translate_axis(
-            resolve_axis_range(view.column_start, view.column_end, col_count),
+            resolve_item_axis(&view, col_count, context, GridAxis::Column),
             col_offset,
         );
         let row = translate_axis(
-            resolve_axis_range(view.row_start, view.row_end, explicit_row_count),
+            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row),
             row_offset,
         );
 
@@ -1248,6 +1397,7 @@ fn anonymous_inline_run_grid_item_view(
         column_end: GridLine::Auto,
         row_start: GridLine::Auto,
         row_end: GridLine::Auto,
+        area_name: None,
         justify_self: JustifySelfKw::Auto,
         align_self: None,
         col_span: 1,
@@ -1324,6 +1474,7 @@ where
         column_end: grid_group.column_end,
         row_start: grid_group.row_start,
         row_end: grid_group.row_end,
+        area_name: grid_group.area_name,
         justify_self: grid_group.justify_self,
         align_self,
         col_span: 1,
@@ -2347,6 +2498,7 @@ fn place_excluded_abs_grid_children<R>(
     row_gap_px: f32,
     col_count: usize,
     explicit_row_count: usize,
+    container_group: &ComputedGridGroup,
     resolver: &mut R,
 ) -> Result<(), DomError>
 where
@@ -2402,6 +2554,7 @@ where
             let (area_left, area_top) = resolve_abs_grid_area(
                 root_dom,
                 current_child_key,
+                container_group,
                 col_count,
                 explicit_row_count,
                 column_range,
@@ -2429,6 +2582,7 @@ where
 fn resolve_abs_grid_area(
     root_dom: &RootDom,
     child_key: DomNodeSlotKey,
+    container_group: &ComputedGridGroup,
     col_count: usize,
     explicit_row_count: usize,
     column_range: LaneRange,
@@ -2442,8 +2596,31 @@ fn resolve_abs_grid_area(
         return (None, None);
     };
     let grid = node.stored_computed_groups().grid;
-    let col = resolve_axis_range(grid.column_start, grid.column_end, col_count);
-    let row = resolve_axis_range(grid.row_start, grid.row_end, explicit_row_count);
+    let context = GridLineContext::new(
+        &root_dom.computed_texts,
+        &root_dom.inline_decl_store,
+        container_group,
+    );
+    let col = resolve_placement_axis(
+        grid.area_name,
+        grid.column_start,
+        grid.column_end,
+        grid.row_start,
+        grid.row_end,
+        col_count,
+        &context,
+        GridAxis::Column,
+    );
+    let row = resolve_placement_axis(
+        grid.area_name,
+        grid.column_start,
+        grid.column_end,
+        grid.row_start,
+        grid.row_end,
+        explicit_row_count,
+        &context,
+        GridAxis::Row,
+    );
     let (ResolvedAxis::Definite(col_start, _), ResolvedAxis::Definite(row_start, _)) = (col, row)
     else {
         return (None, None);
@@ -2595,9 +2772,17 @@ where
         )
     };
     let mut column_tracks = empty_track_array();
-    let col_count = resolve_columns(root_dom, grid_group.template_columns, &mut column_tracks);
+    let col_count = {
+        let columns = root_dom.resolve_inline_track_list(grid_group.template_columns);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_columns(columns, areas, &mut column_tracks)
+    };
     let mut row_tracks = empty_track_array();
-    let explicit_row_count = resolve_rows(root_dom, grid_group.template_rows, &mut row_tracks);
+    let explicit_row_count = {
+        let rows = root_dom.resolve_inline_track_list(grid_group.template_rows);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_rows(rows, areas, &mut row_tracks)
+    };
 
     let entered = enter_node(
         root_dom,
@@ -2613,13 +2798,21 @@ where
     let (item_range, order_range) =
         build_grid_item_formation(root_dom, tree_size, key, &child_context, resolver, metric)?;
 
-    let placement = resolve_grid_placement(
-        &mut root_dom.layout_scratch,
-        order_range,
-        col_count,
-        explicit_row_count,
-        grid_group.auto_flow,
-    );
+    let placement = {
+        let line_context = GridLineContext::new(
+            &root_dom.computed_texts,
+            &root_dom.inline_decl_store,
+            &grid_group,
+        );
+        resolve_grid_placement(
+            &mut root_dom.layout_scratch,
+            order_range,
+            col_count,
+            explicit_row_count,
+            grid_group.auto_flow,
+            &line_context,
+        )
+    };
 
     let (col_h_min, col_h_max) = column_contributions(
         &root_dom.layout_scratch,

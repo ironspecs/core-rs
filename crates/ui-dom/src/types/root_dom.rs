@@ -25,7 +25,6 @@ use std::{
     sync::Arc,
 };
 
-use arrayvec::ArrayVec;
 use bevy::{
     input::{
         ButtonState,
@@ -47,7 +46,7 @@ use crate::domains::style::computed::{
 };
 use crate::domains::style::{
     ComputedStyleRef, DeclBlock, DeclDropReport, DeclGrammar, DeclLength, DeclStore, DeclValue,
-    Declaration, GRID_TRACK_LIST_CAPACITY, GridTrackListKey, GridTrackSize, Keyword,
+    Declaration, GridAreasKey, GridTemplateAreas, GridTrackList, GridTrackListKey, Keyword,
     ParsedDeclaration, PresentationProperty, StyleMut, TextInterner, TextKey,
     decl_value_to_css_string, decl_value_to_dom_value, name_is_presentation,
     parse_declaration_block,
@@ -2049,7 +2048,9 @@ impl RootDom {
                 decl_value_to_dom_value(
                     &value,
                     |key| scratch.resolve(key),
-                    |key| self.resolve_inline_track_list(key).map(ArrayVec::as_slice),
+                    |key| self.resolve_inline_track_list(key),
+                    |key| self.resolve_inline_grid_areas(key),
+                    |key| self.resolve_inline_text(key),
                 ),
             );
         }
@@ -2079,7 +2080,9 @@ impl RootDom {
                     let mut text = decl_value_to_css_string(
                         &declaration.value,
                         |key| self.resolve_inline_text(key),
-                        |key| self.resolve_inline_track_list(key).map(ArrayVec::as_slice),
+                        |key| self.resolve_inline_track_list(key),
+                        |key| self.resolve_inline_grid_areas(key),
+                        |key| self.resolve_inline_text(key),
                     );
                     text.push_str(" !important");
                     DomAttributeValue::String(text)
@@ -2087,7 +2090,9 @@ impl RootDom {
                     decl_value_to_dom_value(
                         &declaration.value,
                         |key| self.resolve_inline_text(key),
-                        |key| self.resolve_inline_track_list(key).map(ArrayVec::as_slice),
+                        |key| self.resolve_inline_track_list(key),
+                        |key| self.resolve_inline_grid_areas(key),
+                        |key| self.resolve_inline_text(key),
                     )
                 };
                 styles.push((declaration.property.name().to_string(), value));
@@ -2791,14 +2796,25 @@ impl RootDom {
         &mut self.inline_decl_store
     }
 
-    /// Resolves an inline-arena track-list key to its retained slice (the
-    /// winners fold's reintern target reads through this).
+    /// Resolves an inline-arena track-list key to its retained `GridTrackList`
+    /// (the winners fold's reintern target reads through this).
     #[must_use]
     pub(crate) fn resolve_inline_track_list(
         &self,
         key: GridTrackListKey,
-    ) -> Option<&ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>> {
+    ) -> Option<&GridTrackList> {
         self.inline_decl_store.resolve_track_list(key)
+    }
+
+    /// Resolves an inline-arena areas-map key to its retained
+    /// `GridTemplateAreas` (the winners fold's reintern target reads through
+    /// this).
+    #[must_use]
+    pub(crate) fn resolve_inline_grid_areas(
+        &self,
+        key: GridAreasKey,
+    ) -> Option<&GridTemplateAreas> {
+        self.inline_decl_store.resolve_grid_areas(key)
     }
 
     /// Level accessor over retained state (observability doctrine: levels are
@@ -4717,6 +4733,9 @@ pub(crate) fn decl_value_for_groups(
         PresentationProperty::GridTemplateRows => {
             Some(DeclValue::TrackList(groups.grid.template_rows))
         }
+        PresentationProperty::GridTemplateAreas => {
+            Some(DeclValue::GridAreas(groups.grid.template_areas))
+        }
         PresentationProperty::GridAutoFlow => Some(DeclValue::GridAutoFlow(groups.grid.auto_flow)),
         PresentationProperty::GridAutoColumns => {
             Some(DeclValue::TrackSize(groups.grid.auto_columns))
@@ -4785,9 +4804,10 @@ pub(crate) fn decl_value_for_groups(
             }
         }
         // Text-valued properties whose source the group already resolved away
-        // (font-family's TextKey) and the transition scheduler slots are never
-        // transitionable.
+        // (font-family's TextKey, `grid-area`'s `area_name` name) and the
+        // transition scheduler slots are never transitionable.
         PresentationProperty::FontFamily
+        | PresentationProperty::GridArea
         | PresentationProperty::TransitionProperty
         | PresentationProperty::TransitionDuration
         | PresentationProperty::TransitionTimingFunction
@@ -4929,6 +4949,7 @@ fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue)
             _ => false,
         },
         DeclGrammar::TrackList => matches!(value, DeclValue::TrackList(_)),
+        DeclGrammar::GridAreas => matches!(value, DeclValue::GridAreas(_)),
         DeclGrammar::GridAutoFlow => matches!(value, DeclValue::GridAutoFlow(_)),
         DeclGrammar::TrackSize => matches!(value, DeclValue::TrackSize(_)),
         DeclGrammar::GridLine => matches!(value, DeclValue::GridLine(_)),

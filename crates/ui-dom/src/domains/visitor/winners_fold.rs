@@ -38,11 +38,12 @@ use crate::domains::style::computed::project::{
     ProjectionContext, parent_inherited_groups, resolve_declaration_into_groups,
     transition_longhands_from_strings,
 };
-use crate::domains::style::computed::{ComputedGroups, ResolvedTransitionLonghands};
+use crate::domains::style::computed::{ComputedGroups, GridLine, ResolvedTransitionLonghands};
 use crate::domains::style::{
-    CascadeTier, DeclBlockKey, DeclLength, DeclStore, DeclValue, Declaration, GridTrackListKey,
-    NodeLookup, NodeStyleIndex, Precedence, PresentationGroup, PresentationProperty,
-    SelectorSpecificity, TextInterner, TextKey, style_index_for_node,
+    CascadeTier, DeclBlockKey, DeclLength, DeclStore, DeclValue, Declaration, GridAreasKey,
+    GridTemplateAreas, GridTrackList, GridTrackListKey, NodeLookup, NodeStyleIndex, Precedence,
+    PresentationGroup, PresentationProperty, SelectorSpecificity, TextInterner, TextKey,
+    style_index_for_node,
 };
 use crate::types::dom_node::DomNodeSlotKey;
 use crate::types::{
@@ -180,7 +181,7 @@ pub(crate) fn collect_winners(
                 declaration.value,
                 &mut scratch,
                 |key| root_dom.resolve_inline_text(key),
-                |key| key,
+                |value| value,
             );
             fold_slot(&mut winners, value, declaration.property, precedence);
         }
@@ -256,11 +257,20 @@ fn fold_matched_rules(
                 declaration.value,
                 scratch,
                 |key| runtime.resolve_text(key),
-                |key| {
-                    let list = runtime
-                        .resolve_track_list(key)
-                        .expect("interned track list must resolve in its owning store");
-                    inline_store.intern_track_list(list.as_slice())
+                |value| match value {
+                    DeclValue::TrackList(key) => DeclValue::TrackList(reintern_track_list(
+                        key,
+                        |k| runtime.resolve_text(k),
+                        |k| runtime.resolve_track_list(k),
+                        inline_store,
+                    )),
+                    DeclValue::GridAreas(key) => DeclValue::GridAreas(reintern_areas(
+                        key,
+                        |k| runtime.resolve_text(k),
+                        |k| runtime.resolve_grid_areas(k),
+                        inline_store,
+                    )),
+                    other => other,
                 },
             );
             fold_slot(winners, value, declaration.property, precedence);
@@ -345,26 +355,117 @@ fn fold_behavior_slot(
     fold_slot(winners, declaration.value, declaration.property, precedence);
 }
 
-/// Re-interns a store-relative `Text` value into the per-element `scratch`
-/// interner and a store-relative `TrackList` key into the inline arena, so the
-/// resolve phase and `compute_style_map` share one interner/arena. The
-/// `track_list` transform maps a source-arena key to an inline-arena key (for
-/// an inline-block winner the key is already inline-relative, so the transform
-/// is the identity).
+/// Re-interns a store-relative `Text` value and a `GridLine`'s `Named`/
+/// `NamedSpan` name into the per-element `scratch` interner, and routes a
+/// store-relative `TrackList`/`GridAreas` value through the single `arena`
+/// transform (identity for an inline-block winner, re-intern for a stylesheet
+/// winner), so the resolve phase and `compute_style_map` share one
+/// interner/arena.
 fn reintern_text<'a>(
     value: DeclValue,
     scratch: &mut TextInterner,
     resolve: impl Fn(TextKey) -> Option<&'a str>,
-    mut track_list: impl FnMut(GridTrackListKey) -> GridTrackListKey,
+    mut arena: impl FnMut(DeclValue) -> DeclValue,
 ) -> DeclValue {
     match value {
         DeclValue::Text(key) => {
             let text = resolve(key).expect("interned text must resolve in its owning store");
             DeclValue::Text(scratch.intern(text))
         }
-        DeclValue::TrackList(key) => DeclValue::TrackList(track_list(key)),
+        DeclValue::TrackList(_) | DeclValue::GridAreas(_) => arena(value),
+        DeclValue::GridLine(line) => {
+            DeclValue::GridLine(reintern_grid_line(line, scratch, &resolve))
+        }
         other => other,
     }
+}
+
+/// Re-interns one `GridLine`'s name keys (`Named`/`NamedSpan`) into the scratch
+/// interner, so the resolver can move them into the document computed-text
+/// interner.
+fn reintern_grid_line<'a>(
+    line: GridLine,
+    scratch: &mut TextInterner,
+    resolve: &impl Fn(TextKey) -> Option<&'a str>,
+) -> GridLine {
+    match line {
+        GridLine::Named(key) => GridLine::Named(reintern_scratch_name(key, scratch, resolve)),
+        GridLine::NamedSpan(key, n) => {
+            GridLine::NamedSpan(reintern_scratch_name(key, scratch, resolve), n)
+        }
+        other => other,
+    }
+}
+
+fn reintern_scratch_name<'a>(
+    key: TextKey,
+    scratch: &mut TextInterner,
+    resolve: &impl Fn(TextKey) -> Option<&'a str>,
+) -> TextKey {
+    let text = resolve(key).expect("interned line name must resolve in its owning store");
+    scratch.intern(text)
+}
+
+/// Re-interns a stylesheet-arena track-list value into the inline arena, mapping
+/// each interned line name through the source interner and the inline store's
+/// text interner.
+fn reintern_track_list<'a>(
+    key: GridTrackListKey,
+    resolve_text: impl Fn(TextKey) -> Option<&'a str>,
+    resolve_list: impl Fn(GridTrackListKey) -> Option<&'a GridTrackList>,
+    inline_store: &mut DeclStore,
+) -> GridTrackListKey {
+    let list = resolve_list(key).expect("interned track list must resolve in its owning store");
+    let mut reinterned = GridTrackList {
+        tracks: list.tracks.clone(),
+        ..GridTrackList::default()
+    };
+    for (name_key, index) in &list.line_names {
+        let text =
+            resolve_text(*name_key).expect("interned line name must resolve in its owning store");
+        reinterned
+            .line_names
+            .push((inline_store.intern(text), *index));
+    }
+    inline_store.intern_track_list(&reinterned)
+}
+
+/// Re-interns a stylesheet-arena areas-map key into the inline arena, mapping
+/// each interned area name through the source interner and the inline store's
+/// text interner.
+fn reintern_areas<'a>(
+    key: GridAreasKey,
+    resolve_text: impl Fn(TextKey) -> Option<&'a str>,
+    resolve_areas: impl Fn(GridAreasKey) -> Option<&'a GridTemplateAreas>,
+    inline_store: &mut DeclStore,
+) -> GridAreasKey {
+    let areas = resolve_areas(key).expect("interned areas map must resolve in its owning store");
+    let mut reinterned = GridTemplateAreas {
+        cells: arrayvec::ArrayVec::new(),
+        names: arrayvec::ArrayVec::new(),
+        row_count: areas.row_count,
+        col_count: areas.col_count,
+    };
+    for row in &areas.cells {
+        let mut reinterned_row = arrayvec::ArrayVec::new();
+        for cell in row {
+            match cell {
+                Some(name_key) => {
+                    let text = resolve_text(*name_key)
+                        .expect("interned area name must resolve in its owning store");
+                    reinterned_row.push(Some(inline_store.intern(text)));
+                }
+                None => reinterned_row.push(None),
+            }
+        }
+        reinterned.cells.push(reinterned_row);
+    }
+    for (name_key, rect) in &areas.names {
+        let text =
+            resolve_text(*name_key).expect("interned area name must resolve in its owning store");
+        reinterned.names.push((inline_store.intern(text), *rect));
+    }
+    inline_store.intern_grid_areas(&reinterned)
 }
 
 /// The slot update rule: a declaration takes the slot when its precedence is
@@ -607,7 +708,7 @@ mod tests {
             DeclValue::Text(TextKey(0)),
             &mut scratch,
             |_key| Some(store_text),
-            |key| key,
+            |value| value,
         );
         let DeclValue::Text(key) = value else {
             panic!("text value should re-intern to a scratch TextKey");
@@ -617,7 +718,7 @@ mod tests {
         // Non-text values pass through untouched.
         let length = DeclValue::Length(DeclLength::Px(4.0));
         assert_eq!(
-            reintern_text(length, &mut scratch, |_key| None, |key| key),
+            reintern_text(length, &mut scratch, |_key| None, |value| value),
             DeclValue::Length(DeclLength::Px(4.0))
         );
 
@@ -628,9 +729,21 @@ mod tests {
             DeclValue::TrackList(source),
             &mut scratch,
             |_key| None,
-            |key| key,
+            |value| value,
         );
         assert_eq!(transformed, DeclValue::TrackList(source));
+
+        // A named GridLine re-interns its name key into the scratch interner.
+        let named = reintern_text(
+            DeclValue::GridLine(GridLine::Named(TextKey(0))),
+            &mut scratch,
+            |_key| Some("main"),
+            |value| value,
+        );
+        let DeclValue::GridLine(GridLine::Named(name_key)) = named else {
+            panic!("named line should re-intern its name to scratch");
+        };
+        assert_eq!(scratch.resolve(name_key), Some("main"));
     }
 
     #[test]
