@@ -153,20 +153,42 @@ Tracks build from `ComputedGridGroup.template_columns/rows` at
 container measure; per-container ranges claimed during the solve,
 update-scoped, high-water-mark — identical lifecycle to the flex lanes.
 
-## D2. The track-list representation (THE FORK — decided)
+## D2. The track-list representation (THE FORK — decided, then amended)
 
 Track lists are the first variable-length computed values; the seven
 groups are fixed-`Copy` (S1: inline, value-compared, zero-allocation).
 The interned-text + lazy-parse model (transforms) fails: track lists
 are read at measure, solve, AND place (repeated parsing or a per-pass
-parse cache — both wrong). **Decided: fixed-capacity
-`ArrayVec<[GridTrackSize; 12]>` inline in `ComputedGridGroup`**, the
-`ResolvedTransitionLonghands` capacity-4 precedent exactly — `Copy`,
-value-compared, zero-allocation. **More than 12 expanded tracks drops
-at admission with a counted report and a registered gate** (never a
-silent cap; the G rule). Twelve covers the design-system standard;
-larger is a named, D6-gated follow-up (it would introduce an
-arena-keyed representation — sketched, not built).
+parse cache — both wrong).
+
+**First decision (2026-10-20):** fixed-capacity `ArrayVec` inline in
+`ComputedGridGroup`. **Amended the same day under the carriage
+analysis:** inline is wrong twice over. (1) `DeclValue` is a small
+`Copy` type closed over `{Length, Color, Keyword, Number, Integer,
+Text}` — a ~144-byte `TrackList(ArrayVec)` variant would inflate every
+`DeclBlock` in the system (declaration blocks are `SmallVec`-inline in
+node records). (2) Two inline 12-capacity lists per group is a
+per-node memory hit for EVERY node, grid or not. The S1-consistent
+shape is the existing `DeclBlockKey` precedent (arena-keyed, `Copy`,
+value-compared, no refcounting):
+
+```rust
+// In DeclStore (both arenas — context-shared stylesheet and RootDom inline):
+track_lists: SlotMap<GridTrackListKey, ArrayVec<[GridTrackSize; 12]>>
+// with value-dedup interning (shared templates intern to one entry),
+// GridTrackListKey: Copy, u32, store-relative (like TextKey).
+// DeclValue gains: TrackList(GridTrackListKey)  // 4 bytes, Copy
+// ComputedGridGroup.template_columns/rows: GridTrackListKey
+```
+
+Capacity-12 stands unchanged: more than 12 expanded tracks drops at
+admission with a counted report and a registered gate (never a silent
+cap; the G rule). The fold's `reintern_text` path gains the
+track-list reintern (stylesheet-arena keys re-intern to the inline
+arena when folding into the group — the existing mechanism, extended
+mechanically). Twelve covers the design-system standard; larger is a
+named, D6-gated follow-up (an arena-page indirection, sketched, not
+built).
 
 ```rust
 struct GridTrackSize {            // Copy
