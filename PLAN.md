@@ -226,11 +226,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-481 layout proofs (473 in
+490 layout proofs (482 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-20 after grid T1);
-the off-spec registry (6 divergent proofs in 5 divergent-class rows, 5
-deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-21 after the PR-25 review
+fixes); the off-spec registry (6 divergent proofs in 5 divergent-class
+rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1682,6 +1682,28 @@ an f32 basis.
   moved on-spec. Next: T2 — spans, `grid-template-rows` sizing,
   `grid-auto-flow` (column/dense), `justify-items`/`justify-self`, and
   the `CellMap` placement generalization, designed first.
+
+- **2026-10-21 — the PR-25 third-party review's two findings
+  (architect-verified, fixed `2ba1bb8` and `8084d06` on
+  `grid/admission`).** (1) The `fr`/`%` track-size parse arms admitted
+  negative values (no sign check, unlike the px arm) — `-1fr` and
+  `-10%` interned instead of dropping; fixed with sign guards on all
+  four arms routed through the existing `parse_non_negative_f32`
+  helper (CSS Grid §7.1; counted drops, zero-inclusive for `0fr`/`0%`
+  per `<flex>`). (2) The fr sizing used a closed-form fraction and
+  omitted CSS Grid 1 §7.2.4's freeze-and-redistribute restart (Gecko
+  `FindUsedFlexFraction`, Blink `FindFrSize` with the sort-by-ratio
+  restart): `1fr 1fr` in a 400px container with a 300px min-content
+  item in column 0 sized to 300/50, leaving 50 unfilled, instead of
+  300/100. Fixed with the engines' iterate-and-freeze loop (fraction →
+  freeze every track whose `base > factor × fraction` at its base →
+  recompute → distribute), with the reviewer's exact scenario
+  (300/100) and the partial-freeze case (200/100/100) pinned. No
+  existing pin moved — all pre-existing fr pins use zero content bases,
+  where the loop is a no-op. The reviewer's non-blocking note
+  (stretch width overestimating row height for auto-margin items with
+  wrapping text) is recorded in the backlog. The grid T0/T1
+  coverage-map rows gained the new pin names. Proofs 481 → 490.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
