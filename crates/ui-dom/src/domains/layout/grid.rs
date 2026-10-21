@@ -660,9 +660,23 @@ fn resolve_grid_placement(
     // Pass 3: remaining autos per auto_flow (D4 step 3). The wrap bounds are
     // the implicit grid width/height established by the explicit tracks plus
     // the definite/locked items (auto items wrap rather than grow the minor
-    // axis), captured BEFORE this pass.
-    let grid_width = scratch.cell_map.width().max(col_count.max(1));
-    let grid_height = scratch.cell_map.height().max(explicit_row_count.max(1));
+    // axis), captured BEFORE this pass. The wrap bound includes the
+    // left/top-implicit tracks the offset creates (CSS Grid §8.5 step 3.2):
+    // columns are added to the implicit grid to accommodate the items, so the
+    // wrap point covers left-implicit + explicit tracks, matching the
+    // engines' explicit-origin translation.
+    let col_offset_as_usize =
+        usize::try_from(col_offset.max(0)).expect("column offset is non-negative");
+    let row_offset_as_usize =
+        usize::try_from(row_offset.max(0)).expect("row offset is non-negative");
+    let grid_width = scratch
+        .cell_map
+        .width()
+        .max(col_offset_as_usize + col_count.max(1));
+    let grid_height = scratch
+        .cell_map
+        .height()
+        .max(row_offset_as_usize + explicit_row_count.max(1));
     place_remaining_autos(
         scratch,
         order_range,

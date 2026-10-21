@@ -315,6 +315,41 @@ fn grid_abspos_child_static_position_uses_padding_box() {
 }
 
 #[test]
+// CSS Grid §8.4: an abs-pos child with BOTH axes definite resolves its static
+// position to the resolved grid-area rectangle (content box + track offset),
+// not the padding box. `grid-column: 2 / 3; grid-row: 2 / 3` in a
+// `100px 100px / 40px 40px` grid with `padding: 10px` → the area rect at
+// content (10, 10) + track offset (100, 40) = (110, 50).
+fn grid_abs_pos_child_static_position_uses_the_grid_area_rect() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "grid-template-rows", "40px 40px");
+    assert_style_set(&mut root, container, "padding", "10px");
+    let abs = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, abs, "position", "absolute");
+    assert_style_set(&mut root, abs, "grid-column", "2 / 3");
+    assert_style_set(&mut root, abs, "grid-row", "2 / 3");
+    assert_style_set(&mut root, abs, "width", "20px");
+    assert_style_set(&mut root, abs, "height", "20px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The abs child sits at the grid-area rectangle: content box (10, 10) plus
+    // the track offset (100, 40) = (110, 50), not the padding box (10, 10).
+    let abs_box = border_box_of(&root, abs);
+    assert_close(
+        abs_box.left_px,
+        110.0,
+        "abs child static left (grid area rect)",
+    );
+    assert_close(
+        abs_box.top_px,
+        50.0,
+        "abs child static top (grid area rect)",
+    );
+}
+
+#[test]
 // CSS Grid §6.6 / D7: a grid container with an empty template has one auto
 // column, so cards stack.
 fn grid_empty_template_is_one_auto_column() {
@@ -654,6 +689,55 @@ fn grid_column_start_end_integer_lines() {
     let second_box = border_box_of(&root, second);
     assert_close(second_box.left_px, 0.0, "auto item flows to column 1");
     assert_close(second_box.width_px, 100.0, "auto item width");
+}
+
+#[test]
+// CSS Grid §8.5 step 3.2: a negative definite line creates left-implicit
+// tracks via the container-wide explicit-origin offset (D2), and the auto
+// placement wrap bound must cover those tracks. `grid-column: -5 / span 1` in
+// a 2-track grid resolves to 0-based line −2 (offset `1 − min(start)` = 2), so
+// the item lands in the first of TWO left-implicit tracks; the two auto items
+// then fill the second left-implicit track and the first EXPLICIT track — the
+// wrap point covers left-implicit + explicit columns, not just the explicit
+// count (Blink `column_start_offset`, Gecko `mExplicitGridOffsetCol`).
+fn grid_left_implicit_tracks_join_auto_placement_at_the_offset() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "100px 100px", "200px");
+    assert_style_set(&mut root, container, "grid-auto-columns", "100px");
+    let definite = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, definite, "grid-column", "-5 / span 1");
+    assert_style_set(&mut root, definite, "height", "40px");
+    let first_auto = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first_auto, "height", "40px");
+    let second_auto = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second_auto, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The four columns' worth of layout (two left-implicit + two explicit) is
+    // shown by the three positions: the definite item at the first left-implicit
+    // track, the first auto at the second, and the second auto at the first
+    // EXPLICIT track (the row the unfixed wrap bound breaks).
+    let definite_box = border_box_of(&root, definite);
+    assert_close(
+        definite_box.left_px,
+        0.0,
+        "definite item in the first left-implicit track",
+    );
+    assert_close(definite_box.width_px, 100.0, "definite item width");
+    let first_box = border_box_of(&root, first_auto);
+    assert_close(
+        first_box.left_px,
+        100.0,
+        "first auto item in the second left-implicit track",
+    );
+    assert_close(first_box.width_px, 100.0, "first auto item width");
+    let second_box = border_box_of(&root, second_auto);
+    assert_close(
+        second_box.left_px,
+        200.0,
+        "second auto item in the first explicit track",
+    );
+    assert_close(second_box.width_px, 100.0, "second auto item width");
 }
 
 #[test]
