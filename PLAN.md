@@ -226,10 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-512 layout proofs (504 in
+515 layout proofs (507 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-21 after grid T2);
-the off-spec registry (6 divergent proofs in 5 divergent-class
+cross-cutting `robustness.rs`; updated 2026-10-21 after the span-overflow
+hang fix); the off-spec registry (6 divergent proofs in 5 divergent-class
 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
@@ -1728,6 +1728,25 @@ an f32 basis.
   (item3: left 0 → left 200). Proofs 490 → 512. Next: T3 —
   `grid-template-areas`, `grid-area`, named lines (the dashboard page
   shells), designed first.
+
+- **2026-10-21 — the PR-26 third-party review's blocking span-overflow
+  hang (fixed `c4b8c5b`) and the justify-vocabulary gate (`fb63eb2`).**
+  `find_auto_auto_row`/`find_auto_auto_col` looped forever when an auto
+  item's span exceeded the explicit track count (`grid-column: span 3`
+  in a 2-track grid — a LAYOUT HANG on admitted input). Fixed per CSS
+  Grid §8.5 step 3 exactly: the wrap bounds now fold the maximum auto
+  span (`max(cell_map.width(), col_offset + col_count, max_auto_span)`),
+  terminating by construction AND matching the spec's implicit-grid
+  expansion — the span-3 item gets its third, implicit column. The
+  before/after is unambiguous: 60s+ timeout kill on unfixed code,
+  0.00s completion fixed. Also fixed: the wider `<self-position>`
+  justify values (`flex-start`/`flex-end`/`baseline`/`safe`/`unsafe`)
+  are now a NAMED gate with a pin (the whole `place-*` declaration
+  drops with them per the G rule — deliberate, D6-gated, no longer
+  silent). The reviewer's non-blocking note (abs-pos lines more
+  negative than in-flow items falling back to the padding box via the
+  `try_from` path — graceful but inconsistent with the in-flow offset
+  pass) is recorded in the backlog. Proofs 512 → 515.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
