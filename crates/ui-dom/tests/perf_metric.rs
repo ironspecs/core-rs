@@ -603,7 +603,7 @@ fn flex_step1_scenario_setup() -> (World, RootDom, DomNodeSlotKey, DomNodeSlotKe
 /// Documented cause: anonymous inline-run merging (CSS Flexbox §4) — the item
 /// count replaces the child count.
 ///
-/// `FlexNodesRefolded` is the step-7 counter for flagged-and-width-changed
+/// `NodesRefolded` is the step-7 counter for flagged-and-width-changed
 /// re-measures. The scenario's items resolve at their measured widths
 /// (content-driven auto sizes; wrapping is line-level, not item shrink), so the
 /// observed refold fraction is 0 by construction — the ≤50% ceiling is not
@@ -630,7 +630,7 @@ fn flex_step1_scenario_measure_place_counts_stay_pinned() {
             (LayerPainted, 1),
             (FlexNodesMeasured, 20),
             (FlexNodesPlaced, 9),
-            (FlexNodesRefolded, 0),
+            (NodesRefolded, 0),
         ],
         "flex step 1 scenario",
     );
@@ -642,6 +642,89 @@ fn flex_step1_scenario_measure_place_counts_stay_pinned() {
     assert!(
         metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
         "flex step 1: LayoutUpdated before PaintUpdated"
+    );
+}
+
+/// Builds the grid card-wall scenario: a `repeat(3, 1fr)` grid in a 300px
+/// container holding 3 cards, each a div with one "aa" text child. Returns
+/// `(world, root, container, first_text)`.
+fn grid_card_wall_scenario_setup() -> (World, RootDom, DomNodeSlotKey, DomNodeSlotKey) {
+    let (world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let container = support::assert_append_div_to(&mut root, document_root);
+    support::assert_style_set(&mut root, container, "display", "grid");
+    support::assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(3, 1fr)",
+    );
+    support::assert_style_set(&mut root, container, "width", "300px");
+    let mut first_text = None;
+    for index in 0..3 {
+        let card = support::assert_append_div_to(&mut root, container);
+        let text = support::assert_append_text_to(&mut root, card, "aa");
+        if index == 0 {
+            first_text = Some(text);
+        }
+    }
+    let first_text = first_text.expect("first text item should exist");
+    (world, root, container, first_text)
+}
+
+/// The grid card-wall scenario pin: `GridNodesMeasured` counts one per record
+/// compute on the grid measure path, `GridNodesPlaced` one per child the grid
+/// placement walk relayouts, and `NodesRefolded` the flagged-and-width-changed
+/// re-measures (the shared counter renamed from `FlexNodesRefolded`).
+///
+/// Tree: grid (`repeat(3, 1fr)`, 300px) with 3 cards, each a div with one "aa"
+/// text child.
+///
+/// `GridNodesMeasured` is one per `compute_node_measurement` on the grid
+/// measure path. The measure fold measures each card's div (one) and its text
+/// child (one) = 6, then each card refolds at its resolved 100px track width
+/// (a card is `main_influences_cross` — it holds a wrapping text child — and
+/// its resolved width differs from its ~max-content measured width), re-measuring
+/// the div + text once more = 6. Total measured = 12.
+///
+/// `GridNodesPlaced` is one per child the grid placement walk relayouts: 3.
+///
+/// `NodesRefolded` is one per flagged-and-width-changed re-measure: 3 (every
+/// card stretches from its narrow measured width to the 100px fr track).
+#[test]
+fn grid_card_wall_measure_place_counts_stay_pinned() {
+    let (mut world, mut root, _container, first_text) = grid_card_wall_scenario_setup();
+    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    root.reset_metrics();
+    root.reset_node_metrics();
+
+    root.set_text_content(first_text, "longer text")
+        .expect("text update should succeed");
+    support::assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
+
+    assert_root_counts(
+        &root,
+        &[
+            (TextIntrinsicMeasurement, 1),
+            (TextStorageAllocation, 1),
+            (LayoutUpdated, 1),
+            (PaintUpdated, 1),
+            (PaintPlanBuilt, 1),
+            (LayerPainted, 1),
+            (GridNodesMeasured, 12),
+            (GridNodesPlaced, 3),
+            (NodesRefolded, 3),
+        ],
+        "grid card wall scenario",
+    );
+    let history = history_names(&root);
+    assert!(
+        metric_index(&history, GridNodesMeasured) < metric_index(&history, GridNodesPlaced),
+        "grid card wall: GridNodesMeasured before GridNodesPlaced (fold precedes placement)"
+    );
+    assert!(
+        metric_index(&history, LayoutUpdated) < metric_index(&history, PaintUpdated),
+        "grid card wall: LayoutUpdated before PaintUpdated"
     );
 }
 

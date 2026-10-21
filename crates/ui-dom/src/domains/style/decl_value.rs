@@ -18,7 +18,7 @@
 //!   their intent
 
 use super::cascade_tier::CascadeTier;
-use super::computed::{GridAutoFlowKw, GridTrackKind, GridTrackSize};
+use super::computed::{GridAutoFlowKw, GridTrackSize, TrackBreadth, TrackMaxBreadth};
 use super::keyword::Keyword;
 use crate::types::DomAttributeValue;
 
@@ -191,25 +191,55 @@ fn format_track_list(list: &[GridTrackSize]) -> String {
         .join(" ")
 }
 
-/// Formats one grid `<track-size>` to its canonical CSS token.
+/// Formats one grid `<track-size>` to its canonical CSS token. A plain track
+/// (matching min and max breadths) formats as its single keyword; a
+/// `minmax(a, b)` whose bounds differ formats as `minmax(a, b)`; an `fr` max
+/// formats as `Nfr` (correction 3 — percent bounds format as `"%"`, never the
+/// former hardcoded `"px"`).
 fn format_grid_track_size(size: &GridTrackSize) -> String {
-    match size.kind {
-        GridTrackKind::Auto => "auto".to_string(),
-        GridTrackKind::Length => format!("{}px", size.min_px),
-        GridTrackKind::Percent => format!("{}%", size.min_px),
-        GridTrackKind::MinContent => "min-content".to_string(),
-        GridTrackKind::MaxContent => "max-content".to_string(),
-        GridTrackKind::Minmax => {
-            let max = if size.max_px == GridTrackSize::MAX_CONTENT_BOUND {
-                "max-content".to_string()
-            } else if size.max_px == GridTrackSize::MIN_CONTENT_BOUND {
-                "min-content".to_string()
-            } else {
-                format!("{}px", size.max_px)
-            };
-            format!("minmax({}px, {max})", size.min_px)
+    if let TrackMaxBreadth::Fr(fr) = size.max {
+        return format!("{fr}fr");
+    }
+    match (size.min, size.max) {
+        (TrackBreadth::Auto, TrackMaxBreadth::Auto) => "auto".to_string(),
+        (TrackBreadth::MinContent, TrackMaxBreadth::MinContent) => "min-content".to_string(),
+        (TrackBreadth::MaxContent, TrackMaxBreadth::MaxContent) => "max-content".to_string(),
+        (TrackBreadth::Px(min), TrackMaxBreadth::Px(max)) if min.to_bits() == max.to_bits() => {
+            format!("{min}px")
         }
-        GridTrackKind::Fr(fr) => format!("{fr}fr"),
+        (TrackBreadth::Percent(min), TrackMaxBreadth::Percent(max))
+            if min.to_bits() == max.to_bits() =>
+        {
+            format!("{min}%")
+        }
+        _ => format!(
+            "minmax({}, {})",
+            format_track_breadth(size.min),
+            format_track_max_breadth(size.max)
+        ),
+    }
+}
+
+/// Formats one `TrackBreadth` to its canonical CSS token.
+fn format_track_breadth(breadth: TrackBreadth) -> String {
+    match breadth {
+        TrackBreadth::Auto => "auto".to_string(),
+        TrackBreadth::Px(px) => format!("{px}px"),
+        TrackBreadth::Percent(percent) => format!("{percent}%"),
+        TrackBreadth::MinContent => "min-content".to_string(),
+        TrackBreadth::MaxContent => "max-content".to_string(),
+    }
+}
+
+/// Formats one `TrackMaxBreadth` to its canonical CSS token.
+fn format_track_max_breadth(breadth: TrackMaxBreadth) -> String {
+    match breadth {
+        TrackMaxBreadth::Auto => "auto".to_string(),
+        TrackMaxBreadth::Px(px) => format!("{px}px"),
+        TrackMaxBreadth::Percent(percent) => format!("{percent}%"),
+        TrackMaxBreadth::MinContent => "min-content".to_string(),
+        TrackMaxBreadth::MaxContent => "max-content".to_string(),
+        TrackMaxBreadth::Fr(fr) => format!("{fr}fr"),
     }
 }
 

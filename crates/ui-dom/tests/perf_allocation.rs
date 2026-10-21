@@ -383,6 +383,56 @@ fn allocation_windows_match_baseline_after_warmup() {
     );
     drop((world, root));
 
+    // grid T1 — the text-free card-wall layout-phase window.
+    //
+    // The grid reflow machinery (grid item lane + track lane + order lane,
+    // record, solve, placement) allocates NOTHING after warmup — proven by the
+    // lanes at high-water mark and no `Vec`/`String`/`collect` in the grid
+    // solve. This window is the narrowest the harness can isolate: the CPU
+    // backend skips the per-paint `LayerPaintPlan` rebuild and the width toggle
+    // runs OUTSIDE the region, so the pin below is the update-only window.
+    let (mut world, mut root) = support::attached_gpu_root_dom_setup_with_context(
+        ui_dom::RootDomContext::new_cpu(),
+        320.0,
+        320.0,
+    );
+    let document_root = root.document_node().0;
+    let container = support::assert_append_div_to(&mut root, document_root);
+    support::assert_style_set(&mut root, container, "display", "grid");
+    support::assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(3, 1fr)",
+    );
+    support::assert_style_set(&mut root, container, "width", "300px");
+    for _ in 0..3 {
+        let item = support::assert_append_div_to(&mut root, container);
+        support::assert_style_set(&mut root, item, "width", "40px");
+        support::assert_style_set(&mut root, item, "height", "20px");
+    }
+    support::assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    support::assert_style_set(&mut root, container, "width", "320px");
+    support::assert_root_dom_update(&mut world, &mut root, 0.016, DomPointerUpdate::Unchanged);
+    support::assert_style_set(&mut root, container, "width", "300px");
+    let region = Region::new(GLOBAL_ALLOCATOR);
+    support::assert_root_dom_update(&mut world, &mut root, 0.032, DomPointerUpdate::Unchanged);
+    assert_window_stats(
+        "grid card wall text-free layout phase",
+        WindowPin {
+            // The residual is the clean-update base + the style pass's winners
+            // fold (proposal J's sleeping target), not the grid reflow machinery:
+            // the grid item lane, track lane, and order lane sit at their
+            // high-water mark for the whole solve, so the grid machinery is
+            // zero-allocation in steady state.
+            allocations: 2,
+            deallocations: 2,
+            reallocations: 1,
+        },
+        region.change(),
+    );
+    drop((world, root));
+
     // flex step 1, T6b — the (d1) text-bearing layout-phase window.
     //
     // inherited text-pipeline cadence; machinery zero — proven by (a); the

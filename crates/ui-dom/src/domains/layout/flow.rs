@@ -271,11 +271,9 @@ where
     }
 }
 
-/// D5 interim solver arm (T0): a grid container lays out as a BLOCK container
-/// (children in normal block flow, grid properties inert but held). This is the
-/// fail-closed interim that keeps T0's scope honest (routing + admission without
-/// a solver) and is REPLACED by T1's solver in the same arc. NOT a divergence:
-/// a named, gated interim with its own registry row and a pin.
+/// The T1 grid solver arm: routes `LayoutSolverKind::Grid` to the real card-wall
+/// solver (`grid.rs`). The D5 interim (T0's block fallback) is gone — a grid
+/// container now solves as a grid (`GRID_STEP2_DESIGN.md`).
 fn relayout_grid_node<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
@@ -288,7 +286,7 @@ fn relayout_grid_node<R>(
 where
     R: DomLayoutResolver + ?Sized,
 {
-    relayout_block_node(
+    super::grid::relayout_grid_node(
         root_dom,
         tree_size,
         key,

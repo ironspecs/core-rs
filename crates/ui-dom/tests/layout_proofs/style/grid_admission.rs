@@ -25,8 +25,7 @@ use ui_dom::{
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_close, assert_decl_drop, assert_node_layout,
-    assert_rect_op_geometry, assert_root_dom_update, assert_style_set,
-    attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    assert_root_dom_update, assert_style_set, attached_gpu_root_dom_default_viewport_setup,
 };
 
 /// Returns `(world, root, target)`: a fresh root with one div target under the
@@ -205,56 +204,5 @@ fn grid_item_margins_are_contained_at_the_boundary() {
         assert_node_layout(&root, item).content_height_px,
         20.0,
         "grid item: the contained 20px is a real first-in-flow offset",
-    );
-}
-
-#[test]
-fn grid_container_at_t0_lays_out_as_block_container() {
-    // D5 interim: a grid container lays out as a BLOCK container (children in
-    // normal block flow, grid properties inert but held). A div with
-    // `display: grid; grid-template-columns: 100px 1fr` and a fixed size stages
-    // the same single block rect as an unstyled block div.
-    let (mut world, mut root, target) = attached_target();
-    assert_style_set(&mut root, target, "display", "grid");
-    assert_style_set(&mut root, target, "grid-template-columns", "100px 1fr");
-    assert_style_set(&mut root, target, "width", "80px");
-    assert_style_set(&mut root, target, "height", "40px");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-
-    assert_eq!(
-        root.computed_style(target)
-            .expect("target")
-            .as_box()
-            .display,
-        DisplayKw::Grid,
-        "display: grid resolves to the Grid computed value",
-    );
-
-    let plans = take_staged_layer_paint_plans(&root);
-    assert_eq!(plans.len(), 1, "one document-root layer plan");
-    assert_eq!(
-        plans[0].rects.len(),
-        1,
-        "one block rect (block-flow interim)"
-    );
-    assert_rect_op_geometry(
-        &plans[0].rects[0],
-        0.0,
-        0.0,
-        80.0,
-        40.0,
-        "grid container lays out as a block div at T0",
-    );
-
-    // Block-outer (D1): a grid container with auto width fills the containing
-    // block width, exactly like a block div (not inline shrink-to-fit).
-    let (mut world, mut root, target) = attached_target();
-    assert_style_set(&mut root, target, "display", "grid");
-    assert_style_set(&mut root, target, "grid-template-columns", "100px 1fr");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    assert_close(
-        assert_node_layout(&root, target).width_px,
-        320.0,
-        "grid container auto width fills the viewport (block-outer)",
     );
 }

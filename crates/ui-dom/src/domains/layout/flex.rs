@@ -360,6 +360,7 @@ where
             container_main_size_px,
         },
         resolver,
+        RootDomMetricName::FlexNodesMeasured,
     )?;
     let resolved_container_main_size_px =
         container_main_size_px.unwrap_or(measured_solve.main_size_px);
@@ -424,6 +425,7 @@ where
             container_main_size_px,
         },
         resolver,
+        RootDomMetricName::FlexNodesMeasured,
     )
 }
 
@@ -432,6 +434,7 @@ fn build_staged_measurement_solve_from_container<R>(
     tree_size: (f32, f32),
     request: &StagedMeasurementRequest,
     resolver: &mut R,
+    metric: RootDomMetricName,
 ) -> Result<FlexContainerSolve, DomError>
 where
     R: DomLayoutResolver + ?Sized,
@@ -469,6 +472,7 @@ where
                 &request.child_context,
                 white_space,
                 resolver,
+                metric,
             )?;
             if !(run.all_members_text_and_all_whitespace && container_mode_is_collapse(white_space))
             {
@@ -502,6 +506,7 @@ where
                 &request.child_context,
                 request.container_style.main_axis,
                 resolver,
+                metric,
             )?;
             push_flex_item_into_lanes(&mut root_dom.layout_scratch, item, current_child_key);
             child_key = next_child_key;
@@ -639,13 +644,14 @@ fn anonymous_inline_run_item_view(
 /// inline accumulation). Joint line-breaking happens in the placement path,
 /// not here. `first_child_key` is a run member (the caller classified it);
 /// subsequent siblings are classified here.
-fn measure_inline_run<R>(
+pub(super) fn measure_inline_run<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
     first_child_key: DomNodeSlotKey,
     child_context: &LayoutContext,
     white_space: DomWhiteSpace,
     resolver: &mut R,
+    metric: RootDomMetricName,
 ) -> Result<(RunAccumulator, Option<DomNodeSlotKey>, f32), DomError>
 where
     R: DomLayoutResolver + ?Sized,
@@ -689,6 +695,7 @@ where
             child_style,
             child_inherited_style,
             resolver,
+            metric,
         )?;
         flow.has_children = true;
         flow.inline_left_px += child_flow.width_px;
@@ -715,6 +722,7 @@ fn measure_one_flex_item<R>(
     child_context: &LayoutContext,
     main_axis: FlexAxis,
     resolver: &mut R,
+    metric: RootDomMetricName,
 ) -> Result<FlexItemView, DomError>
 where
     R: DomLayoutResolver + ?Sized,
@@ -737,6 +745,7 @@ where
         child_style,
         child_inherited_style,
         resolver,
+        metric,
     )?;
     let node = node_for_key(root_dom, child_key)?;
     // The child's record was written by the measurement walk just exited (a
@@ -847,7 +856,7 @@ fn blockified_flex_item_style(mut style: NodeStyle) -> NodeStyle {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn measure_tree_walker_node_without_layout_write<R>(
+pub(super) fn measure_tree_walker_node_without_layout_write<R>(
     root_dom: &mut RootDom,
     tree_size: (f32, f32),
     key: DomNodeSlotKey,
@@ -856,6 +865,7 @@ fn measure_tree_walker_node_without_layout_write<R>(
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
+    metric: RootDomMetricName,
 ) -> Result<FlowSize, DomError>
 where
     R: DomLayoutResolver + ?Sized,
@@ -867,19 +877,32 @@ where
         return Ok(FlowSize::default());
     }
     match style.display {
-        LayoutDisplay::Block
-        | LayoutDisplay::InlineBlock
-        | LayoutDisplay::Grid
-        | LayoutDisplay::InlineGrid => measure_block_node_without_layout_write(
-            root_dom,
-            tree_size,
-            key,
-            context,
-            wrap_width_override,
-            style,
-            inherited_style,
-            resolver,
-        ),
+        LayoutDisplay::Block | LayoutDisplay::InlineBlock => {
+            measure_block_node_without_layout_write(
+                root_dom,
+                tree_size,
+                key,
+                context,
+                wrap_width_override,
+                style,
+                inherited_style,
+                resolver,
+                metric,
+            )
+        }
+        LayoutDisplay::Grid | LayoutDisplay::InlineGrid => {
+            super::grid::measure_grid_node_without_layout_write(
+                root_dom,
+                tree_size,
+                key,
+                context,
+                wrap_width_override,
+                style,
+                inherited_style,
+                resolver,
+                metric,
+            )
+        }
         LayoutDisplay::Inline => measure_inline_node_without_layout_write(
             root_dom,
             tree_size,
@@ -889,6 +912,7 @@ where
             style,
             inherited_style,
             resolver,
+            metric,
         ),
         // CSS Display 3 §2.7 blockification: a flex item's `inline-flex`
         // outer display blockifies to `flex` (like `inline-block` → `block`),
@@ -906,6 +930,7 @@ where
             style,
             inherited_style,
             resolver,
+            metric,
         ),
         LayoutDisplay::None => unreachable!("display none handled before measurement dispatch"),
     }
@@ -921,6 +946,7 @@ fn measure_flex_node_without_layout_write<R>(
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
+    metric: RootDomMetricName,
 ) -> Result<FlowSize, DomError>
 where
     R: DomLayoutResolver + ?Sized,
@@ -968,6 +994,7 @@ where
             container_main_size_px,
         },
         resolver,
+        metric,
     )?;
     let resolved_container_main_size_px =
         container_main_size_px.unwrap_or(measured_solve.main_size_px);
@@ -1011,6 +1038,7 @@ where
             resolved_solve.main_size_px,
             resolved_solve.cross_size_px,
         ),
+        metric,
     )?;
     root_dom.layout_scratch.items.truncate(saved_item_len);
     root_dom.layout_scratch.order.truncate(saved_order_len);
@@ -1110,6 +1138,7 @@ fn measure_block_node_without_layout_write<R>(
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
+    metric: RootDomMetricName,
 ) -> Result<FlowSize, DomError>
 where
     R: DomLayoutResolver + ?Sized,
@@ -1141,6 +1170,7 @@ where
             child_style,
             child_inherited_style,
             resolver,
+            metric,
         )?;
         flow.has_children = true;
         update_measured_block_flow(&mut flow, child_flow, child_style.display);
@@ -1164,6 +1194,7 @@ where
         auto_content_width_px,
         (min_content_width_px, max_content_width_px),
         auto_content_height_px,
+        metric,
     )
 }
 
@@ -1177,6 +1208,7 @@ fn measure_inline_node_without_layout_write<R>(
     style: NodeStyle,
     inherited_style: InheritedStyleContext,
     resolver: &mut R,
+    metric: RootDomMetricName,
 ) -> Result<FlowSize, DomError>
 where
     R: DomLayoutResolver + ?Sized,
@@ -1207,6 +1239,7 @@ where
             child_style,
             child_inherited_style,
             resolver,
+            metric,
         )?;
         flow.has_children = true;
         flow.inline_left_px += child_flow.width_px;
@@ -1230,6 +1263,7 @@ where
         auto_content_width_px,
         (min_content_width_px, max_content_width_px),
         auto_content_height_px,
+        metric,
     )
 }
 
@@ -1240,6 +1274,7 @@ fn measure_exited_node_flow_size(
     auto_content_width_px: f32,
     auto_content_width_contribution_px: (f32, f32),
     auto_content_height_px: f32,
+    metric: RootDomMetricName,
 ) -> Result<FlowSize, DomError> {
     let (auto_min_content_width_px, auto_max_content_width_px) = auto_content_width_contribution_px;
     // Record-serving placement (flex arc step 7, D3): a width-unchanged text
@@ -1332,10 +1367,11 @@ fn measure_exited_node_flow_size(
     if !entered.is_text_node && node_has_main_influences_cross_child(root_dom, key)? {
         next_record.flags = next_record.flags.with_main_influences_cross();
     }
-    // FlexNodesMeasured is a work counter, so it increments per COMPUTE, not
+    // The measure counter (FlexNodesMeasured on the flex path, GridNodesMeasured
+    // on the grid path) is a work counter, so it increments per COMPUTE, not
     // per record write: an unchanged record below still costs one compute on
-    // the flex measure path.
-    root_dom.increment_metric(RootDomMetricName::FlexNodesMeasured);
+    // the measure path.
+    root_dom.increment_metric(metric);
     let _ = write_measurement_if_changed(&mut root_dom.nodes, key, next_record)?;
     Ok(layout_flow_size(
         entered.style,
@@ -1349,7 +1385,7 @@ fn measure_exited_node_flow_size(
 /// `main_influences_cross` (wrapping text / percentage cross) or
 /// `replaced_ratio`. The flag is propagated bottom-up so a container's own
 /// record inherits the width-dependence of its content.
-fn node_has_main_influences_cross_child(
+pub(super) fn node_has_main_influences_cross_child(
     root_dom: &RootDom,
     key: DomNodeSlotKey,
 ) -> Result<bool, DomError> {
@@ -2108,7 +2144,7 @@ fn claim_resolution_range(scratch: &mut LayoutScratch, order_range: LaneRange) -
 /// ratio-derived cross lands at placement via the width override + no height
 /// override); a `main_influences_cross`-flagged item whose resolved main
 /// differs from its hypothetical main REFOLDS (re-measures its subtree at the
-/// resolved main width, counted by `FlexNodesRefolded`); everything else keeps
+/// resolved main width, counted by `NodesRefolded`); everything else keeps
 /// the measured cross. The line lane's measured `cross_size_px` is then
 /// overwritten with the max resolved item cross + cross margins.
 #[allow(clippy::too_many_arguments)]
@@ -2173,7 +2209,7 @@ where
             .get_mut(dom_index)
             .view
             .resolved_cross_size_px = refolded_cross;
-        root_dom.increment_metric(RootDomMetricName::FlexNodesRefolded);
+        root_dom.increment_metric(RootDomMetricName::NodesRefolded);
     }
     // Phase 2: line cross = max resolved item cross + cross margins.
     update_line_cross_sizes(&mut root_dom.layout_scratch, order_range, line_range);
@@ -2255,6 +2291,7 @@ where
         child_style,
         child_inherited_style,
         resolver,
+        RootDomMetricName::FlexNodesMeasured,
     )?;
     Ok(cross_axis_flow_size(main_axis, child_flow) - cross_margins_px)
 }
@@ -3483,7 +3520,7 @@ fn excluded_flex_child_static_cross_px(
 /// Writes a node's retained border-box origin (the positioned-layer offset
 /// composite reads back via `relative_offset_for_node`). Mirrors `write_node_box`
 /// in `flow.rs`; scoped to the abs-child static-position write.
-fn write_node_border_box_position(
+pub(super) fn write_node_border_box_position(
     root_dom: &mut RootDom,
     key: DomNodeSlotKey,
     left_px: f32,

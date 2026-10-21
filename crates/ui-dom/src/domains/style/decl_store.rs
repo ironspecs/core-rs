@@ -174,24 +174,21 @@ mod tests {
 
     #[test]
     fn intern_track_list_dedups_by_content() {
-        use crate::domains::style::computed::{GridTrackKind, GridTrackSize};
+        use crate::domains::style::computed::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
 
         let list = [
             GridTrackSize {
-                kind: GridTrackKind::Length,
-                min_px: 100.0,
-                max_px: 0.0,
+                min: TrackBreadth::Px(100.0),
+                max: TrackMaxBreadth::Px(100.0),
             },
             GridTrackSize {
-                kind: GridTrackKind::Fr(1.0),
-                min_px: 0.0,
-                max_px: 0.0,
+                min: TrackBreadth::Auto,
+                max: TrackMaxBreadth::Fr(1.0),
             },
         ];
         let other = [GridTrackSize {
-            kind: GridTrackKind::Length,
-            min_px: 200.0,
-            max_px: 0.0,
+            min: TrackBreadth::Px(200.0),
+            max: TrackMaxBreadth::Px(200.0),
         }];
 
         let mut store = DeclStore::new();

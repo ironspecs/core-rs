@@ -79,7 +79,7 @@ pub use flex_basis_kw::FlexBasisKw;
 pub use flex_direction_kw::FlexDirectionKw;
 pub use flex_wrap_kw::FlexWrapKw;
 pub use grid_auto_flow_kw::GridAutoFlowKw;
-pub use grid_track_size::{GridTrackKind, GridTrackSize};
+pub use grid_track_size::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
 pub use group_dirty_classification::GroupDirtyClassification;
 pub use justify_content_kw::JustifyContentKw;
 pub use node_presentation::NodePresentation;

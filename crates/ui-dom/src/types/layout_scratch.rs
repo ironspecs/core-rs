@@ -27,7 +27,9 @@
 //! file's unit tests; they are the designed high-water observability surface
 //! the step-6 scenario pin reads (`FLEX_STEP1_EXECUTION.md` §10 R4).
 
-use crate::domains::layout::{FlexItemLane, FlexLineLane, FlexOrderLane, FlexResolutionLane};
+use crate::domains::layout::{
+    FlexItemLane, FlexLineLane, FlexOrderLane, FlexResolutionLane, GridItemLane, GridTrackLane,
+};
 
 #[cfg(test)]
 use crate::domains::layout::{
@@ -55,6 +57,12 @@ pub(crate) struct LayoutScratch {
     pub(crate) order: FlexOrderLane,
     pub(crate) lines: FlexLineLane,
     pub(crate) resolution: FlexResolutionLane,
+    /// The grid item lane (T1): one `GridItemView` per grid child in DOM order
+    /// plus its auto-placed cell and resolved size (`GRID_MAPPING.md` §3).
+    pub(crate) grid_items: GridItemLane,
+    /// The grid track lane (T1): the explicit column tracks and implicit row
+    /// tracks, sized in place per `GRID_MAPPING.md` D1.
+    pub(crate) tracks: GridTrackLane,
     /// The per-update layout pass generation, incremented once per
     /// `reset_for_update`. The flex measure fold stamps each record it writes
     /// with this value (flex arc step 7, D3); the record-serving placement
@@ -72,6 +80,8 @@ impl LayoutScratch {
         self.order.reset();
         self.lines.reset();
         self.resolution.reset();
+        self.grid_items.reset();
+        self.tracks.reset();
         self.layout_pass = self.layout_pass.wrapping_add(1);
     }
 

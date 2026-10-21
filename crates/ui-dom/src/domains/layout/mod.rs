@@ -32,6 +32,9 @@ mod flex_order_lane;
 mod flex_resolution_lane;
 mod flex_wrap_mode;
 mod flow;
+mod grid;
+mod grid_item_lane;
+mod grid_track_lane;
 mod identity_dom_layout_resolver;
 mod layout_pass_result;
 mod measurement_flags;
@@ -65,6 +68,12 @@ pub(crate) use flex_line_lane::{FlexLineEntry, FlexLineLane};
 pub(crate) use flex_order_lane::{FlexOrderLane, FlexOrderLaneEntry};
 #[allow(unused_imports)]
 pub(crate) use flex_resolution_lane::{FlexResolutionEntry, FlexResolutionLane, ViolationClass};
+#[allow(unused_imports)]
+pub(crate) use grid::GridItemView;
+#[allow(unused_imports)]
+pub(crate) use grid_item_lane::{GridItemLane, GridItemLaneEntry};
+#[allow(unused_imports)]
+pub(crate) use grid_track_lane::{GridTrackEntry, GridTrackLane};
 
 pub use walker::{node_box, node_layout_dirty, node_paint_dirty, root_key};
 

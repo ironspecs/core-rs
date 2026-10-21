@@ -10914,7 +10914,7 @@ fn flex_line_cross_reflects_resolved_text_wrap_height() {
 }
 
 #[test]
-// Flex arc step 7, D4: `FlexNodesRefolded` counts one per flagged-and-width-
+// Flex arc step 7, D4: `NodesRefolded` counts one per flagged-and-width-
 // changed re-measure. A shrinking text-bearing item refolds once; a width-
 // unchanged text-bearing item does not refold.
 fn flex_nodes_refolded_counts_flagged_width_changed_items() {
@@ -10929,7 +10929,7 @@ fn flex_nodes_refolded_counts_flagged_width_changed_items() {
     assert_append_text_to(&mut root, item, "aa bb cc dd ee");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
-        root.metrics().count(RootDomMetricName::FlexNodesRefolded),
+        root.metrics().count(RootDomMetricName::NodesRefolded),
         1,
         "a shrinking text-bearing item refolds once",
     );
@@ -10946,7 +10946,7 @@ fn flex_nodes_refolded_counts_flagged_width_changed_items() {
     assert_append_text_to(&mut root, item, "aa bb cc dd ee");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
-        root.metrics().count(RootDomMetricName::FlexNodesRefolded),
+        root.metrics().count(RootDomMetricName::NodesRefolded),
         0,
         "a width-unchanged text-bearing item does not refold",
     );
@@ -10978,7 +10978,7 @@ fn flex_refolded_item_cross_size_excludes_cross_margins() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
 
     assert_eq!(
-        root.metrics().count(RootDomMetricName::FlexNodesRefolded),
+        root.metrics().count(RootDomMetricName::NodesRefolded),
         1,
         "a shrinking text-bearing item refolds once",
     );

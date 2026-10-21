@@ -5,5 +5,6 @@ mod content_height;
 mod fixed_layers;
 mod flex_layout;
 mod form_control_auto_size;
+mod grid_layout;
 mod normal_flow;
 mod replaced_elements;

@@ -82,9 +82,9 @@ pub use computed::{
     AlignContentKw, AlignItemsKw, BoxLength, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
     ComputedFlexGroup, ComputedFontGroup, ComputedGridGroup, ComputedGroups, ComputedStyleRef,
     ComputedTextGroup, ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw,
-    FlexDirectionKw, FlexWrapKw, GridAutoFlowKw, GridTrackKind, GridTrackSize, JustifyContentKw,
-    NodePresentation, OverflowKw, PositionKw, ResolvedTransitionLonghands,
-    TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
+    FlexDirectionKw, FlexWrapKw, GridAutoFlowKw, GridTrackSize, JustifyContentKw, NodePresentation,
+    OverflowKw, PositionKw, ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY,
+    TrackBreadth, TrackMaxBreadth, TransitionLonghandProperty,
 };
 pub(crate) use decl_parse::{name_is_presentation, parse_declaration_block};
 pub(crate) use decl_value::{decl_value_to_css_string, decl_value_to_dom_value};
@@ -646,32 +646,56 @@ fn hash_decl_value(hasher: &mut std::collections::hash_map::DefaultHasher, value
     }
 }
 
-/// Hashes one `GridTrackSize` by kind plus the `to_bits` of its numeric slots
-/// (`f32` does not implement `Hash` in this toolchain, so the bits are hashed
-/// directly — consistent with the `PartialEq` bit equality the group relies on).
+/// Hashes one `GridTrackSize` by its min/max breadth pair plus the `to_bits`
+/// of its numeric slots (`f32` does not implement `Hash` in this toolchain, so
+/// the bits are hashed directly — consistent with the `PartialEq` bit equality
+/// the group relies on). The percent-vs-px unit is part of the identity
+/// (`GRID_STEP2_DESIGN.md` correction 3).
 fn hash_grid_track_size(
     hasher: &mut std::collections::hash_map::DefaultHasher,
     size: GridTrackSize,
 ) {
-    match size.kind {
-        GridTrackKind::Auto => 0u8.hash(hasher),
-        GridTrackKind::Length => {
+    hash_track_breadth(hasher, size.min);
+    hash_track_max_breadth(hasher, size.max);
+}
+
+fn hash_track_breadth(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    breadth: TrackBreadth,
+) {
+    match breadth {
+        TrackBreadth::Auto => 0u8.hash(hasher),
+        TrackBreadth::Px(px) => {
             1u8.hash(hasher);
-            size.min_px.to_bits().hash(hasher);
+            px.to_bits().hash(hasher);
         }
-        GridTrackKind::Percent => {
+        TrackBreadth::Percent(percent) => {
             2u8.hash(hasher);
-            size.min_px.to_bits().hash(hasher);
+            percent.to_bits().hash(hasher);
         }
-        GridTrackKind::MinContent => 3u8.hash(hasher),
-        GridTrackKind::MaxContent => 4u8.hash(hasher),
-        GridTrackKind::Minmax => {
+        TrackBreadth::MinContent => 3u8.hash(hasher),
+        TrackBreadth::MaxContent => 4u8.hash(hasher),
+    }
+}
+
+fn hash_track_max_breadth(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    breadth: TrackMaxBreadth,
+) {
+    match breadth {
+        TrackMaxBreadth::Auto => 0u8.hash(hasher),
+        TrackMaxBreadth::Px(px) => {
+            1u8.hash(hasher);
+            px.to_bits().hash(hasher);
+        }
+        TrackMaxBreadth::Percent(percent) => {
+            2u8.hash(hasher);
+            percent.to_bits().hash(hasher);
+        }
+        TrackMaxBreadth::MinContent => 3u8.hash(hasher),
+        TrackMaxBreadth::MaxContent => 4u8.hash(hasher),
+        TrackMaxBreadth::Fr(fr) => {
             5u8.hash(hasher);
-            size.min_px.to_bits().hash(hasher);
-            size.max_px.to_bits().hash(hasher);
-        }
-        GridTrackKind::Fr(fr) => {
-            6u8.hash(hasher);
             fr.to_bits().hash(hasher);
         }
     }

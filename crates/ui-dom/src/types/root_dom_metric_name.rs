@@ -115,11 +115,23 @@ pub enum RootDomMetricName {
     /// resolved main size during the item-cross-at-resolved-main step (one
     /// increment per refold — D1.2's `main_influences_cross` re-measure, flex
     /// arc step 7). Width-unchanged items never refold, so an unchanged
-    /// scenario's refold fraction is zero by construction.
-    FlexNodesRefolded,
+    /// scenario's refold fraction is zero by construction. Shared with the grid
+    /// solver (the T1 row-sizing refold of a flagged-and-width-changed item at
+    /// its cell track width, `GRID_STEP2_DESIGN.md` D4): one mechanism, one
+    /// counter — the rename from `FlexNodesRefolded` lands with the grid T1
+    /// arc's documented re-pin.
+    NodesRefolded,
+    /// Number of nodes whose measurement record was computed in the grid
+    /// measurement fold. One increment per `compute_node_measurement` on the
+    /// grid measure path (the grid analog of `FlexNodesMeasured`).
+    GridNodesMeasured,
+    /// Number of child relayouts performed during active grid placement (one
+    /// increment per `relayout_active_grid_child` call, i.e. per child the grid
+    /// placement walk relayouts).
+    GridNodesPlaced,
 }
 
-pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 41] = [
+pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 43] = [
     RootDomMetricName::HoverPseudoStateSet,
     RootDomMetricName::HoverPseudoStateCleared,
     RootDomMetricName::StyleUpdated,
@@ -160,7 +172,9 @@ pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 41] = [
     RootDomMetricName::StylePassNodeChanged,
     RootDomMetricName::FlexNodesMeasured,
     RootDomMetricName::FlexNodesPlaced,
-    RootDomMetricName::FlexNodesRefolded,
+    RootDomMetricName::NodesRefolded,
+    RootDomMetricName::GridNodesMeasured,
+    RootDomMetricName::GridNodesPlaced,
 ];
 
 impl RootDomMetricName {
@@ -211,7 +225,9 @@ impl RootDomMetricName {
             Self::StylePassNodeChanged => 37,
             Self::FlexNodesMeasured => 38,
             Self::FlexNodesPlaced => 39,
-            Self::FlexNodesRefolded => 40,
+            Self::NodesRefolded => 40,
+            Self::GridNodesMeasured => 41,
+            Self::GridNodesPlaced => 42,
         }
     }
 }

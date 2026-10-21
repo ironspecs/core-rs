@@ -19,11 +19,8 @@
 //!   auto-track sizes, empty explicit tracks.
 
 use super::grid_auto_flow_kw::GridAutoFlowKw;
-use super::grid_track_size::GridTrackSize;
+use super::grid_track_size::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
 use crate::domains::style::decl_value::GridTrackListKey;
-
-#[cfg(test)]
-use super::GridTrackKind;
 
 /// Computed values of the non-inherited grid longhands (the T1 set).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,14 +49,12 @@ impl ComputedGridGroup {
             template_rows: GridTrackListKey::default(),
             auto_flow: GridAutoFlowKw::Row,
             auto_columns: GridTrackSize {
-                kind: super::grid_track_size::GridTrackKind::Auto,
-                min_px: 0.0,
-                max_px: 0.0,
+                min: TrackBreadth::Auto,
+                max: TrackMaxBreadth::Auto,
             },
             auto_rows: GridTrackSize {
-                kind: super::grid_track_size::GridTrackKind::Auto,
-                min_px: 0.0,
-                max_px: 0.0,
+                min: TrackBreadth::Auto,
+                max: TrackMaxBreadth::Auto,
             },
         }
     }
@@ -76,9 +71,8 @@ mod tests {
         assert_eq!(grid.template_columns, GridTrackListKey::default());
         assert_eq!(grid.template_rows, GridTrackListKey::default());
         assert_eq!(grid.auto_flow, GridAutoFlowKw::Row);
-        assert_eq!(grid.auto_columns.kind, GridTrackKind::Auto);
-        assert_eq!(grid.auto_columns.min_px, 0.0);
-        assert_eq!(grid.auto_columns.max_px, 0.0);
-        assert_eq!(grid.auto_rows.kind, GridTrackKind::Auto);
+        assert_eq!(grid.auto_columns.min, TrackBreadth::Auto);
+        assert_eq!(grid.auto_columns.max, TrackMaxBreadth::Auto);
+        assert_eq!(grid.auto_rows.min, TrackBreadth::Auto);
     }
 }

@@ -958,7 +958,9 @@ mod tests {
     #[test]
     fn grid_resolver_writes_the_group_fields() {
         use crate::domains::style::computed::grid_auto_flow_kw::GridAutoFlowKw;
-        use crate::domains::style::computed::grid_track_size::{GridTrackKind, GridTrackSize};
+        use crate::domains::style::computed::grid_track_size::{
+            GridTrackSize, TrackBreadth, TrackMaxBreadth,
+        };
         use crate::domains::style::decl_value::GridTrackListKey;
 
         let scratch = TextInterner::default();
@@ -989,9 +991,8 @@ mod tests {
         assert_eq!(groups.grid.auto_flow, GridAutoFlowKw::ColumnDense);
 
         let auto_columns = GridTrackSize {
-            kind: GridTrackKind::Fr(1.0),
-            min_px: 0.0,
-            max_px: 0.0,
+            min: TrackBreadth::Auto,
+            max: TrackMaxBreadth::Fr(1.0),
         };
         resolve_declaration_into_groups(
             &mut groups,

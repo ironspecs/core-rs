@@ -54,7 +54,7 @@
 use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
-use super::computed::{GridAutoFlowKw, GridTrackKind, GridTrackSize};
+use super::computed::{GridAutoFlowKw, GridTrackSize, TrackBreadth, TrackMaxBreadth};
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::DeclDropReport;
 use super::decl_store::{DeclStore, GRID_TRACK_LIST_CAPACITY};
@@ -684,31 +684,30 @@ fn split_repeat_inner(inner: &str) -> Option<(usize, &str)> {
     Some((count, list))
 }
 
-/// Parses one grid `<track-size>` leaf: `auto | min-content | max-content |
-/// <px> | <%> | <fr> | minmax(<len-pct>, <len-pct>|min-content|max-content)`.
-/// `em` is not admitted (the `Length` kind carries a resolved px value and no
-/// parse-time font size exists); it drops fail-closed.
+/// Parses one grid `<track-size>` leaf into the uniform minmax shape
+/// (`GRID_STEP2_DESIGN.md` correction 3): `auto | min-content | max-content |
+/// <px> | <%> | <fr> | minmax(<len-pct>, <len-pct>|min-content|max-content|auto)`.
+/// `em` is not admitted (the `Px` breadth carries a resolved px value and no
+/// parse-time font size exists); it drops fail-closed. `auto` is admitted as a
+/// minmax MAX bound (correction 2 — CSS Grid §7.2's `<track-breadth>`).
 fn parse_track_size(token: &str) -> Option<GridTrackSize> {
     match token {
         "auto" => {
             return Some(GridTrackSize {
-                kind: GridTrackKind::Auto,
-                min_px: 0.0,
-                max_px: 0.0,
+                min: TrackBreadth::Auto,
+                max: TrackMaxBreadth::Auto,
             });
         }
         "min-content" => {
             return Some(GridTrackSize {
-                kind: GridTrackKind::MinContent,
-                min_px: 0.0,
-                max_px: 0.0,
+                min: TrackBreadth::MinContent,
+                max: TrackMaxBreadth::MinContent,
             });
         }
         "max-content" => {
             return Some(GridTrackSize {
-                kind: GridTrackKind::MaxContent,
-                min_px: 0.0,
-                max_px: 0.0,
+                min: TrackBreadth::MaxContent,
+                max: TrackMaxBreadth::MaxContent,
             });
         }
         _ => {}
@@ -716,17 +715,15 @@ fn parse_track_size(token: &str) -> Option<GridTrackSize> {
     if let Some(fr) = token.strip_suffix("fr") {
         let value = parse_finite_f32(fr)?;
         return Some(GridTrackSize {
-            kind: GridTrackKind::Fr(value),
-            min_px: 0.0,
-            max_px: 0.0,
+            min: TrackBreadth::Auto,
+            max: TrackMaxBreadth::Fr(value),
         });
     }
     if let Some(percent) = token.strip_suffix('%') {
         let value = parse_finite_f32(percent)?;
         return Some(GridTrackSize {
-            kind: GridTrackKind::Percent,
-            min_px: value,
-            max_px: 0.0,
+            min: TrackBreadth::Percent(value),
+            max: TrackMaxBreadth::Percent(value),
         });
     }
     if let Some(inner) = strip_minmax(token) {
@@ -734,9 +731,8 @@ fn parse_track_size(token: &str) -> Option<GridTrackSize> {
     }
     match parse_authored_length(token)? {
         AuthoredLength::Px(px) if px >= 0.0 => Some(GridTrackSize {
-            kind: GridTrackKind::Length,
-            min_px: px,
-            max_px: 0.0,
+            min: TrackBreadth::Px(px),
+            max: TrackMaxBreadth::Px(px),
         }),
         _ => None,
     }
@@ -748,39 +744,44 @@ fn strip_minmax(token: &str) -> Option<&str> {
     inner.strip_suffix(')')
 }
 
-/// Parses a `minmax(<len-pct>, <len-pct>|min-content|max-content)` inner into
-/// a `Minmax` `GridTrackSize`. The first bound is numeric; the second bound is
-/// numeric or a keyword sentinel (`MAX_CONTENT_BOUND`/`MIN_CONTENT_BOUND`).
+/// Parses a `minmax(<len-pct>, <len-pct>|min-content|max-content|auto)` inner
+/// into a `GridTrackSize`. The min bound is px/percent; the max bound is
+/// px/percent/`min-content`/`max-content`/`auto` (correction 2).
 fn parse_minmax(inner: &str) -> Option<GridTrackSize> {
     let (min_text, max_text) = inner.split_once(',')?;
-    let min_px = parse_minmax_bound(min_text.trim())?;
-    let max_bound = parse_minmax_max_bound(max_text.trim())?;
-    Some(GridTrackSize {
-        kind: GridTrackKind::Minmax,
-        min_px,
-        max_px: max_bound,
-    })
+    let min = parse_minmax_min_bound(min_text.trim())?;
+    let max = parse_minmax_max_bound(max_text.trim())?;
+    Some(GridTrackSize { min, max })
 }
 
-/// Parses the `minmax` first bound (`<length-percentage>`): px or percent as a
-/// numeric value.
-fn parse_minmax_bound(text: &str) -> Option<f32> {
+/// Parses the `minmax` first bound (`<length-percentage>`) as a `TrackBreadth`,
+/// preserving the percent-vs-px unit (correction 3).
+fn parse_minmax_min_bound(text: &str) -> Option<TrackBreadth> {
     if let Some(percent) = text.strip_suffix('%') {
-        return parse_finite_f32(percent);
+        return parse_finite_f32(percent).map(TrackBreadth::Percent);
     }
     match parse_authored_length(text)? {
-        AuthoredLength::Px(px) if px >= 0.0 => Some(px),
+        AuthoredLength::Px(px) if px >= 0.0 => Some(TrackBreadth::Px(px)),
         _ => None,
     }
 }
 
-/// Parses the `minmax` second bound: px, percent, `min-content`, or
-/// `max-content` (the keywords as sentinels).
-fn parse_minmax_max_bound(text: &str) -> Option<f32> {
+/// Parses the `minmax` second bound: px, percent, `min-content`, `max-content`,
+/// or `auto` (correction 2 — `auto` is a valid `<track-breadth>` max).
+fn parse_minmax_max_bound(text: &str) -> Option<TrackMaxBreadth> {
     match text {
-        "min-content" => Some(GridTrackSize::MIN_CONTENT_BOUND),
-        "max-content" => Some(GridTrackSize::MAX_CONTENT_BOUND),
-        _ => parse_minmax_bound(text),
+        "auto" => Some(TrackMaxBreadth::Auto),
+        "min-content" => Some(TrackMaxBreadth::MinContent),
+        "max-content" => Some(TrackMaxBreadth::MaxContent),
+        _ => {
+            if let Some(percent) = text.strip_suffix('%') {
+                return parse_finite_f32(percent).map(TrackMaxBreadth::Percent);
+            }
+            match parse_authored_length(text)? {
+                AuthoredLength::Px(px) if px >= 0.0 => Some(TrackMaxBreadth::Px(px)),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -2830,53 +2831,76 @@ mod tests {
 
     // — Grid family — //
 
-    fn track_size(kind: GridTrackKind, min_px: f32, max_px: f32) -> GridTrackSize {
-        GridTrackSize {
-            kind,
-            min_px,
-            max_px,
-        }
+    fn track_size(min: TrackBreadth, max: TrackMaxBreadth) -> GridTrackSize {
+        GridTrackSize { min, max }
     }
 
     #[test]
     fn grid_track_size_leaf_parses_each_kind() {
         assert_eq!(
             parse_track_size("auto"),
-            Some(track_size(GridTrackKind::Auto, 0.0, 0.0))
+            Some(track_size(TrackBreadth::Auto, TrackMaxBreadth::Auto))
         );
         assert_eq!(
             parse_track_size("100px"),
-            Some(track_size(GridTrackKind::Length, 100.0, 0.0))
+            Some(track_size(
+                TrackBreadth::Px(100.0),
+                TrackMaxBreadth::Px(100.0)
+            ))
         );
         assert_eq!(
             parse_track_size("20%"),
-            Some(track_size(GridTrackKind::Percent, 20.0, 0.0))
+            Some(track_size(
+                TrackBreadth::Percent(20.0),
+                TrackMaxBreadth::Percent(20.0)
+            ))
         );
         assert_eq!(
             parse_track_size("1fr"),
-            Some(track_size(GridTrackKind::Fr(1.0), 0.0, 0.0))
+            Some(track_size(TrackBreadth::Auto, TrackMaxBreadth::Fr(1.0)))
         );
         assert_eq!(
             parse_track_size("min-content"),
-            Some(track_size(GridTrackKind::MinContent, 0.0, 0.0))
+            Some(track_size(
+                TrackBreadth::MinContent,
+                TrackMaxBreadth::MinContent
+            ))
         );
         assert_eq!(
             parse_track_size("max-content"),
-            Some(track_size(GridTrackKind::MaxContent, 0.0, 0.0))
+            Some(track_size(
+                TrackBreadth::MaxContent,
+                TrackMaxBreadth::MaxContent
+            ))
         );
         assert_eq!(
             parse_track_size("minmax(100px, 200px)"),
-            Some(track_size(GridTrackKind::Minmax, 100.0, 200.0))
+            Some(track_size(
+                TrackBreadth::Px(100.0),
+                TrackMaxBreadth::Px(200.0)
+            ))
         );
         assert_eq!(
             parse_track_size("minmax(80px, max-content)"),
             Some(track_size(
-                GridTrackKind::Minmax,
-                80.0,
-                GridTrackSize::MAX_CONTENT_BOUND
+                TrackBreadth::Px(80.0),
+                TrackMaxBreadth::MaxContent
             ))
         );
-        // `em` is not admitted (no parse-time font size for the Length kind).
+        // Correction 2: `auto` is a valid minmax MAX bound.
+        assert_eq!(
+            parse_track_size("minmax(80px, auto)"),
+            Some(track_size(TrackBreadth::Px(80.0), TrackMaxBreadth::Auto))
+        );
+        // Correction 3: percent minmax bounds keep their unit.
+        assert_eq!(
+            parse_track_size("minmax(10%, 200px)"),
+            Some(track_size(
+                TrackBreadth::Percent(10.0),
+                TrackMaxBreadth::Px(200.0)
+            ))
+        );
+        // `em` is not admitted (no parse-time font size for the Px breadth).
         assert_eq!(parse_track_size("2em"), None);
         assert_eq!(parse_track_size("bogus"), None);
     }
@@ -2912,10 +2936,10 @@ mod tests {
         assert_eq!(
             list.as_slice(),
             &[
-                track_size(GridTrackKind::Fr(1.0), 0.0, 0.0),
-                track_size(GridTrackKind::Fr(1.0), 0.0, 0.0),
-                track_size(GridTrackKind::Fr(1.0), 0.0, 0.0),
-                track_size(GridTrackKind::Length, 100.0, 0.0),
+                track_size(TrackBreadth::Auto, TrackMaxBreadth::Fr(1.0)),
+                track_size(TrackBreadth::Auto, TrackMaxBreadth::Fr(1.0)),
+                track_size(TrackBreadth::Auto, TrackMaxBreadth::Fr(1.0)),
+                track_size(TrackBreadth::Px(100.0), TrackMaxBreadth::Px(100.0)),
             ]
         );
     }
