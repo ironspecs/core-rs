@@ -218,6 +218,10 @@ are definite, padding-box otherwise).
 | `crates/ui-dom/src/domains/style/computed/mod.rs`, `style/mod.rs` | re-exports (mechanical) |
 | `crates/ui-dom/src/domains/style/presentation_property.rs` | the placement + justify METADATA rows |
 | `crates/ui-dom/src/domains/style/decl_parse.rs` | the `<grid-line>` grammar, the shorthands, the justify keywords, the `place-*` expansion corrections |
+| `crates/ui-dom/src/domains/style/decl_value.rs` | the `DeclValue::GridLine(GridLine)` variant + the exhaustive formatter/dom-value arms (added after the transcription's STOP, 2026-10-21 — mechanical pipeline) |
+| `crates/ui-dom/src/types/root_dom.rs` | arms for the six new property variants in `decl_value_for_groups` (transition-overlay read path — step-interpolation default like every non-animatable property) and for `DeclGrammar::GridLine` in `decl_value_matches_grammar` (same correction) |
+| `crates/ui-dom/src/types/dom_node.rs` | the `presented_px` arm for the new `DeclValue::GridLine` variant (same correction) |
+| `crates/ui-dom/src/types/layout_scratch.rs` | the `CellMap`'s home (scratch-owned, high-water-mark, update-scoped — the only allocation-free home; same correction, and the reason `GRID_STEP2_DESIGN.md` listed this file for the track lane) |
 | `crates/ui-dom/src/domains/style/project.rs` | the group resolver for the new fields |
 | `crates/ui-dom/src/domains/style/field_mapping.rs` | dirty classification |
 | `crates/ui-dom/src/domains/layout/grid_cell_map.rs` (NEW) | the `CellMap` |
