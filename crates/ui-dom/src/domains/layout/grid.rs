@@ -707,10 +707,10 @@ fn run_track_sizing_phases(
     // and restarts). A flexible track whose content base exceeds its fr share is
     // treated as inflexible (frozen at its base) and removed from the pool; the
     // remaining space redistributes among the still-flexible tracks. The sum<1
-    // cap (step 3) scales the leftover space by `min(Σfr, 1)` ONCE up front,
-    // where Σfr is over ALL flexible tracks, frozen or not; the restart is per
-    // remaining tracks. The loop terminates because each pass freezes ≥1 track
-    // or breaks.
+    // cap applies per iteration to the CURRENT remaining factor sum: §7.2.4's
+    // restart recomputes the used flex fraction over the remaining tracks, so a
+    // freeze under Σfr < 1 re-applies the cap to the reduced factor sum. The
+    // loop terminates because each pass freezes ≥1 track or breaks.
     if remaining > 0.0 {
         let flex_sum: f32 = entries
             .iter()
@@ -721,13 +721,14 @@ fn run_track_sizing_phases(
             // The spec's leftover space is the free space PLUS the flexible
             // tracks' content bases (`remaining` already subtracted every
             // track's base); freezing a track charges its base back out of the
-            // redistributable pool.
+            // redistributable pool. The space stays UNSCALED: the sum<1 cap is
+            // applied per iteration to the CURRENT remaining factor sum.
             let flex_base_sum: f32 = entries
                 .iter()
                 .filter(|entry| entry.flex_factor > 0.0)
                 .map(|entry| entry.base_px)
                 .sum();
-            let mut free = (remaining + flex_base_sum) * flex_sum.min(1.0);
+            let mut free = remaining + flex_base_sum;
             // A frozen bitmap marks tracks removed from the pool (indexed by
             // slice position; `entries.len()` is bounded by the track-list
             // capacity, so a fixed bitmap is zero-allocation).
@@ -742,7 +743,7 @@ fn run_track_sizing_phases(
                 if factor_sum <= 0.0 {
                     break;
                 }
-                let fraction = free / factor_sum;
+                let fraction = free * factor_sum.min(1.0) / factor_sum;
                 let mut froze_any = false;
                 for (index, entry) in entries.iter_mut().enumerate() {
                     if entry.flex_factor <= 0.0 || frozen[index] {

@@ -539,6 +539,28 @@ fn grid_fr_tracks_freeze_over_base_and_redistribute() {
 }
 
 #[test]
+// CSS Grid §7.2.4 restart recomputes the used flex fraction over the REMAINING
+// tracks, so the sum<1 cap re-applies per iteration. `0.25fr 0.25fr` in a 400px
+// container with a 150px-wide item in column 0 → 150 / 62.5: the freeze drops
+// column 0 at its 150px base, and the restart scales the 250px remainder by the
+// remaining 0.25 factor sum (250 × 0.25 / 0.25 → 0.25 × 250 = 62.5). The old
+// single up-front cap gave 150 / 50.
+fn grid_fr_sum_below_one_freeze_recomputes_cap_per_restart() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "0.25fr 0.25fr", "400px");
+    let wide = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, wide, "width", "150px");
+    assert_style_set(&mut root, wide, "height", "40px");
+    let narrow = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, narrow, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 150.0, 40.0, "frozen 150px item");
+    assert_rect_op_geometry(&rects[2], 150.0, 0.0, 62.5, 40.0, "second item gets 62.5");
+}
+
+#[test]
 // No-freeze control: `1fr 1fr` in a 400px container with two zero-content items
 // divides the width 200/200 (unchanged by the freeze loop).
 fn grid_fr_tracks_with_zero_content_stay_even() {
