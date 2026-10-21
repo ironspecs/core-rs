@@ -226,10 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-515 layout proofs (507 in
+533 layout proofs (525 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-21 after the span-overflow
-hang fix); the off-spec registry (6 divergent proofs in 5 divergent-class
+cross-cutting `robustness.rs`; updated 2026-10-21 after grid T3);
+the off-spec registry (6 divergent proofs in 5 divergent-class
 rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
@@ -1747,6 +1747,30 @@ an f32 basis.
   negative than in-flow items falling back to the padding box via the
   `try_from` path — graceful but inconsistent with the in-flow offset
   pass) is recorded in the backlog. Proofs 512 → 515.
+
+- **2026-10-21 — grid T3 LANDED (`6b310cb`, on `grid/t3-t4`):
+  template areas, `grid-area` names, and named lines — the dashboard
+  page shell works.** `grid-template-areas` parses and validates
+  string rows into an interned area map (uniform-column and
+  rectangularity guards and the 8-row/12-column/12-name capacity gates,
+  all counted drops per the G rule); `grid-area` resolves names at
+  placement in the exact order (area match → line match → documented
+  auto fallback); named `[name]` lines in track lists invert from the
+  T3 gate to admitted with the bracket wire round-trip; and every
+  named area creates its implied `<name>-start`/`<name>-end` lines
+  (§7.3.1). The transcription's STOP on the line-name storage produced
+  the `GridTrackList` representation (tracks + name/line-index pairs
+  in the arena, capacity 8, >4 same-name drops at parse, dedup by full
+  content equality) — a representation change to the landed T0/T1
+  arena with a documented cause, migrated cleanly. The
+  `"header header" "sidebar main" "footer footer"` page shell places
+  correctly, with area rects, implied lines, multiple-same-name
+  span-counts, and the abs-pos area-rectangle refinement. Proofs
+  515 → 533. Next: T3.5 — auto-fill/auto-fit (the card-wall idiom
+  `repeat(auto-fit, minmax(240px, 1fr))`; placement re-runs on
+  container resize; collapsed tracks for auto-fit), then T4
+  (shorthand sugar), then PR 4 (the text seam) and PR 5 (the
+  `RootDom` decomposition).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
