@@ -115,6 +115,7 @@ pub(crate) fn resolve_declaration_into_groups(
         PresentationGroup::Flex => {
             resolve_flex_field(groups, property, value, context.own_font_size_px);
         }
+        PresentationGroup::Grid => resolve_grid_field(groups, property, value),
         PresentationGroup::Visual => {
             resolve_visual_field(groups, property, value, context.own_font_size_px);
         }
@@ -515,6 +516,48 @@ fn resolve_flex_field(
     }
 }
 
+// — Grid group resolution — //
+
+/// The grid group's field resolver: the `TrackList` variant copies the
+/// (already re-interned) inline-arena key straight into the template field; the
+/// `GridAutoFlow` and `TrackSize` variants copy their computed value into the
+/// corresponding field. No further resolution happens at T0 (track sizing is
+/// T1, `GRID_STEP2_DESIGN.md`).
+fn resolve_grid_field(
+    groups: &mut ComputedGroups,
+    property: PresentationProperty,
+    value: DeclValue,
+) {
+    match property {
+        PresentationProperty::GridTemplateColumns => {
+            if let DeclValue::TrackList(key) = value {
+                groups.grid.template_columns = key;
+            }
+        }
+        PresentationProperty::GridTemplateRows => {
+            if let DeclValue::TrackList(key) = value {
+                groups.grid.template_rows = key;
+            }
+        }
+        PresentationProperty::GridAutoFlow => {
+            if let DeclValue::GridAutoFlow(flow) = value {
+                groups.grid.auto_flow = flow;
+            }
+        }
+        PresentationProperty::GridAutoColumns => {
+            if let DeclValue::TrackSize(size) = value {
+                groups.grid.auto_columns = size;
+            }
+        }
+        PresentationProperty::GridAutoRows => {
+            if let DeclValue::TrackSize(size) = value {
+                groups.grid.auto_rows = size;
+            }
+        }
+        _ => {}
+    }
+}
+
 // — Visual group resolution — //
 
 fn resolve_visual_field(
@@ -910,5 +953,52 @@ mod tests {
         let child_node = root.nodes.get(child).expect("child");
         let seed = parent_inherited_groups(&root.nodes, child_node);
         assert_eq!(seed.font.size_px, 15.0);
+    }
+
+    #[test]
+    fn grid_resolver_writes_the_group_fields() {
+        use crate::domains::style::computed::grid_auto_flow_kw::GridAutoFlowKw;
+        use crate::domains::style::computed::grid_track_size::{GridTrackKind, GridTrackSize};
+        use crate::domains::style::decl_value::GridTrackListKey;
+
+        let scratch = TextInterner::default();
+        let mut computed_texts = TextInterner::default();
+        let mut context = ProjectionContext {
+            own_font_size_px: 14.0,
+            parent_weight: 400,
+            text_source: &scratch,
+            computed_texts: &mut computed_texts,
+        };
+        let mut groups = ComputedGroups::initial();
+
+        let columns_key = GridTrackListKey::default();
+        resolve_declaration_into_groups(
+            &mut groups,
+            PresentationProperty::GridTemplateColumns,
+            DeclValue::TrackList(columns_key),
+            &mut context,
+        );
+        assert_eq!(groups.grid.template_columns, columns_key);
+
+        resolve_declaration_into_groups(
+            &mut groups,
+            PresentationProperty::GridAutoFlow,
+            DeclValue::GridAutoFlow(GridAutoFlowKw::ColumnDense),
+            &mut context,
+        );
+        assert_eq!(groups.grid.auto_flow, GridAutoFlowKw::ColumnDense);
+
+        let auto_columns = GridTrackSize {
+            kind: GridTrackKind::Fr(1.0),
+            min_px: 0.0,
+            max_px: 0.0,
+        };
+        resolve_declaration_into_groups(
+            &mut groups,
+            PresentationProperty::GridAutoColumns,
+            DeclValue::TrackSize(auto_columns),
+            &mut context,
+        );
+        assert_eq!(groups.grid.auto_columns, auto_columns);
     }
 }

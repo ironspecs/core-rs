@@ -4,6 +4,7 @@ mod admitted_gaps;
 mod cascade;
 mod cascade_tiers;
 mod computed_projection;
+mod grid_admission;
 mod unsupported_colors;
 mod unsupported_properties;
 mod unsupported_selectors;

@@ -3,7 +3,7 @@
 //! This file owns the `PresentationProperty` enum, per-property metadata
 //! (canonical name, cascade group, inherited flag, declaration grammar), and
 //! name lookup. It is the single admission table for the typed declaration
-//! family: the 69 properties, their groups, and the grammar each property's
+//! family: the 74 properties, their groups, and the grammar each property's
 //! declared value must satisfy (68 at v0.6.0, growing via admission per the D6
 //! policy).
 //!
@@ -18,8 +18,8 @@
 
 use super::keyword::Keyword;
 
-/// The closed presentation vocabulary: 69 properties across the inherited
-/// font/text/color groups and the non-inherited box/flex/visual/transform
+/// The closed presentation vocabulary: 74 properties across the inherited
+/// font/text/color groups and the non-inherited box/flex/grid/visual/transform
 /// groups, plus the four transition scheduler slots (68 at v0.6.0, growing via
 /// admission per the D6 policy).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -79,6 +79,12 @@ pub enum PresentationProperty {
     AlignContent,
     RowGap,
     ColumnGap,
+    // Non-inherited — grid group
+    GridTemplateColumns,
+    GridTemplateRows,
+    GridAutoFlow,
+    GridAutoColumns,
+    GridAutoRows,
     // Non-inherited — visual group
     Opacity,
     BackgroundColor,
@@ -111,6 +117,7 @@ pub enum PresentationGroup {
     Color,
     Box,
     Flex,
+    Grid,
     Visual,
     Transform,
     TransitionLonghands,
@@ -164,6 +171,15 @@ pub enum DeclGrammar {
     Text,
     /// One of a closed keyword set.
     Keywords(&'static [Keyword]),
+    /// A grid track-list (`grid-template-columns`/`rows`): space-separated
+    /// `<track-size>` tokens, expanded at parse, interned value-deduped into
+    /// the owning store's track-list arena. Capacity 12 (over-capacity drops).
+    TrackList,
+    /// A grid auto-flow (`[row | column] && dense?`), resolved to the four
+    /// `GridAutoFlowKw` outcomes.
+    GridAutoFlow,
+    /// A single grid `<track-size>` leaf (`grid-auto-columns`/`rows`).
+    TrackSize,
     /// Comma list of admitted presentation property names, `all`, or `none`; interned raw.
     TransitionPropertyList,
     /// Comma list of `<f32> >= 0` with "ms"/"s" units or bare "0"; interned raw
@@ -184,6 +200,8 @@ const DISPLAY_KEYWORDS: &[Keyword] = &[
     Keyword::None,
     Keyword::Flex,
     Keyword::InlineFlex,
+    Keyword::Grid,
+    Keyword::InlineGrid,
 ];
 
 const POSITION_KEYWORDS: &[Keyword] = &[
@@ -489,6 +507,31 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
     ),
     ("row-gap", PresentationGroup::Flex, DeclGrammar::Gap),
     ("column-gap", PresentationGroup::Flex, DeclGrammar::Gap),
+    (
+        "grid-template-columns",
+        PresentationGroup::Grid,
+        DeclGrammar::TrackList,
+    ),
+    (
+        "grid-template-rows",
+        PresentationGroup::Grid,
+        DeclGrammar::TrackList,
+    ),
+    (
+        "grid-auto-flow",
+        PresentationGroup::Grid,
+        DeclGrammar::GridAutoFlow,
+    ),
+    (
+        "grid-auto-columns",
+        PresentationGroup::Grid,
+        DeclGrammar::TrackSize,
+    ),
+    (
+        "grid-auto-rows",
+        PresentationGroup::Grid,
+        DeclGrammar::TrackSize,
+    ),
     ("opacity", PresentationGroup::Visual, DeclGrammar::Opacity),
     (
         "background-color",
@@ -588,7 +631,7 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
 
 impl PresentationProperty {
     /// Number of defined `PresentationProperty` variants.
-    pub const COUNT: usize = 69;
+    pub const COUNT: usize = 74;
 
     /// Every variant, in enum order.
     pub const ALL: [PresentationProperty; Self::COUNT] = [
@@ -642,6 +685,11 @@ impl PresentationProperty {
         PresentationProperty::AlignContent,
         PresentationProperty::RowGap,
         PresentationProperty::ColumnGap,
+        PresentationProperty::GridTemplateColumns,
+        PresentationProperty::GridTemplateRows,
+        PresentationProperty::GridAutoFlow,
+        PresentationProperty::GridAutoColumns,
+        PresentationProperty::GridAutoRows,
         PresentationProperty::Opacity,
         PresentationProperty::BackgroundColor,
         PresentationProperty::BorderTopColor,
@@ -717,25 +765,30 @@ impl PresentationProperty {
             Self::AlignContent => 47,
             Self::RowGap => 48,
             Self::ColumnGap => 49,
-            Self::Opacity => 50,
-            Self::BackgroundColor => 51,
-            Self::BorderTopColor => 52,
-            Self::BorderRightColor => 53,
-            Self::BorderBottomColor => 54,
-            Self::BorderLeftColor => 55,
-            Self::OutlineColor => 56,
-            Self::OutlineWidth => 57,
-            Self::OutlineOffset => 58,
-            Self::CaretColor => 59,
-            Self::BorderTopLeftRadius => 60,
-            Self::BorderTopRightRadius => 61,
-            Self::BorderBottomRightRadius => 62,
-            Self::BorderBottomLeftRadius => 63,
-            Self::Transform => 64,
-            Self::TransitionProperty => 65,
-            Self::TransitionDuration => 66,
-            Self::TransitionTimingFunction => 67,
-            Self::TransitionDelay => 68,
+            Self::GridTemplateColumns => 50,
+            Self::GridTemplateRows => 51,
+            Self::GridAutoFlow => 52,
+            Self::GridAutoColumns => 53,
+            Self::GridAutoRows => 54,
+            Self::Opacity => 55,
+            Self::BackgroundColor => 56,
+            Self::BorderTopColor => 57,
+            Self::BorderRightColor => 58,
+            Self::BorderBottomColor => 59,
+            Self::BorderLeftColor => 60,
+            Self::OutlineColor => 61,
+            Self::OutlineWidth => 62,
+            Self::OutlineOffset => 63,
+            Self::CaretColor => 64,
+            Self::BorderTopLeftRadius => 65,
+            Self::BorderTopRightRadius => 66,
+            Self::BorderBottomRightRadius => 67,
+            Self::BorderBottomLeftRadius => 68,
+            Self::Transform => 69,
+            Self::TransitionProperty => 70,
+            Self::TransitionDuration => 71,
+            Self::TransitionTimingFunction => 72,
+            Self::TransitionDelay => 73,
         }
     }
 
@@ -781,9 +834,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn count_is_sixty_nine_and_all_round_trips() {
-        assert_eq!(PresentationProperty::COUNT, 69);
-        assert_eq!(PresentationProperty::ALL.len(), 69);
+    fn count_is_seventy_four_and_all_round_trips() {
+        assert_eq!(PresentationProperty::COUNT, 74);
+        assert_eq!(PresentationProperty::ALL.len(), 74);
         for property in PresentationProperty::ALL {
             assert_eq!(
                 PresentationProperty::from_name(property.name()),

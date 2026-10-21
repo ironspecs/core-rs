@@ -55,7 +55,7 @@ impl<'a> StyleMut<'a> {
     pub fn set(self, property: &str, value: &str) -> Result<(), DomError> {
         self.validate_target()?;
         let declarations =
-            parse_declaration_strict(property, value, self.root_dom.inline_texts_mut())?;
+            parse_declaration_strict(property, value, self.root_dom.inline_decl_store_mut())?;
         self.root_dom
             .upsert_inline_declarations(self.node, &declarations);
         Ok(())
@@ -67,7 +67,7 @@ impl<'a> StyleMut<'a> {
     pub fn set_all(self, declaration_list: &str) -> Result<DeclDropReport, DomError> {
         self.validate_target()?;
         let (block, report) =
-            parse_declaration_block(declaration_list, self.root_dom.inline_texts_mut());
+            parse_declaration_block(declaration_list, self.root_dom.inline_decl_store_mut());
         self.root_dom.replace_inline_decl_block(self.node, block);
         Ok(report)
     }

@@ -73,6 +73,7 @@ pub(super) enum LayoutSolverKind {
     Block,
     Inline,
     Flex,
+    Grid,
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +113,11 @@ pub(super) struct LayoutContext {
     /// `child_layout_context` from the parent's presented display; never
     /// propagated beyond one level.
     pub parent_is_flex_container: bool,
+    /// Whether this node's PARENT is a grid container (i.e. this node is a grid
+    /// item — an independent formatting context per CSS Grid 1 §4). Set fresh by
+    /// `child_layout_context` from the parent's presented display; never
+    /// propagated beyond one level.
+    pub parent_is_grid_container: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -253,7 +259,44 @@ where
             inherited_style,
             resolver,
         ),
+        LayoutSolverKind::Grid => relayout_grid_node(
+            root_dom,
+            tree_size,
+            key,
+            context,
+            style,
+            inherited_style,
+            resolver,
+        ),
     }
+}
+
+/// D5 interim solver arm (T0): a grid container lays out as a BLOCK container
+/// (children in normal block flow, grid properties inert but held). This is the
+/// fail-closed interim that keeps T0's scope honest (routing + admission without
+/// a solver) and is REPLACED by T1's solver in the same arc. NOT a divergence:
+/// a named, gated interim with its own registry row and a pin.
+fn relayout_grid_node<R>(
+    root_dom: &mut RootDom,
+    tree_size: (f32, f32),
+    key: DomNodeSlotKey,
+    context: LayoutContext,
+    style: NodeStyle,
+    inherited_style: InheritedStyleContext,
+    resolver: &mut R,
+) -> Result<FlowSize, DomError>
+where
+    R: DomLayoutResolver + ?Sized,
+{
+    relayout_block_node(
+        root_dom,
+        tree_size,
+        key,
+        context,
+        style,
+        inherited_style,
+        resolver,
+    )
 }
 
 fn relayout_block_node<R>(
@@ -489,7 +532,8 @@ where
                     style.position,
                     PositionMode::Static | PositionMode::Relative
                 )
-                && !context.parent_is_flex_container,
+                && !context.parent_is_flex_container
+                && !context.parent_is_grid_container,
             node.as_text().is_some(),
             intrinsic_content_height_px(node, measured_box),
             img_intrinsic_aspect_ratio(node),
@@ -909,8 +953,9 @@ pub(super) fn child_layout_context(
         // too.
         allows_parent_child_block_margin_collapse: entered
             .allows_parent_child_block_margin_collapse
-            && !parent_is_flex_container(&entered),
+            && !(parent_is_flex_container(&entered) || parent_is_grid_container(&entered)),
         parent_is_flex_container: parent_is_flex_container(&entered),
+        parent_is_grid_container: parent_is_grid_container(&entered),
     }
 }
 
@@ -921,6 +966,17 @@ fn parent_is_flex_container(entered: &EnteredNodeLayout) -> bool {
     matches!(
         entered.style.display,
         LayoutDisplay::Flex | LayoutDisplay::InlineFlex
+    )
+}
+
+/// Whether the entered node is a grid container (CSS Grid 1 §4): `display:
+/// grid` or `inline-grid`. Its direct children are grid items and establish
+/// independent formatting contexts, so they must not collapse margins with it
+/// (the same rule as flex items — `GRID_STEP1_DESIGN.md` D1).
+fn parent_is_grid_container(entered: &EnteredNodeLayout) -> bool {
+    matches!(
+        entered.style.display,
+        LayoutDisplay::Grid | LayoutDisplay::InlineGrid
     )
 }
 
@@ -1936,7 +1992,10 @@ fn resolve_positioned_auto_content_width(
 pub(super) fn display_is_inline_outer(display: LayoutDisplay) -> bool {
     matches!(
         display,
-        LayoutDisplay::Inline | LayoutDisplay::InlineBlock | LayoutDisplay::InlineFlex
+        LayoutDisplay::Inline
+            | LayoutDisplay::InlineBlock
+            | LayoutDisplay::InlineFlex
+            | LayoutDisplay::InlineGrid
     )
 }
 
@@ -1950,6 +2009,7 @@ fn solver_kind_for_display(display: LayoutDisplay) -> LayoutSolverKind {
         LayoutDisplay::Block | LayoutDisplay::InlineBlock => LayoutSolverKind::Block,
         LayoutDisplay::Inline => LayoutSolverKind::Inline,
         LayoutDisplay::Flex | LayoutDisplay::InlineFlex => LayoutSolverKind::Flex,
+        LayoutDisplay::Grid | LayoutDisplay::InlineGrid => LayoutSolverKind::Grid,
         LayoutDisplay::None => unreachable!("display none is handled before solver dispatch"),
     }
 }
@@ -1960,7 +2020,10 @@ fn resolve_content_width(
     intrinsic_box: DomBoxModel,
 ) -> f32 {
     let intrinsic_width_px = intrinsic_content_width(intrinsic_box);
-    let auto_width_px = if matches!(style.display, LayoutDisplay::Block | LayoutDisplay::Flex) {
+    let auto_width_px = if matches!(
+        style.display,
+        LayoutDisplay::Block | LayoutDisplay::Flex | LayoutDisplay::Grid
+    ) {
         available_width_px.map_or(intrinsic_width_px, |available| {
             (available - horizontal_non_content_px(style.sides)).max(0.0)
         })
@@ -2469,6 +2532,7 @@ mod tests {
             parent_box: None,
             allows_parent_child_block_margin_collapse: false,
             parent_is_flex_container: false,
+            parent_is_grid_container: false,
         }
     }
 
@@ -2498,8 +2562,22 @@ mod tests {
             solver_kind_for_display(LayoutDisplay::Flex),
             LayoutSolverKind::Flex
         );
+        assert_eq!(
+            solver_kind_for_display(LayoutDisplay::InlineFlex),
+            LayoutSolverKind::Flex
+        );
+        assert_eq!(
+            solver_kind_for_display(LayoutDisplay::Grid),
+            LayoutSolverKind::Grid
+        );
+        assert_eq!(
+            solver_kind_for_display(LayoutDisplay::InlineGrid),
+            LayoutSolverKind::Grid
+        );
         assert!(display_is_inline_outer(LayoutDisplay::InlineFlex));
         assert!(!display_is_inline_outer(LayoutDisplay::Flex));
+        assert!(display_is_inline_outer(LayoutDisplay::InlineGrid));
+        assert!(!display_is_inline_outer(LayoutDisplay::Grid));
     }
 
     #[test]

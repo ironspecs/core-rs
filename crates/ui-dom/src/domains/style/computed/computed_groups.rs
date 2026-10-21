@@ -22,6 +22,7 @@ use super::computed_box_group::ComputedBoxGroup;
 use super::computed_color_group::ComputedColorGroup;
 use super::computed_flex_group::ComputedFlexGroup;
 use super::computed_font_group::ComputedFontGroup;
+use super::computed_grid_group::ComputedGridGroup;
 use super::computed_text_group::ComputedTextGroup;
 use super::computed_transform_group::ComputedTransformGroup;
 use super::computed_visual_group::ComputedVisualGroup;
@@ -41,6 +42,7 @@ pub struct ComputedGroups {
     /// Named `box_` because `box` is a reserved Rust keyword.
     pub box_: ComputedBoxGroup,
     pub flex: ComputedFlexGroup,
+    pub grid: ComputedGridGroup,
     pub visual: ComputedVisualGroup,
     pub transform: ComputedTransformGroup,
 }
@@ -55,6 +57,7 @@ impl ComputedGroups {
             color: ComputedColorGroup::initial(),
             box_: ComputedBoxGroup::initial(),
             flex: ComputedFlexGroup::initial(),
+            grid: ComputedGridGroup::initial(),
             visual: ComputedVisualGroup::initial(),
             transform: ComputedTransformGroup::initial(),
         }
@@ -69,6 +72,7 @@ impl ComputedGroups {
             color: self.color,
             box_: ComputedBoxGroup::initial(),
             flex: ComputedFlexGroup::initial(),
+            grid: ComputedGridGroup::initial(),
             visual: ComputedVisualGroup::initial(),
             transform: ComputedTransformGroup::initial(),
         }
@@ -87,6 +91,7 @@ mod tests {
         assert_eq!(groups.color, ComputedColorGroup::initial());
         assert_eq!(groups.box_, ComputedBoxGroup::initial());
         assert_eq!(groups.flex, ComputedFlexGroup::initial());
+        assert_eq!(groups.grid, ComputedGridGroup::initial());
         assert_eq!(groups.visual, ComputedVisualGroup::initial());
         assert_eq!(groups.transform, ComputedTransformGroup::initial());
     }
@@ -112,6 +117,7 @@ mod tests {
         // Non-inherited groups reset to initial.
         assert_eq!(child.box_, ComputedBoxGroup::initial());
         assert_eq!(child.flex, ComputedFlexGroup::initial());
+        assert_eq!(child.grid, ComputedGridGroup::initial());
         assert_eq!(child.visual, ComputedVisualGroup::initial());
         assert_eq!(child.transform, ComputedTransformGroup::initial());
     }

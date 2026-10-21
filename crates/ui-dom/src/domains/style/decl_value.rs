@@ -18,6 +18,7 @@
 //!   their intent
 
 use super::cascade_tier::CascadeTier;
+use super::computed::{GridAutoFlowKw, GridTrackKind, GridTrackSize};
 use super::keyword::Keyword;
 use crate::types::DomAttributeValue;
 
@@ -39,6 +40,13 @@ pub enum DeclLength {
 /// Opaque handle to interned text owned by a `DeclStore`; store-relative.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TextKey(pub u32);
+
+slotmap::new_key_type! {
+    /// Opaque handle to an interned grid track list owned by a `DeclStore`;
+    /// store-relative (value-deduped, so equal lists share one key). `null()`
+    /// is the empty-list sentinel (never a live arena entry).
+    pub struct GridTrackListKey;
+}
 
 /// Cascade precedence record for one declaration (field order IS the sort
 /// order: the cascade tier first, then origin priority, then the inline-style
@@ -73,6 +81,13 @@ pub enum DeclValue {
     /// `[x, y]` translate pair. It is produced only at group-read time
     /// (`decl_value_for_groups`), never by declaration parse.
     Translate([f32; 2]),
+    /// A grid track list, interned value-deduped into the owning store's
+    /// track-list arena (`grid-template-columns`/`rows`).
+    TrackList(GridTrackListKey),
+    /// A single grid `<track-size>` leaf (`grid-auto-columns`/`rows`).
+    TrackSize(GridTrackSize),
+    /// A grid auto-flow (`grid-auto-flow`).
+    GridAutoFlow(GridAutoFlowKw),
 }
 
 impl DeclValue {
@@ -94,9 +109,12 @@ impl DeclValue {
 /// `resolve_text` resolves store-owned interned text; it must resolve (the
 /// interner and the block live in the same store, so a `Text` key here is a
 /// self-owned structural invariant — the `expect` is never on boundary data).
+/// `resolve_track_list` resolves a store-owned interned track list to its
+/// `GridTrackSize` slice; likewise a self-owned structural invariant.
 pub(crate) fn decl_value_to_css_string<'a>(
     value: &DeclValue,
     resolve_text: impl Fn(TextKey) -> Option<&'a str>,
+    resolve_track_list: impl Fn(GridTrackListKey) -> Option<&'a [GridTrackSize]>,
 ) -> String {
     match value {
         DeclValue::Length(DeclLength::Unset) => "unset".to_string(),
@@ -111,6 +129,11 @@ pub(crate) fn decl_value_to_css_string<'a>(
             .expect("interned text must resolve in its owning store")
             .to_string(),
         DeclValue::Translate([x, y]) => format!("translate({x}px, {y}px)"),
+        DeclValue::TrackList(key) => format_track_list(
+            resolve_track_list(*key).expect("interned track list must resolve in its owning store"),
+        ),
+        DeclValue::TrackSize(size) => format_grid_track_size(size),
+        DeclValue::GridAutoFlow(flow) => format_grid_auto_flow(*flow).to_string(),
     }
 }
 
@@ -140,15 +163,63 @@ fn format_color_rgba(rgba: [f32; 4]) -> String {
 /// `resolve_text` resolves store-owned interned text; it must resolve (the
 /// interner and the block live in the same store, so a `Text` key here is a
 /// self-owned structural invariant — the `expect` is never on boundary data).
+/// `resolve_track_list` resolves a store-owned interned track list, likewise.
 pub(crate) fn decl_value_to_dom_value<'a>(
     value: &DeclValue,
     resolve_text: impl Fn(TextKey) -> Option<&'a str>,
+    resolve_track_list: impl Fn(GridTrackListKey) -> Option<&'a [GridTrackSize]>,
 ) -> DomAttributeValue {
     match value {
         // `Color` keeps its typed wire form (the serde fixture pins it); the
         // CSS string form for colors lives in `decl_value_to_css_string`.
         DeclValue::Color(rgba) => DomAttributeValue::Color(*rgba),
-        _ => DomAttributeValue::String(decl_value_to_css_string(value, resolve_text)),
+        _ => DomAttributeValue::String(decl_value_to_css_string(
+            value,
+            resolve_text,
+            resolve_track_list,
+        )),
+    }
+}
+
+/// Formats one grid track list (`&[GridTrackSize]`) as space-separated
+/// canonical track sizes. Debug/wire form only — not a faithful authored-text
+/// re-serialization (the typed list is the retained truth).
+fn format_track_list(list: &[GridTrackSize]) -> String {
+    list.iter()
+        .map(format_grid_track_size)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Formats one grid `<track-size>` to its canonical CSS token.
+fn format_grid_track_size(size: &GridTrackSize) -> String {
+    match size.kind {
+        GridTrackKind::Auto => "auto".to_string(),
+        GridTrackKind::Length => format!("{}px", size.min_px),
+        GridTrackKind::Percent => format!("{}%", size.min_px),
+        GridTrackKind::MinContent => "min-content".to_string(),
+        GridTrackKind::MaxContent => "max-content".to_string(),
+        GridTrackKind::Minmax => {
+            let max = if size.max_px == GridTrackSize::MAX_CONTENT_BOUND {
+                "max-content".to_string()
+            } else if size.max_px == GridTrackSize::MIN_CONTENT_BOUND {
+                "min-content".to_string()
+            } else {
+                format!("{}px", size.max_px)
+            };
+            format!("minmax({}px, {max})", size.min_px)
+        }
+        GridTrackKind::Fr(fr) => format!("{fr}fr"),
+    }
+}
+
+/// Formats one `GridAutoFlowKw` to its canonical CSS keyword form.
+fn format_grid_auto_flow(flow: GridAutoFlowKw) -> &'static str {
+    match flow {
+        GridAutoFlowKw::Row => "row",
+        GridAutoFlowKw::RowDense => "row dense",
+        GridAutoFlowKw::Column => "column",
+        GridAutoFlowKw::ColumnDense => "column dense",
     }
 }
 
@@ -196,76 +267,123 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // every DeclValue kind is a row in this projection
     fn decl_value_to_dom_value_formats_every_decl_value_kind() {
         let resolve_none = |_key: TextKey| -> Option<&str> { None };
         let resolve_text = |_key: TextKey| -> Option<&str> { Some("ui-sans, sans-serif") };
 
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Unset), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Unset),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("unset".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Px(20.0)), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Px(20.0)),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("20px".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Px(0.0)), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Px(0.0)),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("0px".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Px(-10.0)), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Px(-10.0)),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("-10px".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Px(0.5)), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Px(0.5)),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("0.5px".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Em(1.5)), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Em(1.5)),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("1.5em".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Percent(50.0)), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Percent(50.0)),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("50%".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Length(DeclLength::Percent(-10.0)), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Length(DeclLength::Percent(-10.0)),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("-10%".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Color([1.0, 0.0, 0.0, 0.5]), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Color([1.0, 0.0, 0.0, 0.5]),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::Color([1.0, 0.0, 0.0, 0.5])
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Keyword(Keyword::Justified), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Keyword(Keyword::Justified),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("justify".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Keyword(Keyword::RowReverse), resolve_none),
+            decl_value_to_dom_value(
+                &DeclValue::Keyword(Keyword::RowReverse),
+                resolve_none,
+                |_key| None
+            ),
             DomAttributeValue::String("row-reverse".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Number(2.0), resolve_none),
+            decl_value_to_dom_value(&DeclValue::Number(2.0), resolve_none, |_key| None),
             DomAttributeValue::String("2".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Number(0.5), resolve_none),
+            decl_value_to_dom_value(&DeclValue::Number(0.5), resolve_none, |_key| None),
             DomAttributeValue::String("0.5".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Integer(-3), resolve_none),
+            decl_value_to_dom_value(&DeclValue::Integer(-3), resolve_none, |_key| None),
             DomAttributeValue::String("-3".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Text(TextKey(7)), resolve_text),
+            decl_value_to_dom_value(&DeclValue::Text(TextKey(7)), resolve_text, |_key| None),
             DomAttributeValue::String("ui-sans, sans-serif".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Translate([5.0, 0.0]), resolve_none),
+            decl_value_to_dom_value(&DeclValue::Translate([5.0, 0.0]), resolve_none, |_key| None),
             DomAttributeValue::String("translate(5px, 0px)".to_string())
         );
         assert_eq!(
-            decl_value_to_dom_value(&DeclValue::Translate([0.0, -3.5]), resolve_none),
+            decl_value_to_dom_value(&DeclValue::Translate([0.0, -3.5]), resolve_none, |_key| {
+                None
+            }),
             DomAttributeValue::String("translate(0px, -3.5px)".to_string())
         );
     }
@@ -295,11 +413,19 @@ mod tests {
     fn decl_value_to_css_string_formats_color_as_css_text() {
         let resolve_none = |_key: TextKey| -> Option<&str> { None };
         assert_eq!(
-            decl_value_to_css_string(&DeclValue::Color([0.0, 0.0, 0.0, 1.0]), resolve_none),
+            decl_value_to_css_string(
+                &DeclValue::Color([0.0, 0.0, 0.0, 1.0]),
+                resolve_none,
+                |_key| None
+            ),
             "#000000",
         );
         assert_eq!(
-            decl_value_to_css_string(&DeclValue::Color([1.0, 0.0, 0.0, 0.5]), resolve_none),
+            decl_value_to_css_string(
+                &DeclValue::Color([1.0, 0.0, 0.0, 0.5]),
+                resolve_none,
+                |_key| None
+            ),
             "rgba(255, 0, 0, 0.5)",
         );
     }

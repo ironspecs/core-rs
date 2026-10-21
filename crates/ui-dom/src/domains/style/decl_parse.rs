@@ -51,16 +51,18 @@
 // step 2); `parse_declaration_strict` is wired into the `style_mut` single
 // declaration write contract (spine step 2d).
 
+use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
+use super::computed::{GridAutoFlowKw, GridTrackKind, GridTrackSize};
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::DeclDropReport;
-use super::decl_value::{DeclLength, DeclValue};
+use super::decl_store::{DeclStore, GRID_TRACK_LIST_CAPACITY};
+use super::decl_value::{DeclLength, DeclValue, GridTrackListKey};
 use super::declaration::Declaration;
 use super::keyword::Keyword;
 use super::parsed_declaration::ParsedDeclaration;
 use super::presentation_property::{DeclGrammar, PresentationProperty};
-use super::text_interner::TextInterner;
 use crate::types::dom_transition::transition_longhand_values_from_shorthand;
 use crate::types::{
     AuthoredLength, DomAttributeValue, DomError, parse_authored_length, parse_css_color_rgba,
@@ -72,7 +74,7 @@ use crate::types::{
 /// expand to several longhands); `report.dropped` counts malformed segments.
 pub(crate) fn parse_declaration_block(
     text: &str,
-    interner: &mut TextInterner,
+    store: &mut DeclStore,
 ) -> (DeclBlock, DeclDropReport) {
     let mut block = DeclBlock::new();
     let mut report = DeclDropReport::default();
@@ -90,7 +92,7 @@ pub(crate) fn parse_declaration_block(
             report.dropped += 1;
             continue;
         };
-        let Some(declarations) = expand_shape(shape, value, interner) else {
+        let Some(declarations) = expand_shape(shape, value, store) else {
             report.dropped += 1;
             continue;
         };
@@ -110,7 +112,7 @@ pub(crate) fn parse_declaration_block(
 pub(crate) fn parse_declaration_strict(
     property: &str,
     value: &str,
-    interner: &mut TextInterner,
+    store: &mut DeclStore,
 ) -> Result<SmallVec<[ParsedDeclaration; 4]>, DomError> {
     let property = property.trim();
     let value = value.trim();
@@ -122,8 +124,7 @@ pub(crate) fn parse_declaration_strict(
         return Err(DomError::InvalidAttributeValue);
     }
     let shape = property_shape(property).ok_or(DomError::InvalidAttributeValue)?;
-    let declarations =
-        expand_shape(shape, value, interner).ok_or(DomError::InvalidAttributeValue)?;
+    let declarations = expand_shape(shape, value, store).ok_or(DomError::InvalidAttributeValue)?;
     let declarations: SmallVec<[ParsedDeclaration; 4]> = declarations
         .into_iter()
         .map(|declaration| ParsedDeclaration {
@@ -330,14 +331,14 @@ fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProper
 fn expand_shape(
     shape: PropertyShape,
     value: &str,
-    interner: &mut TextInterner,
+    store: &mut DeclStore,
 ) -> Option<Vec<Declaration>> {
     match shape {
         PropertyShape::Longhand(property) => {
-            let parsed = parse_property_value(property, value, interner)?;
+            let parsed = parse_property_value(property, value, store)?;
             Some(vec![declaration(property, parsed)])
         }
-        PropertyShape::Shorthand(shorthand) => expand_shorthand(shorthand, value, interner),
+        PropertyShape::Shorthand(shorthand) => expand_shorthand(shorthand, value, store),
     }
 }
 
@@ -370,18 +371,18 @@ const AUTO_ADMISSIBLE: &[PresentationProperty] = &[
 fn parse_property_value(
     property: PresentationProperty,
     value: &str,
-    interner: &mut TextInterner,
+    store: &mut DeclStore,
 ) -> Option<DeclValue> {
     if value == "auto" && AUTO_ADMISSIBLE.contains(&property) {
         return Some(DeclValue::Keyword(Keyword::Auto));
     }
-    parse_value(property.grammar(), value, interner)
+    parse_value(property.grammar(), value, store)
 }
 
 fn expand_shorthand(
     shorthand: Shorthand,
     value: &str,
-    interner: &mut TextInterner,
+    store: &mut DeclStore,
 ) -> Option<Vec<Declaration>> {
     match shorthand {
         Shorthand::BorderRadius => expand_border_radius(value),
@@ -392,7 +393,7 @@ fn expand_shorthand(
         Shorthand::PlaceContent => expand_place_content(value),
         Shorthand::PlaceItems => expand_place_items(value),
         Shorthand::PlaceSelf => expand_place_self(value),
-        Shorthand::Transition => expand_transition(value, interner),
+        Shorthand::Transition => expand_transition(value, store),
         Shorthand::BorderSide(side) => expand_border_side(side, value),
         Shorthand::Margin => expand_margin(value),
         Shorthand::Padding => expand_padding(value),
@@ -405,11 +406,7 @@ fn declaration(property: PresentationProperty, value: DeclValue) -> Declaration 
 
 /// Dispatches one declared value to its grammar-family helper. This match only
 /// routes; it never parses.
-fn parse_value(
-    grammar: DeclGrammar,
-    value: &str,
-    interner: &mut TextInterner,
-) -> Option<DeclValue> {
+fn parse_value(grammar: DeclGrammar, value: &str, store: &mut DeclStore) -> Option<DeclValue> {
     match grammar {
         DeclGrammar::Length => parse_length(value).map(DeclValue::Length),
         DeclGrammar::NonNegativeLength => {
@@ -425,13 +422,16 @@ fn parse_value(
         DeclGrammar::Integer => parse_integer(value),
         DeclGrammar::FontWeight => parse_font_weight(value),
         DeclGrammar::FlexBasis => parse_flex_basis_value(value),
-        DeclGrammar::Transform => parse_transform(value, interner),
-        DeclGrammar::Text => parse_text(value, interner),
+        DeclGrammar::Transform => parse_transform(value, store),
+        DeclGrammar::Text => parse_text(value, store),
         DeclGrammar::Keywords(set) => Keyword::from_name_in(set, value).map(DeclValue::Keyword),
-        DeclGrammar::TransitionPropertyList => parse_transition_property_list(value, interner),
-        DeclGrammar::TransitionTimeList => parse_transition_time_list(value, interner),
-        DeclGrammar::TransitionSignedTimeList => parse_transition_signed_time_list(value, interner),
-        DeclGrammar::TransitionTimingList => parse_transition_timing_list(value, interner),
+        DeclGrammar::TrackList => parse_track_list(value, store).map(DeclValue::TrackList),
+        DeclGrammar::GridAutoFlow => parse_grid_auto_flow(value).map(DeclValue::GridAutoFlow),
+        DeclGrammar::TrackSize => parse_track_size(value).map(DeclValue::TrackSize),
+        DeclGrammar::TransitionPropertyList => parse_transition_property_list(value, store),
+        DeclGrammar::TransitionTimeList => parse_transition_time_list(value, store),
+        DeclGrammar::TransitionSignedTimeList => parse_transition_signed_time_list(value, store),
+        DeclGrammar::TransitionTimingList => parse_transition_timing_list(value, store),
     }
 }
 
@@ -613,25 +613,237 @@ fn parse_flex_basis_length(value: &str) -> Option<DeclLength> {
     }
 }
 
+// — Grid family — //
+
+/// Parses a grid track list (`grid-template-columns`/`rows`): space-separated
+/// `<track-size>` tokens with `repeat(<positive-integer>, <track-list>)`
+/// expanded at parse. The result interns value-deduped into the owning store's
+/// arena. Gates (each a counted drop, never a crash): a `[` line-name token
+/// (T3), `repeat(auto-fill|auto-fit, ...)` (T3.5), a nested `repeat()`, a
+/// non-positive/non-integer repeat count, and an expanded count over
+/// `GRID_TRACK_LIST_CAPACITY`.
+fn parse_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
+    let mut tracks = ArrayVec::<GridTrackSize, GRID_TRACK_LIST_CAPACITY>::new();
+    expand_track_list_tokens(value, &mut tracks)?;
+    Some(store.intern_track_list(tracks.as_slice()))
+}
+
+/// Expands one space-separated track-list token slice into `out`, failing the
+/// whole list on any gate (the `?`-propagated `None`).
+fn expand_track_list_tokens(
+    value: &str,
+    out: &mut ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>,
+) -> Option<()> {
+    for token in split_ws_paren_aware(value) {
+        if token.starts_with('[') {
+            return None; // line-name token — named lines are T3, never silent
+        }
+        if let Some(inner) = strip_repeat(token) {
+            let (count, list) = split_repeat_inner(inner)?;
+            if list.contains("repeat(") {
+                return None; // nested repeat — CSS forbids it
+            }
+            for _ in 0..count {
+                for inner_token in split_ws_paren_aware(list) {
+                    if inner_token.starts_with('[') {
+                        return None;
+                    }
+                    out.try_push(parse_track_size(inner_token)?).ok()?;
+                }
+            }
+        } else {
+            out.try_push(parse_track_size(token)?).ok()?;
+        }
+    }
+    Some(())
+}
+
+/// Strips a `repeat(...)` call, returning the inner `count, <track-list>` text.
+fn strip_repeat(token: &str) -> Option<&str> {
+    let inner = token.strip_prefix("repeat(")?;
+    inner.strip_suffix(')')
+}
+
+/// Splits a `repeat` inner into `(positive count, track-list text)`. Rejects
+/// `auto-fill`/`auto-fit` (the T3.5 tier), a non-positive or non-integer
+/// count, and an empty list.
+fn split_repeat_inner(inner: &str) -> Option<(usize, &str)> {
+    let (count_text, list) = inner.split_once(',')?;
+    let count_text = count_text.trim();
+    if count_text == "auto-fill" || count_text == "auto-fit" {
+        return None;
+    }
+    let count = count_text.parse::<usize>().ok()?;
+    if count == 0 {
+        return None;
+    }
+    let list = list.trim();
+    if list.is_empty() {
+        return None;
+    }
+    Some((count, list))
+}
+
+/// Parses one grid `<track-size>` leaf: `auto | min-content | max-content |
+/// <px> | <%> | <fr> | minmax(<len-pct>, <len-pct>|min-content|max-content)`.
+/// `em` is not admitted (the `Length` kind carries a resolved px value and no
+/// parse-time font size exists); it drops fail-closed.
+fn parse_track_size(token: &str) -> Option<GridTrackSize> {
+    match token {
+        "auto" => {
+            return Some(GridTrackSize {
+                kind: GridTrackKind::Auto,
+                min_px: 0.0,
+                max_px: 0.0,
+            });
+        }
+        "min-content" => {
+            return Some(GridTrackSize {
+                kind: GridTrackKind::MinContent,
+                min_px: 0.0,
+                max_px: 0.0,
+            });
+        }
+        "max-content" => {
+            return Some(GridTrackSize {
+                kind: GridTrackKind::MaxContent,
+                min_px: 0.0,
+                max_px: 0.0,
+            });
+        }
+        _ => {}
+    }
+    if let Some(fr) = token.strip_suffix("fr") {
+        let value = parse_finite_f32(fr)?;
+        return Some(GridTrackSize {
+            kind: GridTrackKind::Fr(value),
+            min_px: 0.0,
+            max_px: 0.0,
+        });
+    }
+    if let Some(percent) = token.strip_suffix('%') {
+        let value = parse_finite_f32(percent)?;
+        return Some(GridTrackSize {
+            kind: GridTrackKind::Percent,
+            min_px: value,
+            max_px: 0.0,
+        });
+    }
+    if let Some(inner) = strip_minmax(token) {
+        return parse_minmax(inner);
+    }
+    match parse_authored_length(token)? {
+        AuthoredLength::Px(px) if px >= 0.0 => Some(GridTrackSize {
+            kind: GridTrackKind::Length,
+            min_px: px,
+            max_px: 0.0,
+        }),
+        _ => None,
+    }
+}
+
+/// Strips a `minmax(...)` call, returning the inner `A, B` text.
+fn strip_minmax(token: &str) -> Option<&str> {
+    let inner = token.strip_prefix("minmax(")?;
+    inner.strip_suffix(')')
+}
+
+/// Parses a `minmax(<len-pct>, <len-pct>|min-content|max-content)` inner into
+/// a `Minmax` `GridTrackSize`. The first bound is numeric; the second bound is
+/// numeric or a keyword sentinel (`MAX_CONTENT_BOUND`/`MIN_CONTENT_BOUND`).
+fn parse_minmax(inner: &str) -> Option<GridTrackSize> {
+    let (min_text, max_text) = inner.split_once(',')?;
+    let min_px = parse_minmax_bound(min_text.trim())?;
+    let max_bound = parse_minmax_max_bound(max_text.trim())?;
+    Some(GridTrackSize {
+        kind: GridTrackKind::Minmax,
+        min_px,
+        max_px: max_bound,
+    })
+}
+
+/// Parses the `minmax` first bound (`<length-percentage>`): px or percent as a
+/// numeric value.
+fn parse_minmax_bound(text: &str) -> Option<f32> {
+    if let Some(percent) = text.strip_suffix('%') {
+        return parse_finite_f32(percent);
+    }
+    match parse_authored_length(text)? {
+        AuthoredLength::Px(px) if px >= 0.0 => Some(px),
+        _ => None,
+    }
+}
+
+/// Parses the `minmax` second bound: px, percent, `min-content`, or
+/// `max-content` (the keywords as sentinels).
+fn parse_minmax_max_bound(text: &str) -> Option<f32> {
+    match text {
+        "min-content" => Some(GridTrackSize::MIN_CONTENT_BOUND),
+        "max-content" => Some(GridTrackSize::MAX_CONTENT_BOUND),
+        _ => parse_minmax_bound(text),
+    }
+}
+
+/// Parses `grid-auto-flow`: `[row | column] && dense?` — one or two tokens, any
+/// order; `dense` alone defaults to row. Maps to the four `GridAutoFlowKw`.
+fn parse_grid_auto_flow(value: &str) -> Option<GridAutoFlowKw> {
+    let tokens = split_ws_paren_aware(value);
+    let mut flow = Keyword::Row;
+    let mut dense = false;
+    let mut saw_direction = false;
+    for token in tokens {
+        match token {
+            "row" => {
+                if saw_direction {
+                    return None;
+                }
+                flow = Keyword::Row;
+                saw_direction = true;
+            }
+            "column" => {
+                if saw_direction {
+                    return None;
+                }
+                flow = Keyword::Column;
+                saw_direction = true;
+            }
+            "dense" => {
+                if dense {
+                    return None;
+                }
+                dense = true;
+            }
+            _ => return None,
+        }
+    }
+    Some(match (flow, dense) {
+        (Keyword::Row, false) => GridAutoFlowKw::Row,
+        (Keyword::Row, true) => GridAutoFlowKw::RowDense,
+        (Keyword::Column, false) => GridAutoFlowKw::Column,
+        (Keyword::Column, true) => GridAutoFlowKw::ColumnDense,
+        _ => unreachable!("the flow token is only ever Row or Column"),
+    })
+}
+
 // — Text/transform family — //
 
-fn parse_transform(value: &str, interner: &mut TextInterner) -> Option<DeclValue> {
+fn parse_transform(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
     if value.trim() == "none" {
         return Some(DeclValue::Keyword(Keyword::None));
     }
     if parse_translate_text(value) {
-        Some(DeclValue::Text(interner.intern(value)))
+        Some(DeclValue::Text(store.intern(value)))
     } else {
         None
     }
 }
 
-fn parse_text(value: &str, interner: &mut TextInterner) -> Option<DeclValue> {
+fn parse_text(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
     }
-    Some(DeclValue::Text(interner.intern(trimmed)))
+    Some(DeclValue::Text(store.intern(trimmed)))
 }
 
 /// Validates the closed translate grammar: the whole trimmed string must be
@@ -690,7 +902,7 @@ fn comma_split_trim(value: &str) -> Option<Vec<&str>> {
     Some(items)
 }
 
-fn parse_transition_property_list(value: &str, interner: &mut TextInterner) -> Option<DeclValue> {
+fn parse_transition_property_list(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
     let items = comma_split_trim(value)?;
     for &item in &items {
         if item == "all" || item == "none" {
@@ -698,23 +910,20 @@ fn parse_transition_property_list(value: &str, interner: &mut TextInterner) -> O
         }
         PresentationProperty::from_name(item)?;
     }
-    Some(DeclValue::Text(interner.intern(value)))
+    Some(DeclValue::Text(store.intern(value)))
 }
 
-fn parse_transition_time_list(value: &str, interner: &mut TextInterner) -> Option<DeclValue> {
-    parse_transition_time_list_impl(value, interner, false)
+fn parse_transition_time_list(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
+    parse_transition_time_list_impl(value, store, false)
 }
 
-fn parse_transition_signed_time_list(
-    value: &str,
-    interner: &mut TextInterner,
-) -> Option<DeclValue> {
-    parse_transition_time_list_impl(value, interner, true)
+fn parse_transition_signed_time_list(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
+    parse_transition_time_list_impl(value, store, true)
 }
 
 fn parse_transition_time_list_impl(
     value: &str,
-    interner: &mut TextInterner,
+    store: &mut DeclStore,
     allow_negative: bool,
 ) -> Option<DeclValue> {
     let items = comma_split_trim(value)?;
@@ -723,7 +932,7 @@ fn parse_transition_time_list_impl(
             return None;
         }
     }
-    Some(DeclValue::Text(interner.intern(value)))
+    Some(DeclValue::Text(store.intern(value)))
 }
 
 fn parse_time(value: &str, allow_negative: bool) -> bool {
@@ -752,12 +961,12 @@ const TRANSITION_TIMING_KEYWORDS: &[Keyword] = &[
     Keyword::EaseInOut,
 ];
 
-fn parse_transition_timing_list(value: &str, interner: &mut TextInterner) -> Option<DeclValue> {
+fn parse_transition_timing_list(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
     let items = comma_split_trim(value)?;
     for item in &items {
         Keyword::from_name_in(TRANSITION_TIMING_KEYWORDS, item)?;
     }
-    Some(DeclValue::Text(interner.intern(value)))
+    Some(DeclValue::Text(store.intern(value)))
 }
 
 // — Shared shorthand helpers — //
@@ -854,7 +1063,7 @@ fn parse_token_list<T>(value: &str, parse: impl Fn(&str) -> Option<T>) -> Option
 /// (`NonNegativeLength`); the representative property is named for
 /// readability only.
 fn parse_length_for(property: PresentationProperty, value: &str) -> Option<DeclLength> {
-    let mut scratch = TextInterner::default();
+    let mut scratch = DeclStore::default();
     match parse_value(property.grammar(), value, &mut scratch)? {
         DeclValue::Length(length) => Some(length),
         _ => None,
@@ -1131,7 +1340,7 @@ fn expand_place_self(value: &str) -> Option<Vec<Declaration>> {
     )])
 }
 
-fn expand_transition(value: &str, interner: &mut TextInterner) -> Option<Vec<Declaration>> {
+fn expand_transition(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
     let authored = DomAttributeValue::String(value.to_owned());
     let longhands = transition_longhand_values_from_shorthand(Some(&authored)).ok()?;
     let property = transition_string(longhands.property.as_ref()?)?;
@@ -1141,19 +1350,19 @@ fn expand_transition(value: &str, interner: &mut TextInterner) -> Option<Vec<Dec
     Some(vec![
         declaration(
             PresentationProperty::TransitionProperty,
-            DeclValue::Text(interner.intern(property)),
+            DeclValue::Text(store.intern(property)),
         ),
         declaration(
             PresentationProperty::TransitionDuration,
-            DeclValue::Text(interner.intern(duration)),
+            DeclValue::Text(store.intern(duration)),
         ),
         declaration(
             PresentationProperty::TransitionTimingFunction,
-            DeclValue::Text(interner.intern(timing)),
+            DeclValue::Text(store.intern(timing)),
         ),
         declaration(
             PresentationProperty::TransitionDelay,
-            DeclValue::Text(interner.intern(delay)),
+            DeclValue::Text(store.intern(delay)),
         ),
     ])
 }
@@ -1192,24 +1401,24 @@ mod tests {
 
     fn text<'a>(
         block: &DeclBlock,
-        interner: &'a TextInterner,
+        store: &'a DeclStore,
         property: PresentationProperty,
     ) -> &'a str {
         let value = block
             .get(property)
             .unwrap_or_else(|| panic!("expected {property:?} in block"));
         match value {
-            DeclValue::Text(key) => interner
+            DeclValue::Text(key) => store
                 .resolve(*key)
                 .unwrap_or_else(|| panic!("text key {key:?} should resolve")),
             other => panic!("expected text value for {property:?}, got {other:?}"),
         }
     }
 
-    fn parse_block(text: &str) -> (DeclBlock, DeclDropReport, TextInterner) {
-        let mut interner = TextInterner::default();
-        let (block, report) = parse_declaration_block(text, &mut interner);
-        (block, report, interner)
+    fn parse_block(text: &str) -> (DeclBlock, DeclDropReport, DeclStore) {
+        let mut store = DeclStore::default();
+        let (block, report) = parse_declaration_block(text, &mut store);
+        (block, report, store)
     }
 
     fn px(v: f32) -> DeclValue {
@@ -1238,41 +1447,41 @@ mod tests {
 
     #[test]
     fn length_grammar_accepts_closed_vocabulary() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::Length, "0", &mut interner),
+            parse_value(DeclGrammar::Length, "0", &mut store),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Length, "10px", &mut interner),
+            parse_value(DeclGrammar::Length, "10px", &mut store),
             Some(DeclValue::Length(DeclLength::Px(10.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Length, "1.5em", &mut interner),
+            parse_value(DeclGrammar::Length, "1.5em", &mut store),
             Some(DeclValue::Length(DeclLength::Em(1.5)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Length, "unset", &mut interner),
+            parse_value(DeclGrammar::Length, "unset", &mut store),
             Some(DeclValue::Length(DeclLength::Unset))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Length, "50%", &mut interner),
+            parse_value(DeclGrammar::Length, "50%", &mut store),
             Some(DeclValue::Length(DeclLength::Percent(50.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Length, "-10%", &mut interner),
+            parse_value(DeclGrammar::Length, "-10%", &mut store),
             Some(DeclValue::Length(DeclLength::Percent(-10.0)))
         );
     }
 
     #[test]
     fn length_grammar_rejects_unknown_units_and_non_finite() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for invalid in [
             "10", "10vh", "NaNpx", "infpx", "-infpx", "10%%", "10.5%px", "",
         ] {
             assert_eq!(
-                parse_value(DeclGrammar::Length, invalid, &mut interner),
+                parse_value(DeclGrammar::Length, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the Length grammar"
             );
@@ -1281,30 +1490,30 @@ mod tests {
 
     #[test]
     fn non_negative_length_grammar() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeLength, "unset", &mut interner),
+            parse_value(DeclGrammar::NonNegativeLength, "unset", &mut store),
             Some(DeclValue::Length(DeclLength::Unset))
         );
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeLength, "0", &mut interner),
+            parse_value(DeclGrammar::NonNegativeLength, "0", &mut store),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeLength, "10px", &mut interner),
+            parse_value(DeclGrammar::NonNegativeLength, "10px", &mut store),
             Some(DeclValue::Length(DeclLength::Px(10.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeLength, "1.5em", &mut interner),
+            parse_value(DeclGrammar::NonNegativeLength, "1.5em", &mut store),
             Some(DeclValue::Length(DeclLength::Em(1.5)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeLength, "50%", &mut interner),
+            parse_value(DeclGrammar::NonNegativeLength, "50%", &mut store),
             Some(DeclValue::Length(DeclLength::Percent(50.0)))
         );
         for invalid in ["-1px", "-0.5em", "-10%"] {
             assert_eq!(
-                parse_value(DeclGrammar::NonNegativeLength, invalid, &mut interner),
+                parse_value(DeclGrammar::NonNegativeLength, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the NonNegativeLength grammar"
             );
@@ -1313,26 +1522,26 @@ mod tests {
 
     #[test]
     fn line_width_grammar_rejects_percentages() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::LineWidth, "unset", &mut interner),
+            parse_value(DeclGrammar::LineWidth, "unset", &mut store),
             Some(DeclValue::Length(DeclLength::Unset))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineWidth, "0", &mut interner),
+            parse_value(DeclGrammar::LineWidth, "0", &mut store),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineWidth, "10px", &mut interner),
+            parse_value(DeclGrammar::LineWidth, "10px", &mut store),
             Some(DeclValue::Length(DeclLength::Px(10.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineWidth, "1.5em", &mut interner),
+            parse_value(DeclGrammar::LineWidth, "1.5em", &mut store),
             Some(DeclValue::Length(DeclLength::Em(1.5)))
         );
         for invalid in ["10%", "-10%", "-1px", "-0.5em"] {
             assert_eq!(
-                parse_value(DeclGrammar::LineWidth, invalid, &mut interner),
+                parse_value(DeclGrammar::LineWidth, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the LineWidth grammar"
             );
@@ -1341,26 +1550,26 @@ mod tests {
 
     #[test]
     fn signed_line_width_grammar_rejects_percentages() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::SignedLineWidth, "unset", &mut interner),
+            parse_value(DeclGrammar::SignedLineWidth, "unset", &mut store),
             Some(DeclValue::Length(DeclLength::Unset))
         );
         assert_eq!(
-            parse_value(DeclGrammar::SignedLineWidth, "0", &mut interner),
+            parse_value(DeclGrammar::SignedLineWidth, "0", &mut store),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::SignedLineWidth, "-10px", &mut interner),
+            parse_value(DeclGrammar::SignedLineWidth, "-10px", &mut store),
             Some(DeclValue::Length(DeclLength::Px(-10.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::SignedLineWidth, "-0.5em", &mut interner),
+            parse_value(DeclGrammar::SignedLineWidth, "-0.5em", &mut store),
             Some(DeclValue::Length(DeclLength::Em(-0.5)))
         );
         for invalid in ["10%", "-10%", "50%"] {
             assert_eq!(
-                parse_value(DeclGrammar::SignedLineWidth, invalid, &mut interner),
+                parse_value(DeclGrammar::SignedLineWidth, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the SignedLineWidth grammar"
             );
@@ -1369,30 +1578,30 @@ mod tests {
 
     #[test]
     fn gap_grammar_accepts_normal_and_non_negative_lengths() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::Gap, "normal", &mut interner),
+            parse_value(DeclGrammar::Gap, "normal", &mut store),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Gap, "unset", &mut interner),
+            parse_value(DeclGrammar::Gap, "unset", &mut store),
             Some(DeclValue::Length(DeclLength::Unset))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Gap, "0", &mut interner),
+            parse_value(DeclGrammar::Gap, "0", &mut store),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Gap, "4px", &mut interner),
+            parse_value(DeclGrammar::Gap, "4px", &mut store),
             Some(DeclValue::Length(DeclLength::Px(4.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Gap, "1.5em", &mut interner),
+            parse_value(DeclGrammar::Gap, "1.5em", &mut store),
             Some(DeclValue::Length(DeclLength::Em(1.5)))
         );
         for invalid in ["-1px", "-10%", "10%", "bogus"] {
             assert_eq!(
-                parse_value(DeclGrammar::Gap, invalid, &mut interner),
+                parse_value(DeclGrammar::Gap, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the Gap grammar"
             );
@@ -1401,7 +1610,7 @@ mod tests {
 
     #[test]
     fn auto_keyword_admission_is_closed_per_property() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for admitted in [
             PresentationProperty::Width,
             PresentationProperty::Height,
@@ -1413,7 +1622,7 @@ mod tests {
             PresentationProperty::MarginLeft,
         ] {
             assert_eq!(
-                parse_property_value(admitted, "auto", &mut interner),
+                parse_property_value(admitted, "auto", &mut store),
                 Some(DeclValue::Keyword(Keyword::Auto)),
                 "{admitted:?} should admit auto"
             );
@@ -1428,7 +1637,7 @@ mod tests {
             PresentationProperty::FontSize,
         ] {
             assert_eq!(
-                parse_property_value(rejected, "auto", &mut interner),
+                parse_property_value(rejected, "auto", &mut store),
                 None,
                 "{rejected:?} should reject auto"
             );
@@ -1437,39 +1646,39 @@ mod tests {
 
     #[test]
     fn line_height_accepts_normal_number_and_non_negative_lengths() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::LineHeight, "normal", &mut interner),
+            parse_value(DeclGrammar::LineHeight, "normal", &mut store),
             Some(DeclValue::Keyword(Keyword::Normal))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineHeight, "1.5", &mut interner),
+            parse_value(DeclGrammar::LineHeight, "1.5", &mut store),
             Some(DeclValue::Number(1.5))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineHeight, "0", &mut interner),
+            parse_value(DeclGrammar::LineHeight, "0", &mut store),
             Some(DeclValue::Number(0.0))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineHeight, "20px", &mut interner),
+            parse_value(DeclGrammar::LineHeight, "20px", &mut store),
             Some(DeclValue::Length(DeclLength::Px(20.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineHeight, "1.25em", &mut interner),
+            parse_value(DeclGrammar::LineHeight, "1.25em", &mut store),
             Some(DeclValue::Length(DeclLength::Em(1.25)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::LineHeight, "150%", &mut interner),
+            parse_value(DeclGrammar::LineHeight, "150%", &mut store),
             Some(DeclValue::Length(DeclLength::Percent(150.0)))
         );
     }
 
     #[test]
     fn line_height_rejects_negatives_and_non_finite() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for invalid in ["-120%", "-1", "-2px", "-0.5em", "NaN", "inf", "unset"] {
             assert_eq!(
-                parse_value(DeclGrammar::LineHeight, invalid, &mut interner),
+                parse_value(DeclGrammar::LineHeight, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the LineHeight grammar"
             );
@@ -1478,17 +1687,17 @@ mod tests {
 
     #[test]
     fn color_grammar_accepts_and_rejects() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::Color, "transparent", &mut interner),
+            parse_value(DeclGrammar::Color, "transparent", &mut store),
             Some(DeclValue::Color([0.0, 0.0, 0.0, 0.0]))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Color, "red", &mut interner),
+            parse_value(DeclGrammar::Color, "red", &mut store),
             Some(DeclValue::Color([1.0, 0.0, 0.0, 1.0]))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Color, "#112233", &mut interner),
+            parse_value(DeclGrammar::Color, "#112233", &mut store),
             Some(DeclValue::Color([
                 17.0 / 255.0,
                 34.0 / 255.0,
@@ -1497,37 +1706,37 @@ mod tests {
             ]))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Color, "notacolor", &mut interner),
+            parse_value(DeclGrammar::Color, "notacolor", &mut store),
             None
         );
     }
 
     #[test]
     fn opacity_clamps_to_unit_range() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::Opacity, "0.5", &mut interner),
+            parse_value(DeclGrammar::Opacity, "0.5", &mut store),
             Some(DeclValue::Number(0.5))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Opacity, "0", &mut interner),
+            parse_value(DeclGrammar::Opacity, "0", &mut store),
             Some(DeclValue::Number(0.0))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Opacity, "1", &mut interner),
+            parse_value(DeclGrammar::Opacity, "1", &mut store),
             Some(DeclValue::Number(1.0))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Opacity, "1.5", &mut interner),
+            parse_value(DeclGrammar::Opacity, "1.5", &mut store),
             Some(DeclValue::Number(1.0))
         );
         assert_eq!(
-            parse_value(DeclGrammar::Opacity, "-0.5", &mut interner),
+            parse_value(DeclGrammar::Opacity, "-0.5", &mut store),
             Some(DeclValue::Number(0.0))
         );
         for invalid in ["NaN", "inf", "-inf"] {
             assert_eq!(
-                parse_value(DeclGrammar::Opacity, invalid, &mut interner),
+                parse_value(DeclGrammar::Opacity, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the Opacity grammar"
             );
@@ -1536,51 +1745,48 @@ mod tests {
 
     #[test]
     fn non_negative_number_and_integer_grammars() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeNumber, "2.5", &mut interner),
+            parse_value(DeclGrammar::NonNegativeNumber, "2.5", &mut store),
             Some(DeclValue::Number(2.5))
         );
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeNumber, "-1", &mut interner),
+            parse_value(DeclGrammar::NonNegativeNumber, "-1", &mut store),
             None
         );
         assert_eq!(
-            parse_value(DeclGrammar::NonNegativeNumber, "inf", &mut interner),
+            parse_value(DeclGrammar::NonNegativeNumber, "inf", &mut store),
             None
         );
         assert_eq!(
-            parse_value(DeclGrammar::Integer, "-3", &mut interner),
+            parse_value(DeclGrammar::Integer, "-3", &mut store),
             Some(DeclValue::Integer(-3))
         );
-        assert_eq!(
-            parse_value(DeclGrammar::Integer, "4.5", &mut interner),
-            None
-        );
+        assert_eq!(parse_value(DeclGrammar::Integer, "4.5", &mut store), None);
     }
 
     #[test]
     fn font_weight_keywords_and_step_constraints() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::FontWeight, "normal", &mut interner),
+            parse_value(DeclGrammar::FontWeight, "normal", &mut store),
             Some(DeclValue::Keyword(Keyword::Normal))
         );
         assert_eq!(
-            parse_value(DeclGrammar::FontWeight, "bolder", &mut interner),
+            parse_value(DeclGrammar::FontWeight, "bolder", &mut store),
             Some(DeclValue::Keyword(Keyword::Bolder))
         );
         assert_eq!(
-            parse_value(DeclGrammar::FontWeight, "600", &mut interner),
+            parse_value(DeclGrammar::FontWeight, "600", &mut store),
             Some(DeclValue::Integer(600))
         );
         assert_eq!(
-            parse_value(DeclGrammar::FontWeight, "900", &mut interner),
+            parse_value(DeclGrammar::FontWeight, "900", &mut store),
             Some(DeclValue::Integer(900))
         );
         for invalid in ["450", "950", "99", "semibold"] {
             assert_eq!(
-                parse_value(DeclGrammar::FontWeight, invalid, &mut interner),
+                parse_value(DeclGrammar::FontWeight, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the FontWeight grammar"
             );
@@ -1589,39 +1795,39 @@ mod tests {
 
     #[test]
     fn flex_basis_grammar_forms() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::FlexBasis, "auto", &mut interner),
+            parse_value(DeclGrammar::FlexBasis, "auto", &mut store),
             Some(DeclValue::Keyword(Keyword::Auto))
         );
         assert_eq!(
-            parse_value(DeclGrammar::FlexBasis, "content", &mut interner),
+            parse_value(DeclGrammar::FlexBasis, "content", &mut store),
             Some(DeclValue::Keyword(Keyword::Content))
         );
         assert_eq!(
-            parse_value(DeclGrammar::FlexBasis, "0", &mut interner),
+            parse_value(DeclGrammar::FlexBasis, "0", &mut store),
             Some(DeclValue::Length(DeclLength::Px(0.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::FlexBasis, "20px", &mut interner),
+            parse_value(DeclGrammar::FlexBasis, "20px", &mut store),
             Some(DeclValue::Length(DeclLength::Px(20.0)))
         );
         assert_eq!(
-            parse_value(DeclGrammar::FlexBasis, "unset", &mut interner),
+            parse_value(DeclGrammar::FlexBasis, "unset", &mut store),
             None
         );
     }
 
     #[test]
     fn flex_basis_rejects_negative_lengths() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::FlexBasis, "-10px", &mut interner),
+            parse_value(DeclGrammar::FlexBasis, "-10px", &mut store),
             None
         );
         for accepted in ["10px", "auto", "content", "0"] {
             assert!(
-                parse_value(DeclGrammar::FlexBasis, accepted, &mut interner).is_some(),
+                parse_value(DeclGrammar::FlexBasis, accepted, &mut store).is_some(),
                 "{accepted:?} should parse"
             );
         }
@@ -1629,9 +1835,9 @@ mod tests {
 
     #[test]
     fn transform_grammar_accepts_none_and_closed_translate() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_value(DeclGrammar::Transform, "none", &mut interner),
+            parse_value(DeclGrammar::Transform, "none", &mut store),
             Some(DeclValue::Keyword(Keyword::None))
         );
         for accepted in [
@@ -1640,18 +1846,18 @@ mod tests {
             "translate(10px, 20px)",
             "translate(-3px, 4)",
         ] {
-            let parsed = parse_value(DeclGrammar::Transform, accepted, &mut interner)
+            let parsed = parse_value(DeclGrammar::Transform, accepted, &mut store)
                 .unwrap_or_else(|| panic!("{accepted:?} should parse"));
             let DeclValue::Text(key) = parsed else {
                 panic!("{accepted:?} should intern to text");
             };
-            assert_eq!(interner.resolve(key), Some(accepted));
+            assert_eq!(store.resolve(key), Some(accepted));
         }
     }
 
     #[test]
     fn transform_grammar_rejects_trailing_garbage_and_bad_shapes() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for invalid in [
             "translateX(10px 20px)",
             "translateX(10px) extra",
@@ -1664,7 +1870,7 @@ mod tests {
             "",
         ] {
             assert_eq!(
-                parse_value(DeclGrammar::Transform, invalid, &mut interner),
+                parse_value(DeclGrammar::Transform, invalid, &mut store),
                 None,
                 "{invalid:?} should fail the Transform grammar"
             );
@@ -1673,41 +1879,41 @@ mod tests {
 
     #[test]
     fn text_grammar_interns_non_empty_and_rejects_empty() {
-        let mut interner = TextInterner::default();
-        let parsed = parse_value(DeclGrammar::Text, "ui-sans, sans-serif", &mut interner)
+        let mut store = DeclStore::default();
+        let parsed = parse_value(DeclGrammar::Text, "ui-sans, sans-serif", &mut store)
             .expect("font-family should parse");
         let DeclValue::Text(key) = parsed else {
             panic!("font-family should intern to text");
         };
-        assert_eq!(interner.resolve(key), Some("ui-sans, sans-serif"));
-        assert_eq!(parse_value(DeclGrammar::Text, "   ", &mut interner), None);
+        assert_eq!(store.resolve(key), Some("ui-sans, sans-serif"));
+        assert_eq!(parse_value(DeclGrammar::Text, "   ", &mut store), None);
     }
 
     #[test]
     fn transition_property_list_grammar() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         let parsed = parse_value(
             DeclGrammar::TransitionPropertyList,
             "all, opacity",
-            &mut interner,
+            &mut store,
         )
         .expect("admitted list should parse");
         let DeclValue::Text(key) = parsed else {
             panic!("transition-property should intern to text");
         };
-        assert_eq!(interner.resolve(key), Some("all, opacity"));
+        assert_eq!(store.resolve(key), Some("all, opacity"));
 
         assert!(
             parse_value(
                 DeclGrammar::TransitionPropertyList,
                 "width, color",
-                &mut interner
+                &mut store
             )
             .is_some()
         );
         for invalid in ["mystery", "all, mystery", "all,", ""] {
             assert_eq!(
-                parse_value(DeclGrammar::TransitionPropertyList, invalid, &mut interner),
+                parse_value(DeclGrammar::TransitionPropertyList, invalid, &mut store),
                 None,
                 "{invalid:?} should fail"
             );
@@ -1716,16 +1922,16 @@ mod tests {
 
     #[test]
     fn transition_time_list_grammar() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for accepted in ["80ms, 180ms", "0.25s", "0", "120ms"] {
             assert!(
-                parse_value(DeclGrammar::TransitionTimeList, accepted, &mut interner).is_some(),
+                parse_value(DeclGrammar::TransitionTimeList, accepted, &mut store).is_some(),
                 "{accepted:?} should parse"
             );
         }
         for invalid in ["-20ms", "80", "80ms,", "NaNms", ""] {
             assert_eq!(
-                parse_value(DeclGrammar::TransitionTimeList, invalid, &mut interner),
+                parse_value(DeclGrammar::TransitionTimeList, invalid, &mut store),
                 None,
                 "{invalid:?} should fail"
             );
@@ -1734,26 +1940,18 @@ mod tests {
 
     #[test]
     fn transition_signed_time_list_grammar() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for accepted in ["-20ms", "-12.5ms", "0.25s", "0", "-20ms, 100ms"] {
-            let parsed = parse_value(
-                DeclGrammar::TransitionSignedTimeList,
-                accepted,
-                &mut interner,
-            )
-            .unwrap_or_else(|| panic!("{accepted:?} should parse"));
+            let parsed = parse_value(DeclGrammar::TransitionSignedTimeList, accepted, &mut store)
+                .unwrap_or_else(|| panic!("{accepted:?} should parse"));
             let DeclValue::Text(key) = parsed else {
                 panic!("{accepted:?} should intern to text");
             };
-            assert_eq!(interner.resolve(key), Some(accepted));
+            assert_eq!(store.resolve(key), Some(accepted));
         }
         for invalid in ["-20", "80", "80ms,", "NaNms", "infms", "-infms", ""] {
             assert_eq!(
-                parse_value(
-                    DeclGrammar::TransitionSignedTimeList,
-                    invalid,
-                    &mut interner
-                ),
+                parse_value(DeclGrammar::TransitionSignedTimeList, invalid, &mut store),
                 None,
                 "{invalid:?} should fail"
             );
@@ -1762,26 +1960,21 @@ mod tests {
 
     #[test]
     fn transition_timing_list_grammar() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert!(
             parse_value(
                 DeclGrammar::TransitionTimingList,
                 "ease, linear",
-                &mut interner
+                &mut store
             )
             .is_some()
         );
         assert!(
-            parse_value(
-                DeclGrammar::TransitionTimingList,
-                "ease-in-out",
-                &mut interner
-            )
-            .is_some()
+            parse_value(DeclGrammar::TransitionTimingList, "ease-in-out", &mut store).is_some()
         );
         for invalid in ["cubic-bezier(0,0,1,1)", "ease,", "fast"] {
             assert_eq!(
-                parse_value(DeclGrammar::TransitionTimingList, invalid, &mut interner),
+                parse_value(DeclGrammar::TransitionTimingList, invalid, &mut store),
                 None,
                 "{invalid:?} should fail"
             );
@@ -1820,7 +2013,7 @@ mod tests {
 
     #[test]
     fn border_radius_expands_css_corner_mapping() {
-        let (block, report, _interner) = parse_block("border-radius: 10px 20px 30px");
+        let (block, report, _store) = parse_block("border-radius: 10px 20px 30px");
         assert_eq!(report.applied, 1);
         assert_eq!(
             value(&block, PresentationProperty::BorderTopLeftRadius),
@@ -1876,7 +2069,7 @@ mod tests {
 
     #[test]
     fn border_color_does_not_split_inside_rgb() {
-        let (block, report, _interner) = parse_block("border-color: rgb(255, 0, 0) rgb(0, 0, 255)");
+        let (block, report, _store) = parse_block("border-color: rgb(255, 0, 0) rgb(0, 0, 255)");
         assert_eq!(report.applied, 1);
         assert_eq!(
             value(&block, PresentationProperty::BorderTopColor),
@@ -2107,26 +2300,26 @@ mod tests {
 
     #[test]
     fn transition_shorthand_expands_to_normalized_longhands() {
-        let (block, report, interner) = parse_block("transition: width 120ms ease-in 40ms");
+        let (block, report, store) = parse_block("transition: width 120ms ease-in 40ms");
         assert_eq!(report.applied, 1);
         assert_eq!(
-            text(&block, &interner, PresentationProperty::TransitionProperty),
+            text(&block, &store, PresentationProperty::TransitionProperty),
             "width"
         );
         assert_eq!(
-            text(&block, &interner, PresentationProperty::TransitionDuration),
+            text(&block, &store, PresentationProperty::TransitionDuration),
             "0.12s"
         );
         assert_eq!(
             text(
                 &block,
-                &interner,
+                &store,
                 PresentationProperty::TransitionTimingFunction
             ),
             "ease-in"
         );
         assert_eq!(
-            text(&block, &interner, PresentationProperty::TransitionDelay),
+            text(&block, &store, PresentationProperty::TransitionDelay),
             "0.04s"
         );
     }
@@ -2234,7 +2427,7 @@ mod tests {
 
     #[test]
     fn block_parse_rejects_negative_duration_but_accepts_negative_delay() {
-        let (block, report, interner) = parse_block(
+        let (block, report, store) = parse_block(
             "transition-duration: -20ms; transition-delay: -20ms; \
              transition-delay: -20ms, 100ms",
         );
@@ -2246,7 +2439,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            text(&block, &interner, PresentationProperty::TransitionDelay),
+            text(&block, &store, PresentationProperty::TransitionDelay),
             "-20ms, 100ms"
         );
     }
@@ -2302,9 +2495,9 @@ mod tests {
 
     #[test]
     fn strict_parse_ok_for_longhand() {
-        let mut interner = TextInterner::default();
-        let declarations = parse_declaration_strict("width", "10px", &mut interner)
-            .expect("longhand should parse");
+        let mut store = DeclStore::default();
+        let declarations =
+            parse_declaration_strict("width", "10px", &mut store).expect("longhand should parse");
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, PresentationProperty::Width);
         assert_eq!(
@@ -2315,8 +2508,8 @@ mod tests {
 
     #[test]
     fn font_size_unset_is_admitted() {
-        let mut interner = TextInterner::default();
-        let declarations = parse_declaration_strict("font-size", "unset", &mut interner)
+        let mut store = DeclStore::default();
+        let declarations = parse_declaration_strict("font-size", "unset", &mut store)
             .expect("font-size: unset should parse");
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, PresentationProperty::FontSize);
@@ -2325,9 +2518,9 @@ mod tests {
 
     #[test]
     fn strict_parse_ok_for_shorthand_in_expansion_order() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         let declarations =
-            parse_declaration_strict("flex", "1", &mut interner).expect("shorthand should parse");
+            parse_declaration_strict("flex", "1", &mut store).expect("shorthand should parse");
         let properties: Vec<PresentationProperty> =
             declarations.iter().map(|d| d.property).collect();
         assert_eq!(
@@ -2342,33 +2535,33 @@ mod tests {
 
     #[test]
     fn strict_parse_errors_on_unknown_malformed_and_empty() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_declaration_strict("mystery", "1px", &mut interner),
+            parse_declaration_strict("mystery", "1px", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
         assert_eq!(
-            parse_declaration_strict("width", "notalength", &mut interner),
+            parse_declaration_strict("width", "notalength", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
         assert_eq!(
-            parse_declaration_strict("", "10px", &mut interner),
+            parse_declaration_strict("", "10px", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
         assert_eq!(
-            parse_declaration_strict("width", "", &mut interner),
+            parse_declaration_strict("width", "", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
     }
 
     #[test]
     fn strict_parse_rejects_negative_duration_but_accepts_negative_delay() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         assert_eq!(
-            parse_declaration_strict("transition-duration", "-20ms", &mut interner),
+            parse_declaration_strict("transition-duration", "-20ms", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
-        let declarations = parse_declaration_strict("transition-delay", "-20ms", &mut interner)
+        let declarations = parse_declaration_strict("transition-delay", "-20ms", &mut store)
             .expect("negative delay should parse");
         assert_eq!(declarations.len(), 1);
         assert_eq!(
@@ -2378,15 +2571,15 @@ mod tests {
         let DeclValue::Text(key) = declarations[0].value else {
             panic!("delay should intern to text");
         };
-        assert_eq!(interner.resolve(key), Some("-20ms"));
+        assert_eq!(store.resolve(key), Some("-20ms"));
     }
 
     // — `!important` marker — //
 
     #[test]
     fn importance_marker_strips_from_strict_parse_and_carries_the_flag() {
-        let mut interner = TextInterner::default();
-        let declarations = parse_declaration_strict("width", "10px !important", &mut interner)
+        let mut store = DeclStore::default();
+        let declarations = parse_declaration_strict("width", "10px !important", &mut store)
             .expect("important width should parse");
         assert_eq!(declarations.len(), 1);
         assert_eq!(declarations[0].property, PresentationProperty::Width);
@@ -2399,14 +2592,14 @@ mod tests {
 
     #[test]
     fn importance_marker_accepts_case_and_whitespace_variants() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for authored in [
             "10px !important",
             "10px!important",
             "10px ! IMPORTANT",
             "10px !  important",
         ] {
-            let declarations = parse_declaration_strict("width", authored, &mut interner)
+            let declarations = parse_declaration_strict("width", authored, &mut store)
                 .unwrap_or_else(|_| panic!("{authored:?} should parse as important"));
             assert_eq!(declarations.len(), 1, "{authored:?}");
             assert_eq!(
@@ -2420,8 +2613,8 @@ mod tests {
 
     #[test]
     fn importance_marker_absent_keeps_normal_flag() {
-        let mut interner = TextInterner::default();
-        let declarations = parse_declaration_strict("width", "10px", &mut interner)
+        let mut store = DeclStore::default();
+        let declarations = parse_declaration_strict("width", "10px", &mut store)
             .expect("plain width should parse");
         assert_eq!(declarations.len(), 1);
         assert!(!declarations[0].important);
@@ -2429,20 +2622,20 @@ mod tests {
 
     #[test]
     fn importance_marker_is_not_recognized_mid_value() {
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         // `!important` is only a marker at the END of the value string; these
         // values leave the marker in place, so the grammar rejects them.
         assert_eq!(
-            parse_declaration_strict("width", "10px !important 5px", &mut interner),
+            parse_declaration_strict("width", "10px !important 5px", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
         assert_eq!(
-            parse_declaration_strict("width", "!important 10px", &mut interner),
+            parse_declaration_strict("width", "!important 10px", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
         // An empty remainder after the marker is malformed.
         assert_eq!(
-            parse_declaration_strict("width", "!important", &mut interner),
+            parse_declaration_strict("width", "!important", &mut store),
             Err(DomError::InvalidAttributeValue)
         );
     }
@@ -2468,10 +2661,10 @@ mod tests {
         // A post-`!` tail where byte index 9 is NOT a char boundary (multi-byte
         // UTF-8) is not a marker; the strict path must return a typed error,
         // never panic on `after[..9]`/`after[9..]`.
-        let mut interner = TextInterner::default();
+        let mut store = DeclStore::default();
         for authored in ["10px !ééééé", "10px !😀😀😀"] {
             assert_eq!(
-                parse_declaration_strict("width", authored, &mut interner),
+                parse_declaration_strict("width", authored, &mut store),
                 Err(DomError::InvalidAttributeValue),
                 "{authored:?} should be a typed error, not a panic"
             );
@@ -2633,5 +2826,120 @@ mod tests {
     fn longhands_for_name_returns_none_for_unknown_names() {
         assert_eq!(longhands_for_name("frobnicate"), None);
         assert_eq!(longhands_for_name(""), None);
+    }
+
+    // — Grid family — //
+
+    fn track_size(kind: GridTrackKind, min_px: f32, max_px: f32) -> GridTrackSize {
+        GridTrackSize {
+            kind,
+            min_px,
+            max_px,
+        }
+    }
+
+    #[test]
+    fn grid_track_size_leaf_parses_each_kind() {
+        assert_eq!(
+            parse_track_size("auto"),
+            Some(track_size(GridTrackKind::Auto, 0.0, 0.0))
+        );
+        assert_eq!(
+            parse_track_size("100px"),
+            Some(track_size(GridTrackKind::Length, 100.0, 0.0))
+        );
+        assert_eq!(
+            parse_track_size("20%"),
+            Some(track_size(GridTrackKind::Percent, 20.0, 0.0))
+        );
+        assert_eq!(
+            parse_track_size("1fr"),
+            Some(track_size(GridTrackKind::Fr(1.0), 0.0, 0.0))
+        );
+        assert_eq!(
+            parse_track_size("min-content"),
+            Some(track_size(GridTrackKind::MinContent, 0.0, 0.0))
+        );
+        assert_eq!(
+            parse_track_size("max-content"),
+            Some(track_size(GridTrackKind::MaxContent, 0.0, 0.0))
+        );
+        assert_eq!(
+            parse_track_size("minmax(100px, 200px)"),
+            Some(track_size(GridTrackKind::Minmax, 100.0, 200.0))
+        );
+        assert_eq!(
+            parse_track_size("minmax(80px, max-content)"),
+            Some(track_size(
+                GridTrackKind::Minmax,
+                80.0,
+                GridTrackSize::MAX_CONTENT_BOUND
+            ))
+        );
+        // `em` is not admitted (no parse-time font size for the Length kind).
+        assert_eq!(parse_track_size("2em"), None);
+        assert_eq!(parse_track_size("bogus"), None);
+    }
+
+    #[test]
+    fn grid_auto_flow_parses_the_four_combinations() {
+        assert_eq!(parse_grid_auto_flow("row"), Some(GridAutoFlowKw::Row));
+        assert_eq!(parse_grid_auto_flow("column"), Some(GridAutoFlowKw::Column));
+        assert_eq!(
+            parse_grid_auto_flow("row dense"),
+            Some(GridAutoFlowKw::RowDense)
+        );
+        assert_eq!(
+            parse_grid_auto_flow("dense column"),
+            Some(GridAutoFlowKw::ColumnDense)
+        );
+        // `dense` alone defaults to row flow; duplicates and unknowns drop.
+        assert_eq!(
+            parse_grid_auto_flow("dense"),
+            Some(GridAutoFlowKw::RowDense)
+        );
+        assert_eq!(parse_grid_auto_flow("row row"), None);
+        assert_eq!(parse_grid_auto_flow("dense dense"), None);
+        assert_eq!(parse_grid_auto_flow("row column"), None);
+        assert_eq!(parse_grid_auto_flow("row extra"), None);
+    }
+
+    #[test]
+    fn grid_track_list_interns_expanded_typed_sequences() {
+        let mut store = DeclStore::default();
+        let key = parse_track_list("repeat(3, 1fr) 100px", &mut store).expect("track list");
+        let list = store.resolve_track_list(key).expect("resolve");
+        assert_eq!(
+            list.as_slice(),
+            &[
+                track_size(GridTrackKind::Fr(1.0), 0.0, 0.0),
+                track_size(GridTrackKind::Fr(1.0), 0.0, 0.0),
+                track_size(GridTrackKind::Fr(1.0), 0.0, 0.0),
+                track_size(GridTrackKind::Length, 100.0, 0.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn grid_track_list_gates_repeat_and_line_names() {
+        let mut store = DeclStore::default();
+        // Over capacity (> 12 expanded tracks).
+        assert_eq!(parse_track_list("repeat(13, 1fr)", &mut store), None);
+        // Zero / negative / non-integer repeat counts.
+        assert_eq!(parse_track_list("repeat(0, 1fr)", &mut store), None);
+        assert_eq!(parse_track_list("repeat(-1, 1fr)", &mut store), None);
+        assert_eq!(parse_track_list("repeat(1.5, 1fr)", &mut store), None);
+        // auto-fill / auto-fit (the T3.5 tier).
+        assert_eq!(parse_track_list("repeat(auto-fill, 1fr)", &mut store), None);
+        assert_eq!(parse_track_list("repeat(auto-fit, 1fr)", &mut store), None);
+        // Nested repeat.
+        assert_eq!(
+            parse_track_list("repeat(2, repeat(3, 1fr))", &mut store),
+            None
+        );
+        // Line-name tokens.
+        assert_eq!(parse_track_list("[main] 1fr [aside]", &mut store), None);
+        // A valid two-track list still interns (the control).
+        assert!(parse_track_list("1fr 1fr", &mut store).is_some());
     }
 }

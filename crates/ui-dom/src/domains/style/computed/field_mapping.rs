@@ -189,6 +189,23 @@ pub(crate) fn for_each_moved_field(
         visit(PresentationProperty::ColumnGap);
     }
 
+    // Non-inherited — grid group.
+    if old.grid.template_columns != new.grid.template_columns {
+        visit(PresentationProperty::GridTemplateColumns);
+    }
+    if old.grid.template_rows != new.grid.template_rows {
+        visit(PresentationProperty::GridTemplateRows);
+    }
+    if old.grid.auto_flow != new.grid.auto_flow {
+        visit(PresentationProperty::GridAutoFlow);
+    }
+    if old.grid.auto_columns != new.grid.auto_columns {
+        visit(PresentationProperty::GridAutoColumns);
+    }
+    if old.grid.auto_rows != new.grid.auto_rows {
+        visit(PresentationProperty::GridAutoRows);
+    }
+
     // Non-inherited — visual group.
     if old.visual.opacity != new.visual.opacity {
         visit(PresentationProperty::Opacity);

@@ -13,17 +13,27 @@
 //! - level accessors (`live_block_count`, `interned_text_count`) are read
 //!   accessors over retained state, not emitted gauges
 
+use arrayvec::ArrayVec;
 use slotmap::SlotMap;
 
+use super::computed::GridTrackSize;
 use super::decl_block::DeclBlock;
-use super::decl_value::TextKey;
+use super::decl_value::{GridTrackListKey, TextKey};
 use super::text_interner::TextInterner;
 
 slotmap::new_key_type! { pub struct DeclBlockKey; }
 
+/// The maximum expanded track count a grid track list may hold. Track lists
+/// are short and few by design (the design-system standard); larger lists are
+/// a named, D6-gated follow-up (an arena-page indirection, sketched, not
+/// built). The parse-time capacity gate drops lists over this bound with a
+/// counted report (`GRID_STEP1_DESIGN.md` D4).
+pub(crate) const GRID_TRACK_LIST_CAPACITY: usize = 12;
+
 /// Arena of all declaration blocks for one owner (a stylesheet runtime or a
 /// document's inline-style store), plus the text interner the blocks' Text
-/// values resolve against. Generational keys make stale-block access a typed
+/// values resolve against, and the value-deduped grid track-list arena.
+/// Generational keys make stale-block access a typed
 /// None, never a use-after-free. Blocks are never freed while their owner
 /// lives (stylesheet tombstones keep theirs, matching the rule store's
 /// tombstone semantics today); reclamation policy is open question 6.
@@ -31,6 +41,7 @@ slotmap::new_key_type! { pub struct DeclBlockKey; }
 pub struct DeclStore {
     blocks: SlotMap<DeclBlockKey, DeclBlock>,
     texts: TextInterner,
+    track_lists: SlotMap<GridTrackListKey, ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>>,
 }
 
 impl DeclStore {
@@ -73,6 +84,32 @@ impl DeclStore {
         &mut self.texts
     }
 
+    /// Interns a grid track list value-deduped: a linear scan over retained
+    /// lists returns the existing key for equal content, and only a new list
+    /// is pushed (allocation-once-per-new-list, steady-state zero — the D8
+    /// contract). Lists are short and few, so the scan is the honest shape
+    /// (the text interner's).
+    pub fn intern_track_list(&mut self, list: &[GridTrackSize]) -> GridTrackListKey {
+        for (key, existing) in &self.track_lists {
+            if existing.as_slice() == list {
+                return key;
+            }
+        }
+        let mut retained = ArrayVec::<GridTrackSize, GRID_TRACK_LIST_CAPACITY>::new();
+        retained.extend(list.iter().copied());
+        self.track_lists.insert(retained)
+    }
+
+    /// Resolves a track-list key to its retained `GridTrackSize` slice. A stale
+    /// or out-of-range key is a typed `None` (generational safety).
+    #[must_use]
+    pub fn resolve_track_list(
+        &self,
+        key: GridTrackListKey,
+    ) -> Option<&ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>> {
+        self.track_lists.get(key)
+    }
+
     /// Level accessor over retained state (observability doctrine: levels are
     /// read accessors, not emitted gauges): live declaration blocks.
     #[must_use]
@@ -84,6 +121,12 @@ impl DeclStore {
     #[must_use]
     pub fn interned_text_count(&self) -> usize {
         self.texts.len()
+    }
+
+    /// Level accessor over retained state: distinct interned track lists.
+    #[must_use]
+    pub fn interned_track_list_count(&self) -> usize {
+        self.track_lists.len()
     }
 }
 
@@ -127,5 +170,46 @@ mod tests {
         assert_eq!(store.resolve(key), Some("translate(10px)"));
         assert_eq!(store.interned_text_count(), 1);
         assert_eq!(store.resolve(TextKey(u32::MAX)), None);
+    }
+
+    #[test]
+    fn intern_track_list_dedups_by_content() {
+        use crate::domains::style::computed::{GridTrackKind, GridTrackSize};
+
+        let list = [
+            GridTrackSize {
+                kind: GridTrackKind::Length,
+                min_px: 100.0,
+                max_px: 0.0,
+            },
+            GridTrackSize {
+                kind: GridTrackKind::Fr(1.0),
+                min_px: 0.0,
+                max_px: 0.0,
+            },
+        ];
+        let other = [GridTrackSize {
+            kind: GridTrackKind::Length,
+            min_px: 200.0,
+            max_px: 0.0,
+        }];
+
+        let mut store = DeclStore::new();
+        let first = store.intern_track_list(&list);
+        let second = store.intern_track_list(&list);
+        let third = store.intern_track_list(&other);
+
+        assert_eq!(first, second, "equal lists must intern to the SAME key");
+        assert_ne!(first, third, "distinct lists must intern to distinct keys");
+        assert_eq!(store.interned_track_list_count(), 2, "two distinct lists");
+
+        let resolved = store.resolve_track_list(first).expect("key resolves");
+        assert_eq!(resolved.as_slice(), &list[..]);
+    }
+
+    #[test]
+    fn resolve_track_list_out_of_range_is_none() {
+        let store = DeclStore::new();
+        assert_eq!(store.resolve_track_list(GridTrackListKey::default()), None);
     }
 }

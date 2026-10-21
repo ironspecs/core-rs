@@ -52,6 +52,8 @@ pub(super) enum LayoutDisplay {
     InlineBlock,
     Flex,
     InlineFlex,
+    Grid,
+    InlineGrid,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -385,6 +387,8 @@ fn display_from_kw(kw: DisplayKw) -> LayoutDisplay {
         DisplayKw::InlineBlock => LayoutDisplay::InlineBlock,
         DisplayKw::Flex => LayoutDisplay::Flex,
         DisplayKw::InlineFlex => LayoutDisplay::InlineFlex,
+        DisplayKw::Grid => LayoutDisplay::Grid,
+        DisplayKw::InlineGrid => LayoutDisplay::InlineGrid,
     }
 }
 

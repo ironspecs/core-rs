@@ -31,17 +31,19 @@
 
 use std::collections::{HashMap, HashSet};
 
+use arrayvec::ArrayVec;
 use slotmap::SlotMap;
 
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::StylesheetLoadReport;
 use super::decl_parse::parse_declaration_block;
+use super::decl_store::GRID_TRACK_LIST_CAPACITY;
 use super::{
-    CompiledRule, DeclBlockKey, DeclStore, Declaration, NodeLookup, NodeStyleIndex,
-    PrecedenceTuple, PseudoStateCounts, RightMostSelector, SelectorSpecificity, SimpleSelector,
-    StyleRuleKey, StyleRuleOrigin, TextKey, append_rule_keys, compute_rule_identity_hash,
-    extract_right_most_selector, parse_css_blocks, parse_selector, pseudo_state_counts,
-    selector_matches_node, specificity_for_selector_parts,
+    CompiledRule, DeclBlockKey, DeclStore, Declaration, GridTrackListKey, GridTrackSize,
+    NodeLookup, NodeStyleIndex, PrecedenceTuple, PseudoStateCounts, RightMostSelector,
+    SelectorSpecificity, SimpleSelector, StyleRuleKey, StyleRuleOrigin, TextKey, append_rule_keys,
+    compute_rule_identity_hash, extract_right_most_selector, parse_css_blocks, parse_selector,
+    pseudo_state_counts, selector_matches_node, specificity_for_selector_parts,
 };
 use crate::types::{DomError, DomNodeSlotKey, DomPseudoState};
 
@@ -177,7 +179,7 @@ impl StyleRuntime {
             let right_most = extract_right_most_selector(&selector_parts)?;
             let specificity = specificity_for_selector_parts(&selector_parts);
             let (decl_block, drop_report) =
-                parse_declaration_block(&block.declarations, self.decl_store.texts_mut());
+                parse_declaration_block(&block.declarations, &mut self.decl_store);
             report.declarations_applied += drop_report.applied;
             report.declarations_dropped += drop_report.dropped;
             self.declarations_dropped = self.declarations_dropped.saturating_add(
@@ -320,6 +322,16 @@ impl StyleRuntime {
     #[must_use]
     pub(crate) fn resolve_text(&self, key: TextKey) -> Option<&str> {
         self.decl_store.resolve(key)
+    }
+
+    /// Resolves a stylesheet-arena track-list key to its retained slice, so the
+    /// winners fold can re-intern it into the inline arena.
+    #[must_use]
+    pub(crate) fn resolve_track_list(
+        &self,
+        key: GridTrackListKey,
+    ) -> Option<&ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>> {
+        self.decl_store.resolve_track_list(key)
     }
 
     #[must_use]

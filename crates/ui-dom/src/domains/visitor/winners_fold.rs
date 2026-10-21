@@ -40,19 +40,20 @@ use crate::domains::style::computed::project::{
 };
 use crate::domains::style::computed::{ComputedGroups, ResolvedTransitionLonghands};
 use crate::domains::style::{
-    CascadeTier, DeclBlockKey, DeclLength, DeclValue, Declaration, NodeLookup, NodeStyleIndex,
-    Precedence, PresentationGroup, PresentationProperty, SelectorSpecificity, TextInterner,
-    TextKey, style_index_for_node,
+    CascadeTier, DeclBlockKey, DeclLength, DeclStore, DeclValue, Declaration, GridTrackListKey,
+    NodeLookup, NodeStyleIndex, Precedence, PresentationGroup, PresentationProperty,
+    SelectorSpecificity, TextInterner, TextKey, style_index_for_node,
 };
 use crate::types::dom_node::DomNodeSlotKey;
 use crate::types::{
     DomAttribute, DomAttributeValue, DomError, DomPseudoState, DomTextDirection, RootDom,
+    RootDomContext, RootDomNodes,
 };
 
 #[cfg(test)]
 use crate::domains::style::{BoxLength, Keyword, StyleRuleOrigin, TransitionLonghandProperty};
 #[cfg(test)]
-use crate::types::{DomTag, RootDomContext, RootDomContextConfig};
+use crate::types::{DomTag, RootDomContextConfig};
 
 /// The collected per-element winners plus the state the resolution needs: the
 /// parent's overlay-merged seed and the scratch interner the winning `Text`
@@ -95,7 +96,7 @@ pub(crate) fn fold_element_winners(
 /// `compute_style_map` successor. One runtime lock, held only during the
 /// matched-rules fold (`fold_matched_rules`).
 pub(crate) fn collect_winners(
-    root_dom: &RootDom,
+    root_dom: &mut RootDom,
     node_key: DomNodeSlotKey,
 ) -> Result<CollectedWinners, DomError> {
     let mut winners: [Option<(DeclValue, Precedence)>; PresentationProperty::COUNT] =
@@ -141,7 +142,16 @@ pub(crate) fn collect_winners(
     }
 
     let node_index = style_index_for_node(node).ok_or(DomError::InvalidAttributeTarget)?;
-    fold_matched_rules(&mut winners, &mut scratch, root_dom, node_key, node_index)?;
+    let context = Arc::clone(root_dom.context());
+    fold_matched_rules(
+        &mut winners,
+        &mut scratch,
+        &context,
+        &root_dom.nodes,
+        &mut root_dom.inline_decl_store,
+        node_key,
+        node_index,
+    )?;
 
     // Inline block at top specificity (css-style-attr §4); its tier is the
     // declaration's importance bit (`ImportantAuthor` vs `NormalAuthor`).
@@ -166,9 +176,12 @@ pub(crate) fn collect_winners(
                 },
                 ..inline_precedence
             };
-            let value = reintern_text(declaration.value, &mut scratch, |key| {
-                root_dom.resolve_inline_text(key)
-            });
+            let value = reintern_text(
+                declaration.value,
+                &mut scratch,
+                |key| root_dom.resolve_inline_text(key),
+                |key| key,
+            );
             fold_slot(&mut winners, value, declaration.property, precedence);
         }
     }
@@ -194,18 +207,17 @@ pub(crate) fn collect_winners(
 fn fold_matched_rules(
     winners: &mut [Option<(DeclValue, Precedence)>; PresentationProperty::COUNT],
     scratch: &mut TextInterner,
-    root_dom: &RootDom,
+    context: &Arc<RootDomContext>,
+    nodes: &RootDomNodes,
+    inline_store: &mut DeclStore,
     node_key: DomNodeSlotKey,
     node_index: NodeStyleIndex<'_>,
 ) -> Result<(), DomError> {
-    let context = Arc::clone(root_dom.context());
     let runtime = context
         .style_runtime
         .lock()
         .expect("style runtime mutex should not poison");
-    let lookup = NodeLookup {
-        nodes: &root_dom.nodes,
-    };
+    let lookup = NodeLookup { nodes };
     let mut matched: Vec<(i32, SelectorSpecificity, u64, DeclBlockKey)> = Vec::new();
     for key in runtime.candidate_keys_for_node(node_index) {
         let Some((precedence_tuple, decl)) = runtime.active_rule_for_node(key, lookup, node_key)?
@@ -240,7 +252,17 @@ fn fold_matched_rules(
                 specificity,
                 order,
             };
-            let value = reintern_text(declaration.value, scratch, |key| runtime.resolve_text(key));
+            let value = reintern_text(
+                declaration.value,
+                scratch,
+                |key| runtime.resolve_text(key),
+                |key| {
+                    let list = runtime
+                        .resolve_track_list(key)
+                        .expect("interned track list must resolve in its owning store");
+                    inline_store.intern_track_list(list.as_slice())
+                },
+            );
             fold_slot(winners, value, declaration.property, precedence);
         }
     }
@@ -324,17 +346,23 @@ fn fold_behavior_slot(
 }
 
 /// Re-interns a store-relative `Text` value into the per-element `scratch`
-/// interner so the resolve phase and `compute_style_map` share one interner.
+/// interner and a store-relative `TrackList` key into the inline arena, so the
+/// resolve phase and `compute_style_map` share one interner/arena. The
+/// `track_list` transform maps a source-arena key to an inline-arena key (for
+/// an inline-block winner the key is already inline-relative, so the transform
+/// is the identity).
 fn reintern_text<'a>(
     value: DeclValue,
     scratch: &mut TextInterner,
     resolve: impl Fn(TextKey) -> Option<&'a str>,
+    mut track_list: impl FnMut(GridTrackListKey) -> GridTrackListKey,
 ) -> DeclValue {
     match value {
         DeclValue::Text(key) => {
             let text = resolve(key).expect("interned text must resolve in its owning store");
             DeclValue::Text(scratch.intern(text))
         }
+        DeclValue::TrackList(key) => DeclValue::TrackList(track_list(key)),
         other => other,
     }
 }
@@ -575,9 +603,12 @@ mod tests {
     fn reintern_text_moves_store_text_into_scratch() {
         let mut scratch = TextInterner::default();
         let store_text = "translate(10px, 20px)";
-        let value = reintern_text(DeclValue::Text(TextKey(0)), &mut scratch, |_key| {
-            Some(store_text)
-        });
+        let value = reintern_text(
+            DeclValue::Text(TextKey(0)),
+            &mut scratch,
+            |_key| Some(store_text),
+            |key| key,
+        );
         let DeclValue::Text(key) = value else {
             panic!("text value should re-intern to a scratch TextKey");
         };
@@ -586,9 +617,20 @@ mod tests {
         // Non-text values pass through untouched.
         let length = DeclValue::Length(DeclLength::Px(4.0));
         assert_eq!(
-            reintern_text(length, &mut scratch, |_key| None),
+            reintern_text(length, &mut scratch, |_key| None, |key| key),
             DeclValue::Length(DeclLength::Px(4.0))
         );
+
+        // A TrackList key passes through the transform arm (the inline-block
+        // transform is the identity).
+        let source = GridTrackListKey::default();
+        let transformed = reintern_text(
+            DeclValue::TrackList(source),
+            &mut scratch,
+            |_key| None,
+            |key| key,
+        );
+        assert_eq!(transformed, DeclValue::TrackList(source));
     }
 
     #[test]

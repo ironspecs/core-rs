@@ -176,6 +176,7 @@ where
         parent_box: None,
         allows_parent_child_block_margin_collapse: false,
         parent_is_flex_container: false,
+        parent_is_grid_container: false,
     };
     let node_before_layout = root_dom.node(tree_root).ok_or(DomError::InvalidNodeKey)?;
     let previous_box = node_box_from_ref(node_before_layout).border_box;

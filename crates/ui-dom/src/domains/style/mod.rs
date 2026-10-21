@@ -66,8 +66,9 @@ use crate::types::{RootDom, RootDomContext};
 pub use cascade_tier::CascadeTier;
 pub use decl_block::DeclBlock;
 pub use decl_drop_report::{DeclDropReport, StylesheetLoadReport};
+pub(crate) use decl_store::GRID_TRACK_LIST_CAPACITY;
 pub use decl_store::{DeclBlockKey, DeclStore};
-pub use decl_value::{DeclLength, DeclValue, Precedence, TextKey};
+pub use decl_value::{DeclLength, DeclValue, GridTrackListKey, Precedence, TextKey};
 pub use declaration::Declaration;
 pub use keyword::Keyword;
 pub(crate) use parsed_declaration::ParsedDeclaration;
@@ -79,10 +80,11 @@ pub(crate) use text_interner::TextInterner;
 
 pub use computed::{
     AlignContentKw, AlignItemsKw, BoxLength, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
-    ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedStyleRef, ComputedTextGroup,
-    ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw, FlexDirectionKw,
-    FlexWrapKw, JustifyContentKw, NodePresentation, OverflowKw, PositionKw,
-    ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
+    ComputedFlexGroup, ComputedFontGroup, ComputedGridGroup, ComputedGroups, ComputedStyleRef,
+    ComputedTextGroup, ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw,
+    FlexDirectionKw, FlexWrapKw, GridAutoFlowKw, GridTrackKind, GridTrackSize, JustifyContentKw,
+    NodePresentation, OverflowKw, PositionKw, ResolvedTransitionLonghands,
+    TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
 };
 pub(crate) use decl_parse::{name_is_presentation, parse_declaration_block};
 pub(crate) use decl_value::{decl_value_to_css_string, decl_value_to_dom_value};
@@ -628,6 +630,49 @@ fn hash_decl_value(hasher: &mut std::collections::hash_map::DefaultHasher, value
             for channel in channels {
                 channel.to_bits().hash(hasher);
             }
+        }
+        DeclValue::TrackList(key) => {
+            7u8.hash(hasher);
+            key.hash(hasher);
+        }
+        DeclValue::TrackSize(size) => {
+            8u8.hash(hasher);
+            hash_grid_track_size(hasher, *size);
+        }
+        DeclValue::GridAutoFlow(flow) => {
+            9u8.hash(hasher);
+            flow.hash(hasher);
+        }
+    }
+}
+
+/// Hashes one `GridTrackSize` by kind plus the `to_bits` of its numeric slots
+/// (`f32` does not implement `Hash` in this toolchain, so the bits are hashed
+/// directly — consistent with the `PartialEq` bit equality the group relies on).
+fn hash_grid_track_size(
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+    size: GridTrackSize,
+) {
+    match size.kind {
+        GridTrackKind::Auto => 0u8.hash(hasher),
+        GridTrackKind::Length => {
+            1u8.hash(hasher);
+            size.min_px.to_bits().hash(hasher);
+        }
+        GridTrackKind::Percent => {
+            2u8.hash(hasher);
+            size.min_px.to_bits().hash(hasher);
+        }
+        GridTrackKind::MinContent => 3u8.hash(hasher),
+        GridTrackKind::MaxContent => 4u8.hash(hasher),
+        GridTrackKind::Minmax => {
+            5u8.hash(hasher);
+            size.min_px.to_bits().hash(hasher);
+            size.max_px.to_bits().hash(hasher);
+        }
+        GridTrackKind::Fr(fr) => {
+            6u8.hash(hasher);
+            fr.to_bits().hash(hasher);
         }
     }
 }

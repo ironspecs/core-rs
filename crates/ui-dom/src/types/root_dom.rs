@@ -25,6 +25,7 @@ use std::{
     sync::Arc,
 };
 
+use arrayvec::ArrayVec;
 use bevy::{
     input::{
         ButtonState,
@@ -46,7 +47,8 @@ use crate::domains::style::computed::{
 };
 use crate::domains::style::{
     ComputedStyleRef, DeclBlock, DeclDropReport, DeclGrammar, DeclLength, DeclStore, DeclValue,
-    Declaration, Keyword, ParsedDeclaration, PresentationProperty, StyleMut, TextInterner, TextKey,
+    Declaration, GRID_TRACK_LIST_CAPACITY, GridTrackListKey, GridTrackSize, Keyword,
+    ParsedDeclaration, PresentationProperty, StyleMut, TextInterner, TextKey,
     decl_value_to_css_string, decl_value_to_dom_value, name_is_presentation,
     parse_declaration_block,
 };
@@ -223,7 +225,7 @@ pub struct RootDom {
     pub(crate) root: DomNodeSlotKey,
     pub(crate) nodes: RootDomNodes,
     id_lookup: HashMap<String, DomNodeSlotKey>,
-    inline_decl_store: DeclStore,
+    pub(crate) inline_decl_store: DeclStore,
     pseudo_state: RootDomPseudoState,
     selection: DomSelection,
     transitions: DomTransitionStore,
@@ -1920,7 +1922,7 @@ impl RootDom {
         let (block, report) = match value {
             None => (DeclBlock::new(), DeclDropReport::default()),
             Some(DomAttributeValue::String(text)) => {
-                parse_declaration_block(&text, self.inline_texts_mut())
+                parse_declaration_block(&text, &mut self.inline_decl_store)
             }
             Some(_) => return Err(DomError::InvalidAttributeValue),
         };
@@ -2031,7 +2033,7 @@ impl RootDom {
     /// recompute path: the retained pass resolves groups through the typed
     /// winners fold and never calls this.
     pub fn compute_style_map(
-        &self,
+        &mut self,
         node_key: DomNodeSlotKey,
     ) -> Result<BTreeMap<PresentationProperty, DomAttributeValue>, DomError> {
         let CollectedWinners {
@@ -2044,7 +2046,11 @@ impl RootDom {
             };
             map.insert(
                 property,
-                decl_value_to_dom_value(&value, |key| scratch.resolve(key)),
+                decl_value_to_dom_value(
+                    &value,
+                    |key| scratch.resolve(key),
+                    |key| self.resolve_inline_track_list(key).map(ArrayVec::as_slice),
+                ),
             );
         }
         Ok(map)
@@ -2070,13 +2076,19 @@ impl RootDom {
                     // style-attribute route unchanged: serialize every value
                     // kind to its CSS string (a typed `Color` would drop the
                     // importance channel on replay) and append the suffix.
-                    let mut text = decl_value_to_css_string(&declaration.value, |key| {
-                        self.resolve_inline_text(key)
-                    });
+                    let mut text = decl_value_to_css_string(
+                        &declaration.value,
+                        |key| self.resolve_inline_text(key),
+                        |key| self.resolve_inline_track_list(key).map(ArrayVec::as_slice),
+                    );
                     text.push_str(" !important");
                     DomAttributeValue::String(text)
                 } else {
-                    decl_value_to_dom_value(&declaration.value, |key| self.resolve_inline_text(key))
+                    decl_value_to_dom_value(
+                        &declaration.value,
+                        |key| self.resolve_inline_text(key),
+                        |key| self.resolve_inline_track_list(key).map(ArrayVec::as_slice),
+                    )
                 };
                 styles.push((declaration.property.name().to_string(), value));
             }
@@ -2771,6 +2783,22 @@ impl RootDom {
     /// store-relative).
     pub(crate) fn inline_texts_mut(&mut self) -> &mut TextInterner {
         self.inline_decl_store.texts_mut()
+    }
+
+    /// Mutable access to the inline declaration store (the interning owner:
+    /// text AND track lists), for the declaration-parse entries.
+    pub(crate) fn inline_decl_store_mut(&mut self) -> &mut DeclStore {
+        &mut self.inline_decl_store
+    }
+
+    /// Resolves an inline-arena track-list key to its retained slice (the
+    /// winners fold's reintern target reads through this).
+    #[must_use]
+    pub(crate) fn resolve_inline_track_list(
+        &self,
+        key: GridTrackListKey,
+    ) -> Option<&ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>> {
+        self.inline_decl_store.resolve_track_list(key)
     }
 
     /// Level accessor over retained state (observability doctrine: levels are
@@ -4682,6 +4710,18 @@ pub(crate) fn decl_value_for_groups(
         PresentationProperty::ColumnGap => {
             Some(DeclValue::Length(DeclLength::Px(groups.flex.gap[1])))
         }
+        // Non-inherited — grid group
+        PresentationProperty::GridTemplateColumns => {
+            Some(DeclValue::TrackList(groups.grid.template_columns))
+        }
+        PresentationProperty::GridTemplateRows => {
+            Some(DeclValue::TrackList(groups.grid.template_rows))
+        }
+        PresentationProperty::GridAutoFlow => Some(DeclValue::GridAutoFlow(groups.grid.auto_flow)),
+        PresentationProperty::GridAutoColumns => {
+            Some(DeclValue::TrackSize(groups.grid.auto_columns))
+        }
+        PresentationProperty::GridAutoRows => Some(DeclValue::TrackSize(groups.grid.auto_rows)),
         // Non-inherited — visual group
         PresentationProperty::Opacity => Some(DeclValue::Number(groups.visual.opacity)),
         PresentationProperty::BackgroundColor => {
@@ -4874,6 +4914,9 @@ fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue)
             DeclValue::Keyword(keyword) => set.contains(keyword),
             _ => false,
         },
+        DeclGrammar::TrackList => matches!(value, DeclValue::TrackList(_)),
+        DeclGrammar::GridAutoFlow => matches!(value, DeclValue::GridAutoFlow(_)),
+        DeclGrammar::TrackSize => matches!(value, DeclValue::TrackSize(_)),
     }
 }
 

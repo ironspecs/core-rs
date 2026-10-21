@@ -217,14 +217,6 @@ fn unsupported_display_values_drop_to_initial() {
 
     let cases = [
         Case {
-            name: "grid",
-            body: "display: grid",
-        },
-        Case {
-            name: "inline_grid",
-            body: "display: inline-grid",
-        },
-        Case {
             name: "table",
             body: "display: table",
         },
@@ -250,9 +242,11 @@ fn unsupported_display_values_drop_to_initial() {
         assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
     }
 
-    // Representative: `display: grid` on a div leaves `DisplayKw::Block` and
-    // block layout (the no-declaration baseline).
-    let (mut world, mut root, target, _report) = styled_target_load(".x { display: grid }");
+    // Representative: `display: table` on a div leaves `DisplayKw::Block` and
+    // block layout (the no-declaration baseline). `display: grid`/`inline-grid`
+    // are now admitted (see `grid_admission.rs`) — the grid/inline-grid cases
+    // left this pin's drop table in the grid T0 landing.
+    let (mut world, mut root, target, _report) = styled_target_load(".x { display: table }");
     assert_style_set(&mut root, target, "width", "80px");
     assert_style_set(&mut root, target, "height", "40px");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -263,7 +257,7 @@ fn unsupported_display_values_drop_to_initial() {
             .as_box()
             .display,
         DisplayKw::Block,
-        "display: grid should drop to the Block initial for a div",
+        "display: table should drop to the Block initial for a div",
     );
 
     let plans = take_staged_layer_paint_plans(&root);
@@ -275,7 +269,7 @@ fn unsupported_display_values_drop_to_initial() {
         0.0,
         80.0,
         40.0,
-        "grid-dropped block div",
+        "table-dropped block div",
     );
 }
 
@@ -574,17 +568,17 @@ fn unsupported_layout_hint_properties_drop() {
 #[test]
 #[allow(clippy::too_many_lines)]
 // UNSUPPORTED (class: unimplemented — D6 admission-gated):
-// - SPEC: CSS Grid 2 §§5–8 — the grid property family
-//   (`grid-template-columns`/`-rows`/`-areas`/`grid-template`,
-//   `grid-auto-flow`/`grid-auto-columns`/`grid-auto-rows`, `grid-column`/
+// - SPEC: CSS Grid 2 §§5–8 — the still-gated grid property family
+//   (`grid-template-areas`/`grid-template`, `grid-column`/
 //   `grid-row`/`grid-column-start`/`grid-area`, the `grid` shorthand, and the
 //   alignment longhands `justify-items`/`justify-self`).
 //   <https://drafts.csswg.org/css-grid-2/#grid-properties>
-// - CURRENT (asserted): every grid property name drops + counts at name lookup
-//   (the names are absent from the `property_shape` table in `decl_parse.rs`),
-//   no crash, and the block-layout baseline is unchanged — the `display: grid`
-//   value gate (`unsupported_display_values_drop_to_initial`) already covers the
-//   display side; these NAMES are a separate family. CONTROL: the admitted
+// - CURRENT (asserted): every still-gated grid property name drops + counts at
+//   name lookup (the names are absent from the `property_shape` table in
+//   `decl_parse.rs`), no crash, and the block-layout baseline is unchanged. The
+//   T1 set (`grid-template-columns`/`rows`, `grid-auto-flow`,
+//   `grid-auto-columns`/`rows`) left this gate in the grid T0 landing and is
+//   pinned admitted in `grid_admission.rs`. CONTROL: the admitted
 //   `width: 80px` applies (applied == 1, dropped == 0).
 // - SPEC-CORRECT: a grid solver owns these names; admission per the D6 policy.
 fn unsupported_grid_property_names_drop() {
@@ -595,32 +589,12 @@ fn unsupported_grid_property_names_drop() {
 
     let cases = [
         Case {
-            name: "grid_template_columns",
-            body: "grid-template-columns: 100px 1fr",
-        },
-        Case {
-            name: "grid_template_rows",
-            body: "grid-template-rows: 100px 1fr",
-        },
-        Case {
             name: "grid_template_areas",
             body: "grid-template-areas: \"a b\"",
         },
         Case {
             name: "grid_template",
             body: "grid-template: \"a b\" 1fr / 1fr 1fr",
-        },
-        Case {
-            name: "grid_auto_flow",
-            body: "grid-auto-flow: row dense",
-        },
-        Case {
-            name: "grid_auto_columns",
-            body: "grid-auto-columns: 100px",
-        },
-        Case {
-            name: "grid_auto_rows",
-            body: "grid-auto-rows: 100px",
         },
         Case {
             name: "grid_column",
@@ -656,19 +630,22 @@ fn unsupported_grid_property_names_drop() {
         assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
     }
 
-    // No crash: a combined sheet with every grid name drops and the update
-    // completes, leaving the target on the block-layout baseline.
-    let combined = ".x { grid-template-columns: 100px 1fr; grid-template-rows: 100px 1fr; \
-                    grid-template-areas: \"a b\"; grid-auto-flow: row dense; \
-                    grid-auto-columns: 100px; grid-auto-rows: 100px; grid-column: 1 / 2; \
+    // No crash: a combined sheet with every still-gated grid name drops and the
+    // update completes, leaving the target on the block-layout baseline. The
+    // T1 set (`grid-template-columns`/`rows`, `grid-auto-flow`, `grid-auto-*`)
+    // left this gate in the grid T0 landing (see `grid_admission.rs`).
+    let combined = ".x { grid-template-areas: \"a b\"; grid-column: 1 / 2; \
                     grid-row: 1 / 2; grid-column-start: 1; grid-area: 1 / 1 / 2 / 2; \
                     justify-items: center; justify-self: center }";
     let (mut world, mut root, target, report) = styled_target_load(combined);
     assert_eq!(
-        report.declarations_dropped, 12,
-        "all grid names should drop"
+        report.declarations_dropped, 7,
+        "all still-gated grid names should drop"
     );
-    assert_eq!(report.declarations_applied, 0, "no grid name should apply");
+    assert_eq!(
+        report.declarations_applied, 0,
+        "no still-gated grid name should apply"
+    );
     assert_style_set(&mut root, target, "width", "80px");
     assert_style_set(&mut root, target, "height", "40px");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
@@ -698,7 +675,7 @@ fn unsupported_grid_property_names_drop() {
 
     // CONTROL: an admitted property still applies alongside a dropped grid name.
     let (mut world, mut root, target, report) =
-        styled_target_load(".x { grid-template-columns: 100px; width: 80px }");
+        styled_target_load(".x { grid-template-areas: \"a b\"; width: 80px }");
     assert_eq!(report.declarations_applied, 1, "the width control applies");
     assert_eq!(report.declarations_dropped, 1, "the grid name drops");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);

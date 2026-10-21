@@ -24,6 +24,8 @@ pub enum DisplayKw {
     InlineBlock,
     Flex,
     InlineFlex,
+    Grid,
+    InlineGrid,
 }
 
 impl DisplayKw {
@@ -37,6 +39,8 @@ impl DisplayKw {
             DisplayKw::InlineBlock => "inline-block",
             DisplayKw::Flex => "flex",
             DisplayKw::InlineFlex => "inline-flex",
+            DisplayKw::Grid => "grid",
+            DisplayKw::InlineGrid => "inline-grid",
         }
     }
 
@@ -50,6 +54,8 @@ impl DisplayKw {
             Keyword::InlineBlock => Some(DisplayKw::InlineBlock),
             Keyword::Flex => Some(DisplayKw::Flex),
             Keyword::InlineFlex => Some(DisplayKw::InlineFlex),
+            Keyword::Grid => Some(DisplayKw::Grid),
+            Keyword::InlineGrid => Some(DisplayKw::InlineGrid),
             _ => None,
         }
     }
@@ -68,6 +74,8 @@ mod tests {
             (DisplayKw::InlineBlock, Keyword::InlineBlock),
             (DisplayKw::Flex, Keyword::Flex),
             (DisplayKw::InlineFlex, Keyword::InlineFlex),
+            (DisplayKw::Grid, Keyword::Grid),
+            (DisplayKw::InlineGrid, Keyword::InlineGrid),
         ];
         for (value, keyword) in variants {
             assert_eq!(DisplayKw::from_keyword(keyword), Some(value));

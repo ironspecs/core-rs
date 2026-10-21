@@ -811,7 +811,10 @@ impl DomNode {
             | DeclValue::Number(_)
             | DeclValue::Integer(_)
             | DeclValue::Text(_)
-            | DeclValue::Translate(_) => None,
+            | DeclValue::Translate(_)
+            | DeclValue::TrackList(_)
+            | DeclValue::TrackSize(_)
+            | DeclValue::GridAutoFlow(_) => None,
         }
     }
 

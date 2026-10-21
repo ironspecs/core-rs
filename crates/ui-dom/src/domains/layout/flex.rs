@@ -867,18 +867,19 @@ where
         return Ok(FlowSize::default());
     }
     match style.display {
-        LayoutDisplay::Block | LayoutDisplay::InlineBlock => {
-            measure_block_node_without_layout_write(
-                root_dom,
-                tree_size,
-                key,
-                context,
-                wrap_width_override,
-                style,
-                inherited_style,
-                resolver,
-            )
-        }
+        LayoutDisplay::Block
+        | LayoutDisplay::InlineBlock
+        | LayoutDisplay::Grid
+        | LayoutDisplay::InlineGrid => measure_block_node_without_layout_write(
+            root_dom,
+            tree_size,
+            key,
+            context,
+            wrap_width_override,
+            style,
+            inherited_style,
+            resolver,
+        ),
         LayoutDisplay::Inline => measure_inline_node_without_layout_write(
             root_dom,
             tree_size,
@@ -4559,6 +4560,7 @@ mod tests {
             parent_box: None,
             allows_parent_child_block_margin_collapse: false,
             parent_is_flex_container: false,
+            parent_is_grid_container: false,
         }
     }
 

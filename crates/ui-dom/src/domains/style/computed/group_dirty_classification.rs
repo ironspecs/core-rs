@@ -63,7 +63,7 @@ impl GroupDirtyClassification {
                 remeasure_text: false,
                 reevaluate_layer_membership: true,
             },
-            PresentationGroup::Flex => Self {
+            PresentationGroup::Flex | PresentationGroup::Grid => Self {
                 layout: true,
                 paint: true,
                 remeasure_text: false,
@@ -122,6 +122,9 @@ impl GroupDirtyClassification {
         }
         if before.flex != after.flex {
             classification = classification.union(Self::for_group(PresentationGroup::Flex));
+        }
+        if before.grid != after.grid {
+            classification = classification.union(Self::for_group(PresentationGroup::Grid));
         }
         if before.visual != after.visual {
             classification = classification.union(Self::for_group(PresentationGroup::Visual));
