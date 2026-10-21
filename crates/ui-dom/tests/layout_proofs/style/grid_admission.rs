@@ -325,6 +325,68 @@ fn grid_justify_items_and_self_parse_to_keywords() {
 }
 
 #[test]
+fn grid_justify_items_wider_self_position_values_drop() {
+    // The closed `justify-items` vocabulary (`normal|stretch|start|end|center`)
+    // admits no wider `<self-position>` values. `flex-start`/`flex-end`/
+    // `baseline` (and `safe`/`unsafe`) are spec-valid `<self-position>` but
+    // unadmitted per D6, so each drops + counts and the grid group stays at its
+    // `Normal` initial. `place-items: flex-start` drops the WHOLE declaration —
+    // the align side is NOT applied either, because the G-rule whole-declaration
+    // drop is the behavior for an unadmitted side of the two-sided shorthand.
+    for value in ["flex-start", "flex-end", "baseline"] {
+        assert_decl_drop(&format!(".x {{ justify-items: {value} }}"), 0, 1);
+    }
+    assert_decl_drop(".x { place-items: flex-start }", 0, 1);
+
+    // The group stays initial: the strict write rejects the unadmitted value,
+    // and `place-items: flex-start` applies neither side.
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "display", "grid");
+    assert!(
+        root.style_mut(target)
+            .set("justify-items", "flex-start")
+            .is_err(),
+        "justify-items: flex-start must be rejected by the strict write"
+    );
+    assert!(
+        root.style_mut(target)
+            .set("place-items", "flex-start")
+            .is_err(),
+        "place-items: flex-start must be rejected by the strict write"
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(target).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::JustifyItems),
+        None,
+        "unadmitted justify-items value must not be declared (group stays initial)"
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::AlignItems),
+        None,
+        "place-items: flex-start must not apply the align side either"
+    );
+
+    // CONTROL: `place-items: center` still applies both sides.
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "display", "grid");
+    assert_style_set(&mut root, target, "place-items", "center");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let map = root.compute_style_map(target).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::JustifyItems),
+        Some(&DomAttributeValue::String("center".to_string())),
+        "place-items: center applies the justify side"
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::AlignItems),
+        Some(&DomAttributeValue::String("center".to_string())),
+        "place-items: center applies the align side"
+    );
+}
+
+#[test]
 fn grid_span_zero_and_span_negative_drop() {
     // `span <integer>` must be positive: 0 and negatives drop + count.
     assert_decl_drop(".x { grid-column-start: span 0 }", 0, 1);
