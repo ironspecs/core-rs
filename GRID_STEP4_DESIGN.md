@@ -99,6 +99,34 @@ serialization (the wire format) gains the bracket round-trip:
 `[main] 1fr [aside]` re-serializes with brackets for the canonical
 snapshot round-trip.
 
+**The storage representation (added 2026-10-21 under the
+transcription's STOP — the original draft admitted names without
+saying where they live).** The track-list arena's value type becomes
+`GridTrackList` (`computed/grid_track_list.rs`, NEW — structural rule
+1: it has behavior — serialization and name registration):
+
+```rust
+struct GridTrackList {
+    tracks: ArrayVec<[GridTrackSize; 12]>,
+    /// (name_key, line_index) — a bracket group attaches to the line at
+    /// its position (the line BEFORE the following track); a trailing
+    /// bracket names the final line at index `tracks.len()`.
+    line_names: ArrayVec<[(TextKey, u8); 8]>,
+}
+```
+
+Rules: capacity 8 name registrations per list (drop + count beyond);
+a name appearing more than 4 times in one list drops + counts at parse
+(the multiple-same-name span-count rule in D4 stays valid up to 4).
+Dedup interns by FULL content equality (tracks + name pairs), so two
+identical named templates intern to one key. The arena type change
+(from `ArrayVec<GridTrackSize>` to `GridTrackList`) is a documented
+representation change with a cause: the T3 gate inversion requires
+retained names; every current use (intern, resolve, formatter, dedup)
+adjusts. **Placement-time name comparison (confirmed):** resolve
+`TextKey` to `&str` via the container's interner and compare by
+content equality — allocation-free, no hashing.
+
 ## D4. Placement-time name resolution (exact)
 
 Resolving an item's placement per axis, in this order:
@@ -162,6 +190,7 @@ shorthands (T4), `repeat(auto-fill|auto-fit, …)` (T3.5), `subgrid`
 | File | Change |
 |---|---|
 | `crates/ui-dom/src/domains/style/computed/grid_template_areas.rs` (NEW) | `GridTemplateAreas` + `AreaRect` |
+| `crates/ui-dom/src/domains/style/computed/grid_track_list.rs` (NEW) | `GridTrackList` (the D3 storage representation — serialization + name registration) |
 | `crates/ui-dom/src/domains/style/computed/grid_line.rs` | the `Named`/`NamedSpan` variants |
 | `crates/ui-dom/src/domains/style/decl_store.rs` | the `grid_areas` arena + interning |
 | `crates/ui-dom/src/domains/style/decl_value.rs` | the `GridAreas` variant + formatter arms |
