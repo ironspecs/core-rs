@@ -93,7 +93,18 @@ the container's `explicit_origin_offset = 1 − min(all definite starts
 in the container, 1)` ONCE per container and add it to every negative
 `Line(k)` (both engines: Blink `column_start_offset/row_start_offset`
 from most negative definite start; Gecko `mExplicitGridOffsetCol/Row =
-1 − min`). For `Span(n)` with a definite `Line(k)` on the other side,
+1 − min`). **Correction (2026-10-21, the coverage probe's finding):**
+the offset applies to the 1-based line numbers, and the number of
+left-implicit tracks created equals the offset — e.g.
+`grid-column: -5` in a 2-track grid resolves to 0-based line −2 →
+offset `1 − min(−1, 1) = 2` → the item lands in 0-based track 0, the
+leftmost of TWO left-implicit tracks (an earlier draft of this note
+mis-computed the outcome as one implicit track and the item landing in
+the second explicit track; the implementation and both engines agree —
+the pin scenario is `grid-template-columns: 100px 100px;
+grid-auto-columns: 100px`, definite `-5 / span 1` → left 0, first auto
+→ left 100 (second left-implicit track), second auto → left 200 (first
+explicit track)). For `Span(n)` with a definite `Line(k)` on the other side,
 the span resolves from the resolved line. For `Span(n)` with `Auto` on
 the other side, the span is placed by the auto-placement with length n.
 
