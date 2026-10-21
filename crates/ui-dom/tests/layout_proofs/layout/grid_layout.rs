@@ -671,6 +671,63 @@ fn grid_row_span_places_across_two_rows() {
 }
 
 #[test]
+// CSS Grid §8.5 step 3: a span larger than the explicit grid grows the implicit
+// grid to match. `grid-column: span 3` in a 2-track grid gets a third implicit
+// column (sized by `grid-auto-columns`), and the trailing auto item wraps to
+// the next row. The unfixed solver looped forever here — `col + col_span <=
+// grid_width` could never hold — so this pin doubles as the termination proof
+// (the update must COMPLETE).
+fn grid_column_span_exceeding_tracks_expands_the_implicit_grid() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "width", "200px");
+    assert_style_set(&mut root, container, "grid-auto-columns", "100px");
+    let wide = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, wide, "grid-column", "span 3");
+    assert_style_set(&mut root, wide, "height", "40px");
+    let auto_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, auto_item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let wide_box = border_box_of(&root, wide);
+    assert_close(wide_box.left_px, 0.0, "span-3 item starts at column 1");
+    assert_close(
+        wide_box.width_px,
+        300.0,
+        "span-3 item spans the implicit third column",
+    );
+    let auto_box = border_box_of(&root, auto_item);
+    assert_close(auto_box.left_px, 0.0, "auto item wraps to the next row");
+    assert_close(
+        auto_box.top_px,
+        40.0,
+        "auto item sits below the span-3 item",
+    );
+}
+
+#[test]
+// CSS Grid §8.5 step 3 (symmetric): `grid-row: span 3` in a 2-row grid under
+// column flow grows the implicit grid to three rows. The unfixed solver looped
+// forever in `find_auto_auto_col` (`row + row_span <= grid_height` could never
+// hold), so this pin doubles as the termination proof.
+fn grid_row_span_exceeding_tracks_expands_the_implicit_grid() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-rows", "40px 40px");
+    assert_style_set(&mut root, container, "grid-auto-flow", "column");
+    assert_style_set(&mut root, container, "grid-auto-rows", "40px");
+    let tall = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, tall, "grid-row", "span 3");
+    assert_style_set(&mut root, tall, "width", "50px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let tall_box = border_box_of(&root, tall);
+    assert_close(tall_box.top_px, 0.0, "span-3 item starts at row 1");
+    assert_close(tall_box.height_px, 120.0, "span-3 item spans three rows");
+}
+
+#[test]
 // CSS Grid §8.3: `grid-column: 2 / 4` places the item in line-index columns
 // 2–3, and auto items flow around it.
 fn grid_column_start_end_integer_lines() {

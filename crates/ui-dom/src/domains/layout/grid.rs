@@ -24,6 +24,10 @@
 //!   range, exactly: init → maximize (minmax tracks with finite limits) → fr
 //!   expand (CSS Grid 1 §7.2.4's freeze-and-redistribute loop, with the sum<1
 //!   cap) → stretch auto (auto tracks absorb leftover equally)
+//! - auto-placement terminates by construction: the §8.5 step 3 implicit-grid
+//!   wrap bounds fold the maximum auto column/row span, so a span exceeding the
+//!   explicit grid grows the implicit grid to match (never an infinite
+//!   `span > grid` wrap loop in `find_auto_auto_row`/`find_auto_auto_col`)
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs/flex.rs
 
 use crate::domains::style::computed::{
@@ -669,14 +673,28 @@ fn resolve_grid_placement(
         usize::try_from(col_offset.max(0)).expect("column offset is non-negative");
     let row_offset_as_usize =
         usize::try_from(row_offset.max(0)).expect("row offset is non-negative");
-    let grid_width = scratch
-        .cell_map
-        .width()
-        .max(col_offset_as_usize + col_count.max(1));
-    let grid_height = scratch
-        .cell_map
-        .height()
-        .max(row_offset_as_usize + explicit_row_count.max(1));
+    // CSS Grid §8.5 step 3: the largest span among the auto-placed (pass-3)
+    // items grows the implicit grid to match, so the wrap bounds fold the
+    // maximum auto span in addition to the explicit/claimed tracks.
+    let (max_auto_col_span, max_auto_row_span) = max_auto_spans(
+        scratch,
+        order_range,
+        col_count,
+        explicit_row_count,
+        auto_flow,
+    );
+    let grid_width = implicit_grid_width_bound(
+        scratch.cell_map.width(),
+        col_offset_as_usize,
+        col_count,
+        max_auto_col_span,
+    );
+    let grid_height = implicit_grid_height_bound(
+        scratch.cell_map.height(),
+        row_offset_as_usize,
+        explicit_row_count,
+        max_auto_row_span,
+    );
     place_remaining_autos(
         scratch,
         order_range,
@@ -695,6 +713,83 @@ fn resolve_grid_placement(
         col_offset: usize::try_from(col_offset).expect("column offset fits usize"),
         row_offset: usize::try_from(row_offset).expect("row offset fits usize"),
     }
+}
+
+/// The resolved span of one axis: a definite `(start, end)` pair's `end −
+/// start`, or an auto span's value.
+fn resolved_span(axis: ResolvedAxis) -> usize {
+    match axis {
+        ResolvedAxis::Definite(start, end) => usize::try_from(end - start).expect("positive span"),
+        ResolvedAxis::Auto(span) => usize::try_from(span).expect("span fits usize"),
+    }
+}
+
+/// The §8.5 step 3 implicit-grid width bound: the largest of the claimed cell
+/// width, the explicit columns (plus the left-implicit offset), and the maximum
+/// auto column span. Folding the max span guarantees `col + col_span <=
+/// grid_width` can hold for every auto-placed item — a span exceeding the
+/// explicit grid grows the implicit grid to match, so `find_auto_auto_row`
+/// terminates (CSS Grid §8.5 step 3).
+fn implicit_grid_width_bound(
+    claimed_width: usize,
+    col_offset: usize,
+    col_count: usize,
+    max_auto_col_span: usize,
+) -> usize {
+    claimed_width
+        .max(col_offset + col_count.max(1))
+        .max(max_auto_col_span)
+}
+
+/// The §8.5 step 3 implicit-grid height bound: the symmetric row-axis fold
+/// (the maximum auto row span grows the implicit grid's row count to match, so
+/// `find_auto_auto_col` terminates).
+fn implicit_grid_height_bound(
+    claimed_height: usize,
+    row_offset: usize,
+    explicit_row_count: usize,
+    max_auto_row_span: usize,
+) -> usize {
+    claimed_height
+        .max(row_offset + explicit_row_count.max(1))
+        .max(max_auto_row_span)
+}
+
+/// The §8.5 step 3 maximum auto spans over the pass-3 (auto-placed) items:
+/// `(max_auto_col_span, max_auto_row_span)`. A pass-3 item is one whose major
+/// axis is auto (the row for row-major flow, the column for column-major flow);
+/// its span in each axis is the definite line range or the auto span. Span-1
+/// autos contribute 1, so the fold is at least 1.
+fn max_auto_spans(
+    scratch: &LayoutScratch,
+    order_range: LaneRange,
+    col_count: usize,
+    explicit_row_count: usize,
+    auto_flow: GridAutoFlowKw,
+) -> (usize, usize) {
+    let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
+    let mut max_col = 1usize;
+    let mut max_row = 1usize;
+    for order_pos in 0..order_len {
+        let view = scratch
+            .grid_items
+            .get(order_entry_dom_index(scratch, order_range, order_pos))
+            .view;
+        let col = resolve_axis_range(view.column_start, view.column_end, col_count);
+        let row = resolve_axis_range(view.row_start, view.row_end, explicit_row_count);
+        // Pass-3 items have an auto major axis; pass-1 (both definite) and
+        // pass-2 (definite major) items are excluded.
+        if is_row_major(auto_flow) {
+            if !matches!(row, ResolvedAxis::Auto(_)) {
+                continue;
+            }
+        } else if !matches!(col, ResolvedAxis::Auto(_)) {
+            continue;
+        }
+        max_col = max_col.max(resolved_span(col));
+        max_row = max_row.max(resolved_span(row));
+    }
+    (max_col, max_row)
 }
 
 /// The order lane's `dom_index` at `order_pos` within `order_range`.
@@ -2795,5 +2890,21 @@ mod tests {
         assert_eq!(sizes[0], 200.0);
         assert_eq!(sizes[1], 100.0);
         assert_eq!(sizes[2], 100.0);
+    }
+
+    #[test]
+    fn span_overflow_expands_the_implicit_grid_by_the_max_auto_span() {
+        // CSS Grid §8.5 step 3: the largest span among the auto-positioned
+        // items grows the implicit grid to match. A max_auto_col_span of 3 in
+        // a 2-track grid raises the width bound to 3 (the span-3 item gets a
+        // third, implicit, column), so the wrap bound can always hold
+        // `col + col_span <= grid_width`.
+        assert_eq!(implicit_grid_width_bound(0, 0, 2, 3), 3);
+        // The explicit columns (plus the left-implicit offset) still bound from
+        // below, and a span within the explicit grid leaves the width unchanged.
+        assert_eq!(implicit_grid_width_bound(0, 2, 2, 1), 4);
+        assert_eq!(implicit_grid_width_bound(0, 0, 2, 1), 2);
+        // The symmetric row-axis fold.
+        assert_eq!(implicit_grid_height_bound(0, 0, 2, 3), 3);
     }
 }
