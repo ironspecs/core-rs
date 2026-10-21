@@ -17,9 +17,58 @@ intrinsic contribution. T1 admits NO placement properties
 Anything unanswered is a document DEFECT — stop and return to the
 architect.
 
+## Corrections (2026-10-20, the transcription's five-defect STOP)
+
+1. **The fr-cap scenario was arithmetically wrong** (`0.5fr 0.5fr`
+   sums to 1.0, not <1). The pin's scenario becomes `0.25fr 0.25fr`
+   (Σ=0.5 <1): in a 400px container with zero content bases, each track
+   resolves 50px (the free space scales by the sum first: effective
+   free = 400 × 0.5, each takes factor/sum × effective = 0.25/0.5 ×
+   200 = 100… precisely: fraction = (400 × 0.5)/0.5 = 400? NO — the
+   §7.2 rule: `fraction = free × min(Σfactors, 1) / Σfactors` →
+   `(400 × 0.5)/0.5 = 400`; each track = factor × fraction = 0.25 ×
+   400 = 100px. Total 200px, NOT 400 — the cap's observable.)
+2. **`auto` is admitted as a minmax MAX bound** (CSS Grid §7.2: the
+   max bound is `<track-breadth>`, which includes `auto` — T0's
+   grammar was wrong-narrow). It resolves content-based (the `Auto`
+   kind's rules). The pin keeps `minmax(80px, auto)`.
+3. **`GridTrackSize` restructures to the spec's uniform minmax
+   model** (the percent-bound representation fix): every track is
+   `{ min: TrackBreadth, max: TrackMaxBreadth }` where
+   `TrackBreadth { Auto, Px(f32), Percent(f32), MinContent, MaxContent }`
+   and `TrackMaxBreadth = TrackBreadth + Fr(f32)` (Fr valid on max
+   only). Normalization: `100px` → `{Px(100), Px(100)}`; `1fr` →
+   `{Auto, Fr(1.0)}`; `auto` → `{Auto, Auto}`; `minmax(a,b)` → `{a,b}`;
+   `min-content`/`max-content` → matching both bounds. Percent bounds
+   are preserved end-to-end (the T0 wire formatter's hardcoded `"px"`
+   is corrected to format `Percent` as `"%"`). T0's landed
+   representation is adjusted in the T1 commit with a documented cause
+   (grammar, formatter, group field types, the T0 unit tests'
+   expected sequences updated to the spec-shaped forms).
+4. **The inline-grid width rule:** `InlineGrid` sizes to its INTRINSIC
+   contribution per D7 (fixed tracks → px; `Fr`/`Minmax` → content
+   contributions; **percent tracks resolve content-based when the
+   container's own width is indefinite** at shrink-to-fit time — the
+   circular case, named and pinned). The §12.1 re-run stays T2's
+   concern; this rule breaks the fr/percent circularity for T1.
+5. **The grid item lane's home:** `grid_item_lane.rs` (NEW) is added
+   to §D10 — `GridItemLane`/`GridItemLaneEntry` in the flex item
+   lane's discipline (order lane carries verbatim; the item lane is
+   type-specific). GRID_MAPPING §3's "the item and order lanes carry
+   verbatim" is corrected to "the ORDER lane carries verbatim; the
+   item lane is type-specific (a new `GridItemLane` in the same
+   discipline)."
+
+**Amended D8 rows per the corrections:** pin 5 uses `0.25fr 0.25fr`
+(asserting the 100px-per-track cap outcome); pin 8 uses
+`minmax(80px, auto)` (now admitted); the T0 grammar/format/group
+representation corrections ride in the T1 commit with their documented
+cause (a representation correction, not a behavior change — no T0
+proof values move except the wire-format percent representation).
+
 ---
 
-## D0. T1 in one paragraph
+
 
 `relayout_active_grid_node` replaces T0's block interim with the real
 solver: children form grid items via the 3a mechanics (run aggregation,
@@ -211,6 +260,8 @@ The flex solver, the run fold, the abs-pos predicate.
 |---|---|
 | `crates/ui-dom/src/domains/layout/grid.rs` (NEW) | the solver (`relayout_active_grid_node`, `GridItemView`, track sizing, placement) |
 | `crates/ui-dom/src/domains/layout/grid_track_lane.rs` (NEW) | the track lane (D1 of GRID_MAPPING) |
+| `crates/ui-dom/src/domains/layout/grid_item_lane.rs` (NEW) | `GridItemLane`/`GridItemLaneEntry` (correction 5) |
+| `crates/ui-dom/src/domains/layout/grid_item_view.rs` (NEW if the view has behavior; else fields in grid.rs) | `GridItemView` (structural rule 1 decides its home) |
 | `crates/ui-dom/src/types/layout_scratch.rs` | the fifth lane |
 | `crates/ui-dom/src/domains/layout/flow.rs` | route `LayoutSolverKind::Grid` to the real solver (the D5 interim dies) |
 | `crates/ui-dom/src/types/root_dom_metric_name.rs` | the grid counters + the refold rename |

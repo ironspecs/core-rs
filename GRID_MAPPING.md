@@ -83,8 +83,10 @@ consistent with flex's baseline gap.
   `CachedIntrinsicSizes`/`CachedBAxisMeasurement`).
 - **The lane discipline** (`LayoutScratch`, per-container ranges,
   high-water-mark, update-scoped): grid adds a **track lane** (§D1)
-  and an **occupancy structure** (§D4); the item and order lanes carry
-  verbatim.
+  and an **occupancy structure** (§D4); the ORDER lane carries
+  verbatim; the item lane is type-specific (a new `GridItemLane` in
+  the same discipline — corrected 2026-10-20 from "item and order
+  lanes carry verbatim").
 - **Anonymous inline-run formation** (`flex_anonymous_run.rs`): grid
   forms anonymous items identically (CSS Grid §4 + Display §2.7); the
   run fold, member metrics, whitespace drop, and exclusion predicate
