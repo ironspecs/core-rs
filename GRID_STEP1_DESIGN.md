@@ -177,9 +177,14 @@ template-columns lays out block-flow at T0).
 | `crates/ui-dom/src/domains/style/computed/computed_grid_group.rs` (NEW) | the group |
 | `crates/ui-dom/src/domains/style/computed/grid_track_size.rs` (NEW) | `GridTrackSize` + `GridTrackKind` |
 | `crates/ui-dom/src/domains/style/computed/grid_auto_flow_kw.rs` (NEW) | the enum |
+| `crates/ui-dom/src/domains/style/computed/mod.rs` | declare + re-export the three new modules/types (mechanical plumbing — added after the transcription's STOP, 2026-10-20) |
+| `crates/ui-dom/src/domains/style/mod.rs` | re-export `GridTrackListKey` and the new grid types (same correction) |
 | `crates/ui-dom/src/domains/style/decl_store.rs` | the track-list arena + interning |
 | `crates/ui-dom/src/domains/style/decl_value.rs` | the `TrackList` variant |
-| `crates/ui-dom/src/domains/style/decl_parse.rs` | the T1 grammar + repeat expansion + capacity/line-name/auto-fill-fit gates |
+| `crates/ui-dom/src/domains/style/decl_parse.rs` | the T1 grammar + repeat expansion + capacity/line-name/auto-fill-fit gates; **parse entries widen to `&mut DeclStore` (see below)** |
+| `crates/ui-dom/src/domains/style/style_runtime.rs` | pass `&mut self.decl_store` to `parse_declaration_block`; expose `resolve_track_list` (added after the STOP) |
+| `crates/ui-dom/src/types/root_dom.rs` | pass `&mut self.inline_decl_store` to the two parse calls; add the inline store accessor if needed (added after the STOP) |
+| `crates/ui-dom/src/domains/style/style_mut.rs` | pass the inline store to both parse calls (added after the STOP) |
 | `crates/ui-dom/src/domains/style/computed_groups.rs` | the group slot |
 | `crates/ui-dom/src/domains/style/project.rs` | the group resolver |
 | `crates/ui-dom/src/domains/style/field_mapping.rs` | dirty classification |
@@ -188,6 +193,15 @@ template-columns lays out block-flow at T0).
 | `crates/ui-dom/src/domains/layout/style.rs` | `LayoutDisplay` mapping |
 | `crates/ui-dom/tests/layout_proofs/style/*` | the D6 pins (home per the suite's conventions) |
 | `crates/ui-dom/tests/layout_proofs/README.md` | the gate rows (display inversion, capacity, line-name, auto-fill/fit, D5 interim) |
+
+**The parse-entry signature decision (added after the transcription's
+STOP, 2026-10-20):** `parse_declaration_block(text, store:
+&mut DeclStore)` and `parse_declaration_strict(property, value, store:
+&mut DeclStore)` — the store is the interning owner (the text interner
+is one of its fields); widening to it (rather than adding a second
+arena handle) is the honest shape, and every call site is `pub(crate)`.
+The text interner remains reachable via `store.texts_mut()` for all
+existing text-interning paths.
 
 ## D8. The transcription contract
 
