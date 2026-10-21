@@ -256,3 +256,94 @@ fn grid_item_margins_are_contained_at_the_boundary() {
         "grid item: the contained 20px is a real first-in-flow offset",
     );
 }
+
+#[test]
+fn grid_placement_longhands_parse_to_typed_grid_lines() {
+    // The four longhands re-serialize their `<grid-line>` canonically.
+    for (property, value, expected) in [
+        ("grid-column-start", "auto", "auto"),
+        ("grid-column-start", "2", "2"),
+        ("grid-column-start", "-1", "-1"),
+        ("grid-column-start", "span 2", "span 2"),
+        ("grid-column-end", "span 2", "span 2"),
+        ("grid-row-start", "1", "1"),
+        ("grid-row-end", "auto", "auto"),
+    ] {
+        assert_grid_wire_value(property, value, expected);
+    }
+}
+
+#[test]
+fn grid_column_and_row_shorthands_expand_to_longhands() {
+    // `grid-column: span 2` → start auto / end span 2; `2 / 4` → start 2 / end 4.
+    for (property, value, start_expected, end_expected) in [
+        ("grid-column", "span 2", "auto", "span 2"),
+        ("grid-column", "2 / 4", "2", "4"),
+        ("grid-row", "1 / 3", "1", "3"),
+    ] {
+        let (mut world, mut root, target) = attached_target();
+        assert_style_set(&mut root, target, property, value);
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+        let map = root.compute_style_map(target).expect("style map");
+        let start_property = PresentationProperty::from_name(match property {
+            "grid-column" => "grid-column-start",
+            _ => "grid-row-start",
+        })
+        .expect("start longhand");
+        let end_property = PresentationProperty::from_name(match property {
+            "grid-column" => "grid-column-end",
+            _ => "grid-row-end",
+        })
+        .expect("end longhand");
+        assert_eq!(
+            map.get(&start_property),
+            Some(&DomAttributeValue::String(start_expected.to_string())),
+            "{property}: {value} start",
+        );
+        assert_eq!(
+            map.get(&end_property),
+            Some(&DomAttributeValue::String(end_expected.to_string())),
+            "{property}: {value} end",
+        );
+    }
+}
+
+#[test]
+fn grid_justify_items_and_self_parse_to_keywords() {
+    for (property, value, expected) in [
+        ("justify-items", "normal", "normal"),
+        ("justify-items", "stretch", "stretch"),
+        ("justify-items", "start", "start"),
+        ("justify-items", "end", "end"),
+        ("justify-items", "center", "center"),
+        ("justify-self", "auto", "auto"),
+        ("justify-self", "center", "center"),
+    ] {
+        assert_grid_wire_value(property, value, expected);
+    }
+}
+
+#[test]
+fn grid_span_zero_and_span_negative_drop() {
+    // `span <integer>` must be positive: 0 and negatives drop + count.
+    assert_decl_drop(".x { grid-column-start: span 0 }", 0, 1);
+    assert_decl_drop(".x { grid-column-start: span -1 }", 0, 1);
+    assert_decl_drop(".x { grid-column: span 0 }", 0, 1);
+    assert_decl_drop(".x { grid-row: span -1 }", 0, 1);
+}
+
+#[test]
+fn grid_line_zero_drops() {
+    // Zero is not a line (CSS Grid §7.1): `grid-column-start: 0` drops + counts.
+    assert_decl_drop(".x { grid-column-start: 0 }", 0, 1);
+    assert_decl_drop(".x { grid-column: 0 / 2 }", 0, 1);
+}
+
+#[test]
+fn grid_named_lines_still_drop() {
+    // Named lines are the T3 gate (unchanged): `<custom-ident>` with or without
+    // `span` drops + counts.
+    assert_decl_drop(".x { grid-column-start: main }", 0, 1);
+    assert_decl_drop(".x { grid-column-start: span main }", 0, 1);
+}

@@ -28,7 +28,8 @@
 //! the step-6 scenario pin reads (`FLEX_STEP1_EXECUTION.md` §10 R4).
 
 use crate::domains::layout::{
-    FlexItemLane, FlexLineLane, FlexOrderLane, FlexResolutionLane, GridItemLane, GridTrackLane,
+    FlexItemLane, FlexLineLane, FlexOrderLane, FlexResolutionLane, GridCellMap, GridItemLane,
+    GridTrackLane,
 };
 
 #[cfg(test)]
@@ -63,6 +64,10 @@ pub(crate) struct LayoutScratch {
     /// The grid track lane (T1): the explicit column tracks and implicit row
     /// tracks, sized in place per `GRID_MAPPING.md` D1.
     pub(crate) tracks: GridTrackLane,
+    /// The grid `CellMap` (T2, `GRID_STEP3_DESIGN.md` D4): the §8.5
+    /// auto-placement occupancy bitmap, scratch-owned and high-water-mark
+    /// retained (allocation-free after warmup).
+    pub(crate) cell_map: GridCellMap,
     /// The per-update layout pass generation, incremented once per
     /// `reset_for_update`. The flex measure fold stamps each record it writes
     /// with this value (flex arc step 7, D3); the record-serving placement
@@ -82,6 +87,7 @@ impl LayoutScratch {
         self.resolution.reset();
         self.grid_items.reset();
         self.tracks.reset();
+        self.cell_map.reset();
         self.layout_pass = self.layout_pass.wrapping_add(1);
     }
 

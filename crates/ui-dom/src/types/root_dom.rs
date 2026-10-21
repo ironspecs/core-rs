@@ -4722,6 +4722,20 @@ pub(crate) fn decl_value_for_groups(
             Some(DeclValue::TrackSize(groups.grid.auto_columns))
         }
         PresentationProperty::GridAutoRows => Some(DeclValue::TrackSize(groups.grid.auto_rows)),
+        PresentationProperty::GridColumnStart => {
+            Some(DeclValue::GridLine(groups.grid.column_start))
+        }
+        PresentationProperty::GridColumnEnd => Some(DeclValue::GridLine(groups.grid.column_end)),
+        PresentationProperty::GridRowStart => Some(DeclValue::GridLine(groups.grid.row_start)),
+        PresentationProperty::GridRowEnd => Some(DeclValue::GridLine(groups.grid.row_end)),
+        PresentationProperty::JustifyItems => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::JustifyItems,
+            groups.grid.justify_items.name(),
+        )?)),
+        PresentationProperty::JustifySelf => Some(DeclValue::Keyword(keyword_from_name(
+            PresentationProperty::JustifySelf,
+            groups.grid.justify_self.name(),
+        )?)),
         // Non-inherited — visual group
         PresentationProperty::Opacity => Some(DeclValue::Number(groups.visual.opacity)),
         PresentationProperty::BackgroundColor => {
@@ -4917,6 +4931,7 @@ fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue)
         DeclGrammar::TrackList => matches!(value, DeclValue::TrackList(_)),
         DeclGrammar::GridAutoFlow => matches!(value, DeclValue::GridAutoFlow(_)),
         DeclGrammar::TrackSize => matches!(value, DeclValue::TrackSize(_)),
+        DeclGrammar::GridLine => matches!(value, DeclValue::GridLine(_)),
     }
 }
 

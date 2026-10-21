@@ -569,17 +569,17 @@ fn unsupported_layout_hint_properties_drop() {
 #[allow(clippy::too_many_lines)]
 // UNSUPPORTED (class: unimplemented — D6 admission-gated):
 // - SPEC: CSS Grid 2 §§5–8 — the still-gated grid property family
-//   (`grid-template-areas`/`grid-template`, `grid-column`/
-//   `grid-row`/`grid-column-start`/`grid-area`, the `grid` shorthand, and the
-//   alignment longhands `justify-items`/`justify-self`).
+//   (`grid-template-areas`/`grid-template`, `grid-area`, and the `grid`
+//   shorthand).
 //   <https://drafts.csswg.org/css-grid-2/#grid-properties>
 // - CURRENT (asserted): every still-gated grid property name drops + counts at
 //   name lookup (the names are absent from the `property_shape` table in
 //   `decl_parse.rs`), no crash, and the block-layout baseline is unchanged. The
 //   T1 set (`grid-template-columns`/`rows`, `grid-auto-flow`,
-//   `grid-auto-columns`/`rows`) left this gate in the grid T0 landing and is
-//   pinned admitted in `grid_admission.rs`. CONTROL: the admitted
-//   `width: 80px` applies (applied == 1, dropped == 0).
+//   `grid-auto-columns`/`rows`) and the T2 placement/alignment longhands
+//   (`grid-column`/`grid-row` + longhands, `justify-items`/`justify-self`) left
+//   this gate in their landings and are pinned admitted in `grid_admission.rs`.
+//   CONTROL: the admitted `width: 80px` applies (applied == 1, dropped == 0).
 // - SPEC-CORRECT: a grid solver owns these names; admission per the D6 policy.
 fn unsupported_grid_property_names_drop() {
     struct Case {
@@ -597,32 +597,12 @@ fn unsupported_grid_property_names_drop() {
             body: "grid-template: \"a b\" 1fr / 1fr 1fr",
         },
         Case {
-            name: "grid_column",
-            body: "grid-column: 1 / 2",
-        },
-        Case {
-            name: "grid_row",
-            body: "grid-row: 1 / 2",
-        },
-        Case {
-            name: "grid_column_start",
-            body: "grid-column-start: 1",
-        },
-        Case {
             name: "grid_area",
             body: "grid-area: 1 / 1 / 2 / 2",
         },
         Case {
             name: "grid_shorthand",
             body: "grid: \"a b\" 1fr / 1fr 1fr",
-        },
-        Case {
-            name: "justify_items",
-            body: "justify-items: center",
-        },
-        Case {
-            name: "justify_self",
-            body: "justify-self: center",
         },
     ];
 
@@ -631,15 +611,14 @@ fn unsupported_grid_property_names_drop() {
     }
 
     // No crash: a combined sheet with every still-gated grid name drops and the
-    // update completes, leaving the target on the block-layout baseline. The
-    // T1 set (`grid-template-columns`/`rows`, `grid-auto-flow`, `grid-auto-*`)
-    // left this gate in the grid T0 landing (see `grid_admission.rs`).
-    let combined = ".x { grid-template-areas: \"a b\"; grid-column: 1 / 2; \
-                    grid-row: 1 / 2; grid-column-start: 1; grid-area: 1 / 1 / 2 / 2; \
-                    justify-items: center; justify-self: center }";
+    // update completes, leaving the target on the block-layout baseline. The T1
+    // set and the T2 placement/alignment longhands left this gate (see
+    // `grid_admission.rs`).
+    let combined = ".x { grid-template-areas: \"a b\"; grid-template: \"a b\" 1fr / 1fr 1fr; \
+                    grid-area: 1 / 1 / 2 / 2; grid: \"a b\" 1fr / 1fr 1fr }";
     let (mut world, mut root, target, report) = styled_target_load(combined);
     assert_eq!(
-        report.declarations_dropped, 7,
+        report.declarations_dropped, 4,
         "all still-gated grid names should drop"
     );
     assert_eq!(

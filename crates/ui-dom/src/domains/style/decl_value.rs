@@ -18,7 +18,7 @@
 //!   their intent
 
 use super::cascade_tier::CascadeTier;
-use super::computed::{GridAutoFlowKw, GridTrackSize, TrackBreadth, TrackMaxBreadth};
+use super::computed::{GridAutoFlowKw, GridLine, GridTrackSize, TrackBreadth, TrackMaxBreadth};
 use super::keyword::Keyword;
 use crate::types::DomAttributeValue;
 
@@ -88,6 +88,8 @@ pub enum DeclValue {
     TrackSize(GridTrackSize),
     /// A grid auto-flow (`grid-auto-flow`).
     GridAutoFlow(GridAutoFlowKw),
+    /// A grid placement line (`grid-column-*`/`grid-row-*`).
+    GridLine(GridLine),
 }
 
 impl DeclValue {
@@ -134,6 +136,7 @@ pub(crate) fn decl_value_to_css_string<'a>(
         ),
         DeclValue::TrackSize(size) => format_grid_track_size(size),
         DeclValue::GridAutoFlow(flow) => format_grid_auto_flow(*flow).to_string(),
+        DeclValue::GridLine(line) => format_grid_line(*line),
     }
 }
 
@@ -250,6 +253,17 @@ fn format_grid_auto_flow(flow: GridAutoFlowKw) -> &'static str {
         GridAutoFlowKw::RowDense => "row dense",
         GridAutoFlowKw::Column => "column",
         GridAutoFlowKw::ColumnDense => "column dense",
+    }
+}
+
+/// Formats one `GridLine` to its canonical CSS token form (`auto`, an integer
+/// line, or `span <positive-integer>`). Debug/wire form only — the typed line is
+/// the retained truth.
+fn format_grid_line(line: GridLine) -> String {
+    match line {
+        GridLine::Auto => "auto".to_string(),
+        GridLine::Line(n) => n.to_string(),
+        GridLine::Span(n) => format!("span {n}"),
     }
 }
 
@@ -458,5 +472,13 @@ mod tests {
             ),
             "rgba(255, 0, 0, 0.5)",
         );
+    }
+
+    #[test]
+    fn grid_line_formats_to_its_css_token_form() {
+        assert_eq!(format_grid_line(GridLine::Auto), "auto");
+        assert_eq!(format_grid_line(GridLine::Line(2)), "2");
+        assert_eq!(format_grid_line(GridLine::Line(-1)), "-1");
+        assert_eq!(format_grid_line(GridLine::Span(3)), "span 3");
     }
 }

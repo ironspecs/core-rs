@@ -58,7 +58,7 @@
 use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
-use super::computed::{GridAutoFlowKw, GridTrackSize, TrackBreadth, TrackMaxBreadth};
+use super::computed::{GridAutoFlowKw, GridLine, GridTrackSize, TrackBreadth, TrackMaxBreadth};
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::DeclDropReport;
 use super::decl_store::{DeclStore, GRID_TRACK_LIST_CAPACITY};
@@ -202,6 +202,8 @@ enum Shorthand {
     PlaceContent,
     PlaceItems,
     PlaceSelf,
+    GridColumn,
+    GridRow,
     Transition,
     BorderSide(BorderSide),
     Margin,
@@ -232,6 +234,8 @@ fn property_shape(name: &str) -> Option<PropertyShape> {
         "place-content" => Shorthand::PlaceContent,
         "place-items" => Shorthand::PlaceItems,
         "place-self" => Shorthand::PlaceSelf,
+        "grid-column" => Shorthand::GridColumn,
+        "grid-row" => Shorthand::GridRow,
         "transition" => Shorthand::Transition,
         "border-top" => Shorthand::BorderSide(BorderSide::Top),
         "border-right" => Shorthand::BorderSide(BorderSide::Right),
@@ -300,8 +304,22 @@ fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProper
             PresentationProperty::AlignContent,
             PresentationProperty::JustifyContent,
         ],
-        Shorthand::PlaceItems => &[PresentationProperty::AlignItems],
-        Shorthand::PlaceSelf => &[PresentationProperty::AlignSelf],
+        Shorthand::PlaceItems => &[
+            PresentationProperty::AlignItems,
+            PresentationProperty::JustifyItems,
+        ],
+        Shorthand::PlaceSelf => &[
+            PresentationProperty::AlignSelf,
+            PresentationProperty::JustifySelf,
+        ],
+        Shorthand::GridColumn => &[
+            PresentationProperty::GridColumnStart,
+            PresentationProperty::GridColumnEnd,
+        ],
+        Shorthand::GridRow => &[
+            PresentationProperty::GridRowStart,
+            PresentationProperty::GridRowEnd,
+        ],
         Shorthand::Transition => &[
             PresentationProperty::TransitionProperty,
             PresentationProperty::TransitionDuration,
@@ -397,6 +415,8 @@ fn expand_shorthand(
         Shorthand::PlaceContent => expand_place_content(value),
         Shorthand::PlaceItems => expand_place_items(value),
         Shorthand::PlaceSelf => expand_place_self(value),
+        Shorthand::GridColumn => expand_grid_column(value),
+        Shorthand::GridRow => expand_grid_row(value),
         Shorthand::Transition => expand_transition(value, store),
         Shorthand::BorderSide(side) => expand_border_side(side, value),
         Shorthand::Margin => expand_margin(value),
@@ -432,6 +452,7 @@ fn parse_value(grammar: DeclGrammar, value: &str, store: &mut DeclStore) -> Opti
         DeclGrammar::TrackList => parse_track_list(value, store).map(DeclValue::TrackList),
         DeclGrammar::GridAutoFlow => parse_grid_auto_flow(value).map(DeclValue::GridAutoFlow),
         DeclGrammar::TrackSize => parse_track_size(value).map(DeclValue::TrackSize),
+        DeclGrammar::GridLine => parse_grid_line(value).map(DeclValue::GridLine),
         DeclGrammar::TransitionPropertyList => parse_transition_property_list(value, store),
         DeclGrammar::TransitionTimeList => parse_transition_time_list(value, store),
         DeclGrammar::TransitionSignedTimeList => parse_transition_signed_time_list(value, store),
@@ -841,6 +862,41 @@ fn parse_grid_auto_flow(value: &str) -> Option<GridAutoFlowKw> {
     })
 }
 
+/// Parses one `<grid-line>`: `auto | <nonzero-integer> | span <positive-integer>`
+/// (CSS Grid §7.1; `GRID_STEP3_DESIGN.md` D1). Gates (each a counted drop, never
+/// a crash): the integer line `0` (zero is not a line), `span 0`/`span -1` (a
+/// span is positive), bare `span` (no integer), and any `<custom-ident>` named
+/// line with or without `span` (the T3 gate, unchanged from T1's line-name
+/// gate). Negatives are admitted for `<integer>` and translated at placement
+/// (D2).
+fn parse_grid_line(value: &str) -> Option<GridLine> {
+    let tokens = split_ws_paren_aware(value);
+    match tokens.as_slice() {
+        ["auto"] => Some(GridLine::Auto),
+        ["span"] => None, // bare `span` (no integer) drops + counts
+        ["span", n] => parse_positive_line_integer(n).map(GridLine::Span),
+        [n] => parse_nonzero_line_integer(n).map(GridLine::Line),
+        _ => None, // named lines and multi-token forms drop + count (T3 gate)
+    }
+}
+
+/// Parses a `<grid-line>` integer line, rejecting zero (zero is not a line,
+/// CSS Grid §7.1).
+fn parse_nonzero_line_integer(value: &str) -> Option<i32> {
+    let parsed = value.trim().parse::<i32>().ok()?;
+    (parsed != 0).then_some(parsed)
+}
+
+/// Parses a `span <integer>` count, requiring a positive integer (zero and
+/// negative drop + count).
+fn parse_positive_line_integer(value: &str) -> Option<u32> {
+    let parsed = value.trim().parse::<i32>().ok()?;
+    if parsed <= 0 {
+        return None;
+    }
+    u32::try_from(parsed).ok()
+}
+
 // — Text/transform family — //
 
 fn parse_transform(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
@@ -986,20 +1042,6 @@ fn parse_transition_timing_list(value: &str, store: &mut DeclStore) -> Option<De
 }
 
 // — Shared shorthand helpers — //
-
-/// The closed justify-items/justify-self vocabulary validated (and discarded)
-/// for the second token of `place-items`/`place-self`. These properties are
-/// not admitted longhands, so the value is checked and then dropped.
-const JUSTIFY_ITEMS_SELF_KEYWORDS: &[Keyword] = &[
-    Keyword::Auto,
-    Keyword::Normal,
-    Keyword::Stretch,
-    Keyword::Start,
-    Keyword::End,
-    Keyword::FlexStart,
-    Keyword::FlexEnd,
-    Keyword::Center,
-];
 
 /// Reads a `Keywords` grammar off a property that is known to use one. A
 /// self-owned structural invariant: these properties always declare a
@@ -1323,37 +1365,89 @@ fn expand_place_content(value: &str) -> Option<Vec<Declaration>> {
 fn expand_place_items(value: &str) -> Option<Vec<Declaration>> {
     let tokens = split_ws_paren_aware(value);
     let align_set = keyword_set(PresentationProperty::AlignItems);
-    let align_token = match tokens.as_slice() {
-        [align] => *align,
-        [align, justify] => {
-            Keyword::from_name_in(JUSTIFY_ITEMS_SELF_KEYWORDS, justify)?;
-            *align
-        }
+    let justify_set = keyword_set(PresentationProperty::JustifyItems);
+    let (align_token, justify_token) = match tokens.as_slice() {
+        [align] => (*align, *align),
+        [align, justify] => (*align, *justify),
         _ => return None,
     };
     let align = Keyword::from_name_in(align_set, align_token)?;
-    Some(vec![declaration(
-        PresentationProperty::AlignItems,
-        DeclValue::Keyword(align),
-    )])
+    let justify = Keyword::from_name_in(justify_set, justify_token)?;
+    // The D1 correction: `place-items` expands to BOTH sides (align-items AND
+    // justify-items), not just the align side.
+    Some(vec![
+        declaration(PresentationProperty::AlignItems, DeclValue::Keyword(align)),
+        declaration(
+            PresentationProperty::JustifyItems,
+            DeclValue::Keyword(justify),
+        ),
+    ])
 }
 
 fn expand_place_self(value: &str) -> Option<Vec<Declaration>> {
     let tokens = split_ws_paren_aware(value);
     let align_set = keyword_set(PresentationProperty::AlignSelf);
-    let align_token = match tokens.as_slice() {
-        [align] => *align,
-        [align, justify] => {
-            Keyword::from_name_in(JUSTIFY_ITEMS_SELF_KEYWORDS, justify)?;
-            *align
-        }
+    let justify_set = keyword_set(PresentationProperty::JustifySelf);
+    let (align_token, justify_token) = match tokens.as_slice() {
+        [align] => (*align, *align),
+        [align, justify] => (*align, *justify),
         _ => return None,
     };
     let align = Keyword::from_name_in(align_set, align_token)?;
-    Some(vec![declaration(
-        PresentationProperty::AlignSelf,
-        DeclValue::Keyword(align),
-    )])
+    let justify = Keyword::from_name_in(justify_set, justify_token)?;
+    // The D1 correction: `place-self` expands to BOTH sides (align-self AND
+    // justify-self), not just the align side.
+    Some(vec![
+        declaration(PresentationProperty::AlignSelf, DeclValue::Keyword(align)),
+        declaration(
+            PresentationProperty::JustifySelf,
+            DeclValue::Keyword(justify),
+        ),
+    ])
+}
+
+/// Expands the `grid-column`/`grid-row` shorthand per D1: a lone `span N`
+/// writes `Auto`/`Span(N)`; a lone other value writes value/`Auto`; two values
+/// write start/end in order.
+fn expand_grid_placement_shorthand(
+    value: &str,
+    start_property: PresentationProperty,
+    end_property: PresentationProperty,
+) -> Option<Vec<Declaration>> {
+    let mut parts = value.split('/');
+    let start_text = parts.next()?.trim();
+    let end_text = parts.next().map(str::trim);
+    if parts.next().is_some() {
+        return None; // more than one '/'
+    }
+    let start = parse_grid_line(start_text)?;
+    let (start_line, end_line) = match end_text {
+        None => match start {
+            GridLine::Span(n) => (GridLine::Auto, GridLine::Span(n)),
+            other => (other, GridLine::Auto),
+        },
+        Some(end) => (start, parse_grid_line(end)?),
+    };
+    Some(vec![
+        declaration(start_property, DeclValue::GridLine(start_line)),
+        declaration(end_property, DeclValue::GridLine(end_line)),
+    ])
+}
+
+fn expand_grid_column(value: &str) -> Option<Vec<Declaration>> {
+    expand_grid_placement_shorthand(
+        value,
+        PresentationProperty::GridColumnStart,
+        PresentationProperty::GridColumnEnd,
+    )
+}
+
+fn expand_grid_row(value: &str) -> Option<Vec<Declaration>> {
+    expand_grid_placement_shorthand(
+        value,
+        PresentationProperty::GridRowStart,
+        PresentationProperty::GridRowEnd,
+    )
 }
 
 fn expand_transition(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
@@ -2295,21 +2389,37 @@ mod tests {
     }
 
     #[test]
-    fn place_items_and_place_self_discard_second_token() {
+    fn place_items_and_place_self_expand_to_both_sides() {
         let (block, _, _) = parse_block("place-items: center start");
         assert_eq!(
             value(&block, PresentationProperty::AlignItems),
             DeclValue::Keyword(Keyword::Center)
         );
-        assert_eq!(block.len(), 1);
+        assert_eq!(
+            value(&block, PresentationProperty::JustifyItems),
+            DeclValue::Keyword(Keyword::Start)
+        );
+        assert_eq!(block.len(), 2);
+
+        let (block, _, _) = parse_block("place-items: center");
+        assert_eq!(
+            value(&block, PresentationProperty::JustifyItems),
+            DeclValue::Keyword(Keyword::Center)
+        );
 
         let (block, _, _) = parse_block("place-self: end auto");
         assert_eq!(
             value(&block, PresentationProperty::AlignSelf),
             DeclValue::Keyword(Keyword::End)
         );
-        assert_eq!(block.len(), 1);
+        assert_eq!(
+            value(&block, PresentationProperty::JustifySelf),
+            DeclValue::Keyword(Keyword::Auto)
+        );
+        assert_eq!(block.len(), 2);
 
+        // `baseline` is not a justify-items keyword, so the whole declaration
+        // drops.
         let (_, report, _) = parse_block("place-items: center baseline");
         assert_eq!(report.dropped, 1);
     }
@@ -2749,6 +2859,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one assertion row per shorthand's expansion set
     fn longhands_for_name_resolves_shorthands_to_expansion_sets() {
         assert_eq!(
             longhands_for_name("border-radius").map(SmallVec::into_vec),
@@ -2799,11 +2910,31 @@ mod tests {
         );
         assert_eq!(
             longhands_for_name("place-items").map(SmallVec::into_vec),
-            Some(vec![PresentationProperty::AlignItems])
+            Some(vec![
+                PresentationProperty::AlignItems,
+                PresentationProperty::JustifyItems,
+            ])
         );
         assert_eq!(
             longhands_for_name("place-self").map(SmallVec::into_vec),
-            Some(vec![PresentationProperty::AlignSelf])
+            Some(vec![
+                PresentationProperty::AlignSelf,
+                PresentationProperty::JustifySelf,
+            ])
+        );
+        assert_eq!(
+            longhands_for_name("grid-column").map(SmallVec::into_vec),
+            Some(vec![
+                PresentationProperty::GridColumnStart,
+                PresentationProperty::GridColumnEnd,
+            ])
+        );
+        assert_eq!(
+            longhands_for_name("grid-row").map(SmallVec::into_vec),
+            Some(vec![
+                PresentationProperty::GridRowStart,
+                PresentationProperty::GridRowEnd,
+            ])
         );
         assert_eq!(
             longhands_for_name("transition").map(SmallVec::into_vec),
@@ -2848,6 +2979,76 @@ mod tests {
 
     fn track_size(min: TrackBreadth, max: TrackMaxBreadth) -> GridTrackSize {
         GridTrackSize { min, max }
+    }
+
+    #[test]
+    fn grid_line_parses_auto_integer_span() {
+        assert_eq!(parse_grid_line("auto"), Some(GridLine::Auto));
+        assert_eq!(parse_grid_line("2"), Some(GridLine::Line(2)));
+        assert_eq!(parse_grid_line("-3"), Some(GridLine::Line(-3)));
+        assert_eq!(parse_grid_line("span 2"), Some(GridLine::Span(2)));
+    }
+
+    #[test]
+    fn grid_line_drops_zero_negative_span_bare_span_and_names() {
+        assert_eq!(parse_grid_line("0"), None);
+        assert_eq!(parse_grid_line("span"), None);
+        assert_eq!(parse_grid_line("span 0"), None);
+        assert_eq!(parse_grid_line("span -1"), None);
+        assert_eq!(parse_grid_line("main"), None);
+        assert_eq!(parse_grid_line("span main"), None);
+        assert_eq!(parse_grid_line("2 span"), None);
+    }
+
+    #[test]
+    fn grid_column_and_row_shorthands_expand_per_d1() {
+        // Lone span: start Auto, end Span.
+        let (block, _, _) = parse_block("grid-column: span 2");
+        assert_eq!(
+            value(&block, PresentationProperty::GridColumnStart),
+            DeclValue::GridLine(GridLine::Auto)
+        );
+        assert_eq!(
+            value(&block, PresentationProperty::GridColumnEnd),
+            DeclValue::GridLine(GridLine::Span(2))
+        );
+
+        // Lone non-span: start = value, end Auto.
+        let (block, _, _) = parse_block("grid-column: 2");
+        assert_eq!(
+            value(&block, PresentationProperty::GridColumnStart),
+            DeclValue::GridLine(GridLine::Line(2))
+        );
+        assert_eq!(
+            value(&block, PresentationProperty::GridColumnEnd),
+            DeclValue::GridLine(GridLine::Auto)
+        );
+
+        // Two values in order.
+        let (block, _, _) = parse_block("grid-row: 1 / 3");
+        assert_eq!(
+            value(&block, PresentationProperty::GridRowStart),
+            DeclValue::GridLine(GridLine::Line(1))
+        );
+        assert_eq!(
+            value(&block, PresentationProperty::GridRowEnd),
+            DeclValue::GridLine(GridLine::Line(3))
+        );
+
+        // Mixed definite + span.
+        let (block, _, _) = parse_block("grid-column: 2 / span 3");
+        assert_eq!(
+            value(&block, PresentationProperty::GridColumnStart),
+            DeclValue::GridLine(GridLine::Line(2))
+        );
+        assert_eq!(
+            value(&block, PresentationProperty::GridColumnEnd),
+            DeclValue::GridLine(GridLine::Span(3))
+        );
+
+        // Malformed (three '/' parts) drops.
+        let (_, report, _) = parse_block("grid-column: 1 / 2 / 3");
+        assert_eq!(report.dropped, 1);
     }
 
     #[test]

@@ -33,6 +33,7 @@ mod flex_resolution_lane;
 mod flex_wrap_mode;
 mod flow;
 mod grid;
+mod grid_cell_map;
 mod grid_item_lane;
 mod grid_track_lane;
 mod identity_dom_layout_resolver;
@@ -70,6 +71,8 @@ pub(crate) use flex_order_lane::{FlexOrderLane, FlexOrderLaneEntry};
 pub(crate) use flex_resolution_lane::{FlexResolutionEntry, FlexResolutionLane, ViolationClass};
 #[allow(unused_imports)]
 pub(crate) use grid::GridItemView;
+#[allow(unused_imports)]
+pub(crate) use grid_cell_map::GridCellMap;
 #[allow(unused_imports)]
 pub(crate) use grid_item_lane::{GridItemLane, GridItemLaneEntry};
 #[allow(unused_imports)]

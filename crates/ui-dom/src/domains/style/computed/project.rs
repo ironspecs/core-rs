@@ -32,6 +32,8 @@ use super::flex_basis_kw::FlexBasisKw;
 use super::flex_direction_kw::FlexDirectionKw;
 use super::flex_wrap_kw::FlexWrapKw;
 use super::justify_content_kw::JustifyContentKw;
+use super::justify_items_kw::JustifyItemsKw;
+use super::justify_self_kw::JustifySelfKw;
 use super::overflow_kw::OverflowKw;
 use super::position_kw::PositionKw;
 use super::resolved_transition_longhands::{
@@ -552,6 +554,40 @@ fn resolve_grid_field(
         PresentationProperty::GridAutoRows => {
             if let DeclValue::TrackSize(size) = value {
                 groups.grid.auto_rows = size;
+            }
+        }
+        PresentationProperty::GridColumnStart => {
+            if let DeclValue::GridLine(line) = value {
+                groups.grid.column_start = line;
+            }
+        }
+        PresentationProperty::GridColumnEnd => {
+            if let DeclValue::GridLine(line) = value {
+                groups.grid.column_end = line;
+            }
+        }
+        PresentationProperty::GridRowStart => {
+            if let DeclValue::GridLine(line) = value {
+                groups.grid.row_start = line;
+            }
+        }
+        PresentationProperty::GridRowEnd => {
+            if let DeclValue::GridLine(line) = value {
+                groups.grid.row_end = line;
+            }
+        }
+        PresentationProperty::JustifyItems => {
+            if let DeclValue::Keyword(keyword) = value
+                && let Some(justify) = JustifyItemsKw::from_keyword(keyword)
+            {
+                groups.grid.justify_items = justify;
+            }
+        }
+        PresentationProperty::JustifySelf => {
+            if let DeclValue::Keyword(keyword) = value
+                && let Some(justify) = JustifySelfKw::from_keyword(keyword)
+            {
+                groups.grid.justify_self = justify;
             }
         }
         _ => {}

@@ -82,9 +82,10 @@ pub use computed::{
     AlignContentKw, AlignItemsKw, BoxLength, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
     ComputedFlexGroup, ComputedFontGroup, ComputedGridGroup, ComputedGroups, ComputedStyleRef,
     ComputedTextGroup, ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw,
-    FlexDirectionKw, FlexWrapKw, GridAutoFlowKw, GridTrackSize, JustifyContentKw, NodePresentation,
-    OverflowKw, PositionKw, ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY,
-    TrackBreadth, TrackMaxBreadth, TransitionLonghandProperty,
+    FlexDirectionKw, FlexWrapKw, GridAutoFlowKw, GridLine, GridTrackSize, JustifyContentKw,
+    JustifyItemsKw, JustifySelfKw, NodePresentation, OverflowKw, PositionKw,
+    ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TrackBreadth, TrackMaxBreadth,
+    TransitionLonghandProperty,
 };
 pub(crate) use decl_parse::{name_is_presentation, parse_declaration_block};
 pub(crate) use decl_value::{decl_value_to_css_string, decl_value_to_dom_value};
@@ -642,6 +643,27 @@ fn hash_decl_value(hasher: &mut std::collections::hash_map::DefaultHasher, value
         DeclValue::GridAutoFlow(flow) => {
             9u8.hash(hasher);
             flow.hash(hasher);
+        }
+        DeclValue::GridLine(line) => {
+            10u8.hash(hasher);
+            hash_grid_line(hasher, *line);
+        }
+    }
+}
+
+/// Hashes one `GridLine` by its variant tag plus the carried integer (the
+/// `GridLine` derives `Hash`; hashing here keeps the tag consistent with the
+/// `DeclValue` variant's own tag prefix).
+fn hash_grid_line(hasher: &mut std::collections::hash_map::DefaultHasher, line: GridLine) {
+    match line {
+        GridLine::Auto => 0u8.hash(hasher),
+        GridLine::Line(n) => {
+            1u8.hash(hasher);
+            n.hash(hasher);
+        }
+        GridLine::Span(n) => {
+            2u8.hash(hasher);
+            n.hash(hasher);
         }
     }
 }

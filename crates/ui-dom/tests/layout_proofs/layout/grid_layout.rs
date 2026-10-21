@@ -598,3 +598,416 @@ fn grid_fr_tracks_partial_freeze_redistributes_among_the_rest() {
     assert_rect_op_geometry(&rects[2], 200.0, 0.0, 100.0, 40.0, "second 100px item");
     assert_rect_op_geometry(&rects[3], 300.0, 0.0, 100.0, 40.0, "third 100px item");
 }
+
+#[test]
+// CSS Grid §7.1 + §8.5: `grid-column: span 2` occupies two consecutive columns,
+// sized by both tracks plus the gap.
+fn grid_column_span_places_across_two_tracks() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "span 2");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = border_box_of(&root, item);
+    assert_close(box_.left_px, 0.0, "span-2 item starts at column 1");
+    assert_close(box_.width_px, 210.0, "item spans 100px + 10px gap + 100px");
+    assert_close(box_.height_px, 40.0, "item height");
+}
+
+#[test]
+// CSS Grid §7.1 + §8.5: `grid-row: span 2` occupies two consecutive rows.
+fn grid_row_span_places_across_two_rows() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px");
+    assert_style_set(&mut root, container, "grid-template-rows", "40px 40px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-row", "span 2");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = border_box_of(&root, item);
+    assert_close(box_.top_px, 0.0, "span-2 item starts at row 1");
+    assert_close(box_.height_px, 80.0, "item spans 40px + 40px");
+}
+
+#[test]
+// CSS Grid §8.3: `grid-column: 2 / 4` places the item in line-index columns
+// 2–3, and auto items flow around it.
+fn grid_column_start_end_integer_lines() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "repeat(3, 100px)", "300px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "grid-column", "2 / 4");
+    assert_style_set(&mut root, first, "height", "40px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let first_box = border_box_of(&root, first);
+    assert_close(first_box.left_px, 100.0, "definite item at column 2");
+    assert_close(first_box.width_px, 200.0, "definite item spans columns 2-3");
+    let second_box = border_box_of(&root, second);
+    assert_close(second_box.left_px, 0.0, "auto item flows to column 1");
+    assert_close(second_box.width_px, 100.0, "auto item width");
+}
+
+#[test]
+// CSS Grid §8.3 negative lines: `grid-column: -1 / -3` in a 3-track grid
+// resolves from the explicit end to lines 4/2 (spanning tracks 2–3).
+fn grid_negative_lines_translate_from_the_explicit_end() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "repeat(3, 100px)", "300px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "-1 / -3");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = border_box_of(&root, item);
+    assert_close(box_.left_px, 100.0, "negative lines resolve to track 2");
+    assert_close(box_.width_px, 200.0, "item spans tracks 2-3");
+}
+
+#[test]
+// CSS Grid §8.5: `grid-auto-flow: column` fills down the first column before
+// starting the second (column-major).
+fn grid_auto_flow_column_fills_column_major() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(2, 100px)",
+    );
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-rows",
+        "repeat(2, 40px)",
+    );
+    assert_style_set(&mut root, container, "grid-auto-flow", "column");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 100.0, 40.0, "item 0 (col 1, row 1)");
+    assert_rect_op_geometry(&rects[2], 0.0, 40.0, 100.0, 40.0, "item 1 (col 1, row 2)");
+    assert_rect_op_geometry(&rects[3], 100.0, 0.0, 100.0, 40.0, "item 2 (col 2, row 1)");
+}
+
+#[test]
+// CSS Grid §8.5: dense packing backfills a hole that sparse leaves empty.
+fn grid_auto_flow_dense_backfills_holes() {
+    // Sparse: the span-2 auto item cannot fit beside the definite item, so it
+    // wraps; the trailing span-1 item cannot return to (0,0).
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(2, 100px)",
+    );
+    let definite = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, definite, "grid-column", "2");
+    assert_style_set(&mut root, definite, "height", "40px");
+    let wide = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, wide, "grid-column", "span 2");
+    assert_style_set(&mut root, wide, "height", "40px");
+    let last = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, last, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let sparse_last_box = border_box_of(&root, last);
+    assert_close(
+        sparse_last_box.top_px,
+        80.0,
+        "sparse: last auto item at row 3",
+    );
+
+    // Dense: the trailing span-1 item backfills the (0,0) hole.
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(2, 100px)",
+    );
+    assert_style_set(&mut root, container, "grid-auto-flow", "dense");
+    let definite = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, definite, "grid-column", "2");
+    assert_style_set(&mut root, definite, "height", "40px");
+    let wide = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, wide, "grid-column", "span 2");
+    assert_style_set(&mut root, wide, "height", "40px");
+    let last = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, last, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let dense_last_box = border_box_of(&root, last);
+    assert_close(
+        dense_last_box.top_px,
+        0.0,
+        "dense: last auto item backfills (0,0)",
+    );
+    assert_close(dense_last_box.left_px, 0.0, "dense backfill at column 1");
+}
+
+#[test]
+// CSS Grid §12.7: `grid-template-rows: 40px 1fr 2fr` against a definite height
+// sizes rows 40 / 20 / 40.
+fn grid_template_rows_fr_and_fixed() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px");
+    assert_style_set(&mut root, container, "grid-template-rows", "40px 1fr 2fr");
+    assert_style_set(&mut root, container, "height", "100px");
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "width", "50px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 50.0, 40.0, "row 1 = 40px");
+    assert_rect_op_geometry(&rects[2], 0.0, 40.0, 50.0, 20.0, "row 2 = 1fr (20px)");
+    assert_rect_op_geometry(&rects[3], 0.0, 60.0, 50.0, 40.0, "row 3 = 2fr (40px)");
+}
+
+#[test]
+// CSS Grid §12.6: `grid-template-rows: minmax(60px, max-content)` with content
+// floors the row at 60px.
+fn grid_template_rows_minmax_and_content() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-rows",
+        "minmax(60px, max-content)",
+    );
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let container_layout = assert_node_layout(&root, container);
+    assert_close(
+        container_layout.content_height_px,
+        60.0,
+        "row floors at 60px",
+    );
+}
+
+#[test]
+// CSS Grid §8.5 + §12.7: items past the explicit rows size by `grid-auto-rows`.
+fn grid_auto_rows_beyond_explicit_count() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px");
+    assert_style_set(&mut root, container, "grid-template-rows", "40px");
+    assert_style_set(&mut root, container, "grid-auto-rows", "minmax(80px, auto)");
+    for _ in 0..2 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "25px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let container_layout = assert_node_layout(&root, container);
+    assert_close(
+        container_layout.content_height_px,
+        120.0,
+        "explicit 40px row + implicit 80px auto-row",
+    );
+}
+
+#[test]
+// CSS Box Alignment §10.2: `justify-items` aligns a smaller item on the inline
+// axis within its track.
+fn grid_justify_items_start_end_center_in_cell() {
+    // center
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "justify-items", "center");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, item).left_px,
+        75.0,
+        "center: (200-50)/2",
+    );
+
+    // end
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "justify-items", "end");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(border_box_of(&root, item).left_px, 150.0, "end: 200-50");
+
+    // start
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "justify-items", "start");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, item).left_px,
+        0.0,
+        "start: inline-start edge",
+    );
+}
+
+#[test]
+// CSS Box Alignment §10.2: `justify-self` overrides the container's
+// `justify-items`.
+fn grid_justify_self_overrides_container() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "justify-items", "center");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "justify-self", "end");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        border_box_of(&root, item).left_px,
+        150.0,
+        "justify-self end beats container center",
+    );
+}
+
+#[test]
+// CSS Box Alignment §10.2: the flex group's `align-items` applies to the grid
+// item's block axis (bottom-aligns items in their rows).
+fn grid_align_items_block_axis_in_rows() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "grid-template-rows", "100px");
+    assert_style_set(&mut root, container, "align-items", "end");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        border_box_of(&root, item).top_px,
+        60.0,
+        "align-items end bottom-aligns in the row",
+    );
+}
+
+#[test]
+// CSS Box Alignment §10.2: `place-items: center` expands to `align-items` AND
+// `justify-items` (the D1 expansion correction).
+fn grid_place_items_expands_to_justify_items() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "grid-template-rows", "100px");
+    assert_style_set(&mut root, container, "place-items", "center");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = border_box_of(&root, item);
+    assert_close(
+        box_.left_px,
+        75.0,
+        "place-items center: inline-axis centering",
+    );
+    assert_close(
+        box_.top_px,
+        30.0,
+        "place-items center: block-axis centering",
+    );
+}
+
+#[test]
+// CSS Box Alignment §10.2: `place-self: center` expands to `align-self` AND
+// `justify-self`.
+fn grid_place_self_expands_to_justify_self() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "grid-template-rows", "100px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "place-self", "center");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let box_ = border_box_of(&root, item);
+    assert_close(box_.left_px, 75.0, "place-self center: inline axis");
+    assert_close(box_.top_px, 30.0, "place-self center: block axis");
+}
+
+#[test]
+// CSS Box Alignment §8.1: absorbed auto margins take precedence over
+// justify-items.
+fn grid_auto_margins_still_beat_justify() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "200px", "200px");
+    assert_style_set(&mut root, container, "justify-items", "start");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "margin", "auto");
+    assert_style_set(&mut root, item, "width", "50px");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_close(
+        border_box_of(&root, item).left_px,
+        75.0,
+        "auto margins center regardless of justify-items: start",
+    );
+}
+
+#[test]
+// CSS Grid §8.5 order: definite items resolve first, then items locked to the
+// major axis, then remaining autos.
+fn grid_definite_then_locked_then_auto_order() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "repeat(2, 100px)", "200px");
+    // First in document order: an auto item.
+    let auto_item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, auto_item, "height", "40px");
+    // Second: an item locked to row 1 (definite row, auto column).
+    let locked = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, locked, "grid-row", "1");
+    assert_style_set(&mut root, locked, "height", "40px");
+    // Third: a both-axes-definite item.
+    let definite = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, definite, "grid-column", "2");
+    assert_style_set(&mut root, definite, "grid-row", "2");
+    assert_style_set(&mut root, definite, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The locked item claims (row 1, col 1) before the auto item, so the auto
+    // item flows to (row 1, col 2).
+    let locked_box = border_box_of(&root, locked);
+    assert_close(locked_box.left_px, 0.0, "locked item at column 1");
+    assert_close(locked_box.top_px, 0.0, "locked item at row 1");
+    let auto_box = border_box_of(&root, auto_item);
+    assert_close(
+        auto_box.left_px,
+        100.0,
+        "auto item flows past the locked item",
+    );
+    assert_close(auto_box.top_px, 0.0, "auto item at row 1");
+    let definite_box = border_box_of(&root, definite);
+    assert_close(definite_box.left_px, 100.0, "definite item at column 2");
+    assert_close(definite_box.top_px, 40.0, "definite item at row 2");
+}

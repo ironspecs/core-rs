@@ -814,7 +814,8 @@ impl DomNode {
             | DeclValue::Translate(_)
             | DeclValue::TrackList(_)
             | DeclValue::TrackSize(_)
-            | DeclValue::GridAutoFlow(_) => None,
+            | DeclValue::GridAutoFlow(_)
+            | DeclValue::GridLine(_) => None,
         }
     }
 

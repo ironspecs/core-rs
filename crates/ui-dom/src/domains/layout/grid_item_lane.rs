@@ -30,6 +30,8 @@ use crate::types::LaneRange;
 #[cfg(test)]
 use crate::domains::layout::flex_item_source::FlexItemSource;
 #[cfg(test)]
+use crate::domains::style::computed::{GridLine, JustifySelfKw};
+#[cfg(test)]
 use crate::types::DomNodeSlotKey;
 
 /// One grid item's item-lane slot: the assembled view plus its auto-placed cell
@@ -186,6 +188,14 @@ mod tests {
             auto_margins: 0,
             replaced_ratio: false,
             main_influences_cross: false,
+            column_start: GridLine::Auto,
+            column_end: GridLine::Auto,
+            row_start: GridLine::Auto,
+            row_end: GridLine::Auto,
+            justify_self: JustifySelfKw::Auto,
+            align_self: None,
+            col_span: 1,
+            row_span: 1,
         }
     }
 

@@ -85,6 +85,12 @@ pub enum PresentationProperty {
     GridAutoFlow,
     GridAutoColumns,
     GridAutoRows,
+    GridColumnStart,
+    GridColumnEnd,
+    GridRowStart,
+    GridRowEnd,
+    JustifyItems,
+    JustifySelf,
     // Non-inherited — visual group
     Opacity,
     BackgroundColor,
@@ -180,6 +186,9 @@ pub enum DeclGrammar {
     GridAutoFlow,
     /// A single grid `<track-size>` leaf (`grid-auto-columns`/`rows`).
     TrackSize,
+    /// A single grid `<grid-line>` (`auto | <nonzero-integer> | span
+    /// <positive-integer>`) for the four placement longhands.
+    GridLine,
     /// Comma list of admitted presentation property names, `all`, or `none`; interned raw.
     TransitionPropertyList,
     /// Comma list of `<f32> >= 0` with "ms"/"s" units or bare "0"; interned raw
@@ -304,6 +313,23 @@ const ALIGN_CONTENT_KEYWORDS: &[Keyword] = &[
     Keyword::SpaceBetween,
     Keyword::SpaceAround,
     Keyword::SpaceEvenly,
+];
+
+const JUSTIFY_ITEMS_KEYWORDS: &[Keyword] = &[
+    Keyword::Normal,
+    Keyword::Stretch,
+    Keyword::Start,
+    Keyword::End,
+    Keyword::Center,
+];
+
+const JUSTIFY_SELF_KEYWORDS: &[Keyword] = &[
+    Keyword::Auto,
+    Keyword::Normal,
+    Keyword::Stretch,
+    Keyword::Start,
+    Keyword::End,
+    Keyword::Center,
 ];
 
 type PropertyMetadata = (&'static str, PresentationGroup, DeclGrammar);
@@ -532,6 +558,36 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
         PresentationGroup::Grid,
         DeclGrammar::TrackSize,
     ),
+    (
+        "grid-column-start",
+        PresentationGroup::Grid,
+        DeclGrammar::GridLine,
+    ),
+    (
+        "grid-column-end",
+        PresentationGroup::Grid,
+        DeclGrammar::GridLine,
+    ),
+    (
+        "grid-row-start",
+        PresentationGroup::Grid,
+        DeclGrammar::GridLine,
+    ),
+    (
+        "grid-row-end",
+        PresentationGroup::Grid,
+        DeclGrammar::GridLine,
+    ),
+    (
+        "justify-items",
+        PresentationGroup::Grid,
+        DeclGrammar::Keywords(JUSTIFY_ITEMS_KEYWORDS),
+    ),
+    (
+        "justify-self",
+        PresentationGroup::Grid,
+        DeclGrammar::Keywords(JUSTIFY_SELF_KEYWORDS),
+    ),
     ("opacity", PresentationGroup::Visual, DeclGrammar::Opacity),
     (
         "background-color",
@@ -631,7 +687,7 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
 
 impl PresentationProperty {
     /// Number of defined `PresentationProperty` variants.
-    pub const COUNT: usize = 74;
+    pub const COUNT: usize = 80;
 
     /// Every variant, in enum order.
     pub const ALL: [PresentationProperty; Self::COUNT] = [
@@ -690,6 +746,12 @@ impl PresentationProperty {
         PresentationProperty::GridAutoFlow,
         PresentationProperty::GridAutoColumns,
         PresentationProperty::GridAutoRows,
+        PresentationProperty::GridColumnStart,
+        PresentationProperty::GridColumnEnd,
+        PresentationProperty::GridRowStart,
+        PresentationProperty::GridRowEnd,
+        PresentationProperty::JustifyItems,
+        PresentationProperty::JustifySelf,
         PresentationProperty::Opacity,
         PresentationProperty::BackgroundColor,
         PresentationProperty::BorderTopColor,
@@ -770,25 +832,31 @@ impl PresentationProperty {
             Self::GridAutoFlow => 52,
             Self::GridAutoColumns => 53,
             Self::GridAutoRows => 54,
-            Self::Opacity => 55,
-            Self::BackgroundColor => 56,
-            Self::BorderTopColor => 57,
-            Self::BorderRightColor => 58,
-            Self::BorderBottomColor => 59,
-            Self::BorderLeftColor => 60,
-            Self::OutlineColor => 61,
-            Self::OutlineWidth => 62,
-            Self::OutlineOffset => 63,
-            Self::CaretColor => 64,
-            Self::BorderTopLeftRadius => 65,
-            Self::BorderTopRightRadius => 66,
-            Self::BorderBottomRightRadius => 67,
-            Self::BorderBottomLeftRadius => 68,
-            Self::Transform => 69,
-            Self::TransitionProperty => 70,
-            Self::TransitionDuration => 71,
-            Self::TransitionTimingFunction => 72,
-            Self::TransitionDelay => 73,
+            Self::GridColumnStart => 55,
+            Self::GridColumnEnd => 56,
+            Self::GridRowStart => 57,
+            Self::GridRowEnd => 58,
+            Self::JustifyItems => 59,
+            Self::JustifySelf => 60,
+            Self::Opacity => 61,
+            Self::BackgroundColor => 62,
+            Self::BorderTopColor => 63,
+            Self::BorderRightColor => 64,
+            Self::BorderBottomColor => 65,
+            Self::BorderLeftColor => 66,
+            Self::OutlineColor => 67,
+            Self::OutlineWidth => 68,
+            Self::OutlineOffset => 69,
+            Self::CaretColor => 70,
+            Self::BorderTopLeftRadius => 71,
+            Self::BorderTopRightRadius => 72,
+            Self::BorderBottomRightRadius => 73,
+            Self::BorderBottomLeftRadius => 74,
+            Self::Transform => 75,
+            Self::TransitionProperty => 76,
+            Self::TransitionDuration => 77,
+            Self::TransitionTimingFunction => 78,
+            Self::TransitionDelay => 79,
         }
     }
 
@@ -834,9 +902,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn count_is_seventy_four_and_all_round_trips() {
-        assert_eq!(PresentationProperty::COUNT, 74);
-        assert_eq!(PresentationProperty::ALL.len(), 74);
+    fn count_is_eighty_and_all_round_trips() {
+        assert_eq!(PresentationProperty::COUNT, 80);
+        assert_eq!(PresentationProperty::ALL.len(), 80);
         for property in PresentationProperty::ALL {
             assert_eq!(
                 PresentationProperty::from_name(property.name()),

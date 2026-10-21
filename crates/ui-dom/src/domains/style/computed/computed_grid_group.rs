@@ -1,11 +1,12 @@
-//! Non-inherited grid computed group (`GRID_STEP1_DESIGN.md` D2).
+//! Non-inherited grid computed group (`GRID_STEP1_DESIGN.md` D2, extended by
+//! `GRID_STEP3_DESIGN.md` D1 for the T2 placement/alignment fields).
 //!
-//! This file owns the `ComputedGridGroup` struct only. Its three field
-//! vocabularies live in their own files (`grid_track_size.rs`,
-//! `grid_auto_flow_kw.rs`, plus the `GridTrackListKey` handle in
-//! `decl_value.rs`), each owning its type + helpers (structural rule 1). It is
-//! plain `Copy` data plus `initial()`; resolution lives in the step-3.3
-//! resolver (`project.rs`).
+//! This file owns the `ComputedGridGroup` struct only. Its field vocabularies
+//! live in their own files (`grid_track_size.rs`, `grid_auto_flow_kw.rs`,
+//! `grid_line.rs`, `justify_items_kw.rs`, `justify_self_kw.rs`, plus the
+//! `GridTrackListKey` handle in `decl_value.rs`), each owning its type + helpers
+//! (structural rule 1). It is plain `Copy` data plus `initial()`; resolution
+//! lives in the step-3.3 resolver (`project.rs`).
 //!
 //! Invariants and rules:
 //!
@@ -15,14 +16,24 @@
 //!   null key is never a valid arena entry, and the T1 solver reads it as "no
 //!   authored tracks"). Track lists are interned value-deduped, so two equal
 //!   templates share one key.
+//! - **The four placement longhands are item-side.** `column_start`/`column_end`/
+//!   `row_start`/`row_end` are the resolved `<grid-line>` values (T2); `Auto` is
+//!   the initial for all four. `justify_self` is item-side (`Auto` initial).
+//! - **`justify_items` is container-side** (`Normal` initial), the inline-axis
+//!   cell alignment vocabulary (T2, D5).
 //! - **Initial values mirror the CSS initials**: `row` auto-flow, `auto`
-//!   auto-track sizes, empty explicit tracks.
+//!   auto-track sizes, empty explicit tracks, `auto` placement lines, `normal`
+//!   `justify-items`, `auto` `justify-self`.
 
 use super::grid_auto_flow_kw::GridAutoFlowKw;
+use super::grid_line::GridLine;
 use super::grid_track_size::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
+use super::justify_items_kw::JustifyItemsKw;
+use super::justify_self_kw::JustifySelfKw;
 use crate::domains::style::decl_value::GridTrackListKey;
 
-/// Computed values of the non-inherited grid longhands (the T1 set).
+/// Computed values of the non-inherited grid longhands (the T1 set plus the T2
+/// placement/alignment longhands).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComputedGridGroup {
     /// Interned explicit column track list; `null()` = the empty list.
@@ -35,6 +46,18 @@ pub struct ComputedGridGroup {
     pub auto_columns: GridTrackSize,
     /// `Auto` is the CSS initial (`grid-auto-rows: auto`).
     pub auto_rows: GridTrackSize,
+    /// `Auto` is the CSS initial (`grid-column-start`).
+    pub column_start: GridLine,
+    /// `Auto` is the CSS initial (`grid-column-end`).
+    pub column_end: GridLine,
+    /// `Auto` is the CSS initial (`grid-row-start`).
+    pub row_start: GridLine,
+    /// `Auto` is the CSS initial (`grid-row-end`).
+    pub row_end: GridLine,
+    /// `Normal` is the CSS initial (`justify-items`, container side).
+    pub justify_items: JustifyItemsKw,
+    /// `Auto` is the CSS initial (`justify-self`, item side).
+    pub justify_self: JustifySelfKw,
 }
 
 impl ComputedGridGroup {
@@ -56,6 +79,12 @@ impl ComputedGridGroup {
                 min: TrackBreadth::Auto,
                 max: TrackMaxBreadth::Auto,
             },
+            column_start: GridLine::initial(),
+            column_end: GridLine::initial(),
+            row_start: GridLine::initial(),
+            row_end: GridLine::initial(),
+            justify_items: JustifyItemsKw::initial(),
+            justify_self: JustifySelfKw::initial(),
         }
     }
 }
@@ -74,5 +103,11 @@ mod tests {
         assert_eq!(grid.auto_columns.min, TrackBreadth::Auto);
         assert_eq!(grid.auto_columns.max, TrackMaxBreadth::Auto);
         assert_eq!(grid.auto_rows.min, TrackBreadth::Auto);
+        assert_eq!(grid.column_start, GridLine::Auto);
+        assert_eq!(grid.column_end, GridLine::Auto);
+        assert_eq!(grid.row_start, GridLine::Auto);
+        assert_eq!(grid.row_end, GridLine::Auto);
+        assert_eq!(grid.justify_items, JustifyItemsKw::Normal);
+        assert_eq!(grid.justify_self, JustifySelfKw::Auto);
     }
 }

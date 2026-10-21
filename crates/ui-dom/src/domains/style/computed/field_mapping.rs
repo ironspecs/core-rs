@@ -205,6 +205,24 @@ pub(crate) fn for_each_moved_field(
     if old.grid.auto_rows != new.grid.auto_rows {
         visit(PresentationProperty::GridAutoRows);
     }
+    if old.grid.column_start != new.grid.column_start {
+        visit(PresentationProperty::GridColumnStart);
+    }
+    if old.grid.column_end != new.grid.column_end {
+        visit(PresentationProperty::GridColumnEnd);
+    }
+    if old.grid.row_start != new.grid.row_start {
+        visit(PresentationProperty::GridRowStart);
+    }
+    if old.grid.row_end != new.grid.row_end {
+        visit(PresentationProperty::GridRowEnd);
+    }
+    if old.grid.justify_items != new.grid.justify_items {
+        visit(PresentationProperty::JustifyItems);
+    }
+    if old.grid.justify_self != new.grid.justify_self {
+        visit(PresentationProperty::JustifySelf);
+    }
 
     // Non-inherited — visual group.
     if old.visual.opacity != new.visual.opacity {
