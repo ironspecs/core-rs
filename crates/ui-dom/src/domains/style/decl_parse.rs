@@ -18,6 +18,10 @@
 //! - every grammar family is a small helper (<20 complexity); the
 //!   `DeclGrammar` match only dispatches, it never parses
 //! - numeric parsing always rejects non-finite values (`NaN`, `inf`, `-inf`)
+//! - grid track `fr` and `%` leaves reject negative values at admission (CSS
+//!   Grid §7.1: `<flex>` is non-negative, negative track sizes are invalid),
+//!   exactly like the px arm's `px >= 0.0` gate — the four sites are the leaf
+//!   `fr` arm, the leaf `%` arm, and both minmax bound percent arms
 //! - the `auto` keyword is admitted only for the closed `AUTO_ADMISSIBLE`
 //!   property set (fail-closed, before grammar dispatch); properties outside
 //!   the set fall through to their grammar, which rejects `auto` (e.g.
@@ -690,6 +694,9 @@ fn split_repeat_inner(inner: &str) -> Option<(usize, &str)> {
 /// `em` is not admitted (the `Px` breadth carries a resolved px value and no
 /// parse-time font size exists); it drops fail-closed. `auto` is admitted as a
 /// minmax MAX bound (correction 2 — CSS Grid §7.2's `<track-breadth>`).
+/// Negative `fr` and `%` leaves drop fail-closed (CSS Grid §7.1: `<flex>` is
+/// non-negative and negative track sizes are invalid — the px arm's `px >= 0.0`
+/// gate generalized to the fr/percent arms and both minmax bounds).
 fn parse_track_size(token: &str) -> Option<GridTrackSize> {
     match token {
         "auto" => {
@@ -713,14 +720,18 @@ fn parse_track_size(token: &str) -> Option<GridTrackSize> {
         _ => {}
     }
     if let Some(fr) = token.strip_suffix("fr") {
-        let value = parse_finite_f32(fr)?;
+        // CSS Grid §7.1: `<flex>` is a non-negative `<number>`; a negative fr
+        // drops + counts exactly like the px arm's `px >= 0.0` gate.
+        let value = parse_non_negative_f32(fr)?;
         return Some(GridTrackSize {
             min: TrackBreadth::Auto,
             max: TrackMaxBreadth::Fr(value),
         });
     }
     if let Some(percent) = token.strip_suffix('%') {
-        let value = parse_finite_f32(percent)?;
+        // CSS Grid §7.1 rejects negative track sizes; the leaf percent gate
+        // mirrors the px arm (negative percentages drop + count).
+        let value = parse_non_negative_f32(percent)?;
         return Some(GridTrackSize {
             min: TrackBreadth::Percent(value),
             max: TrackMaxBreadth::Percent(value),
@@ -758,7 +769,9 @@ fn parse_minmax(inner: &str) -> Option<GridTrackSize> {
 /// preserving the percent-vs-px unit (correction 3).
 fn parse_minmax_min_bound(text: &str) -> Option<TrackBreadth> {
     if let Some(percent) = text.strip_suffix('%') {
-        return parse_finite_f32(percent).map(TrackBreadth::Percent);
+        // CSS Grid §7.1 rejects negative track sizes; the min bound drops the
+        // negative percentage like the px arm (`px >= 0.0`).
+        return parse_non_negative_f32(percent).map(TrackBreadth::Percent);
     }
     match parse_authored_length(text)? {
         AuthoredLength::Px(px) if px >= 0.0 => Some(TrackBreadth::Px(px)),
@@ -775,7 +788,9 @@ fn parse_minmax_max_bound(text: &str) -> Option<TrackMaxBreadth> {
         "max-content" => Some(TrackMaxBreadth::MaxContent),
         _ => {
             if let Some(percent) = text.strip_suffix('%') {
-                return parse_finite_f32(percent).map(TrackMaxBreadth::Percent);
+                // CSS Grid §7.1 rejects negative track sizes; the max bound
+                // drops the negative percentage like the px arm.
+                return parse_non_negative_f32(percent).map(TrackMaxBreadth::Percent);
             }
             match parse_authored_length(text)? {
                 AuthoredLength::Px(px) if px >= 0.0 => Some(TrackMaxBreadth::Px(px)),
@@ -2903,6 +2918,29 @@ mod tests {
         // `em` is not admitted (no parse-time font size for the Px breadth).
         assert_eq!(parse_track_size("2em"), None);
         assert_eq!(parse_track_size("bogus"), None);
+    }
+
+    #[test]
+    fn grid_track_size_rejects_negative_fr_and_percent() {
+        // CSS Grid §7.1: `<flex>` is non-negative and negative track sizes are
+        // invalid. The four sign-check sites: the leaf `fr` arm, the leaf `%`
+        // arm, and both minmax bound percent arms.
+        assert_eq!(parse_track_size("-1fr"), None);
+        assert_eq!(parse_track_size("-10%"), None);
+        assert_eq!(parse_track_size("minmax(-5%, 100px)"), None);
+        assert_eq!(parse_track_size("minmax(10%, -50%)"), None);
+        // Zero is admitted per spec (`<flex>` is non-negative, zero inclusive).
+        assert_eq!(
+            parse_track_size("0fr"),
+            Some(track_size(TrackBreadth::Auto, TrackMaxBreadth::Fr(0.0)))
+        );
+        assert_eq!(
+            parse_track_size("0%"),
+            Some(track_size(
+                TrackBreadth::Percent(0.0),
+                TrackMaxBreadth::Percent(0.0)
+            ))
+        );
     }
 
     #[test]

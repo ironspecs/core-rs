@@ -174,6 +174,56 @@ fn grid_auto_fill_and_auto_fit_repeat_drops_for_now() {
 }
 
 #[test]
+fn grid_negative_track_sizes_drop() {
+    // CSS Grid §7.1 rejects negative track sizes. The four sign-check sites —
+    // the leaf `fr` arm, the leaf `%` arm, the minmax min-bound `%` arm, and
+    // the minmax max-bound `%` arm — each drop the whole declaration with a
+    // counted report (never `Percent(-10.0)`/`Fr(-1.0)` interned).
+    assert_decl_drop(".x { grid-template-columns: -10% }", 0, 1);
+    assert_decl_drop(".x { grid-template-columns: repeat(2, -1fr) }", 0, 1);
+    assert_decl_drop(".x { grid-template-columns: minmax(-5%, 100px) }", 0, 1);
+    assert_decl_drop(".x { grid-template-columns: minmax(10%, -50%) }", 0, 1);
+}
+
+#[test]
+fn grid_negative_track_size_leaves_the_group_initial() {
+    // The strict single-declaration path rejects the negative track size, so
+    // the grid group's `template_columns` stays at its empty initial. Observed
+    // through the public wire projection (`compute_style_map`): no
+    // `grid-template-columns` winner is declared.
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "display", "grid");
+    assert!(
+        root.style_mut(target)
+            .set("grid-template-columns", "-10%")
+            .is_err(),
+        "negative track size must be rejected by the strict write"
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(target).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        None,
+        "a rejected track size must not be declared (group stays initial)"
+    );
+}
+
+#[test]
+fn grid_track_size_positive_controls_admitted() {
+    // Positive fr/percent controls (and zero, which `<flex>` admits — non-
+    // negative, zero inclusive) still intern and re-serialize canonically.
+    for (value, expected) in [
+        ("50%", "50%"),
+        ("1.5fr", "1.5fr"),
+        ("minmax(10%, 50%)", "minmax(10%, 50%)"),
+        ("0fr", "0fr"),
+    ] {
+        assert_grid_wire_value("grid-template-columns", value, expected);
+    }
+}
+
+#[test]
 fn grid_item_margins_are_contained_at_the_boundary() {
     // CSS Grid 1 §4 + CSS 2.1 §8.3.1: a grid item establishes an independent
     // formatting context, so its first in-flow child's top margin is CONTAINED
