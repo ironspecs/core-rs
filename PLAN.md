@@ -2034,6 +2034,21 @@ an f32 basis.
   here rather than as a silent re-pin. Kill criterion (b)+(c) hold
   (as re-expressed in v3). Proofs 590 → 591.
 
+- **2026-10-22 — S4 finding, recorded as a future decision:**
+  `FontSystem::new()` loads HOST SYSTEM FONTS in practice (the S4
+  demotion pin's Thai precondition failed on macOS — Thai shaped to
+  real system glyph ids 90/61/53/85, not notdef), contradicting the
+  text-domain survey's empty-fontdb claim (which read cosmic-text
+  0.18.2's source). Consequence: production rendering of uncovered
+  scripts currently depends on the host's installed fonts — a
+  cross-host determinism question the seam has not decided. The
+  options are catalog-only FontSystems (deterministic; the pin's
+  test setup) vs host-augmented (better coverage; today's
+  accidental behavior). NOT decided in PR 4 (out of scope); the
+  decision is owed to a future font-determinism epic, and the
+  registry's Thai/NoCoverage notes should be read with this
+  caveat until then.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
