@@ -418,6 +418,11 @@ fn reintern_track_list<'a>(
     let list = resolve_list(key).expect("interned track list must resolve in its owning store");
     let mut reinterned = GridTrackList {
         tracks: list.tracks.clone(),
+        // The span marker and its owned line-name range carry no names to
+        // remap — copy them verbatim so an auto-fill/fit list keeps its span
+        // (and the span-vs-suffix ownership) through the arena reintern.
+        auto_repeat_span: list.auto_repeat_span,
+        owned_line_name_range: list.owned_line_name_range,
         ..GridTrackList::default()
     };
     for (name_key, index) in &list.line_names {

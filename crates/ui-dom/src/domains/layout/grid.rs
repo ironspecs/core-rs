@@ -568,7 +568,13 @@ fn expand_track_list(
             u8::try_from(start_usize + n * inner_usize).expect("expanded span fits u8"),
             kind,
         ));
-        expand_line_names(&list.line_names, start, inner_count, n, line_names_out);
+        expand_line_names(
+            &list.line_names,
+            list.owned_line_name_range,
+            inner_count,
+            n,
+            line_names_out,
+        );
     } else {
         for (slot, track) in tracks_out.iter_mut().zip(list.tracks.iter()) {
             *slot = *track;
@@ -645,26 +651,30 @@ fn span_track_basis(track: &GridTrackSize, s: f32, h_min: f32, h_max: f32) -> f3
 }
 
 /// Expands a list's line names to their expanded (first-match effective)
-/// positions: suffix names shift right by `(N−1)·span_count`; prefix and
-/// first-copy span names keep their stored positions (name resolution is
-/// first-match, so the span's repeated copies are not materialized — their
-/// later positions never win the first match).
+/// positions. `owned` is the span's OWNED line-name array-index range: only the
+/// SUFFIX-owned names (entries after that range) shift right by
+/// `(N−1)·span_count`; prefix and span-inner names keep their stored positions
+/// (name resolution is first-match, so the span's repeated copies are not
+/// materialized — their later positions never win the first match). A name on
+/// the boundary line is suffix-owned and shifts, distinct from a trailing name
+/// INSIDE the span (B3).
 fn expand_line_names(
     line_names: &[(TextKey, u8)],
-    start: u8,
+    owned: Option<(u8, u8)>,
     inner_count: u8,
     n: usize,
     out: &mut ArrayVec<(TextKey, u8), GRID_LINE_NAME_CAPACITY>,
 ) {
-    let start_usize = usize::from(start);
     let inner_usize = usize::from(inner_count);
     let shift = u8::try_from((n - 1) * inner_usize).expect("expanded line shift fits u8");
-    for (name, index) in line_names {
-        let index_usize = usize::from(*index);
-        let expanded = if index_usize > start_usize + inner_usize {
-            index_usize + usize::from(shift)
+    let owned_end = owned.map_or(0, |(_, end)| usize::from(end));
+    for (arr_index, (name, index)) in line_names.iter().enumerate() {
+        // Suffix-owned names (after the span's owned range) shift right; the
+        // span-inner and prefix names keep their stored positions.
+        let expanded = if arr_index >= owned_end {
+            usize::from(*index) + usize::from(shift)
         } else {
-            index_usize
+            usize::from(*index)
         };
         let _ = out.try_push((
             *name,
@@ -3563,19 +3573,23 @@ mod tests {
 
     #[test]
     fn expand_line_names_shifts_suffix_names() {
-        // A suffix name (index > start + count) shifts right by (N-1)*count;
-        // prefix and first-copy span names keep their positions (first match).
+        // A span-owned name (owned range covers it) keeps its position (the
+        // first match is the span's first copy — its repeated later positions
+        // never win the first match).
         let span_inner = [(TextKey(1), 0u8)];
         let mut expanded = arrayvec::ArrayVec::<(TextKey, u8), GRID_LINE_NAME_CAPACITY>::new();
-        expand_line_names(&span_inner, 0, 1, 3, &mut expanded);
+        expand_line_names(&span_inner, Some((0, 1)), 1, 3, &mut expanded);
         assert_eq!(expanded.as_slice(), &[(TextKey(1), 0)]);
 
-        // `repeat(auto-fit, 100px) [after] 200px`'s `after` is stored at line 2
-        // (start 0, count 1, so the suffix begins at index 2); with N = 3 it
-        // shifts by (3-1)*1 = 2 → line 4.
-        let suffix = [(TextKey(3), 2u8)];
+        // `repeat(auto-fill, 100px) [after] 200px`'s `after` is stored at the
+        // BOUNDARY line 1 (start 0 + count 1). It is suffix-owned (registered
+        // after the close paren), so it shifts by (3−1)·1 = 2 → line 3. The old
+        // line-index comparison (`index > start + count`) missed it (1 is NOT
+        // > 1), storing the boundary name at the same index as a span-inner
+        // trailing name — the uncovered case now shifted by ownership.
+        let suffix = [(TextKey(3), 1u8)];
         let mut out = arrayvec::ArrayVec::<(TextKey, u8), GRID_LINE_NAME_CAPACITY>::new();
-        expand_line_names(&suffix, 0, 1, 3, &mut out);
-        assert_eq!(out.as_slice(), &[(TextKey(3), 4)]);
+        expand_line_names(&suffix, Some((0, 0)), 1, 3, &mut out);
+        assert_eq!(out.as_slice(), &[(TextKey(3), 3)]);
     }
 }

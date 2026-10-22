@@ -33,10 +33,13 @@
 //!   list: the span's inner tracks are stored as ONE copy at `tracks[start ..
 //!   start+count]` (prefix, span, suffix), and only `AutoFill`/`AutoFit` are
 //!   ever stored in it (a fixed `repeat(N, …)` expands at parse, leaving the
-//!   field `None`). Named lines inside the span are the registrations with a
-//!   `line_index` in `start..=start+count`; they repeat with their tracks when
-//!   the span expands at layout time (the suffix names shift right by
-//!   `(N−1)·count`)
+//!   field `None`). `owned_line_name_range` is the span's OWNED `[start, end)`
+//!   array-index range into `line_names` — the registrations made while parsing
+//!   the span's inner list. Entries before it are prefix-owned, after it
+//!   suffix-owned; a name on the boundary line (`repeat(auto-fill, 100px)
+//!   [after] 200px`) is suffix-owned, distinct from a trailing name INSIDE the
+//!   span. Expansion shifts only suffix-owned names; serialization partitions
+//!   by ownership so a boundary name is emitted exactly once in its section.
 
 use arrayvec::ArrayVec;
 
@@ -105,6 +108,11 @@ pub struct GridTrackList {
     /// kind)` where the span's inner list is stored once at
     /// `tracks[start..start+count]`. `None` for a fully expanded list.
     pub(crate) auto_repeat_span: Option<(u8, u8, GridRepeat)>,
+    /// The span's OWNED line-name entries: the `[start, end)` array-index range
+    /// into `line_names` of the registrations made while parsing the span's
+    /// inner list (span-inner names). Entries before it are prefix-owned,
+    /// after it suffix-owned. `Some` only alongside `auto_repeat_span`.
+    pub(crate) owned_line_name_range: Option<(u8, u8)>,
 }
 
 impl GridTrackList {
@@ -139,18 +147,19 @@ impl GridTrackList {
         let mut out = String::new();
         let line_count = self.tracks.len();
         let span = self.auto_repeat_span;
+        let owned = self.owned_line_name_range;
         let mut line = 0usize;
         while line <= line_count {
             if let Some((start, count, kind)) = span
                 && line == usize::from(start)
             {
                 // Emit the span as `repeat(auto-*, <inner list>)`: the inner
-                // list is the span's one stored copy (its tracks plus the
-                // names at its lines).
+                // list is the span's one stored copy, but ONLY its span-OWNED
+                // line names (a boundary name owned by the suffix stays out).
                 out.push_str(repeat_keyword(kind));
                 let end = line + usize::from(count);
                 for inner in line..=end {
-                    self.push_line_names(&mut out, inner, &resolve);
+                    self.push_line_names(&mut out, inner, &resolve, owned, true);
                     if inner < end {
                         out.push_str(&format_grid_track_size(&self.tracks[inner]));
                         out.push(' ');
@@ -165,7 +174,7 @@ impl GridTrackList {
                 line = end;
                 continue;
             }
-            self.push_line_names(&mut out, line, &resolve);
+            self.push_line_names(&mut out, line, &resolve, owned, false);
             if line < line_count {
                 out.push_str(&format_grid_track_size(&self.tracks[line]));
                 out.push(' ');
@@ -176,17 +185,26 @@ impl GridTrackList {
     }
 
     /// Appends the `[name1 name2]` bracket group for `line` (if any) to `out`.
+    /// `owned_only` selects the span-OWNED entries (the span wrapper's inner
+    /// loop); `false` selects the non-owned (prefix + suffix) entries (the
+    /// outer loop). A name on the boundary line is therefore emitted exactly
+    /// once, in its owning section.
     fn push_line_names<'a>(
         &self,
         out: &mut String,
         line: usize,
         resolve: &impl Fn(TextKey) -> Option<&'a str>,
+        owned: Option<(u8, u8)>,
+        owned_only: bool,
     ) {
         let names: Vec<&str> = self
             .line_names
             .iter()
-            .filter(|(_, index)| usize::from(*index) == line)
-            .filter_map(|(key, _)| resolve(*key))
+            .enumerate()
+            .filter(|(arr_index, (_, index))| {
+                usize::from(*index) == line && is_span_owned(*arr_index, owned) == owned_only
+            })
+            .filter_map(|(_, (key, _))| resolve(*key))
             .collect();
         if !names.is_empty() {
             out.push('[');
@@ -194,6 +212,14 @@ impl GridTrackList {
             out.push_str("] ");
         }
     }
+}
+
+/// True when the `line_names` array index is inside the span's owned range.
+/// `None` (no span) marks nothing owned, so the `!owned_only` (outer) filter
+/// emits every entry.
+fn is_span_owned(arr_index: usize, owned: Option<(u8, u8)>) -> bool {
+    owned
+        .is_some_and(|(start, end)| usize::from(start) <= arr_index && arr_index < usize::from(end))
 }
 
 #[cfg(test)]
@@ -274,8 +300,8 @@ mod tests {
     #[test]
     fn auto_fit_span_round_trips_repeat_wrapper_and_inner_names() {
         // `repeat(auto-fit, [main] minmax(240px, 1fr))` stores one span copy
-        // with the `[main]` line name inside, and serializes back to the
-        // `repeat(auto-fit, …)` form.
+        // with the `[main]` line name inside (span-OWNED), and serializes back
+        // to the `repeat(auto-fit, …)` form.
         let mut list = GridTrackList::default();
         let mut store = DeclStore::default();
         list.tracks.push(GridTrackSize {
@@ -285,8 +311,41 @@ mod tests {
         let main = store.intern("main");
         assert!(list.register_line_name(main, 0));
         list.auto_repeat_span = Some((0, 1, GridRepeat::AutoFit));
+        list.owned_line_name_range = Some((0, 1));
         let serialized = list.to_css_string(|key| store.resolve(key));
         assert_eq!(serialized, "repeat(auto-fit, [main] minmax(240px, 1fr))");
+    }
+
+    #[test]
+    fn boundary_line_name_is_suffix_owned_and_emitted_once() {
+        // `repeat(auto-fill, 100px) [after] 200px`: the `[after]` name sits on
+        // the boundary line 1 — the SAME line index a trailing name INSIDE the
+        // span would hold — but it is suffix-owned. Serialization partitions by
+        // ownership, so `after` is emitted exactly once, in the suffix.
+        let mut list = GridTrackList::default();
+        let mut store = DeclStore::default();
+        list.tracks.push(px(100.0, 100.0));
+        list.tracks.push(px(200.0, 200.0));
+        let after = store.intern("after");
+        assert!(list.register_line_name(after, 1));
+        list.auto_repeat_span = Some((0, 1, GridRepeat::AutoFill));
+        list.owned_line_name_range = Some((0, 0)); // no span-owned names
+        let serialized = list.to_css_string(|key| store.resolve(key));
+        assert_eq!(serialized, "repeat(auto-fill, 100px) [after] 200px");
+
+        // A span-inner trailing name on the same boundary line stays inside the
+        // span wrapper, and a distinct suffix name stays out — both once.
+        let mut both = GridTrackList::default();
+        both.tracks.push(px(100.0, 100.0));
+        both.tracks.push(px(200.0, 200.0));
+        let inner = store.intern("inner");
+        let after = store.intern("after");
+        assert!(both.register_line_name(inner, 1));
+        assert!(both.register_line_name(after, 1));
+        both.auto_repeat_span = Some((0, 1, GridRepeat::AutoFill));
+        both.owned_line_name_range = Some((0, 1)); // `inner` span-owned, `after` suffix-owned
+        let serialized = both.to_css_string(|key| store.resolve(key));
+        assert_eq!(serialized, "repeat(auto-fill, 100px [inner]) [after] 200px");
     }
 
     #[test]

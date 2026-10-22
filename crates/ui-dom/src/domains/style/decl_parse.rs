@@ -692,7 +692,9 @@ enum RepeatCount {
 /// whole list on any gate (the `?`-propagated `None`). `[name1 name2]` bracket
 /// groups register their names against the line at the current `tracks.len()`.
 /// A fixed `repeat(N, list)` expands to N copies; an `repeat(auto-fill|auto-fit,
-/// list)` stores the inner list as ONE copy plus `auto_repeat_span`.
+/// list)` stores the inner list as ONE copy plus `auto_repeat_span` and the
+/// span's OWNED line-name range (which of the registrations are span-inner vs
+/// suffix — B3).
 fn expand_track_list_tokens(
     value: &str,
     store: &mut DeclStore,
@@ -728,6 +730,7 @@ fn expand_track_list_tokens(
                     }
                     let start = u8::try_from(out.tracks.len()).ok()?;
                     let span_start_len = out.tracks.len();
+                    let owned_start = u8::try_from(out.line_names.len()).ok()?;
                     for inner_token in split_ws_paren_aware(list) {
                         if inner_token.starts_with('[') {
                             register_line_names(inner_token, store, out)?;
@@ -750,12 +753,14 @@ fn expand_track_list_tokens(
                     if count == 0 {
                         return None;
                     }
+                    let owned_end = u8::try_from(out.line_names.len()).ok()?;
                     let grid_repeat = match kind {
                         RepeatCount::AutoFill => GridRepeat::AutoFill,
                         RepeatCount::AutoFit => GridRepeat::AutoFit,
                         RepeatCount::Count(_) => unreachable!("matched the auto arm"),
                     };
                     out.auto_repeat_span = Some((start, count, grid_repeat));
+                    out.owned_line_name_range = Some((owned_start, owned_end));
                 }
             }
         } else {

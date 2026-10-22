@@ -22,8 +22,8 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, RootDom, RootDomMetricName,
-    domains::layout::MeasurementRecord, node_box,
+    DomAttributeValue, DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, RootDom,
+    RootDomMetricName, domains::layout::MeasurementRecord, node_box,
 };
 
 use crate::layout_proofs::support::{
@@ -1978,4 +1978,56 @@ fn grid_repeat_named_lines_repeat_with_tracks() {
         "auto item flows to the second track",
     );
     assert_close(auto_box.width_px, 300.0, "auto item width");
+}
+
+#[test]
+// CSS Grid §7.2.3.2 + §8.1.3 (B3): a line name immediately after the close
+// paren (`repeat(auto-fill, 100px) [after] 200px`) is suffix-owned, distinct
+// from a trailing name inside the span. It resolves at the expanded boundary
+// line (N=6 → after line 6, left 600) and round-trips with `after` emitted
+// exactly once, in the suffix.
+fn grid_repeat_boundary_line_name_ownership() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(auto-fill, 100px) [after] 200px",
+    );
+    assert_style_set(&mut root, container, "width", "600px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "after");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        600.0,
+        "after resolves at the expanded boundary line (after the 6th 100px track)",
+    );
+    assert_close(
+        item_box.width_px,
+        200.0,
+        "the suffix 200px track follows the boundary line",
+    );
+
+    // Round-trip: `after` is emitted exactly once, in the suffix section.
+    let snapshot = root.canonical_style_snapshot(container);
+    let value = snapshot
+        .styles
+        .iter()
+        .find(|(name, _)| name == "grid-template-columns")
+        .map(|(_, value)| value)
+        .expect("grid-template-columns should be declared");
+    let DomAttributeValue::String(text) = value else {
+        panic!("grid-template-columns serializes to a string value");
+    };
+    assert_eq!(text, "repeat(auto-fill, 100px) [after] 200px");
+    assert_eq!(
+        text.matches("after").count(),
+        1,
+        "after is emitted exactly once (in the suffix, not duplicated in the span)"
+    );
 }
