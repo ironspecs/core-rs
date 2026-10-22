@@ -1007,12 +1007,17 @@ fn parse_positive_line_integer(value: &str) -> Option<u32> {
 
 // — Grid areas family — //
 
-/// Parses `grid-template-areas: <string>+` into a validated, interned
-/// `GridTemplateAreas` map (`GRID_STEP4_DESIGN.md` D1). Gates (each a counted
-/// drop, never a crash): > 8 rows, > 12 columns, > 12 distinct names, a
-/// non-uniform column count, a non-rectangular name, and any malformed cell
-/// token.
+/// Parses `grid-template-areas: none | <string>+` into a validated, interned
+/// `GridTemplateAreas` map (`GRID_STEP4_DESIGN.md` D1). `none` is the CSS
+/// initial value: it returns the empty-map sentinel (`GridAreasKey::default()`)
+/// — never a dropped declaration — so re-setting the longhand to `none` clears
+/// any prior areas. Gates (each a counted drop, never a crash): > 8 rows, > 12
+/// columns, > 12 distinct names, a non-uniform column count, a non-rectangular
+/// name, and any malformed cell token.
 fn parse_grid_areas(value: &str, store: &mut DeclStore) -> Option<GridAreasKey> {
+    if value.trim() == "none" {
+        return Some(GridAreasKey::default());
+    }
     let rows = split_grid_area_rows(value)?;
     if rows.is_empty() || rows.len() > GRID_AREA_ROW_CAPACITY {
         return None;
@@ -3416,6 +3421,26 @@ mod tests {
         // Malformed (three '/' parts) drops.
         let (_, report, _) = parse_block("grid-column: 1 / 2 / 3");
         assert_eq!(report.dropped, 1);
+    }
+
+    #[test]
+    fn grid_areas_none_parses_to_the_empty_sentinel() {
+        // `grid-template-areas: none` is the CSS initial value: it admits to the
+        // empty-map sentinel (the null key), never a dropped declaration.
+        let mut store = DeclStore::default();
+        assert_eq!(
+            parse_grid_areas("none", &mut store),
+            Some(GridAreasKey::default()),
+            "`none` admits to the empty-map sentinel"
+        );
+        // The `<string>+` form still parses (and interns a real, non-null map).
+        let key = parse_grid_areas("\"a a\"", &mut store).expect("string form parses");
+        assert_ne!(
+            key,
+            GridAreasKey::default(),
+            "a real map is not the sentinel"
+        );
+        assert_eq!(store.interned_grid_areas_count(), 1, "one interned map");
     }
 
     #[test]

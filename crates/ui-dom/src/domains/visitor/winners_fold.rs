@@ -432,13 +432,17 @@ fn reintern_track_list<'a>(
 
 /// Re-interns a stylesheet-arena areas-map key into the inline arena, mapping
 /// each interned area name through the source interner and the inline store's
-/// text interner.
+/// text interner. The null key (the `none`/initial empty-map sentinel) is
+/// store-independent and passes through unchanged.
 fn reintern_areas<'a>(
     key: GridAreasKey,
     resolve_text: impl Fn(TextKey) -> Option<&'a str>,
     resolve_areas: impl Fn(GridAreasKey) -> Option<&'a GridTemplateAreas>,
     inline_store: &mut DeclStore,
 ) -> GridAreasKey {
+    if key == GridAreasKey::default() {
+        return key;
+    }
     let areas = resolve_areas(key).expect("interned areas map must resolve in its owning store");
     let mut reinterned = GridTemplateAreas {
         cells: arrayvec::ArrayVec::new(),

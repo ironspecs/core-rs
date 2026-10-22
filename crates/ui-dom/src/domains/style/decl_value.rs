@@ -152,10 +152,19 @@ pub(crate) fn decl_value_to_css_string<'a>(
         DeclValue::TrackList(key) => resolve_track_list(*key)
             .expect("interned track list must resolve in its owning store")
             .to_css_string(&resolve_name),
-        DeclValue::GridAreas(key) => format_areas(
-            resolve_areas(*key).expect("interned areas map must resolve in its owning store"),
-            &resolve_name,
-        ),
+        DeclValue::GridAreas(key) => {
+            if *key == GridAreasKey::default() {
+                // `grid-template-areas: none` — the empty-map sentinel (the
+                // initial value), serialized back to `none`.
+                "none".to_string()
+            } else {
+                format_areas(
+                    resolve_areas(*key)
+                        .expect("interned areas map must resolve in its owning store"),
+                    &resolve_name,
+                )
+            }
+        }
         DeclValue::TrackSize(size) => format_grid_track_size(size),
         DeclValue::GridAutoFlow(flow) => format_grid_auto_flow(*flow).to_string(),
         DeclValue::GridLine(line) => format_grid_line(*line, &resolve_text),
@@ -533,6 +542,25 @@ mod tests {
             resolve_areas,
             |_key| None,
         )
+    }
+
+    #[test]
+    fn grid_areas_none_serializes_back_to_none() {
+        // `grid-template-areas: none` stores the null key (the empty-map
+        // sentinel); the wire formatter serializes it back to `none` instead of
+        // resolving the (deliberately unresolvable) sentinel.
+        let resolve_none = |_key: TextKey| -> Option<&str> { None };
+        let no_list = |_key: GridTrackListKey| -> Option<&GridTrackList> { None };
+        let no_areas = |_key: GridAreasKey| -> Option<&GridTemplateAreas> { None };
+        assert_eq!(
+            dom(
+                &DeclValue::GridAreas(GridAreasKey::default()),
+                resolve_none,
+                no_list,
+                no_areas,
+            ),
+            DomAttributeValue::String("none".to_string())
+        );
     }
 
     #[test]
