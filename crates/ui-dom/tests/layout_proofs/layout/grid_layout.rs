@@ -22,14 +22,16 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomAttributeValue, DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, RootDom,
-    RootDomMetricName, domains::layout::MeasurementRecord, node_box,
+    DomAttributeValue, DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, PresentationProperty,
+    RootDom, RootDomMetricName, domains::layout::MeasurementRecord, node_box,
 };
 
 use crate::layout_proofs::support::{
     assert_append_div_to, assert_append_img_to, assert_append_text_to, assert_close,
-    assert_node_layout, assert_rect_op_geometry, assert_root_dom_update, assert_set_attr_str,
-    assert_style_set, attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    assert_load_root_stylesheet, assert_node_layout, assert_rect_op_geometry,
+    assert_root_dom_update, assert_set_attr_str, assert_style_set,
+    attached_gpu_root_dom_default_viewport_setup, take_staged_layer_paint_plans,
+    theme_stylesheet_origin,
 };
 
 /// Returns `(world, root, container)`: a fresh root with one div container.
@@ -1779,6 +1781,51 @@ fn grid_repeat_auto_fit_collapses_empty_tracks() {
         item_box.width_px,
         600.0,
         "the surviving track absorbs the collapsed track's space",
+    );
+}
+
+#[test]
+// CSS Grid §7.2.3.2 (the stylesheet→inline arena reintern path): a matched
+// stylesheet rule (not an inline `style`) authors
+// `repeat(auto-fit, minmax(240px, 1fr))`. The `52d7ac3` reintern fix keeps the
+// auto-repeat span across the arena reintern, so the stylesheet-authored path
+// matches the inline pin `grid_repeat_auto_fit_collapses_empty_tracks`: at
+// 600px with 1 item, the empty track collapses and the surviving track gets
+// the full 600.
+//
+// The layout outcome alone cannot distinguish a dropped span from a collapsed
+// empty track (a single `minmax(240px, 1fr)` track also resolves to 600), so
+// the pin also asserts the computed `grid-template-columns` still serializes
+// to the `repeat(auto-fit, …)` form — the span marker's canonical re-emission,
+// which is the reintern's job to preserve.
+fn grid_repeat_survives_stylesheet_reintern() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".grid-wall { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); width: 600px; }",
+    );
+    assert_set_attr_str(&mut root, container, "class", "grid-wall");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.width_px,
+        600.0,
+        "the surviving track absorbs the collapsed track's space",
+    );
+
+    // The auto-repeat span survives the reintern: the computed wire value
+    // re-emits the `repeat(auto-fit, …)` form, not the bare inner track.
+    let map = root.compute_style_map(container).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String(
+            "repeat(auto-fit, minmax(240px, 1fr))".to_string()
+        )),
+        "the reinterned track list keeps its auto-fit span",
     );
 }
 
