@@ -186,7 +186,7 @@ Resolving an item's placement per axis, in this order:
 | `grid_area_integer_and_span_forms` | `grid-area: 2`, `grid-area: 2 / 3`, `grid-area: 2 / 3 / 4`, `grid-area: 2 / 3 / 4 / 5`, `grid-area: span 2` → the D2 defaulting table |
 | `grid_named_lines_in_track_lists` | `grid-template-columns: [main] 100px [aside] 1fr` + `grid-column: main` → the item starts at line 1; `grid-column: aside` → line 2 |
 | `grid_area_implied_start_end_lines` | `grid-row-start: header-end` → the item starts after the header area |
-| `grid_multiple_same_name_lines_span_count` | two `main` lines: `grid-column: main` → span 2 across both; `grid-column: span main` → span 2; `grid-column: span main 3` → span 3 from the first |
+| `grid_multiple_same_name_lines_span_count` | two `main` lines: `grid-column: main` → the FIRST match (one track); `grid-column: span main` → span 1 from the first match; `grid-column: span main 3` → span 3 from the first (CORRECTED 2026-10-22 — the earlier "span 2 across both" rows are deleted: multiple same-name lines are indexed by filtering the placement by name, §8.1.3) |
 | `grid_named_line_unknown_becomes_auto` | `grid-column: nosuch` → auto (documented, pinned) |
 | `grid_areas_and_explicit_template_tracks` | areas naming a subset of a larger explicit template (the rest of the tracks size and place normally) |
 | `grid_areas_definite_items_abs_pos_area_rect` | an abs-pos child of an area-named item → static position = the area rect (the T2 area refinement with named areas) |

@@ -1430,10 +1430,16 @@ fn grid_area_implied_start_end_lines() {
 }
 
 #[test]
-// CSS Grid §7.1: multiple same-name lines make `Named`/`NamedSpan` span the
-// count (`grid_multiple_same_name_lines_span_count`).
+// CSS Grid §8.1.3 + §8.3: multiple same-name lines form a named set indexed by
+// filtering the placement by name — a bare `<custom-ident>` is "treated as if
+// the integer 1 had been specified" (the FIRST match), and `span
+// <custom-ident>` with no integer is replaced with a span of 1. CORRECTED
+// 2026-10-22: the landed T3 "treated as Span(count) across the matches" rule
+// does not exist — `main`/`span main` occupy the FIRST track (width 100), not
+// span 2 (width 200). (`grid_multiple_same_name_lines_span_count`.)
 fn grid_multiple_same_name_lines_span_count() {
-    // `grid-column: main` with two `main` lines spans 2.
+    // `grid-column: main` with two `main` lines → the FIRST match (line 0):
+    // one track, width 100 (the landed wrong value was span 2 / width 200).
     let (mut world, mut root, container) = grid_container_setup();
     assert_style_set(&mut root, container, "display", "grid");
     assert_style_set(
@@ -1448,12 +1454,18 @@ fn grid_multiple_same_name_lines_span_count() {
     assert_style_set(&mut root, bare, "height", "40px");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_close(
+        border_box_of(&root, bare).left_px,
+        0.0,
+        "bare name starts at the first `main` line",
+    );
+    assert_close(
         border_box_of(&root, bare).width_px,
-        200.0,
-        "bare name spans 2",
+        100.0,
+        "bare name occupies the first track (NOT span 2 / width 200)",
     );
 
-    // `grid-column: span main` spans 2.
+    // `grid-column: span main` → span 1 from the first match (§8.3): width 100
+    // (the landed wrong value was span 2 / width 200).
     let (mut world, mut root, container) = grid_container_setup();
     assert_style_set(&mut root, container, "display", "grid");
     assert_style_set(
@@ -1468,12 +1480,18 @@ fn grid_multiple_same_name_lines_span_count() {
     assert_style_set(&mut root, span, "height", "40px");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_close(
+        border_box_of(&root, span).left_px,
+        0.0,
+        "span main starts at the first `main` line",
+    );
+    assert_close(
         border_box_of(&root, span).width_px,
-        200.0,
-        "span main spans 2",
+        100.0,
+        "span main is span 1 from the first match (NOT span 2 / width 200)",
     );
 
-    // `grid-column: span main 3` spans 3 from the first match.
+    // `grid-column: span main 3` → span 3 from the first match: width 300
+    // (already correct — unchanged).
     let (mut world, mut root, container) = grid_container_setup();
     assert_style_set(&mut root, container, "display", "grid");
     assert_style_set(
@@ -1490,7 +1508,109 @@ fn grid_multiple_same_name_lines_span_count() {
     assert_close(
         border_box_of(&root, span_n).width_px,
         300.0,
-        "span main 3 spans 3",
+        "span main 3 spans 3 from the first match",
+    );
+}
+
+#[test]
+// CSS Grid §8.1.3 + §8.3.1: `name / <integer>` resolves the name to the FIRST
+// match and lets the explicit end line win. `main / 4` → start at the first
+// `main` (line 0), end at line 4 (the far edge after three 100px tracks) →
+// three tracks. The landed wrong rule (name → span 2) ignored the `4` and
+// produced width 200.
+// (`grid_column_main_slash_4_resolves_first_match_plus_explicit_end`.)
+fn grid_column_main_slash_4_resolves_first_match_plus_explicit_end() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px [main] 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "main / 4");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        0.0,
+        "the name resolves to the first `main` (line 0), not a span",
+    );
+    assert_close(
+        item_box.width_px,
+        300.0,
+        "the explicit end 4 wins: three tracks (NOT the name's span 2 / 200)",
+    );
+}
+
+#[test]
+// CSS Grid §8.3.1: `integer / name` where the definite start exceeds the
+// name's first-match end applies the placement-conflict swap. `3 / main` →
+// start line 3 (0-based 2), end at the first `main` (line 0) → start > end →
+// swapped to (0, 2) → two tracks at left 0. The landed wrong rule short-
+// circuited the name to a `Range(0, 2)` and ignored the swap.
+// (`grid_column_3_slash_main_resolves_end_first_match_with_swap`.)
+fn grid_column_3_slash_main_resolves_end_first_match_with_swap() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px [main] 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "3 / main");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        0.0,
+        "start 3 > end (first `main` at 0) swaps to the first `main`",
+    );
+    assert_close(
+        item_box.width_px,
+        200.0,
+        "swapped definite range spans two tracks",
+    );
+}
+
+#[test]
+// CSS Grid §8.3: `name / span <integer>` uses the span from the FIRST match of
+// the name. `main / span 2` → start at the first `main` (line 0), span 2 →
+// two tracks at left 0. (`grid_column_main_slash_span2_uses_span_from_first_match`.)
+fn grid_column_main_slash_span2_uses_span_from_first_match() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "[main] 100px [main] 100px 100px",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "main / span 2");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        0.0,
+        "the name resolves to the first `main` (line 0)",
+    );
+    assert_close(
+        item_box.width_px,
+        200.0,
+        "span 2 from the first match spans two tracks",
     );
 }
 

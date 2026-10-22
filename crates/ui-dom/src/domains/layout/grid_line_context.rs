@@ -14,8 +14,9 @@
 //!   relative) resolves to `&str` and is compared against the arena names
 //!   (inline-store relative), allocation-free and hash-free
 //! - the explicit `[name]` lines are considered before the area-implied lines
-//!   (D4 rule 2's order); a name matching multiple lines reports the count so
-//!   the caller can apply the §7.1 multiple-same-name span rule
+//!   (D4 rule 2's order); a name matching multiple lines resolves to the FIRST
+//!   match — the named set is indexed by filtering the placement by name
+//!   (CSS Grid 1 §8.1.3), never a span across the matches
 
 use crate::domains::style::computed::{
     AreaRect, ComputedGridGroup, GridTemplateAreas, GridTrackList,
@@ -58,16 +59,14 @@ impl<'a> GridLineContext<'a> {
         }
     }
 
-    /// Resolves a referenced name to its matching line indices in `axis`:
-    /// `(first_line, match_count)` — `None` first means no match. Explicit
-    /// `[name]` lines are considered first, then the area-implied
-    /// `<name>-start`/`<name>-end` lines (D4 rule 2's order).
-    pub(crate) fn resolve_named(&self, name: TextKey, axis: GridAxis) -> (Option<u32>, u32) {
-        let Some(name_str) = self.computed_texts.resolve(name) else {
-            return (None, 0);
-        };
-        let mut first = None;
-        let mut count = 0u32;
+    /// Resolves a referenced name to its FIRST matching line index in `axis`
+    /// (`None` when no line matches). Explicit `[name]` lines are considered
+    /// first, then the area-implied `<name>-start`/`<name>-end` lines (D4 rule
+    /// 2's order). Multiple same-name lines form a named set indexed by
+    /// filtering the placement by name (CSS Grid 1 §8.1.3): the bare
+    /// `<custom-ident>` form is the first match, never a span across matches.
+    pub(crate) fn resolve_named(&self, name: TextKey, axis: GridAxis) -> Option<u32> {
+        let name_str = self.computed_texts.resolve(name)?;
         let list = match axis {
             GridAxis::Column => self.columns,
             GridAxis::Row => self.rows,
@@ -75,8 +74,7 @@ impl<'a> GridLineContext<'a> {
         if let Some(list) = list {
             for (key, index) in &list.line_names {
                 if self.inline_store.resolve(*key) == Some(name_str) {
-                    first.get_or_insert(u32::from(*index));
-                    count += 1;
+                    return Some(u32::from(*index));
                 }
             }
         }
@@ -93,11 +91,10 @@ impl<'a> GridLineContext<'a> {
                     (GridAxis::Row, true) => rect.min_row,
                     (GridAxis::Row, false) => rect.max_row + 1,
                 };
-                first.get_or_insert(u32::from(line));
-                count += 1;
+                return Some(u32::from(line));
             }
         }
-        (first, count)
+        None
     }
 
     /// Looks up `name` as a named AREA, returning its rect (D4 rule 1).

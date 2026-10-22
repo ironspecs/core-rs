@@ -159,7 +159,7 @@ enum ResolvedAxis {
 
 /// One side of a placement line, lowered from a `GridLine` after the D4 name
 /// resolution: a definite line, a plain span (no anchor), a definite range
-/// (from a multi-match name or a `NamedSpan`), or auto.
+/// (from a `NamedSpan` — a span anchored at the first matching line), or auto.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum LoweredLine {
     Auto,
@@ -592,10 +592,12 @@ fn resolve_axis_range(
 /// Lowers one `GridLine` into its D4-resolved canonical side: `Line`/`Span`/
 /// `Auto` pass through (with the D2 negative-line translation); `Named`
 /// resolves area-match first (the side's edge — `start` reads the min edge,
-/// `end` the max edge + 1), then to a definite line (single named-line match),
-/// a definite range (multiple matches, spanning the count), or `Auto` (no
-/// match); `NamedSpan` resolves to a definite range spanning `n` (or the match
-/// count when the integer is absent) from the first matching line, or `Auto`
+/// `end` the max edge + 1), then to the FIRST matching line (multiple
+/// same-name lines form a named set indexed by filtering the placement by name
+/// — a bare `<custom-ident>` is "treated as if the integer 1 had been
+/// specified" (CSS Grid 1 §8.1.3), never a span across the matches), or `Auto`
+/// (no match); `NamedSpan` resolves to a definite range spanning `n` (or 1
+/// when the integer is absent, §8.3) from the first matching line, or `Auto`
 /// (no match).
 fn lower_grid_line(
     line: GridLine,
@@ -613,20 +615,18 @@ fn lower_grid_line(
                 return LoweredLine::Line(area_edge(rect, axis, side));
             }
             match context.resolve_named(name, axis) {
-                (None, _) => LoweredLine::Auto,
-                (Some(first), 1) => {
+                None => LoweredLine::Auto,
+                Some(first) => {
                     LoweredLine::Line(i32::try_from(first).expect("line index fits i32"))
-                }
-                (Some(first), count) => {
-                    let first = i32::try_from(first).expect("line index fits i32");
-                    LoweredLine::Range(first, first + i32::try_from(count).expect("count fits i32"))
                 }
             }
         }
         GridLine::NamedSpan(name, n) => match context.resolve_named(name, axis) {
-            (None, _) => LoweredLine::Auto,
-            (Some(first), count) => {
-                let span = if n == 0 { count } else { n };
+            None => LoweredLine::Auto,
+            Some(first) => {
+                // `span <name>` with no integer (`n == 0`) is span 1 (§8.3);
+                // `span <name> n` is span n — both from the FIRST match.
+                let span = if n == 0 { 1 } else { n };
                 let first = i32::try_from(first).expect("line index fits i32");
                 LoweredLine::Range(first, first + i32::try_from(span).expect("span fits i32"))
             }

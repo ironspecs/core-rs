@@ -17,10 +17,10 @@
 //!   never produced — the grammar drops `0` with a counted report (zero is not a
 //!   line, CSS Grid §7.1)
 //! - `Span(u32)` is always positive; `span 0`/`span -1` drop at admission (D1)
-//! - `Named(TextKey)` is a bare `<custom-ident>` line reference; `NamedSpan
-//!   (TextKey, u32)` is `span <custom-ident> [integer]` — a span of `n` (or,
-//!   when the integer is ABSENT and `n == 0`, a span across the count of
-//!   matching lines, per `GRID_STEP4_DESIGN.md` D4 rule 3)
+//! - `Named(TextKey)` is a bare `<custom-ident>` line reference — it resolves
+//!   to the FIRST matching line (CSS Grid 1 §8.1.3); `NamedSpan(TextKey, u32)`
+//!   is `span <custom-ident> [integer]` — a span of `n` from the first
+//!   matching line, where the absent-integer form (`n == 0`) is span 1 (§8.3)
 //! - the `TextKey` in the name forms is document-computed-text-relative by the
 //!   time it reaches the group (the resolver re-interns it); the grammar interns
 //!   the raw name into the parsing store, and `decl_value.rs`/`winners_fold.rs`
@@ -39,12 +39,13 @@ pub enum GridLine {
     Line(i32),
     /// `span <positive-integer>` — a span with no definite line on that side.
     Span(u32),
-    /// `<custom-ident>` — a named line (single match → that line; multiple
-    /// matches → a span across them, D4 rule 2).
+    /// `<custom-ident>` — a named line reference that resolves to the FIRST
+    /// matching line (multiple same-name lines form a named set indexed by
+    /// filtering the placement by name, CSS Grid 1 §8.1.3).
     Named(TextKey),
     /// `span <custom-ident> [integer]` — a span from the first matching line
-    /// (D4 rule 3). `n == 0` encodes the absent-integer form: span the count of
-    /// matching lines.
+    /// (§8.1.3 + §8.3). `n == 0` encodes the absent-integer form, which §8.3
+    /// replaces with a span of 1.
     NamedSpan(TextKey, u32),
 }
 
@@ -89,8 +90,10 @@ mod tests {
 
     #[test]
     fn named_span_zero_is_the_absent_integer_form() {
-        // The D4 rule-3 sentinel: `n == 0` means "span the count of matching
-        // lines", distinct from an explicit `span name 1`.
+        // The absent-integer sentinel: `n == 0` encodes `span <name>` (no
+        // integer), which §8.3 replaces with a span of 1 — distinct at the
+        // VALUE level from an explicit `span name 1` (they round-trip to
+        // different wire forms) even though both resolve to a span of 1.
         assert_eq!(
             GridLine::NamedSpan(TextKey(7), 0),
             GridLine::NamedSpan(TextKey(7), 0)
