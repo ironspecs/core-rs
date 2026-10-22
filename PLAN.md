@@ -1937,7 +1937,7 @@ an f32 basis.
   the null-key sentinel, the wire gains the null-key → `"none"` arm,
   the round-trip holds — a real T0-era gap the tier exposed) and a
   second gated-behavior pin (`unsupported_grid_property_names_drop`)
-  joined the inversion set. 18 pins pass; proofs 564 → 582. Grid
+  joined the inversion set. 18 pins pass; proofs 564 → 580. Grid
   admission T0–T4 is complete: the card-wall and page-shell idioms,
   auto-fill/auto-fit, and the shorthand sugar all land; the remaining
   grid boundaries are named (subgrid, baselines, bare-fr and
@@ -1946,6 +1946,20 @@ an f32 basis.
   Next: PR 4 (the text seam, prove-or-abandon), then PR 5 (RootDom
   decomposition).
 
+- **2026-10-22 — grid T4 review remediation (REMEDIATE).** The local
+  third-party review flagged one blocking finding: `reintern_track_list`
+  (the stylesheet→inline reintern) resolved the null-key track-list
+  sentinel unconditionally, panicking on stylesheet-authored
+  `grid-template: none`, `grid-template-columns/rows: none`,
+  `grid: auto-flow 60px / 100px`, and the areas form's columns-`none`
+  (inline-authored `none` was safe — an identity transform). The fix
+  mirrors `reintern_areas`: `if key == GridTrackListKey::default() {
+  return key; }` — the sentinel is store-independent. Three pins land
+  (`grid_template_none_survives_stylesheet_reintern`,
+  `grid_track_list_none_survives_stylesheet_reintern`,
+  `grid_shorthand_null_axis_survives_stylesheet_reintern`, asserting the
+  WIRE form via `compute_style_map`) plus the symmetric
+  `track_list_none_serializes_back_to_none` unit test. Proofs 580 → 583.
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 

@@ -1830,6 +1830,103 @@ fn grid_repeat_survives_stylesheet_reintern() {
 }
 
 #[test]
+// CSS Grid §7.4 `none` form through the stylesheet→inline reintern path: a
+// matched stylesheet rule authors `grid-template: none`, which expands to the
+// null-key sentinel for all three template longhands. The sentinel is
+// store-independent (it resolves to no arena entry BY DESIGN), so the reintern
+// must pass it through unchanged rather than resolve it. Layout outcomes for
+// `none` are non-discriminating, so this pin asserts the WIRE form via
+// `compute_style_map` (the `grid_repeat_survives_stylesheet_reintern` precedent).
+fn grid_template_none_survives_stylesheet_reintern() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".x { display: grid; grid-template: none }",
+    );
+    assert_set_attr_str(&mut root, container, "class", "x");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(container).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateRows),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "rows none",
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "columns none",
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateAreas),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "areas none",
+    );
+}
+
+#[test]
+// CSS Grid §7.3 `none` longhand through the stylesheet→inline reintern path: a
+// matched stylesheet rule authors `grid-template-columns: none` directly (not
+// via a shorthand), storing the null-key sentinel. The sentinel must pass
+// through the reintern unchanged; the pin asserts the WIRE form (`none`).
+fn grid_track_list_none_survives_stylesheet_reintern() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".x { display: grid; grid-template-columns: none }",
+    );
+    assert_set_attr_str(&mut root, container, "class", "x");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(container).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "columns none",
+    );
+}
+
+#[test]
+// CSS Grid §7.7 row-flow auto-flow form through the stylesheet→inline reintern
+// path: `grid: auto-flow 60px / 100px` emits rows as the null-key sentinel
+// (columns 100px, auto-flow row, auto-rows 60px). The rows sentinel must pass
+// through the reintern unchanged; the pin asserts the WIRE form.
+fn grid_shorthand_null_axis_survives_stylesheet_reintern() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".x { display: grid; grid: auto-flow 60px / 100px }",
+    );
+    assert_set_attr_str(&mut root, container, "class", "x");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(container).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateRows),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "rows none",
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridAutoFlow),
+        Some(&DomAttributeValue::String("row".to_string())),
+        "auto-flow row",
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridAutoRows),
+        Some(&DomAttributeValue::String("60px".to_string())),
+        "auto-rows 60px",
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String("100px".to_string())),
+        "columns 100px",
+    );
+}
+
+#[test]
 // CSS Grid §7.2.3.2: auto-FILL never collapses. 600px, 1 item → N=2, no
 // collapse, fr-expand verbatim: both tracks 300 (the empty "ghost" track 300).
 fn grid_repeat_auto_fill_keeps_empty_tracks_flexed() {

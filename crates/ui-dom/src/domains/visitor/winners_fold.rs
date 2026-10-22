@@ -408,13 +408,17 @@ fn reintern_scratch_name<'a>(
 
 /// Re-interns a stylesheet-arena track-list value into the inline arena, mapping
 /// each interned line name through the source interner and the inline store's
-/// text interner.
+/// text interner. The null key (the `none`/initial empty-list sentinel) is
+/// store-independent and passes through unchanged.
 fn reintern_track_list<'a>(
     key: GridTrackListKey,
     resolve_text: impl Fn(TextKey) -> Option<&'a str>,
     resolve_list: impl Fn(GridTrackListKey) -> Option<&'a GridTrackList>,
     inline_store: &mut DeclStore,
 ) -> GridTrackListKey {
+    if key == GridTrackListKey::default() {
+        return key;
+    }
     let list = resolve_list(key).expect("interned track list must resolve in its owning store");
     let mut reinterned = GridTrackList {
         tracks: list.tracks.clone(),

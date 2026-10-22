@@ -578,6 +578,26 @@ mod tests {
     }
 
     #[test]
+    fn track_list_none_serializes_back_to_none() {
+        // `grid-template-columns/rows: none` stores the null key (the
+        // empty-list sentinel); the wire formatter serializes it back to `none`
+        // instead of resolving the (deliberately unresolvable) sentinel — the
+        // track-list counterpart of `grid_areas_none_serializes_back_to_none`.
+        let resolve_none = |_key: TextKey| -> Option<&str> { None };
+        let no_list = |_key: GridTrackListKey| -> Option<&GridTrackList> { None };
+        let no_areas = |_key: GridAreasKey| -> Option<&GridTemplateAreas> { None };
+        assert_eq!(
+            dom(
+                &DeclValue::TrackList(GridTrackListKey::default()),
+                resolve_none,
+                no_list,
+                no_areas,
+            ),
+            DomAttributeValue::String("none".to_string())
+        );
+    }
+
+    #[test]
     #[allow(clippy::float_cmp)] // round-trip equality is bit-exact by contract
     fn format_color_rgba_round_trips_through_the_color_parser() {
         // Opaque colors serialize to 6-digit hex and round-trip bit-exactly.

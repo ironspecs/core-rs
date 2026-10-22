@@ -2001,6 +2001,9 @@ fn expand_grid_template(value: &str, store: &mut DeclStore) -> Option<Vec<Declar
         return expand_grid_template_areas_form(trimmed, store);
     }
     // Form 2: `<rows> / <columns>` — exactly one slash, both sides non-empty.
+    // A plain `split('/')` is safe here (the areas form's quote/bracket-aware
+    // `split_top_level_slash` is not needed): track-list tokens cannot contain
+    // `/`, and quotes are pre-excluded by the form discriminator above.
     let mut parts = trimmed.split('/');
     let rows_text = parts.next()?.trim();
     let columns_text = parts.next().map(str::trim);
