@@ -154,17 +154,21 @@ Resolving an item's placement per axis, in this order:
 2. **`Named(name)` in a longhand:** resolve against the named-line map
    (explicit `[name]` lines first, then area-implied
    `<name>-start`/`<name>-end`): single matching line → that line
-   index; multiple matching lines → per §7.1's rule, treated as
-   `Span(count)` across the matching lines (the multiple-same-name
-   rule); no match → `Auto` (documented, pinned).
-3. **`NamedSpan(name, n)`:** span `n` starting at the first matching
-   line (multiple matches → across them; the integer-th-match form
-   `span name 2` resolves to the SECOND matching line when n names a
-   match index? NO — per spec, `span <custom-ident> <integer>` means
-   span <integer> lines from the first matching line; the
-   multiple-match-count rule applies only when the integer is absent.
-   Pinned: `span main` with two `main` lines → span 2 across both;
-   `span main 3` with two `main` lines → span 3 from the first).
+   index. **Multiple matching lines → the FIRST match (CORRECTED
+   2026-10-22 against the spec: multiple same-name lines form a named
+   set that is "exclusively indexed by filtering the placement by
+   name" (CSS Grid 1 §8.1.3) — a bare `<custom-ident>` is "treated as
+   if the integer 1 had been specified" = the first match, NOT a span
+   across the matches. The earlier draft's "treated as Span(count)"
+   rule does not exist in the spec and is deleted; both engines agree
+   (Blink `FirstPosition`, Gecko `aNth = 1`).** No match → `Auto`
+   (documented, pinned).
+3. **`NamedSpan(name, n)`:** span `n` starting at the FIRST matching
+   line — and `span <custom-ident>` with NO integer is span **1** from
+   the first match (CSS Grid 1 §8.3: "If the placement contains only a
+   span for a named line, replace it with a span of 1"). The
+   multiple-same-name span-count rule in the earlier draft is deleted
+   with it.
 4. Line numbers and spans then resolve per T2's rules (negative
    translation, the wrap bounds).
 
