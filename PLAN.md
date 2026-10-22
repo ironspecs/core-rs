@@ -1961,6 +1961,29 @@ an f32 basis.
   WIRE form via `compute_style_map`) plus the symmetric
   `track_list_none_serializes_back_to_none` unit test. Proofs 580 → 583.
 
+- **2026-10-22 — PR 4 (the text seam) started; S1 + S2 landed** on
+  `text/seam`, per `TEXT_SEAM_DESIGN.md` v2. The text-domain survey
+  found the Buffer boundary already nearly sealed (two births, one
+  file) — the real gaps were the three FontSystems, two font-install
+  paths, and the `TextLayoutRequest` hardcode structurally killing
+  family/weight/style consumption (with a silently inert dirty
+  propagation). S1 (`6a8c9c9`): the boundary codified, both missing
+  module READMEs created, stale floor citations fixed, dead-code
+  flags verified-live-then-removed — no behavior change. S2
+  (`89d1176`): the family-list grammar (quote-stripping, generics),
+  the request carrier, attrs consumption (weight maps to the
+  variable face's axis — 700 vs 400 measures differently), run
+  identity, and the two `off_spec_font_*` rows flipped ON-SPEC. The
+  S2 STOP was adjudicated in v2: `TextFontFamilyId` survives S2 as
+  the render-world registration key (Role B); style reaches the
+  render world via the signature → record pipeline; the
+  request/record carry the self-owned `TextFamilyList` (no document
+  arena in the render world). Also landed: the layout domain README
+  (a standing required-docs gap). Proofs 583 → 586; perf pins
+  unmoved. Next: S3 (one catalog + the consumer door — door 1), S4
+  (the fallback policy table — door 2), S5 (RTL/vertical honesty —
+  doors 3, 4).
+
 ## Vocabulary carried from the redesign (self-contained definitions)
 
 One line per term this document reuses from the landed plans, so nothing
