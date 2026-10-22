@@ -441,7 +441,7 @@ fn grid_template_areas_parse_and_round_trip() {
 fn grid_template_areas_none_resets_to_the_empty_map() {
     // `grid-template-areas: none` is the CSS initial value: it must be ADMITTED
     // (not dropped) and write the empty areas map, so a later `none` clears any
-    // prior areas. CSS Syntax 3 §4.1 makes the `none` keyword ASCII
+    // prior areas. CSS 2.1 §4.1.3 makes the `none` keyword ASCII
     // case-insensitive, so `NONE`/`None` admit identically (the spec-correct
     // entry point; the rest of the grammar stays case-sensitive — see the
     // `off_spec_keyword_grammars_are_case_sensitive` registry row). CONTROL:

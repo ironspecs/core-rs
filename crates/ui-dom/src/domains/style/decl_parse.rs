@@ -1015,7 +1015,7 @@ fn parse_positive_line_integer(value: &str) -> Option<u32> {
 /// columns, > 12 distinct names, a non-uniform column count, a non-rectangular
 /// name, and any malformed cell token.
 fn parse_grid_areas(value: &str, store: &mut DeclStore) -> Option<GridAreasKey> {
-    // `none` is matched ASCII case-insensitively (CSS Syntax 3 §4.1) — the
+    // `none` is matched ASCII case-insensitively (CSS 2.1 §4.1.3) — the
     // spec-correct entry point for the initial-value reset, so `NONE`/`None`
     // admit identically. The REST of the grammar's keyword/unit matching stays
     // case-sensitive; that broader divergence is registered separately
