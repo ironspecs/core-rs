@@ -24,3 +24,9 @@ Usage:
 - control graph text uses the mono faces
 - runtime shell and diagnostics use the sans/mono shared faces
 - horizontal CJK paint proofs in `ui-dom` use the Source Han Sans J/SC/K regular faces
+
+Test fixtures:
+- `assets/fonts/test-fixtures/` holds ONE OFL Arabic face (Noto Naskh Arabic,
+  Regular) used by the `ui-dom` text-seam proof gate. It is NEVER
+  `include_bytes!`-embedded — proofs load it from disk through the consumer
+  `install_face` API. See `assets/fonts/test-fixtures/README.md` for provenance.
