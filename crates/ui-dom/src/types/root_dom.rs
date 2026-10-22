@@ -4804,8 +4804,9 @@ pub(crate) fn decl_value_for_groups(
             }
         }
         // Text-valued properties whose source the group already resolved away
-        // (font-family's TextKey, `grid-area`'s `area_name` name) and the
-        // transition scheduler slots are never transitionable.
+        // (font-family's TextKey, the `GridArea` longhand that the `grid-area`
+        // shorthand no longer produces) and the transition scheduler slots are
+        // never transitionable.
         PresentationProperty::FontFamily
         | PresentationProperty::GridArea
         | PresentationProperty::TransitionProperty

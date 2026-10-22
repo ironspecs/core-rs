@@ -30,10 +30,10 @@ use super::grid_line::GridLine;
 use super::grid_track_size::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
 use super::justify_items_kw::JustifyItemsKw;
 use super::justify_self_kw::JustifySelfKw;
-use crate::domains::style::decl_value::{GridAreasKey, GridTrackListKey, TextKey};
+use crate::domains::style::decl_value::{GridAreasKey, GridTrackListKey};
 
 /// Computed values of the non-inherited grid longhands (the T1 set, the T2
-/// placement/alignment longhands, and the T3 areas/name fields).
+/// placement/alignment longhands, and the T3 areas/named-line fields).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComputedGridGroup {
     /// Interned explicit column track list; `null()` = the empty list.
@@ -57,10 +57,6 @@ pub struct ComputedGridGroup {
     pub row_start: GridLine,
     /// `Auto` is the CSS initial (`grid-row-end`).
     pub row_end: GridLine,
-    /// The item's `grid-area: <custom-ident>` name (T3, D2); `None` = no named
-    /// area. Placement-time resolution against the container's areas map and
-    /// named lines is D4, in `grid.rs`.
-    pub area_name: Option<TextKey>,
     /// `Normal` is the CSS initial (`justify-items`, container side).
     pub justify_items: JustifyItemsKw,
     /// `Auto` is the CSS initial (`justify-self`, item side).
@@ -91,7 +87,6 @@ impl ComputedGridGroup {
             column_end: GridLine::initial(),
             row_start: GridLine::initial(),
             row_end: GridLine::initial(),
-            area_name: None,
             justify_items: JustifyItemsKw::initial(),
             justify_self: JustifySelfKw::initial(),
         }
@@ -117,7 +112,6 @@ mod tests {
         assert_eq!(grid.column_end, GridLine::Auto);
         assert_eq!(grid.row_start, GridLine::Auto);
         assert_eq!(grid.row_end, GridLine::Auto);
-        assert_eq!(grid.area_name, None);
         assert_eq!(grid.justify_items, JustifyItemsKw::Normal);
         assert_eq!(grid.justify_self, JustifySelfKw::Auto);
     }

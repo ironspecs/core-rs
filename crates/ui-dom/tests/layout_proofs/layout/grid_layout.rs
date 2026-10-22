@@ -1263,6 +1263,86 @@ fn grid_area_name_fills_its_area_rect() {
 }
 
 #[test]
+// CSS Cascade: `grid-area: header` expands to the four placement longhands as
+// `Named(header)`, so a later placement longhand wins its own slot — the
+// margin-shorthand model (`margin: 0 auto` then `margin-left: 5px`). Here
+// `grid-column-start: 2` overrides the header's column-start edge while the
+// other three longhands still come from the header area
+// (`grid_area_longhand_after_shorthand_wins_its_slot`).
+fn grid_area_longhand_after_shorthand_wins_its_slot() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"header header\" \"sidebar main\" \"footer footer\"",
+    );
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 1fr");
+    assert_style_set(&mut root, container, "width", "300px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-area", "header");
+    assert_style_set(&mut root, item, "grid-column-start", "2");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The column-start longhand wins its slot: the item starts at column 2
+    // (100px), while row-start/end come from the header area (top 0, height 40)
+    // and column-end comes from header (span to the right edge at 300px). This
+    // is NOT the whole header rect (left 0, width 300).
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        100.0,
+        "column-start longhand wins: column 2",
+    );
+    assert_close(
+        item_box.width_px,
+        200.0,
+        "column-end from header spans to the right edge",
+    );
+    assert_close(item_box.top_px, 0.0, "row-start from header (top 0)");
+    assert_close(item_box.height_px, 40.0, "row-end from header (height 40)");
+}
+
+#[test]
+// CSS Cascade: re-setting `grid-area` between forms clears the previous form's
+// longhands (the disjoint name/longhand slots no longer exist). `grid-area:
+// header` then `grid-area: 2 / 3` must place per `2 / 3`, not the stale header
+// rect (`grid_area_reset_between_forms_clears_the_name`).
+fn grid_area_reset_between_forms_clears_the_name() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-areas",
+        "\"header header\"",
+    );
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "100px 100px 100px",
+    );
+    assert_style_set(&mut root, container, "grid-template-rows", "40px 40px");
+    assert_style_set(&mut root, container, "width", "300px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-area", "header");
+    assert_style_set(&mut root, item, "grid-area", "2 / 3");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // `2 / 3` → row-start 2, column-start 3 (row 1, column 2); not the header
+    // rect (left 0, top 0).
+    let item_box = border_box_of(&root, item);
+    assert_close(item_box.left_px, 200.0, "column-start 3 (no stale name)");
+    assert_close(item_box.top_px, 40.0, "row-start 2 (no stale name)");
+    assert_close(item_box.width_px, 100.0, "single column width");
+    assert_close(item_box.height_px, 40.0, "single row height");
+}
+
+#[test]
 // CSS Grid §7.4: `grid-area: nosuch` (no matching area or line) falls back to
 // auto placement — documented, NOT a drop (`grid_area_unknown_name_becomes_auto`).
 fn grid_area_unknown_name_becomes_auto() {

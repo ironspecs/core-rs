@@ -475,15 +475,31 @@ fn grid_template_areas_capacity_gates_drop() {
 
 #[test]
 fn grid_area_expands_per_d2() {
-    // A lone <custom-ident> writes the area-name longhand.
+    // A lone <custom-ident> names the area: it expands to the four placement
+    // longhands as `Named(name)` (the margin-shorthand model, adjudicated
+    // 2026-10-22), serializing each as the bare name — not a separate
+    // `GridArea` area-name longhand.
     let (mut world, mut root, target) = attached_target();
     assert_style_set(&mut root, target, "grid-area", "header");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     let map = root.compute_style_map(target).expect("style map");
+    for property_name in [
+        "grid-row-start",
+        "grid-column-start",
+        "grid-row-end",
+        "grid-column-end",
+    ] {
+        let property = PresentationProperty::from_name(property_name).expect("longhand");
+        assert_eq!(
+            map.get(&property),
+            Some(&DomAttributeValue::String("header".to_string())),
+            "grid-area: header → {property_name} = header",
+        );
+    }
     assert_eq!(
         map.get(&PresentationProperty::GridArea),
-        Some(&DomAttributeValue::String("header".to_string())),
-        "grid-area: header writes the area name",
+        None,
+        "grid-area: header must not write a separate area-name longhand",
     );
 
     // 1–4 <grid-line> values write the four placement longhands per D2.

@@ -13,6 +13,18 @@ and named lines (explicit `[name]` in track lists plus the implied
 `<area>-start`/`<area>-end` lines every named area creates). Anything
 unanswered is a document DEFECT — stop and return to the architect.
 
+> **Adjudication 2026-10-22 (PR #27 review) — `grid-area: <name>` is a
+> shorthand, not an area-name slot.** D2's lone-`<custom-ident>` branch
+> and D4 rule 1 are SUPERSEDED: `grid-area: <name>` expands to the FOUR
+> placement longhands as `Named(name)` (the margin-shorthand model), and
+> the item-side `area_name` field is REMOVED — `Named(name)` resolution
+> does area-match first (the side's edge: `-start` reads `min_*`,
+> `-end` reads `max_* + 1`), then named-line match, then auto fallback.
+> This makes a later placement longhand win its slot
+> (`grid-area: header; grid-column-start: 2`) and makes re-setting the
+> shorthand between forms clear the previous form. The wire snapshot for
+> `grid-area: header` serializes as the four `Named(header)` longhands.
+
 ---
 
 ## D0. T3 in one paragraph

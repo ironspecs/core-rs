@@ -525,8 +525,8 @@ fn resolve_flex_field(
 /// (already re-interned) inline-arena key straight into the template field; the
 /// `GridAreas` variant copies the areas key; the `GridAutoFlow` and `TrackSize`
 /// variants copy their computed value into the corresponding field; the
-/// placement `GridLine` and `GridArea` values re-intern their name keys into
-/// the document computed-text interner (the resolver's `text_source` holds the
+/// placement `GridLine` values re-intern their name keys into the document
+/// computed-text interner (the resolver's `text_source` holds the
 /// scratch-relative names the winners fold produced). No further resolution
 /// happens here (track sizing is T1, placement/name resolution is D2/D4 in
 /// `grid.rs`).
@@ -585,13 +585,6 @@ fn resolve_grid_field(
         PresentationProperty::GridRowEnd => {
             if let DeclValue::GridLine(line) = value {
                 groups.grid.row_end = reintern_grid_line(line, context);
-            }
-        }
-        PresentationProperty::GridArea => {
-            if let DeclValue::Text(key) = value
-                && let Some(text) = context.text_source.resolve(key)
-            {
-                groups.grid.area_name = Some(context.computed_texts.intern(text));
             }
         }
         PresentationProperty::JustifyItems => {

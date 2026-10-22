@@ -228,9 +228,8 @@ enum BorderSide {
 /// `None` (the caller drops or errors them).
 ///
 /// Shorthand names resolve BEFORE longhand names: `grid-area` is a shorthand
-/// that expands to the `GridArea` area-name longhand (whose canonical name
-/// shares the shorthand's) or to the four placement longhands, so the shorthand
-/// must win the name lookup.
+/// that expands to the four placement longhands, so the shorthand must win the
+/// name lookup over any same-named longhand.
 fn property_shape(name: &str) -> Option<PropertyShape> {
     if let Some(shorthand) = shorthand_for_name(name) {
         return Some(PropertyShape::Shorthand(shorthand));
@@ -336,7 +335,6 @@ fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProper
             PresentationProperty::GridRowEnd,
         ],
         Shorthand::GridArea => &[
-            PresentationProperty::GridArea,
             PresentationProperty::GridRowStart,
             PresentationProperty::GridColumnStart,
             PresentationProperty::GridRowEnd,
@@ -1678,22 +1676,40 @@ fn expand_grid_row(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration
     )
 }
 
-/// Expands the `grid-area` shorthand per D2: a lone `<custom-ident>` writes the
-/// `GridArea` longhand (the item's `area_name`); 1–4 `<grid-line>` values write
-/// the four placement longhands with the standard defaulting table
-/// (`row-start`, `column-start`, `row-end`, `column-end`).
+/// Expands the `grid-area` shorthand per D2 with the cascade-correct
+/// margin-shorthand model (adjudicated 2026-10-22, PR #27 review): a lone
+/// `<custom-ident>` writes ALL FOUR placement longhands as `GridLine::Named(name)`
+/// — exactly as `margin: 0 auto` expands to four margin longhands, so a later
+/// placement longhand wins its own slot (`grid-area: header` then
+/// `grid-column-start: 2`). 1–4 `<grid-line>` values write the four placement
+/// longhands with the standard defaulting table (`row-start`, `column-start`,
+/// `row-end`, `column-end`).
 fn expand_grid_area(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
-    // A lone <custom-ident> is the area name (not a named line).
+    // A lone <custom-ident> names the area: it expands to the four placement
+    // longhands as `Named(name)` (not a separate area-name slot), so re-setting
+    // the shorthand between forms clears the previous form's longhands.
     let tokens = split_ws_paren_aware(value);
     if let [single] = tokens.as_slice()
         && !single.contains('/')
         && is_custom_ident(single)
         && *single != "span"
     {
-        return Some(vec![declaration(
-            PresentationProperty::GridArea,
-            DeclValue::Text(store.intern(single)),
-        )]);
+        let named = GridLine::Named(store.intern(single));
+        return Some(vec![
+            declaration(
+                PresentationProperty::GridRowStart,
+                DeclValue::GridLine(named),
+            ),
+            declaration(
+                PresentationProperty::GridColumnStart,
+                DeclValue::GridLine(named),
+            ),
+            declaration(PresentationProperty::GridRowEnd, DeclValue::GridLine(named)),
+            declaration(
+                PresentationProperty::GridColumnEnd,
+                DeclValue::GridLine(named),
+            ),
+        ]);
     }
 
     let mut parts = value.split('/');

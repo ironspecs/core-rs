@@ -220,9 +220,6 @@ pub(crate) fn for_each_moved_field(
     if old.grid.row_end != new.grid.row_end {
         visit(PresentationProperty::GridRowEnd);
     }
-    if old.grid.area_name != new.grid.area_name {
-        visit(PresentationProperty::GridArea);
-    }
     if old.grid.justify_items != new.grid.justify_items {
         visit(PresentationProperty::JustifyItems);
     }

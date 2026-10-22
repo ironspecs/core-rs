@@ -30,11 +30,12 @@
 //!   `span > grid` wrap loop in `find_auto_auto_row`/`find_auto_auto_col`)
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs/flex.rs
 
+use crate::domains::style::GRID_TRACK_LIST_CAPACITY;
 use crate::domains::style::computed::{
-    AlignItemsKw, BoxLength, ComputedGridGroup, GridAutoFlowKw, GridLine, GridTemplateAreas,
-    GridTrackList, GridTrackSize, JustifyItemsKw, JustifySelfKw, TrackBreadth, TrackMaxBreadth,
+    AlignItemsKw, AreaRect, BoxLength, ComputedGridGroup, GridAutoFlowKw, GridLine,
+    GridTemplateAreas, GridTrackList, GridTrackSize, JustifyItemsKw, JustifySelfKw, TrackBreadth,
+    TrackMaxBreadth,
 };
-use crate::domains::style::{GRID_TRACK_LIST_CAPACITY, TextKey};
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
 use crate::numeric::usize_to_f32;
 use crate::types::{
@@ -118,10 +119,6 @@ pub(crate) struct GridItemView {
     pub(crate) row_start: GridLine,
     /// The authored `grid-row-end` line (item side, D1).
     pub(crate) row_end: GridLine,
-    /// The item's `grid-area: <custom-ident>` name (T3, D2); `None` = no named
-    /// area. Resolved against the container's areas map and named lines at
-    /// placement (D4).
-    pub(crate) area_name: Option<TextKey>,
     /// The item's `justify-self` (inline axis, D5; `Auto` inherits the
     /// container's `justify-items`).
     pub(crate) justify_self: JustifySelfKw,
@@ -169,6 +166,14 @@ enum LoweredLine {
     Line(i32),
     Span(u32),
     Range(i32, i32),
+}
+
+/// Which edge of a resolved area/line a placement longhand names (the `start`
+/// longhand reads the min edge, the `end` longhand the max edge + 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GridLineSide {
+    Start,
+    End,
 }
 
 /// The per-container grid solve: the three lane ranges plus the resolved
@@ -502,10 +507,10 @@ fn normalize_line_range(start: i32, end: i32) -> (i32, i32) {
     }
 }
 
-/// Resolves one item's placement in `axis` (D4 order): rule 1 — an `area_name`
-/// matching a named area occupies that rect (definite both axes); a name
+/// Resolves one item's placement in `axis` (D4 order): a `Named` longhand
+/// matching a named area occupies that area's edge for its side; a name
 /// matching a line resolves as `Named` per rule 2; a name matching nothing
-/// falls back to `Auto`. Otherwise the authored longhands resolve per D2/D4.
+/// falls back to `Auto`. The authored longhands resolve per D2/D4.
 fn resolve_item_axis(
     view: &GridItemView,
     explicit_count: usize,
@@ -513,7 +518,6 @@ fn resolve_item_axis(
     axis: GridAxis,
 ) -> ResolvedAxis {
     resolve_placement_axis(
-        view.area_name,
         view.column_start,
         view.column_end,
         view.row_start,
@@ -525,10 +529,10 @@ fn resolve_item_axis(
 }
 
 /// The shared D4 per-axis resolution over one item's placement lines (used for
-/// in-flow items and the abs-pos static-position model alike).
-#[allow(clippy::too_many_arguments)]
+/// in-flow items and the abs-pos static-position model alike). Every longhand
+/// resolves uniformly per its axis+side: `Named(name)` resolves area-match first
+/// (the side's edge), then named-line match, then the documented auto fallback.
 fn resolve_placement_axis(
-    area_name: Option<TextKey>,
     column_start: GridLine,
     column_end: GridLine,
     row_start: GridLine,
@@ -537,25 +541,6 @@ fn resolve_placement_axis(
     context: &GridLineContext<'_>,
     axis: GridAxis,
 ) -> ResolvedAxis {
-    if let Some(name) = area_name {
-        if let Some(rect) = context.resolve_area(name) {
-            return match axis {
-                GridAxis::Column => {
-                    ResolvedAxis::Definite(i32::from(rect.min_col), i32::from(rect.max_col) + 1)
-                }
-                GridAxis::Row => {
-                    ResolvedAxis::Definite(i32::from(rect.min_row), i32::from(rect.max_row) + 1)
-                }
-            };
-        }
-        return resolve_axis_range(
-            GridLine::Named(name),
-            GridLine::Auto,
-            explicit_count,
-            context,
-            axis,
-        );
-    }
     let (start, end) = match axis {
         GridAxis::Column => (column_start, column_end),
         GridAxis::Row => (row_start, row_end),
@@ -566,9 +551,9 @@ fn resolve_placement_axis(
 /// Resolves one axis's `(start, end)` `GridLine`s to a `ResolvedAxis` (D2/D4):
 /// definite when at least one side resolves to a definite line or range, auto
 /// with the span otherwise. Name references (`Named`/`NamedSpan`) resolve
-/// against the container's named-line maps (explicit `[name]` lines then the
-/// area-implied `<name>-start`/`<name>-end` lines) per D4 rules 2–3; a name
-/// with no match falls back to `Auto` (documented, pinned).
+/// against the container's areas map and named-line maps (explicit `[name]`
+/// lines then the area-implied `<name>-start`/`<name>-end` lines) per D4 rules
+/// 2–3; a name with no match falls back to `Auto` (documented, pinned).
 #[allow(clippy::unnested_or_patterns)] // the three span-only forms share one arm
 fn resolve_axis_range(
     start: GridLine,
@@ -577,8 +562,8 @@ fn resolve_axis_range(
     context: &GridLineContext<'_>,
     axis: GridAxis,
 ) -> ResolvedAxis {
-    let start = lower_grid_line(start, explicit_count, context, axis);
-    let end = lower_grid_line(end, explicit_count, context, axis);
+    let start = lower_grid_line(start, explicit_count, context, axis, GridLineSide::Start);
+    let end = lower_grid_line(end, explicit_count, context, axis, GridLineSide::End);
     match (start, end) {
         (LoweredLine::Range(s, e), _) | (_, LoweredLine::Range(s, e)) => {
             // A multi-match name or `NamedSpan` determines both edges; the
@@ -606,30 +591,38 @@ fn resolve_axis_range(
 
 /// Lowers one `GridLine` into its D4-resolved canonical side: `Line`/`Span`/
 /// `Auto` pass through (with the D2 negative-line translation); `Named`
-/// resolves to a definite line (single match), a definite range (multiple
-/// matches, spanning the count), or `Auto` (no match); `NamedSpan` resolves to
-/// a definite range spanning `n` (or the match count when the integer is
-/// absent) from the first matching line, or `Auto` (no match).
+/// resolves area-match first (the side's edge — `start` reads the min edge,
+/// `end` the max edge + 1), then to a definite line (single named-line match),
+/// a definite range (multiple matches, spanning the count), or `Auto` (no
+/// match); `NamedSpan` resolves to a definite range spanning `n` (or the match
+/// count when the integer is absent) from the first matching line, or `Auto`
+/// (no match).
 fn lower_grid_line(
     line: GridLine,
     explicit_count: usize,
     context: &GridLineContext<'_>,
     axis: GridAxis,
+    side: GridLineSide,
 ) -> LoweredLine {
     match line {
         GridLine::Auto => LoweredLine::Auto,
         GridLine::Line(k) => LoweredLine::Line(resolve_grid_line(k, explicit_count)),
         GridLine::Span(n) => LoweredLine::Span(n),
-        GridLine::Named(name) => match context.resolve_named(name, axis) {
-            (None, _) => LoweredLine::Auto,
-            (Some(first), 1) => {
-                LoweredLine::Line(i32::try_from(first).expect("line index fits i32"))
+        GridLine::Named(name) => {
+            if let Some(rect) = context.resolve_area(name) {
+                return LoweredLine::Line(area_edge(rect, axis, side));
             }
-            (Some(first), count) => {
-                let first = i32::try_from(first).expect("line index fits i32");
-                LoweredLine::Range(first, first + i32::try_from(count).expect("count fits i32"))
+            match context.resolve_named(name, axis) {
+                (None, _) => LoweredLine::Auto,
+                (Some(first), 1) => {
+                    LoweredLine::Line(i32::try_from(first).expect("line index fits i32"))
+                }
+                (Some(first), count) => {
+                    let first = i32::try_from(first).expect("line index fits i32");
+                    LoweredLine::Range(first, first + i32::try_from(count).expect("count fits i32"))
+                }
             }
-        },
+        }
         GridLine::NamedSpan(name, n) => match context.resolve_named(name, axis) {
             (None, _) => LoweredLine::Auto,
             (Some(first), count) => {
@@ -638,6 +631,17 @@ fn lower_grid_line(
                 LoweredLine::Range(first, first + i32::try_from(span).expect("span fits i32"))
             }
         },
+    }
+}
+
+/// Reads one edge of a resolved area rect for `(axis, side)`: `start` reads the
+/// min edge, `end` the max edge + 1 (the exclusive far line).
+fn area_edge(rect: AreaRect, axis: GridAxis, side: GridLineSide) -> i32 {
+    match (axis, side) {
+        (GridAxis::Column, GridLineSide::Start) => i32::from(rect.min_col),
+        (GridAxis::Column, GridLineSide::End) => i32::from(rect.max_col) + 1,
+        (GridAxis::Row, GridLineSide::Start) => i32::from(rect.min_row),
+        (GridAxis::Row, GridLineSide::End) => i32::from(rect.max_row) + 1,
     }
 }
 
@@ -1397,7 +1401,6 @@ fn anonymous_inline_run_grid_item_view(
         column_end: GridLine::Auto,
         row_start: GridLine::Auto,
         row_end: GridLine::Auto,
-        area_name: None,
         justify_self: JustifySelfKw::Auto,
         align_self: None,
         col_span: 1,
@@ -1474,7 +1477,6 @@ where
         column_end: grid_group.column_end,
         row_start: grid_group.row_start,
         row_end: grid_group.row_end,
-        area_name: grid_group.area_name,
         justify_self: grid_group.justify_self,
         align_self,
         col_span: 1,
@@ -2602,7 +2604,6 @@ fn resolve_abs_grid_area(
         container_group,
     );
     let col = resolve_placement_axis(
-        grid.area_name,
         grid.column_start,
         grid.column_end,
         grid.row_start,
@@ -2612,7 +2613,6 @@ fn resolve_abs_grid_area(
         GridAxis::Column,
     );
     let row = resolve_placement_axis(
-        grid.area_name,
         grid.column_start,
         grid.column_end,
         grid.row_start,
