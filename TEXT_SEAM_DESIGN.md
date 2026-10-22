@@ -1,12 +1,49 @@
 # TEXT_SEAM_DESIGN.md — PR 4: the text seam, proven open (complete design)
 
 Status: `COMPLETE DESIGN — no open questions; transcription is
-mechanical`. Date: 2026-10-22. Author: the architect. Authority:
-PLAN.md "PR 4 — the text seam" (lines 650–708: the three-stage seam,
-the fallback policy table, the TextStyle handoff, the four-door proof
-gate, the kill criterion, the context-scoped catalog ruling, the
-line-height floor boundary); the text-domain survey of 2026-10-22
-(call-site map, consumption graves, catalog reality).
+mechanical`. Date: 2026-10-22 (v2, same day). Author: the architect.
+Authority: PLAN.md "PR 4 — the text seam" (lines 650–708: the
+three-stage seam, the fallback policy table, the TextStyle handoff,
+the four-door proof gate, the kill criterion, the context-scoped
+catalog ruling, the line-height floor boundary); the text-domain
+survey of 2026-10-22 (call-site map, consumption graves, catalog
+reality).
+
+**v2 changelog (S2 STOP adjudication, 2026-10-22).** The S2
+transcription STOPped: `TextFontFamilyId` carries TWO roles and the
+design named only one. Adjudicated:
+
+- **The enum survives S2; its death belongs to S3.** Role A (the
+  request-carrier family) is S2's target; Role B (the render-world
+  font-registration grouping key — `font_registration_state.rs`,
+  `layer_pool_render_executor.rs`, the render records, the warmup
+  key) is the catalog's concern. S2's `TextRunSignature` GAINS
+  family/weight/style AND KEEPS `font_family_id` for Role B; S3's
+  registration model replaces and removes it. (The enum lives inline
+  in `text_layout/mod.rs` — "its file is removed" was a slip.)
+- **Style reaches the render world via the extraction pipeline, not
+  via `ComputedFontGroup`.** The render world has no `DomNode`:
+  main-world run-emission sites (which HAVE the computed style) write
+  the signature's new fields; the signature → `ExtractedTextRunRecord`
+  → `RenderTextRunRecord` flow carries them; the two render-world
+  request-construction sites read the RECORD's fields. D3's "every
+  construction site reads the resolved `ComputedFontGroup`" is
+  corrected to: main-world sites read the computed style; render-world
+  sites read the record.
+- **S2's attrs family resolution** is exactly: requested list's first
+  family-if-installed (the S4 table's rule-1 seed), else today's
+  language-routing. S4 generalizes this into the full policy table
+  (generics, named paths, per-script tests).
+- **Direction**: reuses the existing `effective_text_direction()`
+  (direction is a text-group field, not font-group). cosmic-text
+  0.18.2's `Buffer` exposes NO paragraph-direction setter (verified)
+  — auto-detect is the pinned truth; S5's RTL proofs assert the
+  auto-detect behavior.
+- **Type names**: `TextFamilyList` + `TextFamilyListKey`
+  (arena-interned structured list, mirroring `GridTrackList`/
+  `GridTrackListKey`); `FontWeightKw` (100–900 → `cosmic_text::
+  Weight`); `FontStyleKw` (`Normal | Italic` → `cosmic_text::Style`;
+  oblique stays dropped at parse).
 
 This document decides everything for PR 4. Anything unanswered is a
 document DEFECT — stop and return to the architect. **No pushes**
@@ -97,30 +134,31 @@ punctuation, emit generics bare).
 **The request carrier** (`text_layout_request.rs`): `TextLayoutRequest`
 gains `family: TextFamilyListKey`, `weight: FontWeightKw`,
 `style: FontStyleKw`, `direction: DirectionKw` — replacing the
-hardcoded `TextFontFamilyId::UiSans` (the one-variant enum DIES; its
-file is removed per structural rules). Every construction site
-(`paint/mod.rs:624-631`, `flow.rs:1556-1567`,
-`element_behaviors/paint.rs:168-172, 218-224, 278-288`,
-`layer_pool_text_render.rs:777-788`,
-`text_run_render_state.rs:127-138`) reads the resolved
-`ComputedFontGroup` via the node's computed style; the inherited
-context (`inherited_style_context.rs`) gains `effective_font_family/
-weight/style/direction` accessors alongside the existing size/height
-pair.
+request's hardcoded `TextFontFamilyId::UiSans` (Role A). **The enum
+SURVIVES S2** as the render-world registration grouping key (Role B);
+S3 removes it. Main-world construction sites (`paint/mod.rs:624-631`,
+`flow.rs:1556-1575`, `element_behaviors/paint.rs:168-172, 218-224,
+278-288` — verify current lines) read the resolved `ComputedFontGroup`
+via the node's computed style; the two render-world sites
+(`layer_pool_text_render.rs:777-788`,
+`text_run_render_state.rs:127-138`) read the extracted RECORD's
+fields (the signature → record pipeline — the render world has no
+`DomNode`). The inherited context reuses its existing
+`effective_text_direction()` and gains `effective_font_family/
+weight/style` beside the size/height pair.
 
 **Consumption**: `text_layout_attrs` (`mod.rs:767-772`) becomes
-`text_layout_attrs(request)`: family → the S4 policy table's resolved
-`CosmicFamily` (S2 uses today's language-routing table as the interim
-resolution — S4 replaces it with the full table); weight →
-`cosmic_text::Weight`; style → `cosmic_text::Style` (oblique remains
-dropped at parse — the closed set stands; registry untouched);
-direction → passed to the buffer's paragraph direction where cosmic
-accepts it, else auto-detect (S5's proofs pin whichever is true).
+`text_layout_attrs(request)`: family → the request's first family if
+installed, else today's language-routing (the S4 table's rule-1 seed;
+S4 generalizes); weight → `cosmic_text::Weight`; style →
+`cosmic_text::Style` (oblique remains dropped at parse — the closed
+set stands; registry untouched); direction → auto-detect (cosmic
+0.18.2 has no paragraph-direction setter — verified; S5's RTL proofs
+assert the auto-detect behavior).
 
-**Run identity**: `TextRunSignature` gains `family/weight/style`
-fields so the retained-run bank distinguishes styled runs (today it
-cannot — the survey's grave #3). This changes signature equality for
-styled runs only; unstyled runs compare as today.
+**Run identity**: `TextRunSignature` GAINS `family/weight/style`
+fields AND KEEPS `font_family_id` (Role B, until S3). Styled runs
+distinguish; unstyled runs compare as today.
 
 **The dirty-propagation consequence**: once family/weight/style are
 measure inputs, a change re-measures with different inputs; where the
