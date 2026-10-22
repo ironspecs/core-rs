@@ -441,34 +441,42 @@ fn grid_template_areas_parse_and_round_trip() {
 fn grid_template_areas_none_resets_to_the_empty_map() {
     // `grid-template-areas: none` is the CSS initial value: it must be ADMITTED
     // (not dropped) and write the empty areas map, so a later `none` clears any
-    // prior areas. CONTROL: the `<string>+` form still parses (pinned by
+    // prior areas. CSS Syntax 3 §4.1 makes the `none` keyword ASCII
+    // case-insensitive, so `NONE`/`None` admit identically (the spec-correct
+    // entry point; the rest of the grammar stays case-sensitive — see the
+    // `off_spec_keyword_grammars_are_case_sensitive` registry row). CONTROL:
+    // the `<string>+` form still parses (pinned by
     // `grid_template_areas_parse_and_round_trip`).
-    assert_grid_wire_value("grid-template-areas", "none", "none");
+    for reset in ["none", "NONE", "None"] {
+        assert_grid_wire_value("grid-template-areas", reset, "none");
+    }
 
-    // Reset: `"a a"` then `none` clears the areas — the named area no longer
-    // resolves, so `grid-area: a` falls back to auto placement.
-    let (mut world, mut root, container) = attached_target();
-    assert_style_set(&mut root, container, "display", "grid");
-    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
-    assert_style_set(&mut root, container, "width", "200px");
-    assert_style_set(&mut root, container, "grid-template-areas", "\"a a\"");
-    let item = assert_append_div_to(&mut root, container);
-    assert_style_set(&mut root, item, "grid-area", "a");
-    assert_style_set(&mut root, item, "height", "40px");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    assert_close(
-        node_box(&root, item).expect("item").border_box.width_px,
-        200.0,
-        "before the reset the `a` area spans both columns",
-    );
+    // Reset: `"a a"` then each reset keyword clears the areas — the named area
+    // no longer resolves, so `grid-area: a` falls back to auto placement.
+    for reset in ["none", "NONE", "None"] {
+        let (mut world, mut root, container) = attached_target();
+        assert_style_set(&mut root, container, "display", "grid");
+        assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+        assert_style_set(&mut root, container, "width", "200px");
+        assert_style_set(&mut root, container, "grid-template-areas", "\"a a\"");
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "grid-area", "a");
+        assert_style_set(&mut root, item, "height", "40px");
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_close(
+            node_box(&root, item).expect("item").border_box.width_px,
+            200.0,
+            "before the reset the `a` area spans both columns",
+        );
 
-    assert_style_set(&mut root, container, "grid-template-areas", "none");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
-    assert_close(
-        node_box(&root, item).expect("item").border_box.width_px,
-        100.0,
-        "after `none` the `a` area no longer resolves — auto placement",
-    );
+        assert_style_set(&mut root, container, "grid-template-areas", reset);
+        assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+        assert_close(
+            node_box(&root, item).expect("item").border_box.width_px,
+            100.0,
+            &format!("after `{reset}` the `a` area no longer resolves — auto placement"),
+        );
+    }
 }
 
 #[test]
