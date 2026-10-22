@@ -439,8 +439,21 @@ fn add_node_paint_ops(
                 std::borrow::Cow::Borrowed(_) => text_node.data_arc(),
                 std::borrow::Cow::Owned(text) => std::sync::Arc::<str>::from(text),
             };
-            let text_run_signature =
+            // The plain-text run-emission site applies the resolved inherited
+            // style exactly as the element run-emission site does
+            // (`text_run_signature_for` in `element_behaviors/paint.rs`): a
+            // styled plain-text node measures styled, so it must rasterize
+            // styled too, or styled/unstyled same-text runs dedup-collide (text
+            // seam B1).
+            let mut text_run_signature =
                 crate::domains::layer_ops::TextRunSignature::from_text(text_run_text);
+            text_run_signature.family = inherited_style
+                .effective_font_family()
+                .and_then(|key| root_dom.resolve_inline_family_list(key))
+                .cloned()
+                .unwrap_or_default();
+            text_run_signature.weight = inherited_style.effective_font_weight();
+            text_run_signature.style = inherited_style.effective_font_style();
             let text_run_id = layer_pool
                 .resolve_text_run_id_from_hint(&text_run_signature, text_node.text_run_id_hint());
             let font_size_px = text_intrinsic.font_size_px;

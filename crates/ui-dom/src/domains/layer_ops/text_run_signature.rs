@@ -19,6 +19,9 @@ use std::sync::Arc;
 use crate::domains::style::computed::TextFamilyList;
 use crate::domains::text_layout::{FontStyleKw, FontWeightKw, TextLanguageId};
 
+#[cfg(test)]
+use crate::domains::style::computed::TextFamilyItem;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct TextRunSignature {
     pub(crate) text: Arc<str>,
@@ -70,5 +73,29 @@ mod tests {
             TextRunSignature::from_text("颜色".into()).language_hint_id,
             TextLanguageId::SimplifiedChinese
         );
+    }
+
+    #[test]
+    fn styled_runs_distinguish_while_unstyled_runs_dedup() {
+        let text: Arc<str> = Arc::from("hello");
+
+        // Two same-text unstyled runs still dedup: they compare equal (the
+        // unstyled-compare-as-today contract).
+        let unstyled = TextRunSignature::from_text(text.clone());
+        let unstyled_again = TextRunSignature::from_text(text.clone());
+        assert_eq!(unstyled, unstyled_again);
+
+        // A same-text run with a different resolved style (family/weight/style)
+        // produces a DISTINCT signature — the emission sites write the resolved
+        // style, so styled and unstyled runs cannot dedup-collide (text seam B1).
+        let mut styled = TextRunSignature::from_text(text.clone());
+        styled
+            .family
+            .items
+            .push(TextFamilyItem::FamilyName("Test Face".into()));
+        styled.weight = FontWeightKw::from_weight(700);
+        styled.style = FontStyleKw::Italic;
+        assert_ne!(styled, unstyled);
+        assert_ne!(styled, unstyled_again);
     }
 }
