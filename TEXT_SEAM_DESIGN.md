@@ -1,13 +1,61 @@
 # TEXT_SEAM_DESIGN.md — PR 4: the text seam, proven open (complete design)
 
 Status: `COMPLETE DESIGN — no open questions; transcription is
-mechanical`. Date: 2026-10-22 (v3, same day). Author: the architect.
+mechanical`. Date: 2026-10-22 (v4, same day). Author: the architect.
 Authority: PLAN.md "PR 4 — the text seam" (lines 650–708: the
 three-stage seam, the fallback policy table, the TextStyle handoff,
 the four-door proof gate, the kill criterion, the context-scoped
 catalog ruling, the line-height floor boundary); the text-domain
 survey of 2026-10-22 (call-site map, consumption graves, catalog
 reality).
+
+**v4 changelog (full-body review remediation, 2026-10-22).** The
+review of the complete body returned REMEDIATE with one blocking and
+three remediate findings; all adjudicated:
+
+- **B1 (blocking) — the plain-text run-EMISSION site was missed.**
+  D3's construction-site list named `paint/mod.rs:624-631` (the
+  measure function) and missed the run-emission site at
+  `paint/mod.rs:443`, which builds a bare-signature
+  `TextRunSignature::from_text` — styled plain-text nodes measured
+  styled but rasterized unstyled (a divergence the PR INTRODUCED;
+  on `main` both stages agreed by ignoring style), and
+  styled/unstyled same-text runs dedup-collided. The emission site
+  applies the inherited style like every other site; a crate-internal
+  signature pin asserts styled runs distinguish. (My list was
+  incomplete; the implementer followed it correctly.)
+- **R1 (door-closer) — quoted-comma narrowing.** The family-list
+  splitter was quote-UNAWARE: `font-family: "A, B"` dropped, though
+  verbatim interning accepted it — falsifying D10(b)'s recorded
+  "no narrowing" claim. The splitter becomes quote-aware; pins cover
+  the quoted-comma case and its round-trip.
+- **R2 (door-closer) — the capacity cap was unregistered.** The
+  8-item list cap dropped real-world stacks (Bootstrap's 9-entry
+  system stack) silently-but-counted with no registry row. The cap
+  RISES to 16 (real-world stacks with headroom) AND the gate is
+  registered (cap + count + registry row + a 17-item drop pin), per
+  the crate's capacity-gate doctrine.
+- **R3 — door 1's render-world observation was mislabeled.** The
+  door-1 pin asserted catalog reads, not the render-world route, and
+  the v3-cited precedent test did not exist. A crate-internal
+  `layer_pool` test drives the consumer-face extraction (mint →
+  queue → register → readiness flips for the consumer `FontFaceId`),
+  honestly closing door 1's proof.
+- **R4 — serializer round-trip hazards.** `to_css_string` emitted
+  the empty name bare (drops on replay) and double-quoted names
+  containing `"` unescaped. The serializer quotes the empty name
+  (`""`), prefers double quotes, switches to single quotes when the
+  name contains `"`, and the PARSER rejects names containing BOTH
+  quote types at parse + count (pathological; keeps the admitted set
+  round-trip-closed; grammar-documented).
+- **N1 — the revision-check race**: `refresh_font_catalog` snapshots
+  (revision, sources) under ONE read.
+- **N2 — install dedup semantics**: same-bytes-twice yields two ids;
+  documented in the API docs (no dedup — the caller owns identity).
+- **N4 — doc nits**: the renamed installer, the S2-era attrs
+  description, the moved `resolve_face_id` citation, and the stale
+  dead-code flag on `wrapped_text_layout_from_buffer` (verified
+  production-live first).
 
 **v3 changelog (S4 STOP adjudication, 2026-10-22).** The S4
 transcription STOPped on D10(c): door-2 assertion (a) (non-zero
