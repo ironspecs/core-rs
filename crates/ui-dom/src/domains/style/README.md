@@ -51,7 +51,7 @@ fold), or the computed read surface (`RootDom::computed_style`).
   arena), `decl_block.rs` (the ordered, property-deduplicated block with its
   A10 minimal-edit upsert and a parallel importance bit vector),
   `decl_store.rs` (the block arena + generational
-  keys),   `decl_drop_report.rs` (the parse report types), and `decl_parse.rs`
+  keys), `decl_drop_report.rs` (the parse report types), and `decl_parse.rs`
   (A1: the per-property closed grammars, drop-and-continue block parsing,
   the system's single shorthand-expansion point, the `!important` marker
   stripper, and the name-based D5 admission surface `name_is_presentation`).
@@ -66,7 +66,7 @@ fold), or the computed read surface (`RootDom::computed_style`).
   `resolved_transition_longhands.rs` (the scheduler slot),
   `group_dirty_classification.rs` (A7's static group-diff table), and
   `field_mapping.rs` (the field-level `for_each_moved_field` compare the
-  transition scheduler keys on).   These are **pure data** plus `initial()` and
+  transition scheduler keys on). These are **pure data** plus `initial()` and
   tiny field helpers; resolution logic lives in the step-3.3 resolver
   (`project.rs`), and the used-value percentage resolution lives in the
   layout-facing readers (`domains/layout/style.rs`), never here. The grid

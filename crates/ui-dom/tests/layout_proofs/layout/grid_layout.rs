@@ -2031,3 +2031,56 @@ fn grid_repeat_boundary_line_name_ownership() {
         "after is emitted exactly once (in the suffix, not duplicated in the span)"
     );
 }
+
+#[test]
+// CSS Grid §7.2.3.2 is per-axis (B4): auto-fit collapse applies to the ROW
+// axis too. `height: 600px; grid-template-rows: repeat(auto-fit,
+// minmax(40px, 1fr))` with 1 item → the count clamps to 12 (15 would exceed
+// the lane capacity), 11 empty rows collapse, the fr distribution re-runs over
+// the surviving row → the item stretches to the full 600px height.
+fn grid_repeat_auto_fit_collapses_rows() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-rows",
+        "repeat(auto-fit, minmax(40px, 1fr))",
+    );
+    assert_style_set(&mut root, container, "height", "600px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.height_px,
+        600.0,
+        "the surviving row absorbs the collapsed rows' space",
+    );
+}
+
+#[test]
+// CSS Grid §7.2.3.2 (NB2): a minmax is "treated as its max track sizing
+// function if that is definite". `repeat(auto-fill, minmax(100px, 200px))` at
+// 600px → basis 200 → N = floor(600/200) = 3 (three 200px tracks).
+fn grid_repeat_minmax_definite_max_basis() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fill, minmax(100px, 200px))",
+        "600px",
+    );
+    for _ in 0..3 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_eq!(rects.len(), 4, "container + 3 items");
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 200.0, 40.0, "track 1 (basis 200)");
+    assert_rect_op_geometry(&rects[2], 200.0, 0.0, 200.0, 40.0, "track 2");
+    assert_rect_op_geometry(&rects[3], 400.0, 0.0, 200.0, 40.0, "track 3");
+}

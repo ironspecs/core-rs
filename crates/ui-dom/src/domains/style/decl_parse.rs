@@ -418,6 +418,11 @@ fn parse_property_value(
     if value == "auto" && AUTO_ADMISSIBLE.contains(&property) {
         return Some(DeclValue::Keyword(Keyword::Auto));
     }
+    // The row-axis track list gates content-based auto-repeat span tracks
+    // (their inline-axis repetition basis is wrong for the block axis, D1/NB1).
+    if property == PresentationProperty::GridTemplateRows {
+        return parse_row_track_list(value, store).map(DeclValue::TrackList);
+    }
     parse_value(property.grammar(), value, store)
 }
 
@@ -674,10 +679,30 @@ fn parse_flex_basis_length(value: &str) -> Option<DeclLength> {
 /// basis), a names-only (zero track-size) auto-repeat inner list (§7.2.3
 /// requires ≥1 `<track-size>`), a non-positive/non-integer repeat count, an
 /// empty/missing inner list, a second auto-repeat span, and an expanded count
-/// over `GRID_TRACK_LIST_CAPACITY`.
+/// over `GRID_TRACK_LIST_CAPACITY`. The ROW axis additionally gates
+/// content-based span tracks (`min-content`/`max-content`/`auto`) — see
+/// `parse_row_track_list` (D1/NB1).
 fn parse_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
+    parse_track_list_axis(value, store, false)
+}
+
+/// Parses a ROW-axis track list (`grid-template-rows`), which additionally
+/// gates content-based auto-repeat span tracks (their inline-axis repetition
+/// basis is wrong for the block axis — D1/NB1).
+fn parse_row_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
+    parse_track_list_axis(value, store, true)
+}
+
+/// The shared track-list parser. `is_row_axis` selects the row-axis gate for
+/// content-based auto-repeat span tracks; column-axis lists keep the content
+/// bases (`h_min`/`h_max` are inline-axis, the correct axis for columns).
+fn parse_track_list_axis(
+    value: &str,
+    store: &mut DeclStore,
+    is_row_axis: bool,
+) -> Option<GridTrackListKey> {
     let mut list = GridTrackList::default();
-    expand_track_list_tokens(value, store, &mut list)?;
+    expand_track_list_tokens(value, store, &mut list, is_row_axis)?;
     Some(store.intern_track_list(&list))
 }
 
@@ -694,11 +719,13 @@ enum RepeatCount {
 /// A fixed `repeat(N, list)` expands to N copies; an `repeat(auto-fill|auto-fit,
 /// list)` stores the inner list as ONE copy plus `auto_repeat_span` and the
 /// span's OWNED line-name range (which of the registrations are span-inner vs
-/// suffix — B3).
+/// suffix — B3). `is_row_axis` gates content-based span tracks on the block
+/// axis (D1/NB1).
 fn expand_track_list_tokens(
     value: &str,
     store: &mut DeclStore,
     out: &mut GridTrackList,
+    is_row_axis: bool,
 ) -> Option<()> {
     for token in split_ws_paren_aware(value) {
         if token.starts_with('[') {
@@ -742,6 +769,13 @@ fn expand_track_list_tokens(
                                 // basis) — drop + count at parse.
                                 return None;
                             }
+                            if is_row_axis && span_track_basis_is_content_based(track) {
+                                // Row-axis content-based span tracks
+                                // (`min-content`/`max-content`/`auto`) would
+                                // count from INLINE-axis contributions — a
+                                // wrong-axis count is worse than a gate (D1/NB1).
+                                return None;
+                            }
                             out.tracks.try_push(track).ok()?;
                         }
                     }
@@ -775,6 +809,19 @@ fn expand_track_list_tokens(
 /// (the idiom `minmax(240px, 1fr)`) has a non-`Auto` min bound and is admitted.
 fn is_bare_fr(track: GridTrackSize) -> bool {
     track.min == TrackBreadth::Auto && matches!(track.max, TrackMaxBreadth::Fr(_))
+}
+
+/// True when a span track's repetition basis reads the item content
+/// contributions (`h_min`/`h_max`) rather than a definite length. Only a bare
+/// `min-content`/`max-content`/`auto` leaf has such a min bound (a `minmax`
+/// min is always px/percent), so a ROW-axis auto-repeat span carrying one is
+/// wrong-axis and drops at parse (D1/NB1). Column-axis content bases are
+/// correct-axis (inline) and admitted.
+fn span_track_basis_is_content_based(track: GridTrackSize) -> bool {
+    matches!(
+        track.min,
+        TrackBreadth::MinContent | TrackBreadth::MaxContent | TrackBreadth::Auto
+    )
 }
 
 /// Registers one `[name1 name2]` bracket group's names against the line at the
@@ -3801,5 +3848,29 @@ mod tests {
         );
         // A name PLUS a track size still admits (the ≥1 track-size control).
         assert!(parse_track_list("repeat(auto-fill, [x] 100px)", &mut store).is_some());
+    }
+
+    #[test]
+    fn grid_track_list_row_axis_content_basis_drops() {
+        let mut store = DeclStore::default();
+        // Row-axis content-based span tracks (min-content/max-content/auto) drop
+        // + count: their repetition basis would be INLINE-axis contributions,
+        // wrong for the block axis (D1/NB1).
+        assert_eq!(
+            parse_row_track_list("repeat(auto-fit, min-content)", &mut store),
+            None
+        );
+        assert_eq!(
+            parse_row_track_list("repeat(auto-fill, max-content)", &mut store),
+            None
+        );
+        assert_eq!(
+            parse_row_track_list("repeat(auto-fit, auto)", &mut store),
+            None
+        );
+        // The column axis keeps content bases (correct axis): still admitted.
+        assert!(parse_track_list("repeat(auto-fit, min-content)", &mut store).is_some());
+        // A definite minmax on the row axis (min/max px) still admits.
+        assert!(parse_row_track_list("repeat(auto-fit, minmax(40px, 1fr))", &mut store).is_some());
     }
 }

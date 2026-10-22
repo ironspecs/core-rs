@@ -1,14 +1,17 @@
 #![allow(rustdoc::bare_urls)]
 
-//! Grid T0 admission proofs (`GRID_STEP1_DESIGN.md` D6).
+//! Grid admission proofs (`GRID_STEP1_DESIGN.md` D6 through the T3.5 tier).
 //!
-//! These are the public-surface pins for the grid T0 landing: `display:
+//! These are the public-surface pins for the grid admissions: `display:
 //! grid`/`inline-grid` routing, the T1 property set (`grid-template-columns`,
 //! `grid-template-rows`, `grid-auto-flow`, `grid-auto-columns`,
 //! `grid-auto-rows`) admitted parse-and-hold, the counted-drop gates (the >12
-//! capacity gate, the `[` line-name gate, the auto-fill/auto-fit gate), and the
-//! two layout pins (the D5 block interim, and the formatting-context flag
-//! generalization that contains a grid item's first-child margin).
+//! capacity gate, the line-name capacity and per-name-count gates, nested
+//! `repeat()`, the bare-`fr` auto-repeat span, the names-only zero-track span,
+//! the row-axis content-based span), and the layout-boundary pins (the
+//! formatting-context flag that contains a grid item's first-child margin).
+//! The `[` line-name gate and the auto-fill/auto-fit gate are INVERTED (both
+//! ADMIT — the T3 named lines and the T3.5 auto-repeat tiers, landed).
 //!
 //! The computed grid group is observed through the public wire projection
 //! (`compute_style_map`): an admitted track list re-serializes to its canonical
@@ -242,6 +245,30 @@ fn grid_repeat_names_only_span_drops() {
         "grid-template-columns",
         "repeat(auto-fill, [x] 100px)",
         "repeat(auto-fill, [x] 100px)",
+    );
+}
+
+#[test]
+fn grid_repeat_row_axis_content_basis_drops() {
+    // Row-axis content-based span tracks (min-content/max-content/auto) drop +
+    // count at parse (NB1): their repetition basis would be INLINE-axis
+    // contributions, wrong for the block axis. Column-axis content bases keep
+    // h_min/h_max (the correct axis) and stay admitted.
+    assert_decl_drop(
+        ".x { grid-template-rows: repeat(auto-fit, min-content) }",
+        0,
+        1,
+    );
+    assert_decl_drop(
+        ".x { grid-template-rows: repeat(auto-fill, max-content) }",
+        0,
+        1,
+    );
+    assert_decl_drop(".x { grid-template-rows: repeat(auto-fit, auto) }", 0, 1);
+    assert_grid_wire_value(
+        "grid-template-columns",
+        "repeat(auto-fit, min-content)",
+        "repeat(auto-fit, min-content)",
     );
 }
 

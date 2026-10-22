@@ -34,7 +34,9 @@
 //!   a container-size change re-runs the whole solve via the dirty-bit doctrine
 //! - auto-fit only: empty span tracks (their cells hold no item) collapse to
 //!   fixed 0 after placement, and the fr distribution re-runs over the
-//!   surviving tracks (auto-fill never collapses)
+//!   surviving tracks — PER-AXIS (a `collapsed_columns` bitmap feeds the column
+//!   sizing, a symmetric `collapsed_rows` bitmap the row sizing); auto-fill
+//!   never collapses
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs/flex.rs
 
 use arrayvec::ArrayVec;
@@ -360,13 +362,18 @@ where
         )
     };
 
-    // Auto-fit collapse: mark the empty span columns (after placement) so the
-    // sizing phase treats them as fixed 0 and re-runs the fr distribution over
-    // the surviving tracks (D3 step 4; auto-fill never collapses).
+    // Auto-fit collapse: mark the empty span columns AND rows (after placement)
+    // so the sizing phase treats them as fixed 0 and re-runs the fr distribution
+    // over the surviving tracks (D3 step 4, per-axis; auto-fill never collapses).
     let collapsed_columns = collapsed_auto_fit_columns(
         &root_dom.layout_scratch,
         column_expansion.span,
         placement.col_offset,
+    );
+    let collapsed_rows = collapsed_auto_fit_rows(
+        &root_dom.layout_scratch,
+        row_expansion.span,
+        placement.row_offset,
     );
 
     // 4. Per-column contributions (max h_min / h_max per explicit column, from
@@ -421,7 +428,7 @@ where
     )?;
 
     // 8. Row track sizing (explicit rows by the phase algorithm, implicit rows
-    // by `auto_rows`).
+    // by `auto_rows`; collapsed auto-fit rows force to fixed 0).
     let row_range = size_row_tracks(
         &mut root_dom.layout_scratch,
         item_range,
@@ -431,6 +438,7 @@ where
         placement.row_offset,
         grid_group.auto_rows,
         entered.style.height_px,
+        &collapsed_rows,
     );
     let content_height_px = total_row_height(&root_dom.layout_scratch, row_range, row_gap_px);
 
@@ -637,16 +645,37 @@ fn compute_auto_repeat_count(
     (n, formula_f32 > capacity_f32)
 }
 
-/// One span track's repetition basis for the count: fixed → px, percent → % of
-/// `s`, `min-content` → `h_min`, `max-content`/`auto` → `h_max`. A bare `fr`
-/// never reaches here (parse-gated); a `fr` MAX inside minmax contributes its
-/// min bound (this match reads the min breadth).
+/// One span track's repetition basis for the count (CSS Grid §7.2.3.2). A
+/// minmax is "treated as its max track sizing function if that is definite"
+/// — so the basis is the max bound when definite (px/percent), else the min
+/// bound. A bare leaf's min and max are the same breadth, so the definite-max
+/// test also covers leaves: fixed → px, percent → % of `s`, `min-content` →
+/// `h_min`, `max-content`/`auto` → `h_max`. A bare `fr` never reaches here
+/// (parse-gated); a `fr` MAX inside minmax (the idiom) is not definite, so its
+/// basis is the min bound.
 fn span_track_basis(track: &GridTrackSize, s: f32, h_min: f32, h_max: f32) -> f32 {
+    if let Some(basis) = definite_track_max_basis(track.max, s) {
+        return basis;
+    }
     match track.min {
         TrackBreadth::Px(px) => px,
         TrackBreadth::Percent(p) => s * p * 0.01,
         TrackBreadth::MinContent => h_min,
         TrackBreadth::MaxContent | TrackBreadth::Auto => h_max,
+    }
+}
+
+/// The max bound as a repetition basis when it is definite (px or percent,
+/// resolvable against the definite main size `s`); `None` for `min-content`/
+/// `max-content`/`auto`/`fr` (content-based or flexible — not definite).
+fn definite_track_max_basis(max: TrackMaxBreadth, s: f32) -> Option<f32> {
+    match max {
+        TrackMaxBreadth::Px(px) => Some(px),
+        TrackMaxBreadth::Percent(p) => Some(s * p * 0.01),
+        TrackMaxBreadth::Auto
+        | TrackMaxBreadth::Fr(_)
+        | TrackMaxBreadth::MinContent
+        | TrackMaxBreadth::MaxContent => None,
     }
 }
 
@@ -779,6 +808,40 @@ fn collapsed_auto_fit_columns(
         let col = col_offset + explicit;
         let mut occupied = false;
         for row in 0..rows {
+            if !cell_map.is_free(row, col, 1, 1) {
+                occupied = true;
+                break;
+            }
+        }
+        *slot = !occupied;
+    }
+    collapsed
+}
+
+/// The symmetric row-axis collapse (B4): marks each expanded auto-FIT span ROW
+/// with no occupied cell as collapsed (the empty tracks collapse to zero after
+/// placement, D3 step 4 — §7.2.3.2 is per-axis). Auto-fill never collapses.
+/// Returns a bitmap over the explicit row indices.
+fn collapsed_auto_fit_rows(
+    scratch: &LayoutScratch,
+    span: Option<(u8, u8, GridRepeat)>,
+    row_offset: usize,
+) -> [bool; GRID_TRACK_LIST_CAPACITY] {
+    let mut collapsed = [false; GRID_TRACK_LIST_CAPACITY];
+    let Some((start, end, kind)) = span else {
+        return collapsed;
+    };
+    if kind != GridRepeat::AutoFit {
+        return collapsed;
+    }
+    let cell_map = &scratch.cell_map;
+    let cols = cell_map.width();
+    let start = usize::from(start);
+    let end = usize::from(end);
+    for (explicit, slot) in collapsed.iter_mut().enumerate().take(end).skip(start) {
+        let row = row_offset + explicit;
+        let mut occupied = false;
+        for col in 0..cols {
             if !cell_map.is_free(row, col, 1, 1) {
                 occupied = true;
                 break;
@@ -2328,7 +2391,9 @@ where
 /// columns, against the container's definite height; when the height is
 /// indefinite, explicit rows size to content (the T1 implicit-row rule).
 /// Implicit rows (left of the offset and right beyond the explicit count) size
-/// by `auto_rows` content.
+/// by `auto_rows` content. A collapsed auto-fit row (`collapsed[row]`) is
+/// forced to fixed 0 so the fr distribution re-runs over the surviving rows
+/// only (D3 step 4, per-axis — B4).
 #[allow(clippy::too_many_arguments)]
 fn size_row_tracks(
     scratch: &mut LayoutScratch,
@@ -2339,6 +2404,7 @@ fn size_row_tracks(
     row_offset: usize,
     auto_rows: GridTrackSize,
     container_height_px: Option<f32>,
+    collapsed: &[bool; GRID_TRACK_LIST_CAPACITY],
 ) -> LaneRange {
     let range_start = scratch.tracks.begin_range();
 
@@ -2364,8 +2430,13 @@ fn size_row_tracks(
         scratch.tracks.push(empty_track_entry());
     }
     // Explicit rows: phase-initialized against a definite height, or resolved to
-    // content when the height is indefinite.
+    // content when the height is indefinite. A collapsed auto-fit row is fixed
+    // 0 (its cells hold no item).
     for row in 0..explicit_row_count {
+        if collapsed[row] {
+            scratch.tracks.push(empty_track_entry());
+            continue;
+        }
         let track = &row_tracks[row];
         let cross = row_cross[row];
         let entry = if let Some(height) = container_height_px {
@@ -3174,6 +3245,11 @@ where
         column_expansion.span,
         placement.col_offset,
     );
+    let collapsed_rows = collapsed_auto_fit_rows(
+        &root_dom.layout_scratch,
+        row_expansion.span,
+        placement.row_offset,
+    );
 
     let (col_h_min, col_h_max) = column_contributions(
         &root_dom.layout_scratch,
@@ -3227,6 +3303,7 @@ where
         placement.row_offset,
         grid_group.auto_rows,
         entered.style.height_px,
+        &collapsed_rows,
     );
     let content_height_px = total_row_height(&root_dom.layout_scratch, row_range, row_gap_px);
 
@@ -3537,8 +3614,11 @@ mod tests {
     }
 
     #[test]
-    fn span_track_basis_reads_the_min_bound_for_minmax() {
-        // The idiom's basis is the minmax MIN bound (240), not the fr MAX.
+    fn span_track_basis_reads_definite_max_else_min_for_minmax() {
+        // §7.2.3.2: a minmax is treated as its max bound when definite.
+        let definite_max = track(TrackBreadth::Px(100.0), TrackMaxBreadth::Px(200.0));
+        assert_eq!(span_track_basis(&definite_max, 600.0, 0.0, 0.0), 200.0);
+        // A `fr` max is NOT definite, so the idiom's basis is its min bound (240).
         let idiom = minmax_px_fr(240.0, 1.0);
         assert_eq!(span_track_basis(&idiom, 600.0, 0.0, 0.0), 240.0);
         // Percent resolves against S; content-based reads the contributions.
