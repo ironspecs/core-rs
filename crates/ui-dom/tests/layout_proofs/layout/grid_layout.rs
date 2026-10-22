@@ -2211,6 +2211,104 @@ fn grid_repeat_auto_fit_collapses_rows() {
 }
 
 #[test]
+// CSS Grid §7.2.2.2: a collapsed auto-fit track's gutters on either side
+// collapse. `repeat(auto-fit, minmax(240px, 1fr))` + 10px column-gap at 600px
+// with 1 item → N=2, the empty second track collapses, and its adjacent gutter
+// collapses, so the survivor absorbs the full 600 (not 600 − 10 = 590).
+fn grid_repeat_auto_fit_collapses_gutters_columns() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fit, minmax(240px, 1fr))",
+        "600px",
+    );
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.width_px,
+        600.0,
+        "the survivor absorbs the collapsed track AND its gutter",
+    );
+}
+
+#[test]
+// CSS Grid §7.2.2.2 (row axis): `height: 600px; grid-template-rows:
+// repeat(auto-fit, minmax(40px, 1fr))` + 10px row-gap with 1 item → 11 empty
+// rows collapse, so every row gutter (each touches a collapsed row) collapses
+// and the container's content height is the survivor's 600, not 600 + 11×10.
+fn grid_repeat_auto_fit_collapses_gutters_rows() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-rows",
+        "repeat(auto-fit, minmax(40px, 1fr))",
+    );
+    assert_style_set(&mut root, container, "height", "600px");
+    assert_style_set(&mut root, container, "row-gap", "10px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "width", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // The survivor row keeps the full 600 (the item stretches to it), and the
+    // container's content height drops the collapsed rows' gutters entirely.
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.height_px,
+        600.0,
+        "the surviving row keeps the full 600",
+    );
+    let container_layout = assert_node_layout(&root, container);
+    assert_close(
+        container_layout.content_height_px,
+        600.0,
+        "the collapsed rows' gutters collapse (content height 600, not 710)",
+    );
+}
+
+#[test]
+// CSS Grid §7.2.2.2: a collapsed auto-fit track's gutters on EITHER side
+// collapse. Items explicitly placed in tracks 1 and 3 of a
+// `repeat(auto-fit, 100px)` grid leave track 2 empty; track 2 collapses, so
+// BOTH of its adjacent gutters collapse and the track-3 item's left edge sits
+// flush after the track-1 item's right edge (no phantom 10px gap in the offset
+// accumulation).
+fn grid_repeat_auto_fit_middle_collapse_places_flush() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(auto-fit, 100px)",
+    );
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    assert_style_set(&mut root, container, "width", "320px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "grid-column", "1");
+    assert_style_set(&mut root, first, "height", "40px");
+    let third = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, third, "grid-column", "3");
+    assert_style_set(&mut root, third, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let first_box = border_box_of(&root, first);
+    let third_box = border_box_of(&root, third);
+    assert_close(first_box.width_px, 100.0, "track 1 is a fixed 100px track");
+    assert_close(
+        third_box.left_px,
+        first_box.left_px + first_box.width_px,
+        "track 3 item is flush after the track 1 item (track 2's gutters collapse)",
+    );
+}
+
+#[test]
 // CSS Grid §7.2.3.2 (NB2): a minmax is "treated as its max track sizing
 // function if that is definite". `repeat(auto-fill, minmax(100px, 200px))` at
 // 600px → basis 200 → N = floor(600/200) = 3 (three 200px tracks).

@@ -1899,6 +1899,26 @@ an f32 basis.
   mis-stated (553; measured 552) and is corrected in that entry.
   2 new pins; proofs 559 → 561. Registry row gains the two pins.
 
+- **2026-10-22 — grid T3.5 gutter-collapse fix (the automated reviewer's
+  one outstanding finding, adjudicated).** CSS Grid §7.2.2.2: a collapsed
+  auto-fit track's gutters "on either side of it … collapse" — the solver
+  kept them, so `repeat(auto-fit, minmax(240px, 1fr))` + `column-gap: 10px`
+  with 1 item in 600px sized the survivor to 590, not 600 (the row axis
+  mirrored in `total_row_height`). The adjudicated rule: **a gutter SURVIVES
+  iff BOTH adjacent tracks are non-collapsed** (a gutter touching a collapsed
+  track on either side collapses — e.g. `A [collapsed] B` places B flush
+  after A, both of the collapsed track's adjacent gutters collapsing). This
+  applies to EVERY gap consumer on both axes, not just the fr free-space. The
+  fix threads an `AxisCollapse { offset, collapsed }` context through the gap
+  consumers (the sizing phase's `gap_total`, the placement offset prefix-sums
+  `track_offset`/`track_offset_range`, `track_span_width`, and
+  `total_row_height`), summing only surviving gutters. Three spec-correct pins
+  land (`grid_repeat_auto_fit_collapses_gutters_columns`,
+  `grid_repeat_auto_fit_collapses_gutters_rows`,
+  `grid_repeat_auto_fit_middle_collapse_places_flush`); the deviation is
+  FIXED, not registered. `grid_repeat_count_with_gutters` (two items — nothing
+  collapses) stays green unchanged. Proofs 561 → 564.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 

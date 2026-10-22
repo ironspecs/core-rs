@@ -37,6 +37,12 @@
 //!   surviving tracks — PER-AXIS (a `collapsed_columns` bitmap feeds the column
 //!   sizing, a symmetric `collapsed_rows` bitmap the row sizing); auto-fill
 //!   never collapses
+//! - a gutter SURVIVES iff BOTH adjacent tracks are non-collapsed (§7.2.2.2: a
+//!   gutter touching a collapsed track on either side collapses). Every gap
+//!   consumer on both axes (the sizing phase's `gap_total`, the placement
+//!   offset prefix-sums, span widths, `total_row_height`) sums only surviving
+//!   gutters via `AxisCollapse` (offset + collapsed bitmap)
+
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs/flex.rs
 
 use arrayvec::ArrayVec;
@@ -190,7 +196,8 @@ enum GridLineSide {
 }
 
 /// The per-container grid solve: the three lane ranges plus the resolved
-/// container content height.
+/// container content height, and the surviving-gutter axis contexts for
+/// placement (the explicit-grid offsets plus the collapsed bitmaps — §7.2.2.2).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct GridContainerSolve {
     item_range: LaneRange,
@@ -198,6 +205,10 @@ struct GridContainerSolve {
     column_range: LaneRange,
     row_range: LaneRange,
     content_height_px: f32,
+    col_offset: usize,
+    row_offset: usize,
+    collapsed_columns: [bool; GRID_TRACK_LIST_CAPACITY],
+    collapsed_rows: [bool; GRID_TRACK_LIST_CAPACITY],
 }
 
 /// The §8.5 placement resolution: the implicit grid size plus the container
@@ -209,6 +220,19 @@ struct GridPlacement {
     total_row_count: usize,
     col_offset: usize,
     row_offset: usize,
+}
+
+/// The surviving-gutter axis context (CSS Grid §7.2.2.2): the explicit grid's
+/// offset within the full track lane (the left/top implicit-track count) plus
+/// the collapsed-track bitmap over explicit indices. Implicit tracks (left of
+/// `offset` and right of the explicit span) never collapse; a gutter survives
+/// iff BOTH adjacent tracks are non-collapsed. The gap consumers that walk the
+/// full lane (offset/span/height accumulation) carry this context; the sizing
+/// phase (which runs on the explicit sub-range) carries only the bitmap.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct AxisCollapse {
+    offset: usize,
+    collapsed: [bool; GRID_TRACK_LIST_CAPACITY],
 }
 
 /// The placement result for one grid child: the resolved child context plus the
@@ -375,6 +399,14 @@ where
         row_expansion.span,
         placement.row_offset,
     );
+    let column_collapse = AxisCollapse {
+        offset: placement.col_offset,
+        collapsed: collapsed_columns,
+    };
+    let row_collapse = AxisCollapse {
+        offset: placement.row_offset,
+        collapsed: collapsed_rows,
+    };
 
     // 4. Per-column contributions (max h_min / h_max per explicit column, from
     // the resolved placement + spans).
@@ -422,6 +454,7 @@ where
         order_range,
         column_range,
         column_gap_px,
+        column_collapse,
         &grid_group,
         resolver,
         RootDomMetricName::GridNodesMeasured,
@@ -440,7 +473,12 @@ where
         entered.style.height_px,
         &collapsed_rows,
     );
-    let content_height_px = total_row_height(&root_dom.layout_scratch, row_range, row_gap_px);
+    let content_height_px = total_row_height(
+        &root_dom.layout_scratch,
+        row_range,
+        row_gap_px,
+        row_collapse,
+    );
 
     // 9. Placement + abs-pos pass.
     let placed_content_height_px = place_grid_children(
@@ -453,6 +491,10 @@ where
             column_range,
             row_range,
             content_height_px,
+            col_offset: placement.col_offset,
+            row_offset: placement.row_offset,
+            collapsed_columns,
+            collapsed_rows,
         },
         column_gap_px,
         row_gap_px,
@@ -470,8 +512,8 @@ where
         placed_content_height_px,
         column_range,
         row_range,
-        placement.col_offset,
-        placement.row_offset,
+        column_collapse,
+        row_collapse,
         column_gap_px,
         row_gap_px,
         col_count,
@@ -2072,6 +2114,7 @@ fn size_column_tracks(
         explicit_range,
         (container_width_px - implicit_total).max(0.0),
         column_gap_px,
+        collapsed,
     );
     range
 }
@@ -2100,20 +2143,65 @@ fn resolve_implicit_col_width(
     content_width_px.clamp(min, max)
 }
 
+/// The count of surviving gutters across `count` adjacent explicit tracks: a
+/// gutter survives iff BOTH adjacent tracks are non-collapsed (CSS Grid
+/// §7.2.2.2 — a gutter touching a collapsed track on either side collapses).
+/// `collapsed` is explicit-indexed and the sizing phase's slice positions are
+/// the explicit indices, so the adjacent pairs are `(0,1) .. (count-2, count-1)`.
+fn surviving_explicit_gutter_count(collapsed: &[bool], count: usize) -> usize {
+    (0..count.saturating_sub(1))
+        .filter(|&index| !collapsed[index] && !collapsed[index + 1])
+        .count()
+}
+
+/// True when the lane track at absolute `index` (within the full lane) is a
+/// collapsed auto-fit track. `collapse.offset` locates the explicit grid within
+/// the lane; implicit tracks never collapse.
+#[inline]
+fn lane_track_is_collapsed(collapse: AxisCollapse, index: usize) -> bool {
+    index >= collapse.offset
+        && collapse
+            .collapsed
+            .get(index - collapse.offset)
+            .copied()
+            .unwrap_or(false)
+}
+
+/// The surviving gutter sum across a contiguous span of `count` full-lane
+/// tracks starting at absolute lane index `start` (the offset/span/height
+/// consumers walk the FULL lane: left-implicit + explicit + right-implicit).
+/// A gutter survives iff BOTH adjacent tracks are non-collapsed (§7.2.2.2).
+fn surviving_gutter_sum(collapse: AxisCollapse, start: usize, count: usize, gap_px: f32) -> f32 {
+    let mut total = 0.0f32;
+    let end = start.saturating_add(count);
+    for index in start..end.saturating_sub(1) {
+        if !lane_track_is_collapsed(collapse, index)
+            && !lane_track_is_collapsed(collapse, index + 1)
+        {
+            total += gap_px;
+        }
+    }
+    total
+}
+
 /// The D2 sizing phases (maximize → fr expand → stretch auto), in place. The
 /// overflow edge (free ≤ 0) leaves every track at its base (fr gets its base).
+/// `collapsed` marks the collapsed auto-fit tracks (present in `range` as
+/// `empty_track_entry`, base 0), so the gutter total counts only the surviving
+/// gutters — §7.2.2.2, a gutter touching a collapsed track collapses.
 fn run_track_sizing_phases(
     scratch: &mut LayoutScratch,
     range: LaneRange,
     container_width_px: f32,
     gap_px: f32,
+    collapsed: &[bool; GRID_TRACK_LIST_CAPACITY],
 ) {
     let entries = scratch.tracks.slice_mut(range);
     let count = entries.len();
     if count == 0 {
         return;
     }
-    let gap_total = gap_px * usize_to_f32(count.saturating_sub(1));
+    let gap_total = gap_px * usize_to_f32(surviving_explicit_gutter_count(collapsed, count));
     let base_sum: f32 = entries.iter().map(|entry| entry.base_px).sum();
     let mut remaining = container_width_px - base_sum - gap_total;
     if remaining <= 0.0 {
@@ -2237,6 +2325,7 @@ fn resolve_grid_items<R>(
     order_range: LaneRange,
     column_range: LaneRange,
     column_gap_px: f32,
+    column_collapse: AxisCollapse,
     grid_group: &ComputedGridGroup,
     resolver: &mut R,
     metric: RootDomMetricName,
@@ -2259,6 +2348,7 @@ where
                 entry.col,
                 entry.view.col_span,
                 column_gap_px,
+                column_collapse,
             );
             (
                 order_entry.dom_index,
@@ -2308,20 +2398,24 @@ where
 }
 
 /// The sum of the track sizes spanned by an item (`start..start+span`) plus the
-/// gaps between them (D4: a span-N item's track width includes N tracks and
-/// N−1 gaps).
+/// surviving gaps between them (D4: a span-N item's track width includes N
+/// tracks and the surviving N−1-or-fewer gaps; §7.2.2.2 collapses a gutter that
+/// touches a collapsed track).
 fn track_span_width(
     scratch: &LayoutScratch,
     range: LaneRange,
     start: u32,
     span: u32,
     gap_px: f32,
+    collapse: AxisCollapse,
 ) -> f32 {
     let mut width = 0.0f32;
     for offset in 0..span {
         width += scratch.tracks.get(range.start + start + offset).base_px;
     }
-    width + gap_px * usize_to_f32(usize::try_from(span.saturating_sub(1)).expect("span fits usize"))
+    let start_usize = usize::try_from(start).expect("span start fits usize");
+    let span_usize = usize::try_from(span).expect("span fits usize");
+    width + surviving_gutter_sum(collapse, start_usize, span_usize, gap_px)
 }
 
 /// True when the item has an auto left or right margin (fit-content inline, not
@@ -2510,6 +2604,7 @@ fn size_row_tracks(
             explicit_range,
             (height - implicit_total).max(0.0),
             0.0,
+            collapsed,
         );
     }
     range
@@ -2543,11 +2638,17 @@ fn resolve_implicit_row_height(
     content_cross_px.clamp(min, max)
 }
 
-/// The container's resolved content height: Σ row heights + row gaps.
-fn total_row_height(scratch: &LayoutScratch, row_range: LaneRange, row_gap_px: f32) -> f32 {
+/// The container's resolved content height: Σ row heights + the surviving row
+/// gaps (§7.2.2.2 — a gutter touching a collapsed row collapses).
+fn total_row_height(
+    scratch: &LayoutScratch,
+    row_range: LaneRange,
+    row_gap_px: f32,
+    row_collapse: AxisCollapse,
+) -> f32 {
     let rows = scratch.tracks.slice(row_range);
     let sum: f32 = rows.iter().map(|entry| entry.base_px).sum();
-    let gap_total = row_gap_px * usize_to_f32(rows.len().saturating_sub(1));
+    let gap_total = surviving_gutter_sum(row_collapse, 0, rows.len(), row_gap_px);
     (sum + gap_total).max(0.0)
 }
 
@@ -2571,6 +2672,14 @@ where
     R: DomLayoutResolver + ?Sized,
 {
     let item_count = usize::try_from(solve.item_range.len).expect("item range len fits usize");
+    let column_collapse = AxisCollapse {
+        offset: solve.col_offset,
+        collapsed: solve.collapsed_columns,
+    };
+    let row_collapse = AxisCollapse {
+        offset: solve.row_offset,
+        collapsed: solve.collapsed_rows,
+    };
     let mut placed_item_count = 0usize;
     for order_pos in 0..item_count {
         let (dom_index, cell_left, cell_top, track_width, row_height) = {
@@ -2587,12 +2696,14 @@ where
                     solve.column_range,
                     entry.col,
                     column_gap_px,
+                    column_collapse,
                 ),
                 track_offset(
                     &root_dom.layout_scratch,
                     solve.row_range,
                     entry.row,
                     row_gap_px,
+                    row_collapse,
                 ),
                 track_span_width(
                     &root_dom.layout_scratch,
@@ -2600,6 +2711,7 @@ where
                     entry.col,
                     entry.view.col_span,
                     column_gap_px,
+                    column_collapse,
                 ),
                 track_span_width(
                     &root_dom.layout_scratch,
@@ -2607,6 +2719,7 @@ where
                     entry.row,
                     entry.view.row_span,
                     row_gap_px,
+                    row_collapse,
                 ),
             )
         };
@@ -2660,16 +2773,25 @@ where
     Ok(solve.content_height_px)
 }
 
-/// The sum of the first `index` track sizes plus `index` gaps (the cell's
-/// content-box offset along an axis).
-fn track_offset(scratch: &LayoutScratch, range: LaneRange, index: u32, gap_px: f32) -> f32 {
+/// The sum of the first `index` track sizes plus the surviving gaps before
+/// them (the cell's content-box offset along an axis). A track at index `i`
+/// sits after `i` gutters (the boundaries `0..i`), so the surviving-gutter sum
+/// runs over the internal gutters of the `index + 1`-track prefix (§7.2.2.2
+/// collapses a gutter touching a collapsed track).
+fn track_offset(
+    scratch: &LayoutScratch,
+    range: LaneRange,
+    index: u32,
+    gap_px: f32,
+    collapse: AxisCollapse,
+) -> f32 {
     let tracks = scratch.tracks.slice(range);
     let index_usize = usize::try_from(index).expect("track index fits usize");
     let mut offset = 0.0f32;
     for track in tracks.iter().take(index_usize) {
         offset += track.base_px;
     }
-    offset + gap_px * usize_to_f32(index_usize)
+    offset + surviving_gutter_sum(collapse, 0, index_usize.saturating_add(1), gap_px)
 }
 
 /// Resolves one grid item's placement: the content origin (cell top-left +
@@ -2881,8 +3003,8 @@ fn place_excluded_abs_grid_children<R>(
     content_height_px: f32,
     column_range: LaneRange,
     row_range: LaneRange,
-    col_offset: usize,
-    row_offset: usize,
+    column_collapse: AxisCollapse,
+    row_collapse: AxisCollapse,
     column_gap_px: f32,
     row_gap_px: f32,
     col_count: usize,
@@ -2950,8 +3072,8 @@ where
                 explicit_row_count,
                 column_range,
                 row_range,
-                col_offset,
-                row_offset,
+                column_collapse,
+                row_collapse,
                 column_gap_px,
                 row_gap_px,
                 column_line_names,
@@ -2980,8 +3102,8 @@ fn resolve_abs_grid_area(
     explicit_row_count: usize,
     column_range: LaneRange,
     row_range: LaneRange,
-    col_offset: usize,
-    row_offset: usize,
+    column_collapse: AxisCollapse,
+    row_collapse: AxisCollapse,
     column_gap_px: f32,
     row_gap_px: f32,
     column_line_names: &[(TextKey, u8)],
@@ -3022,8 +3144,10 @@ fn resolve_abs_grid_area(
     else {
         return (None, None);
     };
-    let col_index = usize::try_from(i64::from(col_start) + i64::try_from(col_offset).unwrap_or(0));
-    let row_index = usize::try_from(i64::from(row_start) + i64::try_from(row_offset).unwrap_or(0));
+    let col_index =
+        usize::try_from(i64::from(col_start) + i64::try_from(column_collapse.offset).unwrap_or(0));
+    let row_index =
+        usize::try_from(i64::from(row_start) + i64::try_from(row_collapse.offset).unwrap_or(0));
     let (Ok(col_index), Ok(row_index)) = (col_index, row_index) else {
         return (None, None);
     };
@@ -3032,20 +3156,36 @@ fn resolve_abs_grid_area(
         column_range,
         col_index,
         column_gap_px,
+        column_collapse,
     );
-    let top = track_offset_range(&root_dom.layout_scratch, row_range, row_index, row_gap_px);
+    let top = track_offset_range(
+        &root_dom.layout_scratch,
+        row_range,
+        row_index,
+        row_gap_px,
+        row_collapse,
+    );
     (Some(left), Some(top))
 }
 
-/// The sum of the first `index` track sizes plus `index` gaps (an axis offset),
-/// by `usize` index.
-fn track_offset_range(scratch: &LayoutScratch, range: LaneRange, index: usize, gap_px: f32) -> f32 {
+/// The sum of the first `index` track sizes plus the surviving gaps before
+/// them (an axis offset; §7.2.2.2 collapses a gutter touching a collapsed
+/// track), by `usize` index. A track at index `i` sits after `i` gutters, so
+/// the surviving-gutter sum runs over the `index + 1`-track prefix's internal
+/// gutters.
+fn track_offset_range(
+    scratch: &LayoutScratch,
+    range: LaneRange,
+    index: usize,
+    gap_px: f32,
+    collapse: AxisCollapse,
+) -> f32 {
     let tracks = scratch.tracks.slice(range);
     let mut offset = 0.0f32;
     for track in tracks.iter().take(index) {
         offset += track.base_px;
     }
-    offset + gap_px * usize_to_f32(index)
+    offset + surviving_gutter_sum(collapse, 0, index.saturating_add(1), gap_px)
 }
 
 /// The D7 container intrinsic inline sizes (`h_min`/`h_max` for the parent's
@@ -3256,6 +3396,14 @@ where
         row_expansion.span,
         placement.row_offset,
     );
+    let column_collapse = AxisCollapse {
+        offset: placement.col_offset,
+        collapsed: collapsed_columns,
+    };
+    let row_collapse = AxisCollapse {
+        offset: placement.row_offset,
+        collapsed: collapsed_rows,
+    };
 
     let (col_h_min, col_h_max) = column_contributions(
         &root_dom.layout_scratch,
@@ -3295,6 +3443,7 @@ where
         order_range,
         column_range,
         column_gap_px,
+        column_collapse,
         &grid_group,
         resolver,
         metric,
@@ -3311,7 +3460,12 @@ where
         entered.style.height_px,
         &collapsed_rows,
     );
-    let content_height_px = total_row_height(&root_dom.layout_scratch, row_range, row_gap_px);
+    let content_height_px = total_row_height(
+        &root_dom.layout_scratch,
+        row_range,
+        row_gap_px,
+        row_collapse,
+    );
 
     let (h_min, h_max) = grid_container_intrinsic_inline_sizes(
         &column_tracks,
@@ -3655,6 +3809,43 @@ mod tests {
             ),
             40.0
         );
+    }
+
+    #[test]
+    fn surviving_gutters_collapse_around_a_collapsed_track() {
+        // §7.2.2.2: a gutter survives iff BOTH adjacent tracks are non-collapsed.
+        // Explicit bitmap: [A, collapsed, B] over explicit indices 0..2.
+        let collapsed = [
+            false, true, false, false, false, false, false, false, false, false, false, false,
+        ];
+        // Explicit-only count over the three tracks: both pairs touch the
+        // collapsed middle track → 0 surviving gutters.
+        assert_eq!(surviving_explicit_gutter_count(&collapsed, 3), 0);
+        // Full-lane with one leading implicit track (offset 1): the implicit→A
+        // gutter survives; A→collapsed and collapsed→B collapse → 1 gutter.
+        let lane = AxisCollapse {
+            offset: 1,
+            collapsed,
+        };
+        assert_eq!(surviving_gutter_sum(lane, 0, 4, 10.0), 10.0);
+        // A span of [A, collapsed, B] (start 1, count 3) has no surviving gutter.
+        assert_eq!(surviving_gutter_sum(lane, 1, 3, 10.0), 0.0);
+        // The collapsed track itself is recognized; the implicit track is not.
+        assert!(lane_track_is_collapsed(lane, 2));
+        assert!(!lane_track_is_collapsed(lane, 0));
+        assert!(!lane_track_is_collapsed(lane, 1));
+    }
+
+    #[test]
+    fn surviving_gutters_all_survive_without_collapse() {
+        // No collapsed tracks: every gutter survives (§7.2.2.2's base case).
+        let no_collapse = [false; GRID_TRACK_LIST_CAPACITY];
+        assert_eq!(surviving_explicit_gutter_count(&no_collapse, 3), 2);
+        let lane = AxisCollapse {
+            offset: 0,
+            collapsed: no_collapse,
+        };
+        assert_eq!(surviving_gutter_sum(lane, 0, 3, 10.0), 20.0);
     }
 
     #[test]
