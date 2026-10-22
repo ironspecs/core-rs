@@ -531,6 +531,88 @@ fn grid_area_expands_per_d2() {
 }
 
 #[test]
+fn grid_area_auto_resets_to_auto_placement() {
+    // `grid-area: auto` is the shorthand's keyword, not a name: it writes
+    // `GridLine::Auto` to all four longhands (the lone-ident branch rejects
+    // `auto`, so it falls through to the grid-line path's defaulting table).
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "grid-area", "auto");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let map = root.compute_style_map(target).expect("style map");
+    for property_name in [
+        "grid-row-start",
+        "grid-column-start",
+        "grid-row-end",
+        "grid-column-end",
+    ] {
+        let property = PresentationProperty::from_name(property_name).expect("longhand");
+        assert_eq!(
+            map.get(&property),
+            Some(&DomAttributeValue::String("auto".to_string())),
+            "grid-area: auto → {property_name} = auto",
+        );
+    }
+
+    // Re-setting between forms: `grid-area: header` then `grid-area: auto`
+    // resets to full auto placement (the header name does not linger).
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "grid-area", "header");
+    assert_style_set(&mut root, target, "grid-area", "auto");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let map = root.compute_style_map(target).expect("style map");
+    for property_name in [
+        "grid-row-start",
+        "grid-column-start",
+        "grid-row-end",
+        "grid-column-end",
+    ] {
+        let property = PresentationProperty::from_name(property_name).expect("longhand");
+        assert_eq!(
+            map.get(&property),
+            Some(&DomAttributeValue::String("auto".to_string())),
+            "grid-area: header then auto → {property_name} = auto",
+        );
+    }
+}
+
+#[test]
+fn grid_custom_ident_positions_reject_reserved_keywords() {
+    // CSS Values 4 §3.2 excludes the CSS-wide keywords from <custom-ident>;
+    // CSS Grid §7.1 additionally excludes `span`; `auto` is the shorthand's
+    // keyword, not a name. Each reserved keyword in a name position drops +
+    // counts (never becomes a name).
+    assert_decl_drop(".x { grid-template-areas: \"auto auto\" }", 0, 1);
+    assert_decl_drop(".x { grid-template-columns: [auto] 1fr }", 0, 1);
+
+    // `span` is already excluded and stays excluded (control).
+    assert_decl_drop(".x { grid-area: span }", 0, 1);
+
+    // `grid-area: inherit` is the css-wide keyword, not a name: the strict
+    // write rejects it and the group stays initial (no placement longhands).
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "display", "grid");
+    assert!(
+        root.style_mut(target).set("grid-area", "inherit").is_err(),
+        "grid-area: inherit must be rejected by the strict write"
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let map = root.compute_style_map(target).expect("style map");
+    for property_name in [
+        "grid-row-start",
+        "grid-column-start",
+        "grid-row-end",
+        "grid-column-end",
+    ] {
+        let property = PresentationProperty::from_name(property_name).expect("longhand");
+        assert_eq!(
+            map.get(&property),
+            None,
+            "grid-area: inherit must not become {property_name} area state",
+        );
+    }
+}
+
+#[test]
 fn grid_line_name_capacity_gates_drop() {
     // A name labeling more than four lines drops + counts.
     assert_decl_drop(

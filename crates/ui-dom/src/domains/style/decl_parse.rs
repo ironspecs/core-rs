@@ -739,9 +739,19 @@ fn register_line_names(
 /// True when `value` is a valid grid `<custom-ident>`: a non-empty identifier
 /// whose first character is alphabetic (or `-`/`_`) and whose remainder is
 /// alphanumeric/`-`/`_`, and NOT a signed integer (`-1` is a line, never a
-/// name). The `span`/`auto` keywords are handled by the callers before this
-/// check.
+/// name). The CSS-wide keywords (`initial`, `inherit`, `unset`, `revert`,
+/// `revert-layer` — CSS Values 4 §3.2), `span` (CSS Grid §7.1), and `auto`
+/// (the grid shorthand's keyword, not a name) are rejected here so they never
+/// become names in area cells, `[name]` line names, or the lone-ident
+/// `grid-area` branch; the CSS-wide keywords then fall through to the css-wide
+/// value path upstream rather than becoming area/line state.
 fn is_custom_ident(value: &str) -> bool {
+    if matches!(
+        value,
+        "span" | "initial" | "inherit" | "unset" | "revert" | "revert-layer" | "auto"
+    ) {
+        return false;
+    }
     if value.parse::<i64>().is_ok() {
         return false;
     }
@@ -1681,18 +1691,21 @@ fn expand_grid_row(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration
 /// `<custom-ident>` writes ALL FOUR placement longhands as `GridLine::Named(name)`
 /// — exactly as `margin: 0 auto` expands to four margin longhands, so a later
 /// placement longhand wins its own slot (`grid-area: header` then
-/// `grid-column-start: 2`). 1–4 `<grid-line>` values write the four placement
-/// longhands with the standard defaulting table (`row-start`, `column-start`,
-/// `row-end`, `column-end`).
+/// `grid-column-start: 2`). `grid-area: auto` is NOT a lone ident (`auto` is
+/// rejected by `is_custom_ident`) and falls through to the grid-line path,
+/// which writes `GridLine::Auto` to all four longhands. 1–4 `<grid-line>`
+/// values write the four placement longhands with the standard defaulting
+/// table (`row-start`, `column-start`, `row-end`, `column-end`).
 fn expand_grid_area(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
     // A lone <custom-ident> names the area: it expands to the four placement
     // longhands as `Named(name)` (not a separate area-name slot), so re-setting
-    // the shorthand between forms clears the previous form's longhands.
+    // the shorthand between forms clears the previous form's longhands. `auto`
+    // and the CSS-wide keywords are rejected by `is_custom_ident`, so they fall
+    // through to the grid-line path below (never a name).
     let tokens = split_ws_paren_aware(value);
     if let [single] = tokens.as_slice()
         && !single.contains('/')
         && is_custom_ident(single)
-        && *single != "span"
     {
         let named = GridLine::Named(store.intern(single));
         return Some(vec![
@@ -3320,6 +3333,38 @@ mod tests {
         assert_eq!(parse_grid_line("span -1", &mut store), None);
         assert_eq!(parse_grid_line("span main 0", &mut store), None);
         assert_eq!(parse_grid_line("2 span", &mut store), None);
+    }
+
+    #[test]
+    fn is_custom_ident_rejects_reserved_keywords() {
+        // CSS Values 4 §3.2 excludes the CSS-wide keywords; CSS Grid §7.1
+        // excludes `span`; `auto` is the shorthand's keyword, not a name. None
+        // of these may become a name in area cells, `[name]` line names, or the
+        // lone-ident `grid-area` branch.
+        for reserved in [
+            "span",
+            "initial",
+            "inherit",
+            "unset",
+            "revert",
+            "revert-layer",
+            "auto",
+        ] {
+            assert!(
+                !is_custom_ident(reserved),
+                "{reserved:?} must not be a <custom-ident>"
+            );
+        }
+        // Signed integers are lines, not names.
+        assert!(!is_custom_ident("1"));
+        assert!(!is_custom_ident("-1"));
+        // Genuine idents (including hyphen-prefixed) still pass.
+        for valid in ["header", "main", "a1", "-start", "_x", "foo-bar"] {
+            assert!(
+                is_custom_ident(valid),
+                "{valid:?} should be a <custom-ident>"
+            );
+        }
     }
 
     #[test]
