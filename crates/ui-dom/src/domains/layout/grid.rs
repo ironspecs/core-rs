@@ -606,6 +606,11 @@ fn expand_track_list(
 /// conversion: the quotient is unbounded for astronomical/infinite definite
 /// sizes, so any value above the lane capacity clamps to it (the metric fires)
 /// and the f32→u32 conversion happens only on the already-clamped value (B2).
+/// `capped` is `is_nan() || formula > capacity` rather than a bare
+/// `formula > capacity` so a NaN quotient (finite ~3e38 lengths whose
+/// `s + gap`/`rep_size + gap` sums overflow to INF, making the quotient
+/// INF/INF) still counts as capped — the clamp DID engage (N lands on the
+/// capacity), and `>` alone is false for NaN (N1).
 fn compute_auto_repeat_count(
     stored_tracks: &[GridTrackSize],
     start: u8,
@@ -642,7 +647,8 @@ fn compute_auto_repeat_count(
     // clamped value (≤ the lane capacity, so it always fits u32).
     let clamped_f32 = formula_f32.min(capacity_f32).max(1.0);
     let n = usize::try_from(f32_to_u32(clamped_f32)).expect("clamped count fits u32");
-    (n, formula_f32 > capacity_f32)
+    let capped = formula_f32.is_nan() || formula_f32 > capacity_f32;
+    (n, capped)
 }
 
 /// One span track's repetition basis for the count (CSS Grid §7.2.3.2). A

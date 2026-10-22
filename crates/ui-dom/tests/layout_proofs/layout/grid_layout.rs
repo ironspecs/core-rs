@@ -1988,6 +1988,51 @@ fn grid_repeat_count_clamps_before_conversion() {
 }
 
 #[test]
+// CSS Grid §7.2.3.2 + N1: finite ~3e38 lengths (width, column-gap, and the span
+// track) whose `s + gap` and `rep_size + gap` sums overflow f32 to INF make the
+// fill-formula quotient INF/INF = NaN. The clamp still engages — the count
+// lands on the 12-track lane capacity (no panic) — and
+// `grid_repetition_count_capped` must count it, because a NaN quotient is a
+// capped clamp, not an in-range count.
+fn grid_repeat_nan_quotient_counts_as_capped() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(auto-fill, 300000000000000000000000000000000000000px)",
+    );
+    assert_style_set(
+        &mut root,
+        container,
+        "column-gap",
+        "300000000000000000000000000000000000000px",
+    );
+    assert_style_set(
+        &mut root,
+        container,
+        "width",
+        "300000000000000000000000000000000000000px",
+    );
+    for _ in 0..12 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    root.reset_metrics();
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        root.count(RootDomMetricName::GridRepetitionCountCapped),
+        1,
+        "the NaN quotient's count clamped to lane capacity once"
+    );
+    // N = 12 (no panic): twelve span tracks hold the twelve items.
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_eq!(rects.len(), 13, "container + 12 items");
+}
+
+#[test]
 // CSS Grid §7.1 + §8.1.3: named lines inside an auto-repeat span repeat with
 // their tracks; `grid-column: main` resolves to the FIRST match (one track,
 // not a span across both `main` lines).
@@ -2076,6 +2121,64 @@ fn grid_repeat_boundary_line_name_ownership() {
         text.matches("after").count(),
         1,
         "after is emitted exactly once (in the suffix, not duplicated in the span)"
+    );
+}
+
+#[test]
+// CSS Grid §7.2.3.2 + §8.1.3 (F1 — the B3 span-START mirror): a line name
+// authored between the last prefix track and the `repeat(` token
+// (`50px [pre] repeat(auto-fill, 100px) 200px`) is prefix-owned and sits on
+// the span-START line. It resolves at line 1 (left 50, width 100) and
+// round-trips with `[pre]` emitted exactly once, BEFORE the `repeat(` wrapper.
+fn grid_repeat_prefix_boundary_name_round_trips() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "50px [pre] repeat(auto-fill, 100px) 200px",
+    );
+    assert_style_set(&mut root, container, "width", "600px");
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "grid-column", "pre");
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.left_px,
+        50.0,
+        "pre resolves at line 1 (after the 50px prefix track)",
+    );
+    assert_close(
+        item_box.width_px,
+        100.0,
+        "the pre-named start is one 100px span track",
+    );
+
+    // Round-trip: `pre` is emitted exactly once, before the `repeat(`.
+    let snapshot = root.canonical_style_snapshot(container);
+    let value = snapshot
+        .styles
+        .iter()
+        .find(|(name, _)| name == "grid-template-columns")
+        .map(|(_, value)| value)
+        .expect("grid-template-columns should be declared");
+    let DomAttributeValue::String(text) = value else {
+        panic!("grid-template-columns serializes to a string value");
+    };
+    assert_eq!(text, "50px [pre] repeat(auto-fill, 100px) 200px");
+    assert_eq!(
+        text.matches("pre").count(),
+        1,
+        "pre is emitted exactly once (in the prefix, not duplicated in the span)"
+    );
+    let pre_idx = text.find("[pre]").expect("the prefix bracket is present");
+    let repeat_idx = text.find("repeat(").expect("the repeat wrapper is present");
+    assert!(
+        pre_idx < repeat_idx,
+        "the prefix name is emitted before the repeat wrapper"
     );
 }
 

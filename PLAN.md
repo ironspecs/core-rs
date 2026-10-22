@@ -1874,8 +1874,30 @@ an f32 basis.
   pin (`grid_repeat_survives_stylesheet_reintern`) asserts the wire
   form because the layout outcome alone was non-discriminating
   (proved by reverting the fix). Design v3 records every
-  adjudication; 6+1 new pins; proofs 553 → 559. Registry gains the
+  adjudication; 6+1 new pins; proofs 552 → 559. Registry gains the
   zero-basis-span and inline-grid intrinsic-fill deferred notes.
+
+- **2026-10-22 — T3.5 re-review close-out: REMEDIATE, remediated.**
+  The re-review cleared all four original findings but found one new
+  blocking defect (F1) and two non-blockings, all adjudicated. F1
+  (blocking): a prefix-owned line name authored between the last
+  prefix track and the `repeat(` token (`50px [pre]
+  repeat(auto-fill, 100px) 200px`) was dropped from the wire — the
+  `to_css_string` span-wrapper branch emitted only span-OWNED names
+  and resumed the outer loop at `end`, so the span-START line was
+  never flushed with the non-owned filter (resolution stayed correct,
+  but re-parsing the wire turned `grid-column: pre` into auto). The
+  wrapper now flushes non-owned names at the start line BEFORE the
+  `repeat(` keyword, restoring exact authored order and once-only
+  emission; the B3 suffix-boundary partition was untouched. N1
+  (non-blocking, fixed): a NaN fill-formula quotient (finite ~3e38
+  width/column-gap/span-track whose `s + gap` and `rep_size + gap`
+  sums overflow f32 to INF, making the quotient INF/INF) no longer
+  escapes the capped metric — `capped` is now `is_nan() || formula >
+  capacity` so a NaN quotient counts the engaged clamp. N2
+  (non-blocking, fixed): the remediation entry's base proof count was
+  mis-stated (553; measured 552) and is corrected in that entry.
+  2 new pins; proofs 559 → 561. Registry row gains the two pins.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

@@ -38,8 +38,11 @@
 //!   the span's inner list. Entries before it are prefix-owned, after it
 //!   suffix-owned; a name on the boundary line (`repeat(auto-fill, 100px)
 //!   [after] 200px`) is suffix-owned, distinct from a trailing name INSIDE the
-//!   span. Expansion shifts only suffix-owned names; serialization partitions
-//!   by ownership so a boundary name is emitted exactly once in its section.
+//!   span, and its span-START mirror (`50px [pre] repeat(auto-fill, 100px)
+//!   200px`) is prefix-owned. Expansion shifts only suffix-owned names;
+//!   serialization partitions by ownership so a boundary name is emitted
+//!   exactly once in its section — the suffix boundary after the wrapper, the
+//!   prefix boundary flushed before the `repeat(` token.
 
 use arrayvec::ArrayVec;
 
@@ -153,6 +156,13 @@ impl GridTrackList {
             if let Some((start, count, kind)) = span
                 && line == usize::from(start)
             {
+                // A name authored between the last prefix track and the
+                // `repeat(` token sits on the span-START line and is
+                // prefix-owned; flush it BEFORE the wrapper so authored order
+                // round-trips (`50px [pre] repeat(…)`). The outer loop resumes
+                // at `end`, so this flush is that name's one and only emission
+                // (suffix-owned names cannot sit at a line below `end`).
+                self.push_line_names(&mut out, line, &resolve, owned, false);
                 // Emit the span as `repeat(auto-*, <inner list>)`: the inner
                 // list is the span's one stored copy, but ONLY its span-OWNED
                 // line names (a boundary name owned by the suffix stays out).
@@ -346,6 +356,43 @@ mod tests {
         both.owned_line_name_range = Some((0, 1)); // `inner` span-owned, `after` suffix-owned
         let serialized = both.to_css_string(|key| store.resolve(key));
         assert_eq!(serialized, "repeat(auto-fill, 100px [inner]) [after] 200px");
+    }
+
+    #[test]
+    fn boundary_line_name_is_prefix_owned_and_emitted_once() {
+        // `50px [pre] repeat(auto-fill, 100px) 200px`: the `[pre]` name sits on
+        // the span-START line 1 — the SAME line index a leading name INSIDE the
+        // span would hold — but it is prefix-owned. Serialization flushes it
+        // BEFORE the wrapper, so `pre` is emitted exactly once, in the prefix.
+        let mut list = GridTrackList::default();
+        let mut store = DeclStore::default();
+        list.tracks.push(px(50.0, 50.0));
+        list.tracks.push(px(100.0, 100.0));
+        list.tracks.push(px(200.0, 200.0));
+        let pre = store.intern("pre");
+        assert!(list.register_line_name(pre, 1));
+        list.auto_repeat_span = Some((1, 1, GridRepeat::AutoFill));
+        list.owned_line_name_range = Some((1, 1)); // no span-owned names
+        let serialized = list.to_css_string(|key| store.resolve(key));
+        assert_eq!(serialized, "50px [pre] repeat(auto-fill, 100px) 200px");
+
+        // A span-inner leading name on the same start line stays inside the
+        // span wrapper, and a distinct prefix name stays out — both once.
+        let mut both = GridTrackList::default();
+        both.tracks.push(px(50.0, 50.0));
+        both.tracks.push(px(100.0, 100.0));
+        both.tracks.push(px(200.0, 200.0));
+        let pre = store.intern("pre");
+        let inner = store.intern("inner");
+        assert!(both.register_line_name(pre, 1));
+        assert!(both.register_line_name(inner, 1));
+        both.auto_repeat_span = Some((1, 1, GridRepeat::AutoFill));
+        both.owned_line_name_range = Some((1, 2)); // `inner` span-owned, `pre` prefix-owned
+        let serialized = both.to_css_string(|key| store.resolve(key));
+        assert_eq!(
+            serialized,
+            "50px [pre] repeat(auto-fill, [inner] 100px) 200px"
+        );
     }
 
     #[test]
