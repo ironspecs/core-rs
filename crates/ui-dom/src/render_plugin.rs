@@ -150,10 +150,11 @@ fn install_ui_dom_surface_material_support(app: &mut App) {
 #[allow(clippy::needless_pass_by_value)]
 fn load_ui_dom_text_fonts(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(UiDomTextFontCatalog {
-        ui_sans_handles: text_layout::text_render::ui_sans_repo_font_asset_paths()
+        embedded_handles: text_layout::text_render::ui_sans_repo_font_asset_paths()
             .iter()
             .map(|path| asset_server.load(*path))
             .collect(),
+        font_catalog: text_layout::TextFontCatalog::repo_default(),
     });
 }
 

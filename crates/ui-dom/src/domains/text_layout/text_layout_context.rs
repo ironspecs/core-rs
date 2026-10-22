@@ -23,11 +23,11 @@ use crate::types::DomWhiteSpace;
 
 use super::text_render;
 use super::{
-    CaretStop, TextCaretLayout, TextCaretLine, TextCaretMap, TextIntrinsicMetrics,
+    CaretStop, TextCaretLayout, TextCaretLine, TextCaretMap, TextFontCatalog, TextIntrinsicMetrics,
     TextLayoutConfig, TextLayoutRequest, WrappedTextLayout, WrappedTextLineLayout,
     build_text_buffer, build_wrapped_text_buffer, build_wrapped_text_buffer_and_byte_map,
-    effective_line_height_px, install_text_font_catalog, text_caret_layout_from_buffer,
-    text_caret_map_from_buffer, text_caret_stop_byte_index_from_map,
+    effective_line_height_px, install_text_font_catalog_sources, install_text_font_source,
+    text_caret_layout_from_buffer, text_caret_map_from_buffer, text_caret_stop_byte_index_from_map,
     wrapped_text_height_from_buffer, wrapped_text_layout_from_buffer,
 };
 
@@ -41,6 +41,13 @@ use crate::types::{DomOverflowWrap, DomWordBreak};
 
 pub(crate) struct TextLayoutContext {
     pub(super) font_system: FontSystem,
+    pub(super) font_catalog: TextFontCatalog,
+    /// The catalog revision this context has installed (checked at seam entry).
+    installed_revision: u64,
+    /// The number of catalog sources installed into `font_system` (embedded
+    /// faces plus any consumer faces seen so far). Only sources past this index
+    /// are installed on a revision change — embedded faces are never re-loaded.
+    installed_source_count: usize,
 }
 
 impl TextLayoutContext {
@@ -50,8 +57,33 @@ impl TextLayoutContext {
         font_system
             .db_mut()
             .set_sans_serif_family(text_render::repo_default_sans_serif_family_name());
-        install_text_font_catalog(&mut font_system, config.font_catalog);
-        Self { font_system }
+        let font_catalog = config.font_catalog;
+        install_text_font_catalog_sources(&mut font_system, &font_catalog);
+        let installed_source_count = font_catalog.sources_snapshot().len();
+        let installed_revision = font_catalog.revision();
+        Self {
+            font_system,
+            font_catalog,
+            installed_revision,
+            installed_source_count,
+        }
+    }
+
+    /// Re-installs newly appended catalog sources when the catalog's revision
+    /// has moved since this context last installed (the consumer door's main-
+    /// world routing). Cheap: one atomic-free read-lock compare at seam entry;
+    /// the re-install itself only runs on a change.
+    fn refresh_font_catalog(&mut self) {
+        let revision = self.font_catalog.revision();
+        if revision == self.installed_revision {
+            return;
+        }
+        let sources = self.font_catalog.sources_snapshot();
+        for source in &sources[self.installed_source_count..] {
+            install_text_font_source(&mut self.font_system, source);
+        }
+        self.installed_source_count = sources.len();
+        self.installed_revision = self.font_catalog.revision();
     }
 
     #[must_use]
@@ -59,6 +91,7 @@ impl TextLayoutContext {
         &mut self,
         request: &TextLayoutRequest<'_>,
     ) -> TextIntrinsicMetrics {
+        self.refresh_font_catalog();
         let line_height_px = effective_line_height_px(&mut self.font_system, request);
         // Boundary wrap-opportunity flags are text-shaped, not measurement
         // shaped: a collapsed whitespace/segment-break character at either edge
@@ -85,10 +118,16 @@ impl TextLayoutContext {
                 v_min_content_px: 0.0,
             };
         }
-        let max_content_width_px =
-            build_text_buffer(&mut self.font_system, request, line_height_px, None, None)
-                .layout_runs()
-                .fold(0.0f32, |width_px, run| width_px.max(run.line_w));
+        let max_content_width_px = build_text_buffer(
+            &mut self.font_system,
+            &self.font_catalog,
+            request,
+            line_height_px,
+            None,
+            None,
+        )
+        .layout_runs()
+        .fold(0.0f32, |width_px, run| width_px.max(run.line_w));
         // The min-content pass already forces a break at every soft-wrap
         // opportunity (width 0), so each layout run is exactly one unbreakable
         // fragment: the first run is the leading fragment, the last run is the
@@ -97,6 +136,7 @@ impl TextLayoutContext {
         // the same runs supply all three quantities.
         let min_content_buffer = build_text_buffer(
             &mut self.font_system,
+            &self.font_catalog,
             request,
             line_height_px,
             Some(0.0),
@@ -138,6 +178,7 @@ impl TextLayoutContext {
         &mut self,
         request: &TextLayoutRequest<'_>,
     ) -> WrappedTextLayout {
+        self.refresh_font_catalog();
         if request.font_size_px == 0.0 {
             // Same zero guard: zero-width text occupies one line per source
             // line under newline-preserving white-space, one line otherwise.
@@ -157,18 +198,27 @@ impl TextLayoutContext {
                 lines,
             };
         }
-        wrapped_text_layout_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
+        wrapped_text_layout_from_buffer(build_wrapped_text_buffer(
+            &mut self.font_system,
+            &self.font_catalog,
+            request,
+        ))
     }
 
     #[must_use]
     pub(crate) fn measure_wrapped_text_height(&mut self, request: &TextLayoutRequest<'_>) -> f32 {
+        self.refresh_font_catalog();
         if request.font_size_px == 0.0 {
             // Same zero guard: height is the line count for the white-space
             // policy times the line height.
             return usize_to_f32(zero_size_line_count(request))
                 * effective_line_height_px(&mut self.font_system, request);
         }
-        wrapped_text_height_from_buffer(build_wrapped_text_buffer(&mut self.font_system, request))
+        wrapped_text_height_from_buffer(build_wrapped_text_buffer(
+            &mut self.font_system,
+            &self.font_catalog,
+            request,
+        ))
     }
 
     #[must_use]
@@ -177,6 +227,7 @@ impl TextLayoutContext {
         request: &TextLayoutRequest<'_>,
         scalar_offset: usize,
     ) -> TextCaretLayout {
+        self.refresh_font_catalog();
         if request.font_size_px == 0.0 {
             // Zero-size text (CSS Fonts 4 §3.5): every caret position coincides at
             // the origin; cosmic-text asserts a non-zero font size.
@@ -187,7 +238,11 @@ impl TextLayoutContext {
             };
         }
         let (buffer, transformed_text, transformed_to_original_byte) =
-            build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
+            build_wrapped_text_buffer_and_byte_map(
+                &mut self.font_system,
+                &self.font_catalog,
+                request,
+            );
         text_caret_layout_from_buffer(
             request.text,
             &transformed_text,
@@ -203,6 +258,7 @@ impl TextLayoutContext {
         &mut self,
         request: &TextLayoutRequest<'_>,
     ) -> TextCaretMap {
+        self.refresh_font_catalog();
         if request.font_size_px == 0.0 {
             return zero_size_caret_map(
                 request,
@@ -210,7 +266,11 @@ impl TextLayoutContext {
             );
         }
         let (buffer, transformed_text, transformed_to_original_byte) =
-            build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
+            build_wrapped_text_buffer_and_byte_map(
+                &mut self.font_system,
+                &self.font_catalog,
+                request,
+            );
         text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer)
     }
 
@@ -222,13 +282,18 @@ impl TextLayoutContext {
         x_px: f32,
         y_px: f32,
     ) -> usize {
+        self.refresh_font_catalog();
         if request.font_size_px == 0.0 {
             // Zero-size text: every position coincides; the only honest byte index
             // without glyph data is the text start.
             return 0;
         }
         let (buffer, transformed_text, transformed_to_original_byte) =
-            build_wrapped_text_buffer_and_byte_map(&mut self.font_system, request);
+            build_wrapped_text_buffer_and_byte_map(
+                &mut self.font_system,
+                &self.font_catalog,
+                request,
+            );
         let caret_map =
             text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer);
         text_caret_stop_byte_index_from_map(&caret_map, x_px, y_px)

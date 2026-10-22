@@ -13,9 +13,7 @@ mod svg_paint_op;
 mod text_run;
 mod text_run_signature;
 
-pub(crate) use crate::domains::text_layout::{
-    TextAlign, TextFontFamilyId, TextLanguageId, TextWrapMode,
-};
+pub(crate) use crate::domains::text_layout::{FontFaceId, TextAlign, TextLanguageId, TextWrapMode};
 pub use icon::IconPaintOp;
 pub use image_paint_id::ImagePaintId;
 pub use layer_paint_plan::LayerPaintPlan;

@@ -28,8 +28,8 @@ pub(crate) struct LayerPoolRenderExecutor {
     parent_z_order_by_attached_root_parent: HashMap<MainEntity, f32>,
     attached_root_parent_by_surface_entity: HashMap<MainEntity, MainEntity>,
     pub(super) pending_font_asset_loads: Vec<ExtractedFontAssetRecord>,
-    pub(super) pending_required_font_asset_ids_by_family:
-        HashMap<TextFontFamilyId, Vec<AssetId<UiDomFontAsset>>>,
+    pub(super) pending_required_font_asset_ids_by_face:
+        HashMap<FontFaceId, Vec<AssetId<UiDomFontAsset>>>,
     pub(super) pending_text_run_changes: Vec<ExtractedTextRunRecord>,
     pub(super) pending_text_run_removals: Vec<TextRunId>,
     pub(super) render: Option<LayerPoolRenderState>,
@@ -50,9 +50,9 @@ impl LayerPoolRenderExecutor {
 
     pub(super) fn set_required_font_assets(
         &mut self,
-        required_font_asset_ids_by_family: HashMap<TextFontFamilyId, Vec<AssetId<UiDomFontAsset>>>,
+        required_font_asset_ids_by_face: HashMap<FontFaceId, Vec<AssetId<UiDomFontAsset>>>,
     ) {
-        self.pending_required_font_asset_ids_by_family = required_font_asset_ids_by_family;
+        self.pending_required_font_asset_ids_by_face = required_font_asset_ids_by_face;
     }
 
     pub(super) fn apply_text_run_change(&mut self, text_run_change: ExtractedTextRunRecord) {
@@ -216,22 +216,20 @@ impl LayerPoolRenderExecutor {
         queue: &RenderQueue,
     ) {
         let pending_font_asset_loads = std::mem::take(&mut self.pending_font_asset_loads);
-        let pending_required_font_asset_ids_by_family =
-            std::mem::take(&mut self.pending_required_font_asset_ids_by_family);
+        let pending_required_font_asset_ids_by_face =
+            std::mem::take(&mut self.pending_required_font_asset_ids_by_face);
         let pending_text_run_removals = std::mem::take(&mut self.pending_text_run_removals);
         let pending_text_run_changes = std::mem::take(&mut self.pending_text_run_changes);
         if !pending_font_asset_loads.is_empty()
-            || !pending_required_font_asset_ids_by_family.is_empty()
+            || !pending_required_font_asset_ids_by_face.is_empty()
             || !pending_text_run_removals.is_empty()
             || !pending_text_run_changes.is_empty()
         {
             let render_state = self.render_state(device);
-            for (font_family_id, required_font_asset_ids) in
-                pending_required_font_asset_ids_by_family
-            {
+            for (face_id, required_font_asset_ids) in pending_required_font_asset_ids_by_face {
                 render_state
                     .text_run
-                    .set_required_font_asset_ids(font_family_id, required_font_asset_ids);
+                    .set_required_font_asset_ids(face_id, required_font_asset_ids);
             }
             for font_asset in pending_font_asset_loads {
                 render_state.text_run.register_font_asset(font_asset);
@@ -387,7 +385,7 @@ impl LayerPoolRenderExecutor {
             parent_z_order_by_attached_root_parent: HashMap::new(),
             attached_root_parent_by_surface_entity: HashMap::new(),
             pending_font_asset_loads: Vec::new(),
-            pending_required_font_asset_ids_by_family: HashMap::new(),
+            pending_required_font_asset_ids_by_face: HashMap::new(),
             pending_text_run_changes: Vec::new(),
             pending_text_run_removals: Vec::new(),
             render: None,

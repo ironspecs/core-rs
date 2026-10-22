@@ -64,7 +64,7 @@ pub(super) enum GenericWarmupKind {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct GenericGlyphWarmupKey {
-    pub(super) font_family_id: TextFontFamilyId,
+    pub(super) font_face_id: FontFaceId,
     pub(super) language_hint_id: TextLanguageId,
     pub(super) font_size_bits: u32,
     pub(super) raster_scale_bits: u32,
@@ -151,6 +151,7 @@ pub(super) fn create_text_run_render_state(
         sampler: gpu_state.sampler,
         glyph_bind_group_layout: gpu_state.glyph_bind_group_layout,
         font_system: create_text_run_font_system(),
+        font_catalog: text_layout::TextFontCatalog::repo_default(),
         swash_cache: SwashCache::new(),
         font_registration_state: FontRegistrationState::default(),
         run_bank: SecondaryMap::new(),
@@ -365,7 +366,7 @@ fn generic_glyph_warmup_key(
     pixel_density: PixelDensity,
 ) -> GenericGlyphWarmupKey {
     GenericGlyphWarmupKey {
-        font_family_id: TextFontFamilyId::UiSans,
+        font_face_id: FontFaceId::EMBEDDED_IBM_PLEX_SANS,
         language_hint_id,
         font_size_bits: font_size_px.to_bits(),
         raster_scale_bits: pixel_density_scale(pixel_density).to_bits(),
@@ -462,14 +463,13 @@ fn text_run_record_for_surface(
         );
         return None;
     };
-    if !text_run_state
-        .font_registration_state
-        .ready(run_record.font_family_id)
-    {
-        push_unique_copy(
-            &mut preparation.dependencies.missing_font_families,
-            run_record.font_family_id,
-        );
+    let face_id = text_layout::text_render::resolve_face_id(
+        &run_record.family,
+        run_record.language_hint_id,
+        &text_run_state.font_catalog,
+    );
+    if !text_run_state.font_registration_state.ready(face_id) {
+        push_unique_copy(&mut preparation.dependencies.missing_font_faces, face_id);
         return None;
     }
     Some(run_record)
@@ -484,8 +484,12 @@ fn ensure_text_buffer_cached(
     if text_run_state.text_buffer_cache.contains(&buffer_key) {
         return;
     }
-    let cached_text_buffer =
-        build_text_buffer(&mut text_run_state.font_system, run_record, text_run);
+    let cached_text_buffer = build_text_buffer(
+        &mut text_run_state.font_system,
+        &text_run_state.font_catalog,
+        run_record,
+        text_run,
+    );
     let _ = text_run_state
         .text_buffer_cache
         .insert(&buffer_key, cached_text_buffer);
@@ -602,7 +606,7 @@ fn ensure_glyph_mask_cached(
 }
 
 fn text_run_dependencies_are_pending(dependencies: &PendingLeaseDependencies) -> bool {
-    !dependencies.missing_text_runs.is_empty() || !dependencies.missing_font_families.is_empty()
+    !dependencies.missing_text_runs.is_empty() || !dependencies.missing_font_faces.is_empty()
 }
 
 fn hold_text_runs_until_dependencies_arrive(
@@ -771,6 +775,7 @@ pub(super) fn text_buffer_key(text_run: &TextRunPaintOp) -> TextBufferKey {
 
 pub(super) fn build_text_buffer(
     font_system: &mut FontSystem,
+    font_catalog: &text_layout::TextFontCatalog,
     run_record: &RenderTextRunRecord,
     text_run: &TextRunPaintOp,
 ) -> CachedTextBuffer {
@@ -792,6 +797,7 @@ pub(super) fn build_text_buffer(
     CachedTextBuffer {
         buffer: text_layout::text_render::build_render_text_buffer(
             font_system,
+            font_catalog,
             &request,
             Some(text_run.size_px[1]),
         ),

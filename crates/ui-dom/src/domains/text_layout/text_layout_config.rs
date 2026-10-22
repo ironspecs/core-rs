@@ -32,6 +32,6 @@ mod tests {
     #[test]
     fn repo_default_config_provides_a_populated_font_catalog() {
         let config = TextLayoutConfig::repo_default();
-        assert!(!config.font_catalog.ui_sans_font_sources.is_empty());
+        assert_eq!(config.font_catalog.installed_face_ids().len(), 4);
     }
 }

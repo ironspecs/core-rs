@@ -107,7 +107,7 @@ use crate::domains::{
         icon_density_from_pixel_density, validate_manifest_asset,
     },
     layer_ops::{
-        IconPaintOp, TextAlign, TextFontFamilyId, TextLanguageId, TextRunId, TextRunSignature,
+        FontFaceId, IconPaintOp, TextAlign, TextLanguageId, TextRunId, TextRunSignature,
         TextWrapMode,
     },
     layer_ops::{ImagePaintOp, SvgPaintOp, TextRunPaintOp},
@@ -287,7 +287,6 @@ struct ExtractedTextRunRecord {
     text_run_id: TextRunId,
     text: std::sync::Arc<str>,
     language_hint_id: TextLanguageId,
-    font_family_id: TextFontFamilyId,
     family: TextFamilyList,
     weight: FontWeightKw,
     style: FontStyleKw,
@@ -297,7 +296,6 @@ struct ExtractedTextRunRecord {
 struct RenderTextRunRecord {
     text: std::sync::Arc<str>,
     language_hint_id: TextLanguageId,
-    font_family_id: TextFontFamilyId,
     family: TextFamilyList,
     weight: FontWeightKw,
     style: FontStyleKw,
@@ -311,7 +309,7 @@ struct CanonicalTextRunRecord {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PendingLeaseDependencies {
     missing_text_runs: Vec<TextRunId>,
-    missing_font_families: Vec<TextFontFamilyId>,
+    missing_font_faces: Vec<FontFaceId>,
 }
 
 fn external_rgba_byte_len(image_extent_px: UVec2) -> usize {
@@ -551,29 +549,58 @@ fn extract_text_font_assets(main_world: &mut MainWorld, executor: &mut LayerPool
     let Some(font_catalog) = main_world.get_resource::<UiDomTextFontCatalog>().cloned() else {
         return;
     };
-    executor.set_required_font_assets(font_catalog.required_asset_ids_by_family());
     main_world.init_resource::<UiDomTextFontExtractState>();
-    main_world.resource_scope(
-        |world, mut extract_state: bevy::prelude::Mut<UiDomTextFontExtractState>| {
-            let Some(font_assets) = world.get_resource::<Assets<UiDomFontAsset>>() else {
-                return;
-            };
-            for handle in font_catalog.ui_sans_handles() {
-                let asset_id = handle.id();
-                if extract_state.already_extracted(asset_id) {
-                    continue;
-                }
-                let Some(font_asset) = font_assets.get(handle) else {
-                    continue;
+    let required_asset_ids_by_face: HashMap<FontFaceId, Vec<AssetId<UiDomFontAsset>>> = main_world
+        .resource_scope(
+            |world, mut extract_state: bevy::prelude::Mut<UiDomTextFontExtractState>| {
+                let Some(mut font_assets) = world.get_resource_mut::<Assets<UiDomFontAsset>>()
+                else {
+                    return HashMap::new();
                 };
-                executor.queue_font_asset_load(ExtractedFontAssetRecord {
-                    asset_id,
-                    bytes: font_asset.bytes.clone(),
-                });
-                extract_state.mark_extracted(asset_id);
-            }
-        },
-    );
+                let mut required_asset_ids_by_face = HashMap::new();
+                for (index, handle) in font_catalog.embedded_handles().iter().enumerate() {
+                    let face_id = FontFaceId::embedded_at(
+                        u32::try_from(index).expect("embedded face index fits u32"),
+                    );
+                    let asset_id = handle.id();
+                    required_asset_ids_by_face.insert(face_id, vec![asset_id]);
+                    if extract_state.already_extracted(asset_id) {
+                        continue;
+                    }
+                    let Some(font_asset) = font_assets.get(handle) else {
+                        continue;
+                    };
+                    executor.queue_font_asset_load(ExtractedFontAssetRecord {
+                        asset_id,
+                        bytes: font_asset.bytes.clone(),
+                    });
+                    extract_state.mark_extracted(asset_id);
+                }
+                for (face_id, bytes) in font_catalog.font_catalog().consumer_faces() {
+                    let asset_id = extract_state
+                        .consumer_face_asset_id(face_id)
+                        .unwrap_or_else(|| {
+                            let bytes: std::sync::Arc<[u8]> =
+                                std::sync::Arc::<[u8]>::from(bytes.as_ref().clone());
+                            let asset_id = font_assets
+                                .add(UiDomFontAsset {
+                                    bytes: bytes.clone(),
+                                })
+                                .id();
+                            executor.queue_font_asset_load(ExtractedFontAssetRecord {
+                                asset_id,
+                                bytes,
+                            });
+                            extract_state.mark_extracted(asset_id);
+                            extract_state.mark_consumer_face(face_id, asset_id);
+                            asset_id
+                        });
+                    required_asset_ids_by_face.insert(face_id, vec![asset_id]);
+                }
+                required_asset_ids_by_face
+            },
+        );
+    executor.set_required_font_assets(required_asset_ids_by_face);
 }
 
 fn poll_icon_atlas_assets(main_world: &mut MainWorld, executor: &mut LayerPoolRenderExecutor) {
@@ -1669,7 +1696,6 @@ mod tests {
     };
     use collections::lru_cache::LruCache;
     use cosmic_text::CacheKeyFlags;
-    use cosmic_text::Family as CosmicFamily;
     use cosmic_text::fontdb::{ID as FontDbId, Weight as FontWeight};
     use slotmap::SlotMap;
     use std::sync::Arc;
@@ -1776,7 +1802,6 @@ mod tests {
         super::RenderTextRunRecord {
             text: Arc::<str>::from("Density"),
             language_hint_id: TextLanguageId::English,
-            font_family_id: super::TextFontFamilyId::UiSans,
             family: TextFamilyList::default(),
             weight: FontWeightKw::NORMAL,
             style: FontStyleKw::Normal,
@@ -1806,7 +1831,6 @@ mod tests {
             super::RenderTextRunRecord {
                 text: Arc::<str>::from(text),
                 language_hint_id: TextLanguageId::from_text_hint(text),
-                font_family_id: super::TextFontFamilyId::UiSans,
                 family: TextFamilyList::default(),
                 weight: FontWeightKw::NORMAL,
                 style: FontStyleKw::Normal,
@@ -2229,8 +2253,9 @@ mod tests {
         let text_run = sample_text_run_op();
         let run_record = sample_run_record();
         let mut font_system = text_render::create_text_run_font_system();
+        let font_catalog = text_layout::TextFontCatalog::repo_default();
         let cached_buffer =
-            text_render::build_text_buffer(&mut font_system, &run_record, &text_run);
+            text_render::build_text_buffer(&mut font_system, &font_catalog, &run_record, &text_run);
         let layout_run = cached_buffer
             .buffer
             .layout_runs()
@@ -2269,12 +2294,10 @@ mod tests {
     fn render_buffer_keeps_rtmp_server_single_line_at_intrinsic_width() {
         let (text_run, run_record) = text_run_at_intrinsic_width("RTMP Server");
         let mut font_system = text_render::create_text_run_font_system();
-        text_layout::install_text_font_catalog(
-            &mut font_system,
-            text_layout::TextFontCatalog::repo_default(),
-        );
+        let font_catalog = text_layout::TextFontCatalog::repo_default();
+        text_layout::install_text_font_catalog_sources(&mut font_system, &font_catalog);
         let cached_buffer =
-            text_render::build_text_buffer(&mut font_system, &run_record, &text_run);
+            text_render::build_text_buffer(&mut font_system, &font_catalog, &run_record, &text_run);
 
         assert_eq!(cached_buffer.buffer.layout_runs().count(), 1);
     }
@@ -2283,12 +2306,10 @@ mod tests {
     fn render_buffer_keeps_session_state_single_line_at_intrinsic_width() {
         let (text_run, run_record) = text_run_at_intrinsic_width("Session State");
         let mut font_system = text_render::create_text_run_font_system();
-        text_layout::install_text_font_catalog(
-            &mut font_system,
-            text_layout::TextFontCatalog::repo_default(),
-        );
+        let font_catalog = text_layout::TextFontCatalog::repo_default();
+        text_layout::install_text_font_catalog_sources(&mut font_system, &font_catalog);
         let cached_buffer =
-            text_render::build_text_buffer(&mut font_system, &run_record, &text_run);
+            text_render::build_text_buffer(&mut font_system, &font_catalog, &run_record, &text_run);
 
         assert_eq!(cached_buffer.buffer.layout_runs().count(), 1);
     }
@@ -2301,14 +2322,14 @@ mod tests {
         let run_record = super::RenderTextRunRecord {
             text: Arc::<str>::from("hello"),
             language_hint_id: TextLanguageId::English,
-            font_family_id: super::TextFontFamilyId::UiSans,
             family: TextFamilyList::default(),
             weight: FontWeightKw::NORMAL,
             style: FontStyleKw::Normal,
         };
         let mut font_system = text_render::create_text_run_font_system();
+        let font_catalog = text_layout::TextFontCatalog::repo_default();
         let cached_buffer =
-            text_render::build_text_buffer(&mut font_system, &run_record, &text_run);
+            text_render::build_text_buffer(&mut font_system, &font_catalog, &run_record, &text_run);
         let layout_run = cached_buffer
             .buffer
             .layout_runs()
@@ -2318,26 +2339,6 @@ mod tests {
         assert!(
             !layout_run.glyphs.is_empty(),
             "input-like single-line run should produce drawable glyphs in the retained text buffer",
-        );
-    }
-
-    #[test]
-    fn text_run_repo_font_preference_uses_language_specific_repo_families() {
-        assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(TextLanguageId::English),
-            CosmicFamily::Name(text_layout::text_render::repo_default_sans_serif_family_name())
-        );
-        assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(TextLanguageId::Japanese),
-            CosmicFamily::Name("Source Han Sans")
-        );
-        assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(TextLanguageId::SimplifiedChinese),
-            CosmicFamily::Name("Source Han Sans SC")
-        );
-        assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(TextLanguageId::Korean),
-            CosmicFamily::Name("Source Han Sans K")
         );
     }
 

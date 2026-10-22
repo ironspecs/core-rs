@@ -21,11 +21,9 @@ use cosmic_text::{FontSystem, SwashCache, fontdb::Source as FontSource};
 use slotmap::SecondaryMap;
 use wgpu;
 
-use crate::domains::layer_ops::{
-    TextAlign, TextFontFamilyId, TextRunId, TextRunPaintOp, TextWrapMode,
-};
+use crate::domains::layer_ops::{FontFaceId, TextAlign, TextRunId, TextRunPaintOp, TextWrapMode};
 use crate::domains::style::computed::TextFamilyList;
-use crate::domains::text_layout::{self, FontStyleKw, FontWeightKw};
+use crate::domains::text_layout::{self, FontStyleKw, FontWeightKw, TextFontCatalog};
 use crate::render_plugin::UiDomFontAsset;
 use crate::types::{DomWhiteSpace, PixelDensity};
 
@@ -53,6 +51,7 @@ pub(super) struct TextRunRenderState {
     pub(super) sampler: wgpu::Sampler,
     pub(super) glyph_bind_group_layout: wgpu::BindGroupLayout,
     pub(super) font_system: FontSystem,
+    pub(super) font_catalog: TextFontCatalog,
     pub(super) swash_cache: SwashCache,
     pub(super) font_registration_state: FontRegistrationState,
     pub(super) run_bank: SecondaryMap<TextRunId, RenderTextRunRecord>,
@@ -69,11 +68,11 @@ pub(super) struct TextRunRenderState {
 impl TextRunRenderState {
     pub(super) fn set_required_font_asset_ids(
         &mut self,
-        font_family_id: TextFontFamilyId,
+        face_id: FontFaceId,
         required_font_asset_ids: Vec<AssetId<UiDomFontAsset>>,
     ) {
         self.font_registration_state
-            .set_required_font_asset_ids(font_family_id, required_font_asset_ids);
+            .set_required_font_asset_ids(face_id, required_font_asset_ids);
     }
 
     pub(super) fn remove_run_record(&mut self, text_run_id: TextRunId) {
@@ -94,7 +93,6 @@ impl TextRunRenderState {
             RenderTextRunRecord {
                 text: text_run_change.text,
                 language_hint_id: text_run_change.language_hint_id,
-                font_family_id: text_run_change.font_family_id,
                 family: text_run_change.family,
                 weight: text_run_change.weight,
                 style: text_run_change.style,
@@ -121,10 +119,7 @@ impl TextRunRenderState {
             .preload_warmup_queue
             .take_batch(UI_TEXT_PRELOAD_BATCH_SIZE)
         {
-            if !self
-                .font_registration_state
-                .ready(request.key.font_family_id)
-            {
+            if !self.font_registration_state.ready(request.key.font_face_id) {
                 self.preload_warmup_queue.push(request);
                 continue;
             }
@@ -145,6 +140,7 @@ impl TextRunRenderState {
             };
             let buffer = text_layout::text_render::build_render_text_buffer(
                 &mut self.font_system,
+                &self.font_catalog,
                 &text_layout_request,
                 None,
             );
@@ -236,14 +232,14 @@ mod tests {
     }
 
     #[test]
-    fn render_state_constructs_pipelines_and_starts_without_ready_family() {
+    fn render_state_constructs_pipelines_and_starts_without_ready_face() {
         let (_render_device, state) = fresh_text_run_render_state();
         assert!(state.run_bank.is_empty());
         assert!(state.pending_lease_dependencies.is_empty());
         assert!(
             !state
                 .font_registration_state
-                .ready(TextFontFamilyId::UiSans)
+                .ready(FontFaceId::EMBEDDED_IBM_PLEX_SANS)
         );
     }
 
@@ -256,7 +252,6 @@ mod tests {
             text_run_id,
             text: Arc::<str>::from("Settings"),
             language_hint_id: TextLanguageId::English,
-            font_family_id: TextFontFamilyId::UiSans,
             family: TextFamilyList::default(),
             weight: FontWeightKw::NORMAL,
             style: FontStyleKw::Normal,
@@ -296,11 +291,11 @@ mod tests {
             })
             .id();
 
-        state.set_required_font_asset_ids(TextFontFamilyId::UiSans, vec![id_a, id_b]);
+        state.set_required_font_asset_ids(FontFaceId::EMBEDDED_IBM_PLEX_SANS, vec![id_a, id_b]);
         assert!(
             !state
                 .font_registration_state
-                .ready(TextFontFamilyId::UiSans)
+                .ready(FontFaceId::EMBEDDED_IBM_PLEX_SANS)
         );
 
         state.register_font_asset(ExtractedFontAssetRecord {
@@ -310,7 +305,7 @@ mod tests {
         assert!(
             !state
                 .font_registration_state
-                .ready(TextFontFamilyId::UiSans)
+                .ready(FontFaceId::EMBEDDED_IBM_PLEX_SANS)
         );
 
         state.register_font_asset(ExtractedFontAssetRecord {
@@ -320,7 +315,7 @@ mod tests {
         assert!(
             state
                 .font_registration_state
-                .ready(TextFontFamilyId::UiSans)
+                .ready(FontFaceId::EMBEDDED_IBM_PLEX_SANS)
         );
     }
 }

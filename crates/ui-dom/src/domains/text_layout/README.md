@@ -33,17 +33,20 @@ not own the resolved font/line-height computation (that is the style system's
   language hint).
 - `text_render.rs` owns the render-facing helpers: `build_render_text_buffer`
   (the seam's public render entry), `resolve_requested_family` +
-  `installed_family_by_name` (S2's first-family-if-installed resolution),
-  `preferred_repo_font_family` (language-routing), `ui_sans_repo_font_asset_paths`,
+  `resolve_face_id` (the catalog-aware first-family-if-installed resolution),
+  `preferred_repo_font_face` (language-routing), `ui_sans_repo_font_asset_paths`,
   `cosmic_wrap`, `cosmic_align`, and the embedded font asset paths.
 - `font_weight_kw.rs` / `font_style_kw.rs` own the request-carrier weight/style
   keywords and their `cosmic_text` mappings; `resolved_text_style.rs` owns the
   `ResolvedTextStyle` handoff bundle the main-world sites carry into the
   request.
-- `text_font_catalog.rs` owns `TextFontCatalog` (the embedded font binary
-  sources); `text_layout_config.rs` owns `TextLayoutConfig` (which catalog a
-  context is built from); `text_language_id.rs` owns `TextLanguageId` (the
-  script-range language hint).
+- `text_font_catalog.rs` owns `TextFontCatalog` (the shared source list of
+  embedded + consumer-installed faces, the revision counter, and the public
+  `install_face` door); `font_face_id.rs` owns `FontFaceId` (the catalog face
+  identity); `font_install_report.rs` owns the install report types;
+  `text_layout_config.rs` owns `TextLayoutConfig` (which catalog a context is
+  built from); `text_language_id.rs` owns `TextLanguageId` (the script-range
+  language hint).
 
 ## The three-stage seam (Measure / Shape / Rasterize)
 
@@ -95,13 +98,42 @@ The style system hands the seam a resolved text style — the parsed
 - `direction` reuses the text group's `effective_text_direction()`; cosmic-text
   0.18.2 has no paragraph-direction setter, so the attrs auto-detect bidi.
 - `text_layout_attrs(request)` resolves family as the requested first
-  family-if-installed (ASCII case-insensitive against the four embedded faces),
-  else today's language-routing (`preferred_repo_font_family`). This is the
-  S4 policy table's rule-1 seed; S4 generalizes to generics, named paths, and
-  per-script tests.
-- The `TextRunSignature` GAINS `family`/`weight`/`style` (so styled runs
-  distinguish) and KEEPS `font_family_id` (Role B: the render-world
-  font-registration grouping key) until S3 removes it.
+  family-if-installed (ASCII case-insensitive against the catalog's installed
+  names, embedded + consumer), else today's language-routing
+  (`preferred_repo_font_face`). This is the S4 policy table's rule-1 seed; S4
+  generalizes to generics, named paths, and per-script tests.
+- The `TextRunSignature` carries `family`/`weight`/`style` (so styled runs
+  distinguish). The render-world font-registration key is now `FontFaceId`
+  (text seam S3): the one-variant `TextFontFamilyId` placeholder enum is
+  removed, and the render world resolves a run's face id from its family list
+  (`text_render::resolve_face_id`).
+
+## The catalog and the consumer door (text seam S3)
+
+`TextFontCatalog` is the single source of truth for "which faces exist". It is
+context-scoped and shared: a catalog clone wraps one `Arc` of shared state
+(`sources`, family names, a revision counter), so a face installed through any
+clone is visible to every other clone — the main-world thread-local context and
+the render world both read the same state.
+
+- **The source list** — `FaceSource = Embedded(&'static [u8]) |
+  ConsumerInstalled { bytes: Arc<Vec<u8>>, id: FontFaceId }`. The four embedded
+  vendor faces are the initial list (ids `0..4`); consumer faces receive
+  freshly allocated `FontFaceId`s.
+- **The door** — `TextFontCatalog::install_face(bytes) -> FontInstallReport`
+  parses the bytes with fontdb at install; a malformed buffer is a `Rejected`
+  report, never a panic (boundary data). Family names are read from the face's
+  name table so the fallback table can route to it by name.
+- **Both worlds** — the main-world `TextLayoutContext` installs every catalog
+  source at birth and re-installs (sources only) when the catalog revision
+  changes, checked cheaply at seam entry. The render world's
+  `UiDomTextFontCatalog` resource enumerates the same list: embedded handles
+  plus the consumer faces the extract pipeline mints and registers into
+  FontSystem #2.
+- **Resolution** — `text_render::resolve_requested_family` resolves the
+  request's first installed family against the catalog (S2's rule-1 seed,
+  generalized in S4); `resolve_face_id` supplies the render world's per-face
+  readiness key.
 
 ## The zero-size doctrine`font-size: 0` is CSS-legal (CSS Fonts 4 §3.5), but cosmic-text asserts a
 non-zero font size when it builds a `Buffer`. Every entry point therefore

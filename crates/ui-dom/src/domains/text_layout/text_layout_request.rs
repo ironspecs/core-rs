@@ -13,8 +13,8 @@
 //! - the carried `family` is the RESOLVED `TextFamilyList` (self-owned names),
 //!   not an arena key: the render world reads it from the extracted record and
 //!   has no document interner (text seam S2, Role A — `TextFontFamilyId`'s
-//!   request-carrier role is replaced; the enum survives for Role B, the
-//!   render-world registration grouping key)
+//!   request-carrier role is replaced; the enum itself is removed in S3, and
+//!   the render world keys font registration per-face by `FontFaceId`)
 
 use crate::domains::style::computed::TextFamilyList;
 use crate::types::{DomOverflowWrap, DomTextDirection, DomWhiteSpace, DomWordBreak};

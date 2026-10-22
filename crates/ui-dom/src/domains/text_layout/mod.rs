@@ -17,6 +17,9 @@
 //! private fontdb by cosmic-text's design; the shared SOURCE list is
 //! `TextFontCatalog`, not the `FontSystem`s themselves.
 
+mod face_source;
+mod font_face_id;
+mod font_install_report;
 mod font_style_kw;
 mod font_weight_kw;
 mod resolved_text_style;
@@ -29,20 +32,20 @@ pub(crate) mod text_render;
 
 use std::{borrow::Cow, cell::RefCell};
 
-use cosmic_text::{
-    Attrs, Buffer, FontSystem, LayoutRun, Metrics as CosmicMetrics, Shaping,
-    fontdb::Source as FontSource,
-};
+use cosmic_text::{Attrs, Buffer, FontSystem, LayoutRun, Metrics as CosmicMetrics, Shaping};
 
 use crate::types::{
     DomOverflowWrap, DomTextAlign, DomTextDirection, DomWhiteSpace, DomWordBreak,
     text_layout_input_and_byte_map_for_white_space, text_layout_input_for_white_space,
 };
 
+pub(crate) use face_source::FaceSource;
+pub use font_face_id::FontFaceId;
+pub use font_install_report::{FontInstallReport, FontRejectReason};
 pub(crate) use font_style_kw::FontStyleKw;
 pub(crate) use font_weight_kw::FontWeightKw;
 pub(crate) use resolved_text_style::ResolvedTextStyle;
-pub(crate) use text_font_catalog::TextFontCatalog;
+pub use text_font_catalog::TextFontCatalog;
 pub(crate) use text_language_id::TextLanguageId;
 pub(crate) use text_layout_config::TextLayoutConfig;
 pub(crate) use text_layout_context::TextLayoutContext;
@@ -56,11 +59,6 @@ const SOFT_HYPHEN: char = '\u{00AD}';
 thread_local! {
     static REPO_TEXT_LAYOUT_CONTEXT: RefCell<TextLayoutContext> =
         RefCell::new(TextLayoutContext::new(TextLayoutConfig::repo_default()));
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum TextFontFamilyId {
-    UiSans,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -226,6 +224,7 @@ pub(crate) fn text_caret_stop_byte_index_at_point(
 
 pub(super) fn build_text_buffer(
     font_system: &mut FontSystem,
+    font_catalog: &TextFontCatalog,
     request: &TextLayoutRequest<'_>,
     line_height_px: f32,
     width_px: Option<f32>,
@@ -241,12 +240,13 @@ pub(super) fn build_text_buffer(
         request.word_break,
         request.language_hint_id,
     );
+    let family = text_render::resolve_requested_family(request, font_catalog);
     buffer.set_wrap(font_system, text_render::cosmic_wrap(request));
     buffer.set_size(font_system, width_px, height_px);
     buffer.set_text(
         font_system,
         text.as_ref(),
-        &text_layout_attrs(request),
+        &text_layout_attrs(&family, request),
         Shaping::Advanced,
         Some(text_render::cosmic_align(request.alignment)),
     );
@@ -296,11 +296,13 @@ fn white_space_suppresses_soft_wrap(white_space: DomWhiteSpace) -> bool {
 
 pub(super) fn build_wrapped_text_buffer(
     font_system: &mut FontSystem,
+    font_catalog: &TextFontCatalog,
     request: &TextLayoutRequest<'_>,
 ) -> Buffer {
     let line_height_px = effective_line_height_px(font_system, request);
     build_text_buffer(
         font_system,
+        font_catalog,
         request,
         line_height_px,
         request.width_px.map(|width_px| width_px.max(0.0)),
@@ -310,6 +312,7 @@ pub(super) fn build_wrapped_text_buffer(
 
 pub(super) fn build_wrapped_text_buffer_and_byte_map(
     font_system: &mut FontSystem,
+    font_catalog: &TextFontCatalog,
     request: &TextLayoutRequest<'_>,
 ) -> (Buffer, String, Vec<usize>) {
     let line_height_px = effective_line_height_px(font_system, request);
@@ -325,6 +328,7 @@ pub(super) fn build_wrapped_text_buffer_and_byte_map(
         font_system,
         CosmicMetrics::new(request.font_size_px, line_height_px.max(1.0)),
     );
+    let family = text_render::resolve_requested_family(request, font_catalog);
     buffer.set_wrap(font_system, text_render::cosmic_wrap(request));
     buffer.set_size(
         font_system,
@@ -334,7 +338,7 @@ pub(super) fn build_wrapped_text_buffer_and_byte_map(
     buffer.set_text(
         font_system,
         transformed_text.as_str(),
-        &text_layout_attrs(request),
+        &text_layout_attrs(&family, request),
         Shaping::Advanced,
         Some(text_render::cosmic_align(request.alignment)),
     );
@@ -787,22 +791,33 @@ pub(super) fn effective_line_height_px(
     request.font_size_px.max(1.0)
 }
 
-fn text_layout_attrs(request: &TextLayoutRequest<'_>) -> Attrs<'static> {
+fn text_layout_attrs<'a>(
+    family: &'a cosmic_text::FamilyOwned,
+    request: &TextLayoutRequest<'_>,
+) -> Attrs<'a> {
     Attrs::new()
-        .family(text_render::resolve_requested_family(request))
+        .family(family.as_family())
         .weight(request.weight.cosmic())
         .style(request.style.cosmic())
 }
 
-pub(super) fn install_text_font_catalog(
+/// Installs every source in the catalog into one `FontSystem`. Called once at
+/// context birth.
+pub(super) fn install_text_font_catalog_sources(
     font_system: &mut FontSystem,
-    font_catalog: TextFontCatalog,
+    font_catalog: &TextFontCatalog,
 ) {
-    for font_source in font_catalog.ui_sans_font_sources {
-        font_system
-            .db_mut()
-            .load_font_source(FontSource::Binary(font_source));
+    for source in font_catalog.sources_snapshot() {
+        install_text_font_source(font_system, &source);
     }
+}
+
+/// Installs one catalog source into a `FontSystem` (the incremental re-install
+/// unit the context runs when the catalog revision changes).
+pub(super) fn install_text_font_source(font_system: &mut FontSystem, source: &FaceSource) {
+    font_system
+        .db_mut()
+        .load_font_source(source.font_db_source());
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -853,7 +868,7 @@ mod tests {
         context: &mut TextLayoutContext,
         request: &TextLayoutRequest<'_>,
     ) -> Buffer {
-        build_wrapped_text_buffer(&mut context.font_system, request)
+        build_wrapped_text_buffer(&mut context.font_system, &context.font_catalog, request)
     }
 
     #[test]
@@ -978,7 +993,11 @@ mod tests {
         let mut context = default_context();
         let request = TextLayoutRequest::for_text("A👩\u{200d}💻B", DEFAULT_TEXT_FONT_SIZE_PX);
         let (buffer, transformed_text, transformed_to_original_byte) =
-            build_wrapped_text_buffer_and_byte_map(&mut context.font_system, &request);
+            build_wrapped_text_buffer_and_byte_map(
+                &mut context.font_system,
+                &context.font_catalog,
+                &request,
+            );
         let caret_map =
             text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer);
         let line_start_byte_indices = super::line_start_byte_indices(request.text);

@@ -82,7 +82,6 @@ impl LayerPool {
                 text_run_id,
                 text: text_run_signature.text.clone(),
                 language_hint_id: text_run_signature.language_hint_id,
-                font_family_id: text_run_signature.font_family_id,
                 family: text_run_signature.family.clone(),
                 weight: text_run_signature.weight,
                 style: text_run_signature.style,

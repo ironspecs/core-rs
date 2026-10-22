@@ -9,20 +9,20 @@
 //!
 //! - this file owns only the `TextRunSignature` struct and its `impl` block
 //! - the signature is `Eq + Hash` so it can key the retained text-run cache
-//! - `font_family_id` stays through S2 as the render-world registration
-//!   grouping key (Role B — `TEXT_SEAM_DESIGN.md` v2 ruling 1); the STYLE
-//!   (`family`/`weight`/`style`) is the S2 request-carrier replacement (Role A)
+//! - the `family`/`weight`/`style` carry the resolved style (Role A); the
+//!   render world resolves the family list to a face id (`FontFaceId`) at
+//!   readiness-check time (Role B — the `TextFontFamilyId` placeholder enum is
+//!   removed in text seam S3)
 
 use std::sync::Arc;
 
 use crate::domains::style::computed::TextFamilyList;
-use crate::domains::text_layout::{FontStyleKw, FontWeightKw, TextFontFamilyId, TextLanguageId};
+use crate::domains::text_layout::{FontStyleKw, FontWeightKw, TextLanguageId};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct TextRunSignature {
     pub(crate) text: Arc<str>,
     pub(crate) language_hint_id: TextLanguageId,
-    pub(crate) font_family_id: TextFontFamilyId,
     pub(crate) family: TextFamilyList,
     pub(crate) weight: FontWeightKw,
     pub(crate) style: FontStyleKw,
@@ -33,7 +33,6 @@ impl TextRunSignature {
     pub(crate) fn from_text(text: Arc<str>) -> Self {
         Self {
             language_hint_id: TextLanguageId::from_text_hint(text.as_ref()),
-            font_family_id: TextFontFamilyId::UiSans,
             family: TextFamilyList::default(),
             weight: FontWeightKw::NORMAL,
             style: FontStyleKw::NORMAL,
@@ -50,7 +49,6 @@ mod tests {
     fn from_text_detects_language_hints_and_defaults_the_style() {
         let settings = TextRunSignature::from_text("Settings".into());
         assert_eq!(settings.language_hint_id, TextLanguageId::English);
-        assert_eq!(settings.font_family_id, TextFontFamilyId::UiSans);
         assert_eq!(settings.family, TextFamilyList::default());
         assert_eq!(settings.weight, FontWeightKw::NORMAL);
         assert_eq!(settings.style, FontStyleKw::Normal);

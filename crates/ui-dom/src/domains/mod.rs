@@ -28,7 +28,7 @@ pub mod layout;
 pub(crate) mod paint;
 pub mod render_ops;
 pub mod style;
-pub(crate) mod text_layout;
+pub mod text_layout;
 pub(crate) mod validated_ui_icon_atlas_lookup;
 pub(crate) mod visitor;
 
@@ -67,4 +67,6 @@ pub use style::{
     PresentationProperty, ResolvedTransitionLonghands, StyleMut, StyleRuleKey, StyleRuleOrigin,
     StylesheetLoadReport, TRANSITION_LONGHAND_CAPACITY, TextKey, TransitionLonghandProperty,
 };
-pub use text_layout::{TextAlign, TextWrapMode};
+pub use text_layout::{
+    FontFaceId, FontInstallReport, FontRejectReason, TextAlign, TextFontCatalog, TextWrapMode,
+};

@@ -34,8 +34,9 @@ ops themselves (that is `domains/render_ops` and `domains/paint`).
   `text_layout::text_render::build_render_text_buffer`), `build_glyph_mask`,
   the debug-rect demotion decision, and the GPU text-run submission.
 - `font_registration_state.rs` owns `FontRegistrationState` (required asset ids
-  per family vs registered asset ids); `preload_warmup_queue.rs` owns
-  `PreloadWarmupQueue` (deduped FIFO glyph-warmup batches).
+  per FACE, keyed by `FontFaceId`, vs registered asset ids);
+  `preload_warmup_queue.rs` owns `PreloadWarmupQueue` (deduped FIFO
+  glyph-warmup batches).
 
 ## The rasterize/cache stage's side of the seam
 
@@ -62,8 +63,16 @@ constructs a `cosmic_text::Buffer` directly.
 
 - FontSystem #2 loads faces through `register_font_asset`, which feeds
   extracted asset bytes into `font_system.db_mut()`. `FontRegistrationState`
-  declares each family's required asset ids and reports a family ready only
-  when every required id is registered.
+  declares each FACE's required asset ids — keyed by `FontFaceId` (the catalog
+  face id, text seam S3), not the removed `TextFontFamilyId` placeholder — and
+  reports a face ready only when every required id is registered. A run's face
+  id is resolved from its family list (`text_layout::text_render::resolve_face_id`)
+  before the readiness gate.
+- Consumer-installed faces reach FontSystem #2 through the extract pipeline
+  (`extract_text_font_assets`): the shared `TextFontCatalog` enumerates the
+  consumer faces, each is minted one `UiDomFontAsset` (deduped by
+  `FontFaceId` in `UiDomTextFontExtractState`), and its bytes are queued for
+  `register_font_asset` exactly once.
 - `PreloadWarmupQueue` warms glyph masks before first paint: requests are
   deduped by `PreloadKey` and drain in FIFO batches (`UI_TEXT_PRELOAD_BATCH_SIZE`,
   8) across five language hints × ten warmup samples × ten font sizes.

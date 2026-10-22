@@ -18,7 +18,7 @@ use super::layer_pool_text_render::{GenericGlyphWarmupRequest, PreloadKey};
 #[cfg(test)]
 use super::layer_pool_text_render::{GenericGlyphWarmupKey, GenericWarmupKind};
 #[cfg(test)]
-use crate::domains::layer_ops::{TextFontFamilyId, TextLanguageId};
+use crate::domains::layer_ops::{FontFaceId, TextLanguageId};
 
 #[derive(Default)]
 pub(super) struct PreloadWarmupQueue {
@@ -58,7 +58,7 @@ mod tests {
     fn warmup_request(sample_index: u16, sample_text: &'static str) -> GenericGlyphWarmupRequest {
         GenericGlyphWarmupRequest {
             key: GenericGlyphWarmupKey {
-                font_family_id: TextFontFamilyId::UiSans,
+                font_face_id: FontFaceId::EMBEDDED_IBM_PLEX_SANS,
                 language_hint_id: TextLanguageId::English,
                 font_size_bits: 0,
                 raster_scale_bits: 0,
