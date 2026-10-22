@@ -1855,6 +1855,28 @@ an f32 basis.
   auto-fill/auto-fit difference is exactly the collapse. Proofs
   542 → 553. Next: T4 (`grid-template`/`grid` shorthands), then PR 4.
 
+- **2026-10-22 — T3.5 third-party review: REMEDIATE, remediated.**
+  The review found four blocking defects, all in the "inputs the pin
+  table never exercises" theme: a names-only span divided by zero at
+  layout (now a parse gate — §7.2.3 requires ≥1 track-size), the
+  f32→u32 conversion ran before the capacity clamp (panicked on
+  astronomical widths — the clamp now compares in f32 first), a
+  boundary line name was mis-owned through resolution AND
+  serialization (parse now records span-owned vs suffix-owned name
+  ranges), and the auto-fit collapse was column-only (now per-axis
+  per §7.2.3.2). Two non-blockings adjudicated in the same pass:
+  row-axis content-based span tracks drop at parse (a wrong-axis
+  count is worse than a gate; block-axis intrinsic basis deferred)
+  and the minmax count basis reads the definite max per §7.2.3.2
+  (`minmax(100px, 200px)` at 600 → N=3). The B3 fix exposed a latent
+  bug BEYOND the review: `reintern_track_list` silently dropped the
+  span on the stylesheet→inline arena path — fixed, and the closing
+  pin (`grid_repeat_survives_stylesheet_reintern`) asserts the wire
+  form because the layout outcome alone was non-discriminating
+  (proved by reverting the fix). Design v3 records every
+  adjudication; 6+1 new pins; proofs 553 → 559. Registry gains the
+  zero-basis-span and inline-grid intrinsic-fill deferred notes.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
