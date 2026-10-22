@@ -201,7 +201,15 @@ use super::{LayerConfig, LayerPool, LayerPoolMetricName, LayerPoolRenderFeedback
 #[cfg(test)]
 use crate::domains::layer_ops::TextLanguageId;
 #[cfg(test)]
+use crate::domains::layer_pool::LayerPoolRenderExecutor;
+#[cfg(test)]
+use crate::domains::layer_pool::extract_text_font_assets;
+#[cfg(test)]
 use crate::domains::layer_pool::layer_pool_text_render::create_text_run_render_state;
+#[cfg(test)]
+use crate::domains::text_layout::FontInstallReport;
+#[cfg(test)]
+use crate::render_plugin::{UiDomTextFontCatalog, UiDomTextFontExtractState};
 
 #[cfg(test)]
 mod tests {
@@ -209,6 +217,7 @@ mod tests {
 
     use bevy::asset::Assets;
     use bevy::prelude::World;
+    use bevy::render::MainWorld;
     use bevy::render::render_resource::{Sampler, Texture};
     use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
     use bevy::render::texture::GpuImage;
@@ -327,6 +336,61 @@ mod tests {
                 .font_registration_state
                 .ready(FontFaceId::EMBEDDED_IBM_PLEX_SANS)
         );
+    }
+
+    #[test]
+    fn consumer_face_extraction_readies_the_render_world_face() {
+        // Install one consumer face through the public door — the render-world
+        // route door 1's catalog-side public pin does NOT observe. Uses a FRESH
+        // (non-shared) catalog so the install cannot pollute the shared
+        // `repo_default` singleton other tests read.
+        let catalog = TextFontCatalog::from_embedded_sources();
+        let fixture = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/fonts/test-fixtures/NotoNaskhArabic-Regular.ttf"
+        ))
+        .expect("the OFL Arabic fixture should load from disk");
+        let FontInstallReport::Installed { id, .. } = catalog.install_face(&fixture) else {
+            panic!("the OFL Arabic fixture should install as a valid face");
+        };
+
+        // Drive the render-world extraction: it mints exactly ONE UiDomFontAsset
+        // for the consumer FontFaceId and queues it once.
+        let mut main_world = MainWorld::default();
+        main_world.insert_resource(Assets::<UiDomFontAsset>::default());
+        main_world.insert_resource(UiDomTextFontCatalog {
+            embedded_handles: Vec::new(),
+            font_catalog: catalog,
+        });
+        let mut executor = LayerPoolRenderExecutor::new(LayerConfig::default());
+        extract_text_font_assets(&mut main_world, &mut executor);
+
+        let asset_id = main_world
+            .resource::<UiDomTextFontExtractState>()
+            .consumer_face_asset_id(id)
+            .expect("the extraction should mint one asset for the consumer face");
+        assert_eq!(
+            executor.pending_font_asset_loads.len(),
+            1,
+            "the extraction should queue exactly one font asset load"
+        );
+        assert_eq!(executor.pending_font_asset_loads[0].asset_id, asset_id);
+        assert_eq!(
+            executor.pending_required_font_asset_ids_by_face.get(&id),
+            Some(&vec![asset_id]),
+            "the extraction should declare the consumer face's required asset id"
+        );
+
+        // A second extraction mints no second asset (dedup by FontFaceId).
+        extract_text_font_assets(&mut main_world, &mut executor);
+        assert_eq!(executor.pending_font_asset_loads.len(), 1);
+
+        // register_font_asset flips the readiness for the consumer face id.
+        let (_render_device, mut render_state) = fresh_text_run_render_state();
+        render_state.set_required_font_asset_ids(id, vec![asset_id]);
+        assert!(!render_state.font_registration_state.ready(id));
+        render_state.register_font_asset(executor.pending_font_asset_loads[0].clone());
+        assert!(render_state.font_registration_state.ready(id));
     }
 
     fn noop_gpu_image(render_device: &RenderDevice) -> GpuImage {

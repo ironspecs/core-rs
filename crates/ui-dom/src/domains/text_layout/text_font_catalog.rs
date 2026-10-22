@@ -99,6 +99,11 @@ impl TextFontCatalog {
     /// data). On success the face is appended to the catalog, receives a fresh
     /// [`FontFaceId`], and the catalog revision is bumped so the main-world
     /// context re-installs at its next seam entry.
+    ///
+    /// There is NO dedup: installing the same bytes twice yields two distinct
+    /// [`FontFaceId`]s, each its own catalog source. Identity is the caller's
+    /// to own — if a caller wants one face per unique buffer, it must dedup
+    /// before installing.
     #[must_use]
     pub fn install_face(&self, bytes: &[u8]) -> FontInstallReport {
         let Some(family_names) = parse_family_names(bytes) else {
@@ -204,8 +209,12 @@ impl TextFontCatalog {
         })
     }
 
-    /// Builds the catalog from the four embedded sources (the initial list).
-    fn from_embedded_sources() -> Self {
+    /// Builds a fresh, NON-shared catalog from the four embedded sources (the
+    /// initial list). This is the constructor [`repo_default`](Self::repo_default)
+    /// shares as the process-wide singleton; it is `pub(crate)` so crate-internal
+    /// subsystems can build an isolated catalog whose `install_face` does not
+    /// pollute the shared one.
+    pub(crate) fn from_embedded_sources() -> Self {
         let sources = EMBEDDED_SOURCES
             .iter()
             .map(|bytes| FaceSource::Embedded(bytes))

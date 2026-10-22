@@ -827,7 +827,6 @@ pub(super) fn install_text_font_source(font_system: &mut FontSystem, source: &Fa
         .load_font_source(source.font_db_source());
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::needless_pass_by_value)]
 pub(super) fn wrapped_text_layout_from_buffer(buffer: Buffer) -> WrappedTextLayout {
     let mut width_px: f32 = 0.0;

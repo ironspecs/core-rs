@@ -2066,6 +2066,36 @@ an f32 basis.
   narrowing what can be requested. PR 4's implementation is
   complete (S1–S5); next: the full-body review, then PR 5.
 
+- **2026-10-23 — PR 4 full-body review remediation (REMEDIATE →
+  remediated; adjudicated in `TEXT_SEAM_DESIGN.md` v4, three commits on
+  `text/seam`).** The complete-body review returned REMEDIATE with one
+  blocking (B1) and three remediate findings (R1–R4) plus four nits
+  (N1–N4). B1 (blocking): the plain-text run-EMISSION site
+  (`domains/paint/mod.rs`) built a bare `TextRunSignature::from_text`
+  while the measure path used the resolved style — styled plain-text
+  nodes measured styled but rasterized unstyled, and styled/unstyled
+  same-text runs dedup-collided; the emission site now applies the
+  inherited style exactly as the element emission site does, pinned by
+  the crate-internal signature test
+  `styled_runs_distinguish_while_unstyled_runs_dedup`. R1/R2/R4: the
+  family-list splitter became quote-aware (`"A, B"` is one name), the
+  list capacity rose 8 → 16 (a registry row under the capacity-gate
+  doctrine), and `to_css_string` round-trip-closed the empty name
+  (`""`) and the opposite-quote name (single-quoted when the name
+  holds `"`), with the parser rejecting both-quotes names. R3: the
+  door-1 pin's "(c) render-world registration observed" label was
+  wrong (it asserted catalog reads); the comment is corrected, and a
+  crate-internal `layer_pool` test
+  (`consumer_face_extraction_readies_the_render_world_face`) drives
+  the render-world route (install → mint exactly one `UiDomFontAsset`
+  → queue → `register_font_asset` → `FontRegistrationState` readiness
+  flips for the consumer `FontFaceId`). N1: `refresh_font_catalog`
+  snapshots (revision, sources) consistently (loop until stable). N2:
+  `install_face` documents the no-dedup contract. N4: four doc nits +
+  the stale dead-code flag on `wrapped_text_layout_from_buffer`
+  (verified production-live). Layout proofs at remediation: 595 (all
+  green).
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 

@@ -20,7 +20,7 @@ not own the resolved font/line-height computation (that is the style system's
   `build_wrapped_text_buffer_and_byte_map`), the wrap-policy text transforms
   (`text_layout_input_for_wrap_policy` and its byte-map sibling), the caret-map
   helpers built from a laid-out buffer, `effective_line_height_px` (the
-  render-side line-height backstop), `install_text_font_catalog`, and the
+  render-side line-height backstop), `install_text_font_catalog_sources`, and the
   thread-local repo context. It is the ONLY place a production `Buffer` is
   born.
 - `text_layout_context.rs` owns `TextLayoutContext` (the main-world
@@ -102,11 +102,11 @@ The style system hands the seam a resolved text style — the parsed
   map to `cosmic_text::Weight`/`Style` in `text_layout_attrs`.
 - `direction` reuses the text group's `effective_text_direction()`; cosmic-text
   0.18.2 has no paragraph-direction setter, so the attrs auto-detect bidi.
-- `text_layout_attrs(request)` resolves family as the requested first
-  family-if-installed (ASCII case-insensitive against the catalog's installed
-  names, embedded + consumer), else today's language-routing
-  (`preferred_repo_font_face`). This is the S4 policy table's rule-1 seed; S4
-  generalizes to generics, named paths, and per-script tests.
+- `text_layout_attrs(family, request)` only maps the shaper attrs (weight →
+  cosmic `Weight`, style → cosmic `Style`) from the request and the
+  already-resolved `FamilyOwned`. Family RESOLUTION happens upstream, in the
+  two `Buffer` constructors via `font_fallback_policy::resolve` (the S4 policy
+  table's four rules), never in `text_layout_attrs`.
 - The `TextRunSignature` carries `family`/`weight`/`style` (so styled runs
   distinguish). The render-world font-registration key is now `FontFaceId`
   (text seam S3): the one-variant `TextFontFamilyId` placeholder enum is

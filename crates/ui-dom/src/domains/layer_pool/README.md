@@ -66,8 +66,8 @@ constructs a `cosmic_text::Buffer` directly.
   declares each FACE's required asset ids — keyed by `FontFaceId` (the catalog
   face id, text seam S3), not the removed `TextFontFamilyId` placeholder — and
   reports a face ready only when every required id is registered. A run's face
-  id is resolved from its family list (`text_layout::text_render::resolve_face_id`)
-  before the readiness gate.
+  id is resolved from its family list (`text_layout::resolve_face_id`, the
+  `font_fallback_policy` re-export) before the readiness gate.
 - Consumer-installed faces reach FontSystem #2 through the extract pipeline
   (`extract_text_font_assets`): the shared `TextFontCatalog` enumerates the
   consumer faces, each is minted one `UiDomFontAsset` (deduped by

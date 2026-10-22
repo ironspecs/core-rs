@@ -74,16 +74,29 @@ impl TextLayoutContext {
     /// world routing). Cheap: one atomic-free read-lock compare at seam entry;
     /// the re-install itself only runs on a change.
     fn refresh_font_catalog(&mut self) {
-        let revision = self.font_catalog.revision();
-        if revision == self.installed_revision {
+        // Snapshot (revision, sources) consistently: loop until the revision is
+        // stable across the snapshot read, so an install landing mid-refresh
+        // cannot leave this context ahead of its sources — the revision we
+        // record must describe exactly the sources we installed. Reads revision
+        // first (cheap) and only snapshots sources on a change.
+        loop {
+            let revision = self.font_catalog.revision();
+            if revision == self.installed_revision {
+                return;
+            }
+            let sources = self.font_catalog.sources_snapshot();
+            if self.font_catalog.revision() != revision {
+                // An install landed between the two reads: retry with the fresh
+                // revision so the installed set matches the revision we record.
+                continue;
+            }
+            for source in &sources[self.installed_source_count..] {
+                install_text_font_source(&mut self.font_system, source);
+            }
+            self.installed_source_count = sources.len();
+            self.installed_revision = revision;
             return;
         }
-        let sources = self.font_catalog.sources_snapshot();
-        for source in &sources[self.installed_source_count..] {
-            install_text_font_source(&mut self.font_system, source);
-        }
-        self.installed_source_count = sources.len();
-        self.installed_revision = self.font_catalog.revision();
     }
 
     #[must_use]

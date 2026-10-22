@@ -145,13 +145,16 @@ fn consumer_face_renders_through_the_public_pipeline() {
         "the fixture family should resolve to a consumer face, not an embedded one",
     );
 
-    // (c) The render world's source list (which mirrors the catalog) enumerates
-    // the consumer face.
+    // (c) The shared CATALOG enumerates the consumer face (the single source of
+    // truth the render world mirrors). This asserts the CATALOG-side route; the
+    // render-world extraction route itself (mint → queue → register → readiness
+    // for the consumer `FontFaceId`) is driven by the crate-internal `layer_pool`
+    // test `consumer_face_extraction_readies_the_render_world_face`.
     assert!(
         TextFontCatalog::repo_default()
             .installed_face_ids()
             .contains(&resolved_id),
-        "the render-world source enumeration should include the consumer face",
+        "the shared catalog should enumerate the consumer face",
     );
 }
 
