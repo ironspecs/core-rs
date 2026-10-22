@@ -226,11 +226,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-541 layout proofs (533 in
+542 layout proofs (534 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-22 after the multi-match
-correction); the off-spec registry (6 divergent proofs in 5
-divergent-class rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-22 after the
+case-sensitivity registration); the off-spec registry (7 divergent
+proofs in 6 divergent-class rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1817,6 +1817,26 @@ an f32 basis.
   named form (the first-match default covers `text 1`). Also admitted:
   `grid-template-areas: none` as the initial-value reset (the empty
   map; prior areas clear — pinned). Proofs 537 → 541.
+
+- **2026-10-22 — the PR-28 review's three non-blocking findings, plus
+  a citation correction it prompted.** The two stale comments citing
+  the deleted multi-match rule are corrected (`grid.rs`, the
+  `grid_track_list.rs` per-name capacity rationale — now justified by
+  the named set's Nth-match indexing). `grid-template-areas: none`
+  (and `NONE`/`None`) now admits ASCII case-insensitively (CSS 2.1
+  §4.1.3 "Characters and case") as the spec-correct entry point. And
+  the codebase-wide keyword case-sensitivity is registered as a named
+  divergent row (`off_spec_keyword_grammars_are_case_sensitive`):
+  CSS 2.1 §4.1.3 says all CSS syntax is ASCII case-insensitive, and
+  CSS Syntax 3 §8.1 says property names are too — but the crate's
+  keyword grammars and property-name dispatch both match
+  case-sensitively (pinned: `GRID`, `ROW`, `ABSOLUTE`, `PRE`, `1FR`
+  drop while lowercase applies; `GRID-TEMPLATE-COLUMNS`, `MARGIN-LEFT`,
+  `FONT-SIZE` drop likewise), deferred per D6 except the `none`
+  entry point. The reviewer's citation flag was right: "CSS Syntax 3
+  §4.1" was wrong (Token Railroad Diagrams); the anchors are now
+  spec-text-verified. Divergent registry 6-in-5 → 7-in-6. Proofs
+  541 → 542. Next: T3.5 — auto-fill/auto-fit.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
