@@ -167,10 +167,14 @@ fold), or the computed read surface (`RootDom::computed_style`).
   longhands exactly as if expanded in place). The cascade and every consumer
   only ever see longhands. The admitted shorthands are `border-radius`,
   `border-color`, `gap`, `flex`, `flex-flow`, `place-content`, `place-items`,
-  `place-self`, `transition`, `margin`, `padding`, and the four
-  `border-<side>` width aliases (width-only in this vocabulary; style/color
-  components are not admitted). The `margin` shorthand also admits `auto` per
-  token (`margin: 0 auto`); `padding` does not (auto is invalid there).
+  `place-self`, `grid-column`, `grid-row`, `grid-area`, `grid-template`,
+  `grid`, `transition`, `margin`, `padding`, and the four `border-<side>`
+  width aliases (width-only in this vocabulary; style/color components are not
+  admitted). `grid-template` always expands to rows/columns/areas (CSS Grid
+  §7.4) and `grid` to rows/columns/areas/auto-flow/auto-rows/auto-columns (CSS
+  Grid §7.7); omitted axes emit `none` (the null-key sentinel). The `margin`
+  shorthand also admits `auto` per token (`margin: 0 auto`); `padding` does not
+  (auto is invalid there).
 - Declaration parsing is drop-and-continue (CSS 2.1 §4.1.7): a malformed
   declaration is dropped and parsing continues. Drops are always observable —
   counted in the `StylesheetLoadReport` and in the runtime's monotonic

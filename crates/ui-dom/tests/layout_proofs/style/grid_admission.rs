@@ -1,6 +1,6 @@
 #![allow(rustdoc::bare_urls)]
 
-//! Grid admission proofs (`GRID_STEP1_DESIGN.md` D6 through the T3.5 tier).
+//! Grid admission proofs (`GRID_STEP1_DESIGN.md` D6 through the T4 tier).
 //!
 //! These are the public-surface pins for the grid admissions: `display:
 //! grid`/`inline-grid` routing, the T1 property set (`grid-template-columns`,
@@ -10,8 +10,11 @@
 //! `repeat()`, the bare-`fr` auto-repeat span, the names-only zero-track span,
 //! the row-axis content-based span), and the layout-boundary pins (the
 //! formatting-context flag that contains a grid item's first-child margin).
-//! The `[` line-name gate and the auto-fill/auto-fit gate are INVERTED (both
-//! ADMIT — the T3 named lines and the T3.5 auto-repeat tiers, landed).
+//! The `[` line-name gate, the auto-fill/auto-fit gate, and the T4
+//! `grid-template`/`grid` shorthand gate are INVERTED (all ADMIT — the T3
+//! named lines, the T3.5 auto-repeat tier, and the T4 shorthand expansions,
+//! landed). The T4 shorthand `none` representation (the track-list longhands
+//! admit `none` → the null-key sentinel, v2 Defect A) is pinned here too.
 //!
 //! The computed grid group is observed through the public wire projection
 //! (`compute_style_map`): an admitted track list re-serializes to its canonical
@@ -54,6 +57,25 @@ fn assert_grid_wire_value(property: &str, value: &str, expected: &str) {
         Some(&DomAttributeValue::String(expected.to_string())),
         "{property:?}: {value:?} should project to {expected:?}",
     );
+}
+
+/// Asserts a SHORTHAND expands to the given longhand wire values (the shorthand
+/// is gone post-expansion — `compute_style_map` is keyed by `PresentationProperty`,
+/// longhands only, so the shorthand name cannot appear on the wire).
+fn assert_shorthand_wire(shorthand: &str, value: &str, expected: &[(&str, &str)]) {
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, shorthand, value);
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(target).expect("style map");
+    for (name, expected_value) in expected {
+        let property = PresentationProperty::from_name(name).expect("admitted longhand");
+        assert_eq!(
+            map.get(&property),
+            Some(&DomAttributeValue::String((*expected_value).to_string())),
+            "shorthand {shorthand}: {value:?} → {name}",
+        );
+    }
 }
 
 #[test]
@@ -759,8 +781,162 @@ fn grid_line_name_capacity_gates_drop() {
 }
 
 #[test]
-fn grid_template_and_grid_shorthands_still_drop() {
-    // The T4 shorthands stay gated (unchanged).
-    assert_decl_drop(".x { grid-template: \"a b\" 1fr / 1fr 1fr }", 0, 1);
-    assert_decl_drop(".x { grid: \"a b\" 1fr / 1fr 1fr }", 0, 1);
+fn grid_template_and_grid_gates_invert() {
+    // The T4 gate inversion (rewrites the T3-era
+    // `grid_template_and_grid_shorthands_still_drop`): both shorthands ADMIT
+    // via parse-time expansion.
+    assert_shorthand_wire(
+        "grid-template",
+        "\"a b\" 1fr / 1fr 1fr",
+        &[
+            ("grid-template-rows", "1fr"),
+            ("grid-template-columns", "1fr 1fr"),
+            ("grid-template-areas", "\"a b\""),
+        ],
+    );
+    assert_shorthand_wire(
+        "grid",
+        "\"a b\" 1fr / 1fr 1fr",
+        &[
+            ("grid-template-rows", "1fr"),
+            ("grid-template-columns", "1fr 1fr"),
+            ("grid-template-areas", "\"a b\""),
+            ("grid-auto-flow", "row"),
+            ("grid-auto-rows", "auto"),
+            ("grid-auto-columns", "auto"),
+        ],
+    );
+
+    // Garbage still drops + counts.
+    assert_decl_drop(".x { grid: nonsense }", 0, 1);
+    assert_decl_drop(".x { grid-template: nonsense }", 0, 1);
+}
+
+#[test]
+fn grid_shorthand_template_form() {
+    // `grid: 40px / 100px` is the <'grid-template'> form plus the auto-flow/
+    // auto-track initial values — all six longhands emitted.
+    assert_shorthand_wire(
+        "grid",
+        "40px / 100px",
+        &[
+            ("grid-template-rows", "40px"),
+            ("grid-template-columns", "100px"),
+            ("grid-template-areas", "none"),
+            ("grid-auto-flow", "row"),
+            ("grid-auto-rows", "auto"),
+            ("grid-auto-columns", "auto"),
+        ],
+    );
+}
+
+#[test]
+fn grid_shorthand_auto_flow_row_form() {
+    // `grid: auto-flow 60px / 100px 1fr` → auto-flow `row`, auto-rows `60px`,
+    // columns 100/1fr, rows/areas none.
+    assert_shorthand_wire(
+        "grid",
+        "auto-flow 60px / 100px 1fr",
+        &[
+            ("grid-template-rows", "none"),
+            ("grid-template-columns", "100px 1fr"),
+            ("grid-template-areas", "none"),
+            ("grid-auto-flow", "row"),
+            ("grid-auto-rows", "60px"),
+            ("grid-auto-columns", "auto"),
+        ],
+    );
+}
+
+#[test]
+fn grid_shorthand_dense_either_order() {
+    // `dense auto-flow` ≡ `auto-flow dense` (both `row dense`).
+    for value in [
+        "dense auto-flow 60px / 100px",
+        "auto-flow dense 60px / 100px",
+    ] {
+        assert_shorthand_wire(
+            "grid",
+            value,
+            &[
+                ("grid-template-rows", "none"),
+                ("grid-template-columns", "100px"),
+                ("grid-template-areas", "none"),
+                ("grid-auto-flow", "row dense"),
+                ("grid-auto-rows", "60px"),
+                ("grid-auto-columns", "auto"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn grid_template_areas_form_auto_repeat_columns_drops() {
+    // §7.4's <explicit-track-list> forbids auto-repeat: the areas-form columns
+    // drop + count (the whole shorthand, atomically).
+    assert_decl_drop(
+        ".x { grid-template: \"a\" 40px / repeat(auto-fit, 100px) }",
+        0,
+        1,
+    );
+    assert_decl_drop(
+        ".x { grid-template: \"a\" 40px / repeat(auto-fill, 100px) }",
+        0,
+        1,
+    );
+}
+
+#[test]
+fn grid_template_areas_form_repeat_row_size_drops() {
+    // Row sizes are single track-sizes: `repeat()` in the row-size position
+    // drops + count (the whole shorthand).
+    assert_decl_drop(".x { grid-template: \"a\" repeat(2, 40px) / 100px }", 0, 1);
+}
+
+#[test]
+fn grid_shorthand_capacity_gate_atomic() {
+    // A 13-column areas string exceeds the 12-column capacity: the WHOLE
+    // shorthand drops as one counted declaration (rows/columns/areas unset).
+    let thirteen_cols = (0..13).map(|_| "a").collect::<Vec<_>>().join(" ");
+    assert_decl_drop(
+        &format!(".x {{ grid-template: \"{thirteen_cols}\" 40px }}"),
+        0,
+        1,
+    );
+}
+
+#[test]
+fn grid_track_list_none_longhand_admits() {
+    // v2 Defect A: `none` for track lists is now representable — the rows/
+    // columns longhand grammars admit `none` → the null-key sentinel (the
+    // initial value), the wire emits `none`, and the wire string re-parses to
+    // the same sentinel. ASCII case-insensitive per the registered exception
+    // (`NONE`/`None` too).
+    for reset in ["none", "NONE", "None"] {
+        assert_grid_wire_value("grid-template-columns", reset, "none");
+        assert_grid_wire_value("grid-template-rows", reset, "none");
+    }
+
+    // Reset + round-trip: a prior track list is cleared by `none`, and the wire
+    // `none` string re-parses to the same sentinel.
+    let (mut world, mut root, target) = attached_target();
+    assert_style_set(&mut root, target, "grid-template-columns", "100px 200px");
+    assert_style_set(&mut root, target, "grid-template-columns", "none");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let map = root.compute_style_map(target).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "grid-template-columns: none resets prior tracks to the sentinel",
+    );
+    // Re-parse the wire `none` through the strict writer: same sentinel.
+    assert_style_set(&mut root, target, "grid-template-columns", "none");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.compute_style_map(target)
+            .expect("style map")
+            .get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "the wire `none` re-parses to the same sentinel",
+    );
 }

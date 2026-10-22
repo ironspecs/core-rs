@@ -209,6 +209,8 @@ enum Shorthand {
     GridColumn,
     GridRow,
     GridArea,
+    GridTemplate,
+    Grid,
     Transition,
     BorderSide(BorderSide),
     Margin,
@@ -251,6 +253,8 @@ fn shorthand_for_name(name: &str) -> Option<Shorthand> {
         "grid-column" => Shorthand::GridColumn,
         "grid-row" => Shorthand::GridRow,
         "grid-area" => Shorthand::GridArea,
+        "grid-template" => Shorthand::GridTemplate,
+        "grid" => Shorthand::Grid,
         "transition" => Shorthand::Transition,
         "border-top" => Shorthand::BorderSide(BorderSide::Top),
         "border-right" => Shorthand::BorderSide(BorderSide::Right),
@@ -339,6 +343,19 @@ fn longhands_for_shorthand(shorthand: Shorthand) -> SmallVec<[PresentationProper
             PresentationProperty::GridColumnStart,
             PresentationProperty::GridRowEnd,
             PresentationProperty::GridColumnEnd,
+        ],
+        Shorthand::GridTemplate => &[
+            PresentationProperty::GridTemplateRows,
+            PresentationProperty::GridTemplateColumns,
+            PresentationProperty::GridTemplateAreas,
+        ],
+        Shorthand::Grid => &[
+            PresentationProperty::GridTemplateRows,
+            PresentationProperty::GridTemplateColumns,
+            PresentationProperty::GridTemplateAreas,
+            PresentationProperty::GridAutoFlow,
+            PresentationProperty::GridAutoRows,
+            PresentationProperty::GridAutoColumns,
         ],
         Shorthand::Transition => &[
             PresentationProperty::TransitionProperty,
@@ -443,6 +460,8 @@ fn expand_shorthand(
         Shorthand::GridColumn => expand_grid_column(value, store),
         Shorthand::GridRow => expand_grid_row(value, store),
         Shorthand::GridArea => expand_grid_area(value, store),
+        Shorthand::GridTemplate => expand_grid_template(value, store),
+        Shorthand::Grid => expand_grid(value, store),
         Shorthand::Transition => expand_transition(value, store),
         Shorthand::BorderSide(side) => expand_border_side(side, value),
         Shorthand::Margin => expand_margin(value),
@@ -683,26 +702,52 @@ fn parse_flex_basis_length(value: &str) -> Option<DeclLength> {
 /// content-based span tracks (`min-content`/`max-content`/`auto`) — see
 /// `parse_row_track_list` (D1/NB1).
 fn parse_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
-    parse_track_list_axis(value, store, false)
+    parse_track_list_axis(value, store, false, false)
 }
 
 /// Parses a ROW-axis track list (`grid-template-rows`), which additionally
 /// gates content-based auto-repeat span tracks (their inline-axis repetition
 /// basis is wrong for the block axis — D1/NB1).
 fn parse_row_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
-    parse_track_list_axis(value, store, true)
+    parse_track_list_axis(value, store, true, false)
+}
+
+/// Parses a COLUMN-axis track list for the grid shorthands, which additionally
+/// reject the shorthand's reserved keywords (`auto-flow`/`dense`/`none`) as line
+/// names.
+fn parse_track_list_for_shorthand(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
+    parse_track_list_axis(value, store, false, true)
+}
+
+/// Parses a ROW-axis track list for the grid shorthands (row content gate +
+/// the shorthand's reserved-keyword line-name guard).
+fn parse_row_track_list_for_shorthand(
+    value: &str,
+    store: &mut DeclStore,
+) -> Option<GridTrackListKey> {
+    parse_track_list_axis(value, store, true, true)
 }
 
 /// The shared track-list parser. `is_row_axis` selects the row-axis gate for
 /// content-based auto-repeat span tracks; column-axis lists keep the content
 /// bases (`h_min`/`h_max` are inline-axis, the correct axis for columns).
+/// `shorthand_guard` additionally rejects the shorthand's reserved keywords
+/// (`auto-flow`/`dense`/`none`) as line names.
 fn parse_track_list_axis(
     value: &str,
     store: &mut DeclStore,
     is_row_axis: bool,
+    shorthand_guard: bool,
 ) -> Option<GridTrackListKey> {
+    // `none` is the initial value (grid T4, `GRID_STEP6_DESIGN.md` v2 Defect A):
+    // it admits to the null-key sentinel so the shorthand can emit it for
+    // none/missing axes and the longhand reset round-trips. ASCII
+    // case-insensitive per the registered exception (the T3 areas precedent).
+    if value.trim().eq_ignore_ascii_case("none") {
+        return Some(GridTrackListKey::default());
+    }
     let mut list = GridTrackList::default();
-    expand_track_list_tokens(value, store, &mut list, is_row_axis)?;
+    expand_track_list_tokens(value, store, &mut list, is_row_axis, shorthand_guard)?;
     Some(store.intern_track_list(&list))
 }
 
@@ -720,16 +765,18 @@ enum RepeatCount {
 /// list)` stores the inner list as ONE copy plus `auto_repeat_span` and the
 /// span's OWNED line-name range (which of the registrations are span-inner vs
 /// suffix — B3). `is_row_axis` gates content-based span tracks on the block
-/// axis (D1/NB1).
+/// axis (D1/NB1); `shorthand_guard` rejects the shorthand's reserved keywords
+/// as line names.
 fn expand_track_list_tokens(
     value: &str,
     store: &mut DeclStore,
     out: &mut GridTrackList,
     is_row_axis: bool,
+    shorthand_guard: bool,
 ) -> Option<()> {
     for token in split_ws_paren_aware(value) {
         if token.starts_with('[') {
-            register_line_names(token, store, out)?;
+            register_line_names(token, store, out, shorthand_guard)?;
             continue;
         }
         if let Some(inner) = strip_repeat(token) {
@@ -742,7 +789,7 @@ fn expand_track_list_tokens(
                     for _ in 0..n {
                         for inner_token in split_ws_paren_aware(list) {
                             if inner_token.starts_with('[') {
-                                register_line_names(inner_token, store, out)?;
+                                register_line_names(inner_token, store, out, shorthand_guard)?;
                             } else {
                                 out.tracks.try_push(parse_track_size(inner_token)?).ok()?;
                             }
@@ -760,7 +807,7 @@ fn expand_track_list_tokens(
                     let owned_start = u8::try_from(out.line_names.len()).ok()?;
                     for inner_token in split_ws_paren_aware(list) {
                         if inner_token.starts_with('[') {
-                            register_line_names(inner_token, store, out)?;
+                            register_line_names(inner_token, store, out, shorthand_guard)?;
                         } else {
                             let track = parse_track_size(inner_token)?;
                             if is_bare_fr(track) {
@@ -827,11 +874,13 @@ fn span_track_basis_is_content_based(track: GridTrackSize) -> bool {
 /// Registers one `[name1 name2]` bracket group's names against the line at the
 /// current `tracks.len()` (the line BEFORE the following track; a trailing
 /// bracket names the final line). Fails the whole list on any capacity or
-/// per-name-count gate.
+/// per-name-count gate. `shorthand_guard` additionally rejects the shorthand's
+/// reserved keywords (`auto-flow`/`dense`/`none`) as line names.
 fn register_line_names(
     bracket: &str,
     store: &mut DeclStore,
     out: &mut GridTrackList,
+    shorthand_guard: bool,
 ) -> Option<()> {
     let inner = bracket.strip_prefix('[')?.strip_suffix(']')?;
     if inner.trim().is_empty() {
@@ -839,7 +888,7 @@ fn register_line_names(
     }
     let line_index = u8::try_from(out.tracks.len()).ok()?;
     for name in inner.split_whitespace() {
-        if !is_custom_ident(name) {
+        if !is_custom_ident(name) || (shorthand_guard && is_grid_shorthand_keyword(name)) {
             return None;
         }
         let key = store.intern(name);
@@ -848,6 +897,14 @@ fn register_line_names(
         }
     }
     Some(())
+}
+
+/// True when `value` is one of the grid-shorthand reserved keywords
+/// (`auto-flow`, `dense`, `none`) — these are keywords in the `grid-template`
+/// and `grid` grammars, never area/line names (D3). The longhand grammars admit
+/// them as names (the guard is shorthand-local).
+fn is_grid_shorthand_keyword(value: &str) -> bool {
+    matches!(value, "auto-flow" | "dense" | "none")
 }
 
 /// True when `value` is a valid grid `<custom-ident>`: a non-empty identifier
@@ -1149,6 +1206,21 @@ fn parse_grid_areas(value: &str, store: &mut DeclStore) -> Option<GridAreasKey> 
         return Some(GridAreasKey::default());
     }
     let rows = split_grid_area_rows(value)?;
+    intern_grid_areas_from_rows(&rows, store, false)
+}
+
+/// Validates a set of already-extracted area row strings into an interned
+/// `GridTemplateAreas` map (the shared body behind `parse_grid_areas` and the
+/// `grid-template`/`grid` areas form). Gates (each a counted drop, never a
+/// crash): > 8 rows, > 12 columns, > 12 distinct names, a non-uniform column
+/// count, a non-rectangular name, and any malformed cell token.
+/// `shorthand_guard` additionally rejects the shorthand's reserved keywords
+/// (`auto-flow`/`dense`/`none`) as area names.
+fn intern_grid_areas_from_rows(
+    rows: &[&str],
+    store: &mut DeclStore,
+    shorthand_guard: bool,
+) -> Option<GridAreasKey> {
     if rows.is_empty() || rows.len() > GRID_AREA_ROW_CAPACITY {
         return None;
     }
@@ -1158,8 +1230,8 @@ fn parse_grid_areas(value: &str, store: &mut DeclStore) -> Option<GridAreasKey> 
         GRID_AREA_ROW_CAPACITY,
     > = ArrayVec::new();
     let mut col_count: Option<usize> = None;
-    for row in &rows {
-        let row_cells = parse_area_row(row, store)?;
+    for row in rows {
+        let row_cells = parse_area_row(row, store, shorthand_guard)?;
         match col_count {
             None => col_count = Some(row_cells.len()),
             Some(count) if count != row_cells.len() => return None, // non-uniform columns
@@ -1242,10 +1314,12 @@ fn split_grid_area_rows(value: &str) -> Option<Vec<&str>> {
 
 /// Parses one areas row string into its cell tokens: a dot-run → `None` (empty
 /// cell), a `<custom-ident>` → `Some(interned name)`. Over `GRID_AREA_COL_CAPACITY`
-/// cells or any malformed token fails the whole declaration.
+/// cells or any malformed token fails the whole declaration. `shorthand_guard`
+/// additionally rejects the shorthand's reserved keywords as area names.
 fn parse_area_row(
     row: &str,
     store: &mut DeclStore,
+    shorthand_guard: bool,
 ) -> Option<ArrayVec<Option<TextKey>, GRID_AREA_COL_CAPACITY>> {
     let mut cells = ArrayVec::<Option<TextKey>, GRID_AREA_COL_CAPACITY>::new();
     for token in row.split_whitespace() {
@@ -1254,7 +1328,7 @@ fn parse_area_row(
         }
         if token.bytes().all(|byte| byte == b'.') {
             cells.push(None);
-        } else if is_custom_ident(token) {
+        } else if is_custom_ident(token) && !(shorthand_guard && is_grid_shorthand_keyword(token)) {
             cells.push(Some(store.intern(token)));
         } else {
             return None;
@@ -1896,6 +1970,429 @@ fn expand_grid_area(value: &str, store: &mut DeclStore) -> Option<Vec<Declaratio
             DeclValue::GridLine(column_end),
         ),
     ])
+}
+
+/// Expands `grid-template` (CSS Grid §7.4) per D1: `none`, `<rows> /
+/// <columns>`, or the areas form. Always emits all three template longhands in
+/// order (rows, columns, areas); omitted axes are the null-key sentinel
+/// (`none`). Any grammar/validation failure drops the whole shorthand.
+fn expand_grid_template(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
+    let trimmed = value.trim();
+    // Form 1: `none` — all three longhands reset to their initial (`none`)
+    // values (ASCII case-insensitive, the registered exception).
+    if trimmed.eq_ignore_ascii_case("none") {
+        return Some(vec![
+            declaration(
+                PresentationProperty::GridTemplateRows,
+                DeclValue::TrackList(GridTrackListKey::default()),
+            ),
+            declaration(
+                PresentationProperty::GridTemplateColumns,
+                DeclValue::TrackList(GridTrackListKey::default()),
+            ),
+            declaration(
+                PresentationProperty::GridTemplateAreas,
+                DeclValue::GridAreas(GridAreasKey::default()),
+            ),
+        ]);
+    }
+    // Form 3 (areas): a quoted `<string>` is the discriminator.
+    if trimmed.contains('"') {
+        return expand_grid_template_areas_form(trimmed, store);
+    }
+    // Form 2: `<rows> / <columns>` — exactly one slash, both sides non-empty.
+    let mut parts = trimmed.split('/');
+    let rows_text = parts.next()?.trim();
+    let columns_text = parts.next().map(str::trim);
+    if parts.next().is_some() {
+        return None; // more than one '/'
+    }
+    let Some(columns_text) = columns_text else {
+        return None; // a lone track list is not a valid grid-template
+    };
+    if rows_text.is_empty() || columns_text.is_empty() {
+        return None;
+    }
+    let rows = parse_row_track_list_for_shorthand(rows_text, store)?;
+    let columns = parse_track_list_for_shorthand(columns_text, store)?;
+    Some(vec![
+        declaration(
+            PresentationProperty::GridTemplateRows,
+            DeclValue::TrackList(rows),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateColumns,
+            DeclValue::TrackList(columns),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateAreas,
+            DeclValue::GridAreas(GridAreasKey::default()),
+        ),
+    ])
+}
+
+/// The `grid-template` areas form: `[names]? <string> <track-size>? [names]?`+
+/// groups, optional `/ <explicit-track-list>` columns (auto-fill/auto-fit
+/// FORBIDDEN; missing `/` → columns `none`).
+fn expand_grid_template_areas_form(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
+    let pieces = split_top_level_slash(value);
+    let (groups_text, columns_text) = match pieces.as_slice() {
+        [groups] => (*groups, None),
+        [groups, columns] => (*groups, Some(*columns)),
+        _ => return None, // more than one top-level '/'
+    };
+    let (areas, rows_key) = parse_areas_form_groups(groups_text, store)?;
+    let columns_key = match columns_text {
+        Some(text) => parse_explicit_track_list(text, store)?,
+        None => GridTrackListKey::default(),
+    };
+    Some(vec![
+        declaration(
+            PresentationProperty::GridTemplateRows,
+            DeclValue::TrackList(rows_key),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateColumns,
+            DeclValue::TrackList(columns_key),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateAreas,
+            DeclValue::GridAreas(areas),
+        ),
+    ])
+}
+
+/// Parses the areas form's `[names]? <string> <track-size>? [names]?`+ group
+/// sequence into `(areas_key, rows_key)`: the extracted string rows validate
+/// through the T3 areas machinery (rectangular, uniform columns, name caps,
+/// `.` holes) and the interleaved single track-sizes build the rows list (a
+/// MISSING size → `auto`; `repeat()` drops — the leaf grammar excludes it;
+/// line names attach to ROW lines; `auto_repeat_span`/`owned_line_name_range`
+/// stay `None`). The shorthand's reserved keywords are rejected as names here
+/// too (D3).
+fn parse_areas_form_groups(
+    groups_text: &str,
+    store: &mut DeclStore,
+) -> Option<(GridAreasKey, GridTrackListKey)> {
+    let tokens = split_ws_paren_quote_aware(groups_text);
+    let mut index = 0usize;
+    let mut area_rows: Vec<&str> = Vec::new();
+    let mut rows = GridTrackList::default();
+
+    while index < tokens.len() {
+        // Leading `[names]?` — attaches to the line BEFORE this row track.
+        if tokens[index].starts_with('[') {
+            register_line_names(tokens[index], store, &mut rows, true)?;
+            index += 1;
+        }
+        // Required `<string>` (the area row).
+        let string_token = *tokens.get(index)?;
+        area_rows.push(strip_area_string_quotes(string_token)?);
+        index += 1;
+        // Optional single `<track-size>` (missing → `auto`).
+        if index < tokens.len() && !tokens[index].starts_with('[') {
+            let size = parse_track_size(tokens[index])?;
+            rows.tracks.try_push(size).ok()?;
+            index += 1;
+        } else {
+            rows.tracks.try_push(auto_track_size()).ok()?;
+        }
+        // Trailing `[names]?` — attaches to the line AFTER this row track.
+        if index < tokens.len() && tokens[index].starts_with('[') {
+            register_line_names(tokens[index], store, &mut rows, true)?;
+            index += 1;
+        }
+    }
+    if area_rows.is_empty() {
+        return None; // the areas form requires ≥1 group
+    }
+    let areas = intern_grid_areas_from_rows(&area_rows, store, true)?;
+    let rows_key = store.intern_track_list(&rows);
+    Some((areas, rows_key))
+}
+
+/// Parses the areas form's `/ <explicit-track-list>` columns: a fixed
+/// `repeat(N, …)` track list where auto-fill/auto-fit is FORBIDDEN (§7.4).
+/// `none` (the null key) resolves to no arena entry and drops here too.
+fn parse_explicit_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let key = parse_track_list_for_shorthand(value, store)?;
+    let list = store.resolve_track_list(key)?;
+    (list.auto_repeat_span.is_none()).then_some(key)
+}
+
+/// Expands `grid` (CSS Grid §7.7) per D2. Disambiguation: a standalone
+/// `auto-flow` token (after the slash → column flow, before → row flow);
+/// otherwise the whole value parses as `grid-template` (form 1). Always emits
+/// all six grid-shaping longhands in order (rows, columns, areas, auto-flow,
+/// auto-rows, auto-columns).
+fn expand_grid(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
+    let trimmed = value.trim();
+    if contains_auto_flow_keyword(trimmed) {
+        return expand_grid_auto_flow(trimmed, store);
+    }
+    // Form 1: <'grid-template'> plus the auto-flow/auto-track initial values.
+    let mut expanded = expand_grid_template(trimmed, store)?;
+    expanded.push(declaration(
+        PresentationProperty::GridAutoFlow,
+        DeclValue::GridAutoFlow(GridAutoFlowKw::Row),
+    ));
+    expanded.push(declaration(
+        PresentationProperty::GridAutoRows,
+        DeclValue::TrackSize(auto_track_size()),
+    ));
+    expanded.push(declaration(
+        PresentationProperty::GridAutoColumns,
+        DeclValue::TrackSize(auto_track_size()),
+    ));
+    Some(expanded)
+}
+
+/// Disambiguates the `grid` auto-flow forms (2 and 3) by which side of the
+/// top-level `/` carries the standalone `auto-flow` token.
+fn expand_grid_auto_flow(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {
+    let pieces = split_top_level_slash(value);
+    match pieces.as_slice() {
+        [before, after] => {
+            let flow_before = contains_auto_flow_keyword(before);
+            let flow_after = contains_auto_flow_keyword(after);
+            match (flow_before, flow_after) {
+                (false, true) => expand_grid_column_flow(before, after, store),
+                (true, false) => expand_grid_row_flow(before, after, store),
+                _ => None, // auto-flow on both/neither side, or no slash
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Form 2: `<rows> / auto-flow [dense]? <auto-columns-size>?` — column flow.
+fn expand_grid_column_flow(
+    rows_text: &str,
+    flow_text: &str,
+    store: &mut DeclStore,
+) -> Option<Vec<Declaration>> {
+    if rows_text.trim().is_empty() {
+        return None;
+    }
+    let rows = parse_row_track_list_for_shorthand(rows_text, store)?;
+    let flow_tokens = split_ws_paren_quote_aware(flow_text);
+    let (consumed, dense) = parse_flow_and_dense(&flow_tokens)?;
+    let auto_columns = match flow_tokens.len() - consumed {
+        0 => auto_track_size(),
+        1 => parse_track_size(flow_tokens[consumed])?,
+        _ => return None,
+    };
+    let flow = if dense {
+        GridAutoFlowKw::ColumnDense
+    } else {
+        GridAutoFlowKw::Column
+    };
+    Some(vec![
+        declaration(
+            PresentationProperty::GridTemplateRows,
+            DeclValue::TrackList(rows),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateColumns,
+            DeclValue::TrackList(GridTrackListKey::default()),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateAreas,
+            DeclValue::GridAreas(GridAreasKey::default()),
+        ),
+        declaration(
+            PresentationProperty::GridAutoFlow,
+            DeclValue::GridAutoFlow(flow),
+        ),
+        declaration(
+            PresentationProperty::GridAutoRows,
+            DeclValue::TrackSize(auto_track_size()),
+        ),
+        declaration(
+            PresentationProperty::GridAutoColumns,
+            DeclValue::TrackSize(auto_columns),
+        ),
+    ])
+}
+
+/// Form 3: `auto-flow [dense]? <auto-rows-size>? / <columns>` — row flow.
+fn expand_grid_row_flow(
+    flow_text: &str,
+    columns_text: &str,
+    store: &mut DeclStore,
+) -> Option<Vec<Declaration>> {
+    if columns_text.trim().is_empty() {
+        return None;
+    }
+    let columns = parse_track_list_for_shorthand(columns_text, store)?;
+    let flow_tokens = split_ws_paren_quote_aware(flow_text);
+    let (consumed, dense) = parse_flow_and_dense(&flow_tokens)?;
+    let auto_rows = match flow_tokens.len() - consumed {
+        0 => auto_track_size(),
+        1 => parse_track_size(flow_tokens[consumed])?,
+        _ => return None,
+    };
+    let flow = if dense {
+        GridAutoFlowKw::RowDense
+    } else {
+        GridAutoFlowKw::Row
+    };
+    Some(vec![
+        declaration(
+            PresentationProperty::GridTemplateRows,
+            DeclValue::TrackList(GridTrackListKey::default()),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateColumns,
+            DeclValue::TrackList(columns),
+        ),
+        declaration(
+            PresentationProperty::GridTemplateAreas,
+            DeclValue::GridAreas(GridAreasKey::default()),
+        ),
+        declaration(
+            PresentationProperty::GridAutoFlow,
+            DeclValue::GridAutoFlow(flow),
+        ),
+        declaration(
+            PresentationProperty::GridAutoRows,
+            DeclValue::TrackSize(auto_rows),
+        ),
+        declaration(
+            PresentationProperty::GridAutoColumns,
+            DeclValue::TrackSize(auto_track_size()),
+        ),
+    ])
+}
+
+/// Parses the leading `[ auto-flow && dense? ]` flow tokens (either order;
+/// `auto-flow` required, `dense` optional and at most once). Returns
+/// `(consumed_token_count, is_dense)`. `dense` without `auto-flow` drops.
+fn parse_flow_and_dense(tokens: &[&str]) -> Option<(usize, bool)> {
+    let mut saw_auto_flow = false;
+    let mut saw_dense = false;
+    let mut consumed = 0usize;
+    for &token in tokens.iter().take(2) {
+        match token {
+            "auto-flow" if !saw_auto_flow => {
+                saw_auto_flow = true;
+                consumed += 1;
+            }
+            "dense" if !saw_dense => {
+                saw_dense = true;
+                consumed += 1;
+            }
+            _ => break,
+        }
+    }
+    if !saw_auto_flow {
+        return None;
+    }
+    Some((consumed, saw_dense))
+}
+
+/// True when the value contains the STANDALONE `auto-flow` keyword (a bracket
+/// `[auto-flow]` or quoted `"auto-flow"` is a name/string token, not the
+/// keyword).
+fn contains_auto_flow_keyword(value: &str) -> bool {
+    split_ws_paren_quote_aware(value).contains(&"auto-flow")
+}
+
+/// The `auto` single track-size leaf (the initial value of `grid-auto-rows`/
+/// `grid-auto-columns`): `{ Auto, Auto }`.
+fn auto_track_size() -> GridTrackSize {
+    GridTrackSize {
+        min: TrackBreadth::Auto,
+        max: TrackMaxBreadth::Auto,
+    }
+}
+
+/// Strips the surrounding quotes from one `"…"` area-string token (the areas
+/// form's group parser tokenizer keeps the quotes on the token).
+fn strip_area_string_quotes(token: &str) -> Option<&str> {
+    let inner = token.strip_prefix('"')?;
+    inner.strip_suffix('"')
+}
+
+/// Splits a grid shorthand value on top-level `/` characters (outside quotes,
+/// brackets, and parens — a `/` inside an area string or a line-name bracket is
+/// not a separator).
+fn split_top_level_slash(value: &str) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let mut depth = 0usize;
+    let mut in_quote = false;
+    let mut start = 0usize;
+    for (index, ch) in value.char_indices() {
+        if ch == '"' {
+            in_quote = !in_quote;
+        } else if !in_quote {
+            if ch == '(' || ch == '[' {
+                depth = depth.saturating_add(1);
+            } else if ch == ')' || ch == ']' {
+                depth = depth.saturating_sub(1);
+            } else if ch == '/' && depth == 0 {
+                pieces.push(value[start..index].trim());
+                start = index + 1;
+            }
+        }
+    }
+    pieces.push(value[start..].trim());
+    pieces
+}
+
+/// Splits on whitespace only at paren/bracket/quote depth 0, so `rgb(255, 0, 0)`
+/// stays one token even when it contains spaces, a `[name1 name2]` line-name
+/// bracket stays one token, and a `"a b"` area string stays one token.
+fn split_ws_paren_quote_aware(value: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut depth = 0usize;
+    let mut in_quote = false;
+    let mut token_start = 0usize;
+    let mut in_token = false;
+    for (index, ch) in value.char_indices() {
+        if ch == '"' {
+            in_quote = !in_quote;
+            if !in_token {
+                token_start = index;
+                in_token = true;
+            }
+            continue;
+        }
+        if !in_quote && (ch == '(' || ch == '[') {
+            depth = depth.saturating_add(1);
+            if !in_token {
+                token_start = index;
+                in_token = true;
+            }
+            continue;
+        }
+        if !in_quote && (ch == ')' || ch == ']') {
+            depth = depth.saturating_sub(1);
+            if !in_token {
+                token_start = index;
+                in_token = true;
+            }
+            continue;
+        }
+        if ch.is_whitespace() && depth == 0 && !in_quote {
+            if in_token {
+                tokens.push(value[token_start..index].trim());
+                in_token = false;
+            }
+            continue;
+        }
+        if !in_token {
+            token_start = index;
+            in_token = true;
+        }
+    }
+    if in_token {
+        tokens.push(value[token_start..].trim());
+    }
+    tokens
 }
 
 fn expand_transition(value: &str, store: &mut DeclStore) -> Option<Vec<Declaration>> {

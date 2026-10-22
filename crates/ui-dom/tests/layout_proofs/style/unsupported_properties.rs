@@ -566,87 +566,23 @@ fn unsupported_layout_hint_properties_drop() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
-// UNSUPPORTED (class: unimplemented — D6 admission-gated):
-// - SPEC: CSS Grid 2 §§5–8 — the still-gated grid property family (the
-//   `grid-template` and `grid` shorthands).
-//   <https://drafts.csswg.org/css-grid-2/#grid-properties>
-// - CURRENT (asserted): every still-gated grid shorthand name drops + counts at
-//   name lookup (the names are absent from the `property_shape` table in
-//   `decl_parse.rs`), no crash, and the block-layout baseline is unchanged. The
-//   T1 set (`grid-template-columns`/`rows`, `grid-auto-flow`,
-//   `grid-auto-columns`/`rows`), the T2 placement/alignment longhands
-//   (`grid-column`/`grid-row` + longhands, `justify-items`/`justify-self`), and
-//   the T3 `grid-template-areas`/`grid-area` names left this gate in their
-//   landings and are pinned admitted in `grid_admission.rs`.
-//   CONTROL: the admitted `width: 80px` applies (applied == 1, dropped == 0).
-// - SPEC-CORRECT: a grid solver owns these names; admission per the D6 policy.
+// INVERSION (grid T4, `GRID_STEP6_DESIGN.md` v2 Defect B): the grid
+// property-name gate is now EMPTY. `grid-template` and `grid` left the
+// unsupported list — they now parse (pinned admitted in `grid_admission.rs`),
+// so no grid property name drops at name lookup. The `width: 80px` CONTROL
+// still applies.
 fn unsupported_grid_property_names_drop() {
-    struct Case {
-        name: &'static str,
-        body: &'static str,
-    }
-
-    let cases = [
-        Case {
-            name: "grid_template",
-            body: "grid-template: \"a b\" 1fr / 1fr 1fr",
-        },
-        Case {
-            name: "grid_shorthand",
-            body: "grid: \"a b\" 1fr / 1fr 1fr",
-        },
-    ];
-
-    for case in &cases {
-        assert_decl_drop(&format!(".{} {{ {} }}", case.name, case.body), 0, 1);
-    }
-
-    // No crash: a combined sheet with every still-gated grid shorthand drops and
-    // the update completes, leaving the target on the block-layout baseline. The
-    // T1/T2/T3 sets left this gate (see `grid_admission.rs`).
-    let combined = ".x { grid-template: \"a b\" 1fr / 1fr 1fr; grid: \"a b\" 1fr / 1fr 1fr }";
-    let (mut world, mut root, target, report) = styled_target_load(combined);
-    assert_eq!(
-        report.declarations_dropped, 2,
-        "all still-gated grid shorthands should drop"
+    let (mut world, mut root, target, report) = styled_target_load(
+        ".x { grid-template: \"a b\" 1fr / 1fr 1fr; grid: \"a b\" 1fr / 1fr 1fr; width: 80px }",
     );
     assert_eq!(
-        report.declarations_applied, 0,
-        "no still-gated grid shorthand should apply"
+        report.declarations_applied, 3,
+        "both grid shorthands and the width control apply",
     );
-    assert_style_set(&mut root, target, "width", "80px");
-    assert_style_set(&mut root, target, "height", "40px");
-    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
-        root.computed_style(target)
-            .expect("target")
-            .as_box()
-            .display,
-        DisplayKw::Block,
-        "a div with dropped grid properties stays on the Block display initial",
+        report.declarations_dropped, 0,
+        "no grid property name drops at name lookup",
     );
-    let plans = take_staged_layer_paint_plans(&root);
-    assert_eq!(plans.len(), 1, "one document-root layer plan");
-    assert_eq!(
-        plans[0].rects.len(),
-        1,
-        "one block rect (block-layout baseline)"
-    );
-    assert_rect_op_geometry(
-        &plans[0].rects[0],
-        0.0,
-        0.0,
-        80.0,
-        40.0,
-        "grid-name-dropped block div",
-    );
-
-    // CONTROL: an admitted property still applies alongside a dropped grid name.
-    let (mut world, mut root, target, report) =
-        styled_target_load(".x { grid-template: \"a b\" 1fr / 1fr 1fr; width: 80px }");
-    assert_eq!(report.declarations_applied, 1, "the width control applies");
-    assert_eq!(report.declarations_dropped, 1, "the grid shorthand drops");
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").as_box().width,

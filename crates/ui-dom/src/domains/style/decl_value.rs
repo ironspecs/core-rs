@@ -149,9 +149,18 @@ pub(crate) fn decl_value_to_css_string<'a>(
             .expect("interned text must resolve in its owning store")
             .to_string(),
         DeclValue::Translate([x, y]) => format!("translate({x}px, {y}px)"),
-        DeclValue::TrackList(key) => resolve_track_list(*key)
-            .expect("interned track list must resolve in its owning store")
-            .to_css_string(&resolve_name),
+        DeclValue::TrackList(key) => {
+            if *key == GridTrackListKey::default() {
+                // `grid-template-columns/rows: none` — the empty-list sentinel
+                // (the initial value), serialized back to `none` (grid T4 v2,
+                // mirroring the `GridAreas` null arm below).
+                "none".to_string()
+            } else {
+                resolve_track_list(*key)
+                    .expect("interned track list must resolve in its owning store")
+                    .to_css_string(&resolve_name)
+            }
+        }
         DeclValue::GridAreas(key) => {
             if *key == GridAreasKey::default() {
                 // `grid-template-areas: none` — the empty-map sentinel (the

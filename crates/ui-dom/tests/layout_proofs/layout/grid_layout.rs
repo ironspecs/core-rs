@@ -2332,3 +2332,408 @@ fn grid_repeat_minmax_definite_max_basis() {
     assert_rect_op_geometry(&rects[2], 200.0, 0.0, 200.0, 40.0, "track 2");
     assert_rect_op_geometry(&rects[3], 400.0, 0.0, 200.0, 40.0, "track 3");
 }
+
+// — Grid T4: the `grid-template` and `grid` shorthands (`GRID_STEP6_DESIGN.md` D4) — //
+
+/// Builds a `display: grid` container (width 300px) with `set_template` applied
+/// (a shorthand or its equivalent longhands), appends the items authored by
+/// `author_items`, runs one update, and returns each item's border box in order.
+fn grid_item_boxes<F>(
+    set_template: impl FnOnce(&mut RootDom, DomNodeSlotKey),
+    author_items: F,
+) -> Vec<DomRect>
+where
+    F: Fn(&mut RootDom, DomNodeSlotKey) -> Vec<DomNodeSlotKey>,
+{
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    set_template(&mut root, container);
+    assert_style_set(&mut root, container, "width", "300px");
+    let keys = author_items(&mut root, container);
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    keys.into_iter()
+        .map(|key| border_box_of(&root, key))
+        .collect()
+}
+
+/// Asserts two layout scenarios' item border boxes are pairwise identical
+/// (field-wise, within the file's `assert_close` tolerance).
+fn assert_boxes_match(left: &[DomRect], right: &[DomRect], label: &str) {
+    assert_eq!(left.len(), right.len(), "{label}: item count");
+    for (index, (a, b)) in left.iter().zip(right).enumerate() {
+        assert_close(a.left_px, b.left_px, &format!("{label} item {index} left"));
+        assert_close(a.top_px, b.top_px, &format!("{label} item {index} top"));
+        assert_close(
+            a.width_px,
+            b.width_px,
+            &format!("{label} item {index} width"),
+        );
+        assert_close(
+            a.height_px,
+            b.height_px,
+            &format!("{label} item {index} height"),
+        );
+    }
+}
+
+#[test]
+// CSS Grid §7.4: `grid-template: 40px 1fr / 100px 1fr` expands to the three
+// template longhands; layout is identical to the longhand control
+// (`grid_template_admits_and_expands`).
+fn grid_template_admits_and_expands() {
+    let items = |root: &mut RootDom, container: DomNodeSlotKey| -> Vec<DomNodeSlotKey> {
+        let first = assert_append_div_to(root, container);
+        assert_style_set(root, first, "height", "40px");
+        let second = assert_append_div_to(root, container);
+        assert_style_set(root, second, "height", "40px");
+        vec![first, second]
+    };
+    let shorthand = grid_item_boxes(
+        |root, c| assert_style_set(root, c, "grid-template", "40px 1fr / 100px 1fr"),
+        items,
+    );
+    let longhand = grid_item_boxes(
+        |root, c| {
+            assert_style_set(root, c, "grid-template-rows", "40px 1fr");
+            assert_style_set(root, c, "grid-template-columns", "100px 1fr");
+            assert_style_set(root, c, "grid-template-areas", "none");
+        },
+        items,
+    );
+    assert_boxes_match(&shorthand, &longhand, "grid-template");
+
+    // The shorthand emits all three template longhands on the wire.
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template",
+        "40px 1fr / 100px 1fr",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    let map = root.compute_style_map(container).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateRows),
+        Some(&DomAttributeValue::String("40px 1fr".to_string())),
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String("100px 1fr".to_string())),
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateAreas),
+        Some(&DomAttributeValue::String("none".to_string())),
+    );
+}
+
+#[test]
+// CSS Grid §7.4 `none` form: prior `grid-template-columns: 100px` is reset by
+// `grid-template: none` — items stack in implicit auto columns (columns none
+// wins) (`grid_template_none_resets_all_three`).
+fn grid_template_none_resets_all_three() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-template-columns", "100px 100px");
+    assert_style_set(&mut root, container, "grid-template", "none");
+    assert_style_set(&mut root, container, "width", "300px");
+    let first = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, first, "height", "40px");
+    let second = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, second, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let first_box = border_box_of(&root, first);
+    let second_box = border_box_of(&root, second);
+    assert_close(
+        first_box.width_px,
+        300.0,
+        "columns none: one implicit auto column",
+    );
+    assert_close(
+        second_box.top_px,
+        40.0,
+        "items stack in implicit auto columns",
+    );
+    assert_close(second_box.left_px, 0.0, "second item in the same column");
+}
+
+#[test]
+// CSS Grid §7.4 areas form: `grid-template: [top] "a b" 40px [middle] "c d" 1fr
+// [bottom] / 100px 1fr` sets areas, rows (40/1fr with row line names), and
+// columns (100/1fr); `grid-area: b` and `grid-row: middle` resolve; layout
+// matches the longhand control (`grid_template_areas_form_sets_all_three`).
+fn grid_template_areas_form_sets_all_three() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template",
+        "[top] \"a b\" 40px [middle] \"c d\" 1fr [bottom] / 100px 1fr",
+    );
+    assert_style_set(&mut root, container, "width", "300px");
+    let b = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, b, "grid-area", "b");
+    assert_style_set(&mut root, b, "height", "40px");
+    let middle = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, middle, "grid-row", "middle");
+    assert_style_set(&mut root, middle, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let b_box = border_box_of(&root, b);
+    assert_close(b_box.left_px, 100.0, "area b lands in column 2");
+    assert_close(b_box.top_px, 0.0, "area b in row 1");
+    assert_close(b_box.width_px, 200.0, "area b spans column 2 (1fr = 200px)");
+
+    let middle_box = border_box_of(&root, middle);
+    assert_close(
+        middle_box.top_px,
+        40.0,
+        "grid-row: middle starts at the middle line",
+    );
+
+    // Longhand control produces the identical layout.
+    let (mut world2, mut root2, container2) = grid_container_setup();
+    assert_style_set(&mut root2, container2, "display", "grid");
+    assert_style_set(
+        &mut root2,
+        container2,
+        "grid-template-rows",
+        "[top] 40px [middle] 1fr [bottom]",
+    );
+    assert_style_set(&mut root2, container2, "grid-template-columns", "100px 1fr");
+    assert_style_set(
+        &mut root2,
+        container2,
+        "grid-template-areas",
+        "\"a b\" \"c d\"",
+    );
+    assert_style_set(&mut root2, container2, "width", "300px");
+    let b2 = assert_append_div_to(&mut root2, container2);
+    assert_style_set(&mut root2, b2, "grid-area", "b");
+    assert_style_set(&mut root2, b2, "height", "40px");
+    let middle2 = assert_append_div_to(&mut root2, container2);
+    assert_style_set(&mut root2, middle2, "grid-row", "middle");
+    assert_style_set(&mut root2, middle2, "height", "40px");
+    assert_root_dom_update(&mut world2, &mut root2, 0.0, DomPointerUpdate::Unchanged);
+    let control_b_box = border_box_of(&root2, b2);
+    let control_middle_box = border_box_of(&root2, middle2);
+    assert_close(
+        b_box.left_px,
+        control_b_box.left_px,
+        "b left matches the longhand control",
+    );
+    assert_close(
+        b_box.width_px,
+        control_b_box.width_px,
+        "b width matches the longhand control",
+    );
+    assert_close(
+        middle_box.top_px,
+        control_middle_box.top_px,
+        "middle top matches the longhand control",
+    );
+}
+
+#[test]
+// CSS Grid §7.4 areas form without `/ columns`: `grid-template: "a b" 40px` →
+// columns none; the areas map widens to 2 implicit columns; `grid-area: b`
+// lands in column 2 (`grid_template_areas_form_without_columns`).
+fn grid_template_areas_form_without_columns() {
+    let items = |root: &mut RootDom, container: DomNodeSlotKey| -> Vec<DomNodeSlotKey> {
+        let a = assert_append_div_to(root, container);
+        assert_style_set(root, a, "grid-area", "a");
+        assert_style_set(root, a, "height", "40px");
+        let b = assert_append_div_to(root, container);
+        assert_style_set(root, b, "grid-area", "b");
+        assert_style_set(root, b, "height", "40px");
+        vec![a, b]
+    };
+    let shorthand = grid_item_boxes(
+        |root, c| assert_style_set(root, c, "grid-template", "\"a b\" 40px"),
+        items,
+    );
+    let longhand = grid_item_boxes(
+        |root, c| {
+            assert_style_set(root, c, "grid-template-rows", "40px");
+            assert_style_set(root, c, "grid-template-columns", "none");
+            assert_style_set(root, c, "grid-template-areas", "\"a b\"");
+        },
+        items,
+    );
+    assert_boxes_match(&shorthand, &longhand, "grid-template areas without columns");
+
+    // Two implicit auto columns split the 300px width; `b` sits in column 2.
+    assert_close(shorthand[0].left_px, 0.0, "a in column 1");
+    assert_close(shorthand[1].left_px, 150.0, "b lands in column 2");
+    assert_close(
+        shorthand[1].width_px,
+        150.0,
+        "b spans the second implicit column",
+    );
+}
+
+#[test]
+// CSS Grid §7.4 areas form: a missing `<track-size>` defaults to `auto`, so
+// `grid-template: "a" 40px "b" / 100px` sizes the second row to content
+// (`grid_template_areas_form_default_row_size_auto`).
+fn grid_template_areas_form_default_row_size_auto() {
+    let items = |root: &mut RootDom, container: DomNodeSlotKey| -> Vec<DomNodeSlotKey> {
+        let a = assert_append_div_to(root, container);
+        assert_style_set(root, a, "grid-area", "a");
+        assert_style_set(root, a, "height", "40px");
+        let b = assert_append_div_to(root, container);
+        assert_style_set(root, b, "grid-area", "b");
+        assert_style_set(root, b, "height", "25px");
+        vec![a, b]
+    };
+    let shorthand = grid_item_boxes(
+        |root, c| assert_style_set(root, c, "grid-template", "\"a\" 40px \"b\" / 100px"),
+        items,
+    );
+    let longhand = grid_item_boxes(
+        |root, c| {
+            assert_style_set(root, c, "grid-template-rows", "40px auto");
+            assert_style_set(root, c, "grid-template-columns", "100px");
+            assert_style_set(root, c, "grid-template-areas", "\"a\" \"b\"");
+        },
+        items,
+    );
+    assert_boxes_match(&shorthand, &longhand, "grid-template default row size");
+
+    // The second (missing → auto) row sizes to the item's 25px content.
+    assert_close(shorthand[1].top_px, 40.0, "b below the 40px first row");
+    assert_close(shorthand[1].height_px, 25.0, "auto row sizes to content");
+}
+
+#[test]
+// CSS Grid §7.4 areas form wider than the explicit columns: `grid-template:
+// "a b c" 40px / 100px 100px` — the third areas column creates an implicit
+// column and `grid-area: c` lands there (`grid_template_areas_wider_than_columns_widens`).
+fn grid_template_areas_wider_than_columns_widens() {
+    let items = |root: &mut RootDom, container: DomNodeSlotKey| -> Vec<DomNodeSlotKey> {
+        let c = assert_append_div_to(root, container);
+        assert_style_set(root, c, "grid-area", "c");
+        assert_style_set(root, c, "height", "40px");
+        vec![c]
+    };
+    let shorthand = grid_item_boxes(
+        |root, c| assert_style_set(root, c, "grid-template", "\"a b c\" 40px / 100px 100px"),
+        items,
+    );
+    let longhand = grid_item_boxes(
+        |root, c| {
+            assert_style_set(root, c, "grid-template-rows", "40px");
+            assert_style_set(root, c, "grid-template-columns", "100px 100px");
+            assert_style_set(root, c, "grid-template-areas", "\"a b c\"");
+        },
+        items,
+    );
+    assert_boxes_match(
+        &shorthand,
+        &longhand,
+        "grid-template areas wider than columns",
+    );
+
+    // The third (implicit) column absorbs the leftover 100px; `c` lands there.
+    assert_close(
+        shorthand[0].left_px,
+        200.0,
+        "c in the third (implicit) column",
+    );
+    assert_close(shorthand[0].width_px, 100.0, "c spans the implicit column");
+}
+
+#[test]
+// CSS Grid §7.7 column-flow form: `grid: 40px 1fr / auto-flow dense 80px` →
+// rows 40/1fr, auto-flow column dense, auto-columns 80px, columns/areas none;
+// an overflow item sizes its implicit column to 80px
+// (`grid_shorthand_auto_flow_column_form`).
+fn grid_shorthand_auto_flow_column_form() {
+    let items = |root: &mut RootDom, container: DomNodeSlotKey| -> Vec<DomNodeSlotKey> {
+        (0..3)
+            .map(|_| {
+                let item = assert_append_div_to(root, container);
+                assert_style_set(root, item, "height", "40px");
+                item
+            })
+            .collect()
+    };
+    let shorthand = grid_item_boxes(
+        |root, c| assert_style_set(root, c, "grid", "40px 1fr / auto-flow dense 80px"),
+        items,
+    );
+    let longhand = grid_item_boxes(
+        |root, c| {
+            assert_style_set(root, c, "grid-template-rows", "40px 1fr");
+            assert_style_set(root, c, "grid-template-columns", "none");
+            assert_style_set(root, c, "grid-template-areas", "none");
+            assert_style_set(root, c, "grid-auto-flow", "column dense");
+            assert_style_set(root, c, "grid-auto-rows", "auto");
+            assert_style_set(root, c, "grid-auto-columns", "80px");
+        },
+        items,
+    );
+    assert_boxes_match(&shorthand, &longhand, "grid auto-flow column form");
+
+    // The third item overflows into the second (implicit) column sized 80px.
+    assert_close(
+        shorthand[2].width_px,
+        80.0,
+        "overflow item's implicit column is 80px",
+    );
+}
+
+#[test]
+// CSS Cascade: `grid-auto-rows: 99px; grid-template-rows: 5px` then `grid:
+// auto-flow 60px / 100px` — the shorthand resets both priors (auto-rows 60,
+// rows none) (`grid_shorthand_resets_implicit_props`).
+fn grid_shorthand_resets_implicit_props() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(&mut root, container, "grid-auto-rows", "99px");
+    assert_style_set(&mut root, container, "grid-template-rows", "5px");
+    assert_style_set(&mut root, container, "grid", "auto-flow 60px / 100px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(container).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridAutoRows),
+        Some(&DomAttributeValue::String("60px".to_string())),
+        "auto-rows reset to 60px",
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateRows),
+        Some(&DomAttributeValue::String("none".to_string())),
+        "rows reset to none",
+    );
+}
+
+#[test]
+// CSS Cascade §3: `grid-template: 40px / 100px; grid-template-rows: 1fr` in one
+// style — the later longhand wins its slot over the shorthand's expansion
+// (`grid_shorthand_longhand_override_order`).
+fn grid_shorthand_longhand_override_order() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_set_attr_str(&mut root, container, "class", "x");
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".x { grid-template: 40px / 100px; grid-template-rows: 1fr }",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let map = root.compute_style_map(container).expect("style map");
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateRows),
+        Some(&DomAttributeValue::String("1fr".to_string())),
+        "the later grid-template-rows longhand overrides the shorthand's rows",
+    );
+    assert_eq!(
+        map.get(&PresentationProperty::GridTemplateColumns),
+        Some(&DomAttributeValue::String("100px".to_string())),
+        "the shorthand's columns survive",
+    );
+}
