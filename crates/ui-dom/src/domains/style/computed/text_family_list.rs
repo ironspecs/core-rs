@@ -38,7 +38,7 @@ pub(crate) const TEXT_FAMILY_LIST_CAPACITY: usize = 8;
 /// keyword. A quoted generic (`"serif"`) is a NAME, not the generic keyword —
 /// the parser routes only bare keywords to `Generic`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum TextFamilyItem {
+pub enum TextFamilyItem {
     /// A family name. Owned (`Arc<str>`) so the resolved list crosses the seam.
     FamilyName(Arc<str>),
     /// A generic family keyword (`serif`/`sans-serif`/`monospace`/`system-ui`).
@@ -50,14 +50,14 @@ pub(crate) enum TextFamilyItem {
 pub struct TextFamilyList {
     /// The family items, in authored order. Empty is the initial value (no
     /// authored family → the request's default).
-    pub(crate) items: ArrayVec<TextFamilyItem, TEXT_FAMILY_LIST_CAPACITY>,
+    pub items: ArrayVec<TextFamilyItem, TEXT_FAMILY_LIST_CAPACITY>,
 }
 
 impl TextFamilyList {
     /// The first named family (skipping generic keywords), the seed for S2's
     /// "requested first-family-if-installed" resolution (D3; S4 generalizes).
     #[must_use]
-    pub(crate) fn first_family_name(&self) -> Option<&str> {
+    pub fn first_family_name(&self) -> Option<&str> {
         self.items.iter().find_map(|item| match item {
             TextFamilyItem::FamilyName(name) => Some(name.as_ref()),
             TextFamilyItem::Generic(_) => None,

@@ -1,22 +1,18 @@
 //! Render-facing text-layout helpers.
 //!
-//! This file holds the render-side font-family selection, asset-path mapping,
-//! and wrapped-buffer construction so `text_layout::mod` stays focused on
-//! measurement-oriented behavior. It owns the seam's face resolution: the
-//! requested family's first installed face (against the shared catalog), else
-//! the language-routed embedded face.
+//! This file holds the render-side buffer construction, asset-path mapping,
+//! and the cosmic wrap/align mappings so `text_layout::mod` stays focused on
+//! measurement-oriented behavior. Family resolution no longer lives here: the
+//! fallback policy table moved to `font_fallback_policy.rs` (text seam S4), and
+//! this file only maps resolved inputs into cosmic-text.
 
-use cosmic_text::{Buffer, Family as CosmicFamily, FamilyOwned, FontSystem};
+use cosmic_text::{Buffer, FontSystem};
 
-use crate::domains::style::computed::TextFamilyList;
-
-use super::text_font_catalog::{
-    IBM_PLEX_SANS_FAMILY, SOURCE_HAN_SANS_FAMILY, SOURCE_HAN_SANS_K_FAMILY,
-    SOURCE_HAN_SANS_SC_FAMILY,
-};
+use super::font_fallback_policy;
+use super::text_font_catalog::IBM_PLEX_SANS_FAMILY;
 use super::{
-    FontFaceId, TextAlign, TextFontCatalog, TextLanguageId, TextLayoutRequest, TextWrapMode,
-    build_text_buffer, effective_line_height_px,
+    TextAlign, TextFontCatalog, TextLayoutRequest, TextWrapMode, build_text_buffer,
+    effective_line_height_px,
 };
 
 pub(crate) const UI_DOM_FONT_IBM_PLEX_SANS_PATH: &str =
@@ -46,65 +42,6 @@ pub(crate) fn build_render_text_buffer(
     )
 }
 
-/// The resolved family for one request: the shaping-ready owned family. The
-/// owned family is an inline string for typical names, so resolution does not
-/// allocate. The face id is resolved separately by [`resolve_face_id`] for the
-/// render world's registration gate.
-#[must_use]
-pub(crate) fn resolve_requested_family(
-    request: &TextLayoutRequest<'_>,
-    font_catalog: &TextFontCatalog,
-) -> FamilyOwned {
-    if let Some(name) = request.family.first_family_name()
-        && let Some((_, family)) = font_catalog.resolve_face(name)
-    {
-        return family;
-    }
-    let (_, family_name) = preferred_repo_font_face(request.language_hint_id);
-    FamilyOwned::new(CosmicFamily::Name(family_name))
-}
-
-/// The face id the render world checks registration readiness against for one
-/// run record: the record's first family if installed, else the language
-/// default. Mirrors [`resolve_requested_family`] so the readiness gate and the
-/// shaping resolution agree.
-#[must_use]
-pub(crate) fn resolve_face_id(
-    family: &TextFamilyList,
-    language_hint_id: TextLanguageId,
-    font_catalog: &TextFontCatalog,
-) -> FontFaceId {
-    if let Some(name) = family.first_family_name()
-        && let Some((face_id, _)) = font_catalog.resolve_face(name)
-    {
-        return face_id;
-    }
-    preferred_repo_font_face(language_hint_id).0
-}
-
-/// The language-routed embedded face (the pre-S4 fallback): returns the face id
-/// and its static family name.
-#[must_use]
-fn preferred_repo_font_face(language_hint_id: TextLanguageId) -> (FontFaceId, &'static str) {
-    match language_hint_id {
-        TextLanguageId::Japanese => (
-            FontFaceId::EMBEDDED_SOURCE_HAN_SANS_J,
-            SOURCE_HAN_SANS_FAMILY,
-        ),
-        TextLanguageId::SimplifiedChinese => (
-            FontFaceId::EMBEDDED_SOURCE_HAN_SANS_SC,
-            SOURCE_HAN_SANS_SC_FAMILY,
-        ),
-        TextLanguageId::Korean => (
-            FontFaceId::EMBEDDED_SOURCE_HAN_SANS_K,
-            SOURCE_HAN_SANS_K_FAMILY,
-        ),
-        TextLanguageId::English | TextLanguageId::Thai => {
-            (FontFaceId::EMBEDDED_IBM_PLEX_SANS, IBM_PLEX_SANS_FAMILY)
-        }
-    }
-}
-
 #[must_use]
 pub(crate) fn ui_sans_repo_font_asset_paths() -> &'static [&'static str] {
     &[
@@ -122,22 +59,12 @@ pub(crate) fn repo_default_sans_serif_family_name() -> &'static str {
 
 #[must_use]
 pub(crate) fn cosmic_wrap(request: &TextLayoutRequest<'_>) -> cosmic_text::Wrap {
-    match effective_cosmic_wrap_mode(request) {
+    match font_fallback_policy::effective_cosmic_wrap_mode(request) {
         TextWrapMode::None => cosmic_text::Wrap::None,
         TextWrapMode::Word => cosmic_text::Wrap::Word,
         TextWrapMode::Glyph => cosmic_text::Wrap::Glyph,
         TextWrapMode::WordOrGlyph => cosmic_text::Wrap::WordOrGlyph,
     }
-}
-
-fn effective_cosmic_wrap_mode(request: &TextLayoutRequest<'_>) -> TextWrapMode {
-    if request.wrap_mode == TextWrapMode::Word && request.language_hint_id == TextLanguageId::Thai {
-        // Blink and Gecko run locale-aware line breaking for Thai text. Our
-        // backend does not expose that exact breaker, so `WordOrGlyph` is the
-        // closest available approximation for the browser normal-wrap path.
-        return TextWrapMode::WordOrGlyph;
-    }
-    request.wrap_mode
 }
 
 #[must_use]
@@ -155,33 +82,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn language_routing_falls_back_to_repo_families() {
-        let catalog = TextFontCatalog::repo_default();
-        let english =
-            resolve_requested_family(&TextLayoutRequest::for_text("hello", 14.0), &catalog);
-        assert_eq!(
-            english,
-            FamilyOwned::new(CosmicFamily::Name(IBM_PLEX_SANS_FAMILY)),
-        );
+    fn cosmic_wrap_delegates_the_thai_word_override_to_the_policy_table() {
+        // Thai normal-wrap requests become WordOrGlyph: the named locale
+        // decision owned by `font_fallback_policy::effective_cosmic_wrap_mode`.
+        let thai_word = TextLayoutRequest::for_text("เมนู", 14.0);
+        assert_eq!(cosmic_wrap(&thai_word), cosmic_text::Wrap::WordOrGlyph);
 
-        let japanese =
-            resolve_requested_family(&TextLayoutRequest::for_text("メニュー", 14.0), &catalog);
-        assert_eq!(
-            japanese,
-            FamilyOwned::new(CosmicFamily::Name(SOURCE_HAN_SANS_FAMILY)),
-        );
+        let english_word = TextLayoutRequest::for_text("hello", 14.0);
+        assert_eq!(cosmic_wrap(&english_word), cosmic_text::Wrap::Word);
 
-        let simplified =
-            resolve_requested_family(&TextLayoutRequest::for_text("颜色", 14.0), &catalog);
-        assert_eq!(
-            simplified,
-            FamilyOwned::new(CosmicFamily::Name(SOURCE_HAN_SANS_SC_FAMILY)),
-        );
+        // The override is Word-specific: a Thai glyph-wrap request stays Glyph.
+        let thai_glyph = TextLayoutRequest {
+            wrap_mode: TextWrapMode::Glyph,
+            ..TextLayoutRequest::for_text("เมนู", 14.0)
+        };
+        assert_eq!(cosmic_wrap(&thai_glyph), cosmic_text::Wrap::Glyph);
+    }
 
-        let korean = resolve_requested_family(&TextLayoutRequest::for_text("메뉴", 14.0), &catalog);
+    #[test]
+    fn cosmic_align_maps_each_align_variant() {
+        assert_eq!(cosmic_align(TextAlign::Left), cosmic_text::Align::Left);
+        assert_eq!(cosmic_align(TextAlign::Center), cosmic_text::Align::Center);
+        assert_eq!(cosmic_align(TextAlign::Right), cosmic_text::Align::Right);
         assert_eq!(
-            korean,
-            FamilyOwned::new(CosmicFamily::Name(SOURCE_HAN_SANS_K_FAMILY)),
+            cosmic_align(TextAlign::Justified),
+            cosmic_text::Align::Justified
         );
     }
 }

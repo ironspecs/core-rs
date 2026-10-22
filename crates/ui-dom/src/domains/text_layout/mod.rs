@@ -19,6 +19,7 @@
 
 mod face_source;
 mod font_face_id;
+mod font_fallback_policy;
 mod font_install_report;
 mod font_style_kw;
 mod font_weight_kw;
@@ -41,12 +42,14 @@ use crate::types::{
 
 pub(crate) use face_source::FaceSource;
 pub use font_face_id::FontFaceId;
+pub(crate) use font_fallback_policy::resolve_face_id;
+pub use font_fallback_policy::{ResolutionPath, ResolvedFace, resolve};
 pub use font_install_report::{FontInstallReport, FontRejectReason};
 pub(crate) use font_style_kw::FontStyleKw;
 pub(crate) use font_weight_kw::FontWeightKw;
 pub(crate) use resolved_text_style::ResolvedTextStyle;
 pub use text_font_catalog::TextFontCatalog;
-pub(crate) use text_language_id::TextLanguageId;
+pub use text_language_id::TextLanguageId;
 pub(crate) use text_layout_config::TextLayoutConfig;
 pub(crate) use text_layout_context::TextLayoutContext;
 pub(crate) use text_layout_request::TextLayoutRequest;
@@ -240,7 +243,9 @@ pub(super) fn build_text_buffer(
         request.word_break,
         request.language_hint_id,
     );
-    let family = text_render::resolve_requested_family(request, font_catalog);
+    let family =
+        font_fallback_policy::resolve(&request.family, request.language_hint_id, font_catalog)
+            .family;
     buffer.set_wrap(font_system, text_render::cosmic_wrap(request));
     buffer.set_size(font_system, width_px, height_px);
     buffer.set_text(
@@ -328,7 +333,9 @@ pub(super) fn build_wrapped_text_buffer_and_byte_map(
         font_system,
         CosmicMetrics::new(request.font_size_px, line_height_px.max(1.0)),
     );
-    let family = text_render::resolve_requested_family(request, font_catalog);
+    let family =
+        font_fallback_policy::resolve(&request.family, request.language_hint_id, font_catalog)
+            .family;
     buffer.set_wrap(font_system, text_render::cosmic_wrap(request));
     buffer.set_size(
         font_system,

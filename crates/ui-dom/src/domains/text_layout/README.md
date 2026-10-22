@@ -32,10 +32,15 @@ not own the resolved font/line-height computation (that is the style system's
   alignment, the resolved family list, weight, style, direction, and the
   language hint).
 - `text_render.rs` owns the render-facing helpers: `build_render_text_buffer`
-  (the seam's public render entry), `resolve_requested_family` +
-  `resolve_face_id` (the catalog-aware first-family-if-installed resolution),
-  `preferred_repo_font_face` (language-routing), `ui_sans_repo_font_asset_paths`,
-  `cosmic_wrap`, `cosmic_align`, and the embedded font asset paths.
+  (the seam's public render entry), `ui_sans_repo_font_asset_paths`,
+  `cosmic_wrap`, `cosmic_align`, and the embedded font asset paths. Family
+  resolution no longer lives here — it moved to `font_fallback_policy.rs`
+  (text seam S4).
+- `font_fallback_policy.rs` owns the WHOLE family-resolution policy — the
+  fallback table (`resolve`), the render-world face-id resolution
+  (`resolve_face_id`), the Thai wrap override (`effective_cosmic_wrap_mode`),
+  and the glyph-coverage demotion naming. It is the ONLY place a family is
+  resolved; no other file may resolve one.
 - `font_weight_kw.rs` / `font_style_kw.rs` own the request-carrier weight/style
   keywords and their `cosmic_text` mappings; `resolved_text_style.rs` owns the
   `ResolvedTextStyle` handoff bundle the main-world sites carry into the
@@ -106,7 +111,7 @@ The style system hands the seam a resolved text style — the parsed
   distinguish). The render-world font-registration key is now `FontFaceId`
   (text seam S3): the one-variant `TextFontFamilyId` placeholder enum is
   removed, and the render world resolves a run's face id from its family list
-  (`text_render::resolve_face_id`).
+  (`font_fallback_policy::resolve_face_id`).
 
 ## The catalog and the consumer door (text seam S3)
 
@@ -130,10 +135,39 @@ the render world both read the same state.
   `UiDomTextFontCatalog` resource enumerates the same list: embedded handles
   plus the consumer faces the extract pipeline mints and registers into
   FontSystem #2.
-- **Resolution** — `text_render::resolve_requested_family` resolves the
-  request's first installed family against the catalog (S2's rule-1 seed,
-  generalized in S4); `resolve_face_id` supplies the render world's per-face
-  readiness key.
+
+## The fallback policy table (text seam S4)
+
+`font_fallback_policy.rs` owns the whole family-resolution policy — the ONLY
+place a family is resolved. `resolve(requested, script, catalog)` walks four
+rules in order and returns a `ResolvedFace { family, policy }`:
+
+1. **Requested names** — each named family in the request, ASCII
+   case-insensitive, first installed match wins → `ResolutionPath::RequestedName`.
+2. **Generic mapping** — the first generic keyword maps through the static
+   table (every generic routes to the guaranteed-final face) →
+   `ResolutionPath::GenericMapped`. The vendor directory holds real Plex Mono
+   faces but they are NOT embedded; a consumer wanting real monospace installs
+   one via the S3 door (registry note).
+3. **Script coverage** — J/SC/K text routes to the Source Han faces,
+   English/Latin to IBM Plex Sans (absorbs the pre-S4 language routing) →
+   `ResolutionPath::ScriptCoverage`.
+4. **No-face outcome** — Thai has no installed face that covers it, so
+   resolution returns the guaranteed-final face (IBM Plex Sans is ALWAYS
+   installed) and records `ResolutionPath::NoCoverage`.
+
+The Thai `Word → WordOrGlyph` wrap override lives here too
+(`effective_cosmic_wrap_mode`) as the named locale policy beside the
+no-coverage reality it names, and the glyph-id-0 debug-rect demotion is NAMED
+here as the render answer to `NoCoverage` — counted by
+`LayerPoolMetricName::TextRunGlyphCoverageDemotion` (the zero-allocation counter
+that makes the demotion policy countable rather than silent).
+
+The resolve API is public seam surface: `TextLanguageId`, `TextFamilyList`,
+`ResolutionPath` (`pub + Debug`), and `ResolvedFace` are `pub`; the resolved
+family is carried as `cosmic_text::FamilyOwned` (the non-allocating sibling of
+`cosmic_text::Family`). The `ResolutionPath` is read via the seam's public
+`resolve` API in tests, never emitted.
 
 ## The zero-size doctrine`font-size: 0` is CSS-legal (CSS Fonts 4 §3.5), but cosmic-text asserts a
 non-zero font size when it builds a `Buffer`. Every entry point therefore

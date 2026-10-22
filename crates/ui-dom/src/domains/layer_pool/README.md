@@ -93,6 +93,13 @@ pushed to `fallback_debug_runs`, and `draw_text_run_fallback_debug_rects`
 draws one `GpuDebugRectOp` using the run's position/size/color. An unsupported
 glyph-mask result demotes the same way.
 
+The demotion is NAMED policy in `text_layout::font_fallback_policy` (the render
+answer to a `NoCoverage` resolution) and is now countable: the glyph-id-0
+decision increments `LayerPoolMetricName::TextRunGlyphCoverageDemotion`, folded
+from the render world through `LayerPoolRenderFeedback` into the `LayerPool`
+metric tally (text seam S4). A run demoted for an unsupported glyph-mask result
+does not increment it — the counter tracks glyph-COVERAGE demotions only.
+
 ## Invariants, rules, and decisions
 
 - `LayerPool` is the only retained backing-image allocator in `ui-dom`; retained

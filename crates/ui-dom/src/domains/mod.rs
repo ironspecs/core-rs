@@ -63,10 +63,12 @@ pub use style::{
     ComputedFlexGroup, ComputedFontGroup, ComputedGroups, ComputedStyleMap, ComputedStyleRef,
     ComputedTextGroup, ComputedTransformGroup, ComputedVisualGroup, DeclBlockKey, DeclDropReport,
     DeclLength, DeclStore, DeclValue, Declaration, DisplayKw, FlexBasisKw, FlexDirectionKw,
-    FlexWrapKw, JustifyContentKw, Keyword, NodePresentation, OverflowKw, PositionKw,
-    PresentationProperty, ResolvedTransitionLonghands, StyleMut, StyleRuleKey, StyleRuleOrigin,
-    StylesheetLoadReport, TRANSITION_LONGHAND_CAPACITY, TextKey, TransitionLonghandProperty,
+    FlexWrapKw, FontFamilyGeneric, JustifyContentKw, Keyword, NodePresentation, OverflowKw,
+    PositionKw, PresentationProperty, ResolvedTransitionLonghands, StyleMut, StyleRuleKey,
+    StyleRuleOrigin, StylesheetLoadReport, TRANSITION_LONGHAND_CAPACITY, TextFamilyItem,
+    TextFamilyList, TextKey, TransitionLonghandProperty,
 };
 pub use text_layout::{
-    FontFaceId, FontInstallReport, FontRejectReason, TextAlign, TextFontCatalog, TextWrapMode,
+    FontFaceId, FontInstallReport, FontRejectReason, ResolutionPath, ResolvedFace, TextAlign,
+    TextFontCatalog, TextLanguageId, TextWrapMode, resolve,
 };

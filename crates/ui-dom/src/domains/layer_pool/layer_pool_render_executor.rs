@@ -289,6 +289,11 @@ impl LayerPoolRenderExecutor {
                 .repaint_applied
                 .checked_add(1)
                 .expect("repaint feedback should not overflow");
+            self.feedback.text_run_glyph_coverage_demotion = self
+                .feedback
+                .text_run_glyph_coverage_demotion
+                .checked_add(render_apply_result.text_run_glyph_coverage_demotion)
+                .expect("text run glyph coverage demotion feedback should not overflow");
             if !apply.plan.rects.is_empty() {
                 self.feedback.rect_gpu_work_applied = self
                     .feedback

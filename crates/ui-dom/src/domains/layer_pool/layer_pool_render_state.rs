@@ -36,6 +36,10 @@ use super::{
 pub(super) struct RenderSurfaceApplyResult {
     pub(super) rect_buffer_grew: bool,
     pub(super) text_runs_ready: bool,
+    /// The glyph-coverage demotion count for this apply's text runs, folded
+    /// into `LayerPoolMetricName::TextRunGlyphCoverageDemotion` by the
+    /// executor (text seam S4).
+    pub(super) text_run_glyph_coverage_demotion: u64,
 }
 
 pub(super) struct LayerPoolRenderState {
@@ -95,6 +99,7 @@ impl LayerPoolRenderState {
             },
             &apply.plan.text_runs,
         );
+        let text_run_glyph_coverage_demotion = self.text_run.glyph_coverage_demotion_count;
         apply_svgs_to_surface(
             &mut self.svg,
             device,
@@ -116,6 +121,7 @@ impl LayerPoolRenderState {
         RenderSurfaceApplyResult {
             rect_buffer_grew,
             text_runs_ready,
+            text_run_glyph_coverage_demotion,
         }
     }
 

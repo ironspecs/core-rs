@@ -10,18 +10,28 @@
 //! - detection is script-range based and ordered: Thai, Korean, Japanese,
 //!   Simplified Chinese, then English fallback
 
+/// The script-range language hint the fallback policy table keys script
+/// coverage on (text seam S4). It is a closed set: the five scripts the
+/// embedded vendor faces cover (or, for Thai, deliberately do not).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum TextLanguageId {
+pub enum TextLanguageId {
+    /// English / Latin text.
     English,
+    /// Japanese kana/hiragana/katakana text.
     Japanese,
+    /// Simplified Chinese Han text.
     SimplifiedChinese,
+    /// Korean Hangul text.
     Korean,
+    /// Thai text (no embedded face covers it; the `NoCoverage` path).
     Thai,
 }
 
 impl TextLanguageId {
+    /// Derives the language hint from a text sample by script-range scan
+    /// (ordered: Thai, Korean, Japanese, Simplified Chinese, then English).
     #[must_use]
-    pub(crate) fn from_text_hint(text: &str) -> Self {
+    pub fn from_text_hint(text: &str) -> Self {
         if text
             .chars()
             .any(|character| ('\u{0e00}'..='\u{0e7f}').contains(&character))

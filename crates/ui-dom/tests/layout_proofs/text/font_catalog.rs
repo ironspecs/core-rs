@@ -187,3 +187,51 @@ fn catalog_revision_reloads_the_main_world_context() {
          (default {plain:?} vs fixture {arabic:?})",
     );
 }
+
+#[test]
+fn door_2_arabic_shapes_with_real_glyphs() {
+    // Door 2 (D5, v3 shape): the Arabic fixture, installed via the consumer
+    // API in the proof, proves REAL shaping through the public measure stage —
+    // (a) the fixture's metrics are in use (width differs from the default
+    // face), and (b) a contextual ligature advances differently from its
+    // isolated characters summed, which notdef passthrough cannot produce.
+    let (_id, family) = install_fixture();
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let stylesheet = format!(".arabic {{ font-family: \"{family}\" }}");
+    assert_load_root_stylesheet(&root, theme_stylesheet_origin(), &stylesheet);
+    let document_root = root.document_node().0;
+
+    // ل (U+0644) + ا (U+0627) = the lam-alef ligature. Noto Naskh Arabic
+    // substitutes the single lam-alef glyph, whose advance differs from the
+    // isolated lam and alef widths summed.
+    let pair = append_arabic_text(&mut root, document_root, "لا", Some("arabic"));
+    let lam = append_arabic_text(&mut root, document_root, "ل", Some("arabic"));
+    let alef = append_arabic_text(&mut root, document_root, "ا", Some("arabic"));
+    let plain = append_arabic_text(&mut root, document_root, "لا", None);
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let pair = text_intrinsic(&root, pair);
+    let lam = text_intrinsic(&root, lam);
+    let alef = text_intrinsic(&root, alef);
+    let plain = text_intrinsic(&root, plain);
+
+    // (a) The fixture's family measures the pair differently from the default
+    // face (whose Arabic characters fall through to notdef glyphs).
+    assert!(
+        pair.max_content_width_px != plain.max_content_width_px,
+        "the fixture family should measure the Arabic pair differently from the \
+         default face (fixture {pair:?} vs default {plain:?})",
+    );
+
+    // (b) The lam-alef ligature advances differently from the isolated
+    // characters summed — real GSUB shaping, impossible under notdef
+    // passthrough (uniform advance, no GSUB engagement).
+    assert!(
+        pair.max_content_width_px != lam.max_content_width_px + alef.max_content_width_px,
+        "the lam-alef ligature should advance differently than the isolated \
+         lam + alef summed (pair {:.3}, lam {:.3}, alef {:.3})",
+        pair.max_content_width_px,
+        lam.max_content_width_px,
+        alef.max_content_width_px,
+    );
+}

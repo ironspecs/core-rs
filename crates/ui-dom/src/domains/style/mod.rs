@@ -83,10 +83,10 @@ pub use computed::{
     AlignContentKw, AlignItemsKw, BoxLength, BoxSizingKw, ComputedBoxGroup, ComputedColorGroup,
     ComputedFlexGroup, ComputedFontGroup, ComputedGridGroup, ComputedGroups, ComputedStyleRef,
     ComputedTextGroup, ComputedTransformGroup, ComputedVisualGroup, DisplayKw, FlexBasisKw,
-    FlexDirectionKw, FlexWrapKw, GridAutoFlowKw, GridLine, GridTrackSize, JustifyContentKw,
-    JustifyItemsKw, JustifySelfKw, NodePresentation, OverflowKw, PositionKw,
-    ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TrackBreadth, TrackMaxBreadth,
-    TransitionLonghandProperty,
+    FlexDirectionKw, FlexWrapKw, FontFamilyGeneric, GridAutoFlowKw, GridLine, GridTrackSize,
+    JustifyContentKw, JustifyItemsKw, JustifySelfKw, NodePresentation, OverflowKw, PositionKw,
+    ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TextFamilyItem, TextFamilyList,
+    TrackBreadth, TrackMaxBreadth, TransitionLonghandProperty,
 };
 pub(crate) use computed::{
     GRID_LINE_NAME_CAPACITY, GRID_TRACK_LIST_CAPACITY, GridTemplateAreas, GridTrackList,

@@ -10,7 +10,7 @@
 /// `Generic(_)` (CSS Fonts 4 §3.1: `serif`, `sans-serif`, `monospace`,
 /// `system-ui`).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum FontFamilyGeneric {
+pub enum FontFamilyGeneric {
     Serif,
     SansSerif,
     Monospace,
@@ -20,7 +20,7 @@ pub(crate) enum FontFamilyGeneric {
 impl FontFamilyGeneric {
     /// Maps a bare (unquoted, single-token) generic keyword to its variant.
     #[must_use]
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
+    pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "serif" => Some(Self::Serif),
             "sans-serif" => Some(Self::SansSerif),
@@ -32,7 +32,7 @@ impl FontFamilyGeneric {
 
     /// The canonical (bare) CSS keyword name, used by `to_css_string`.
     #[must_use]
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Serif => "serif",
             Self::SansSerif => "sans-serif",

@@ -85,7 +85,7 @@ pub use display_kw::DisplayKw;
 pub use flex_basis_kw::FlexBasisKw;
 pub use flex_direction_kw::FlexDirectionKw;
 pub use flex_wrap_kw::FlexWrapKw;
-pub(crate) use font_family_generic::FontFamilyGeneric;
+pub use font_family_generic::FontFamilyGeneric;
 pub use grid_auto_flow_kw::GridAutoFlowKw;
 pub use grid_line::GridLine;
 pub(crate) use grid_template_areas::{
@@ -106,6 +106,6 @@ pub use position_kw::PositionKw;
 pub use resolved_transition_longhands::{
     ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
 };
-pub(crate) use text_family_list::{TextFamilyItem, TextFamilyList};
+pub use text_family_list::{TextFamilyItem, TextFamilyList};
 
 pub(crate) use field_mapping::for_each_moved_field;

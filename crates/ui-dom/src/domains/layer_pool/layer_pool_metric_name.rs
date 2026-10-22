@@ -50,9 +50,13 @@ pub enum LayerPoolMetricName {
     RepaintApplied,
     /// Number of rect-family GPU executions performed by the pool.
     RectGpuWorkApplied,
+    /// Number of text-run demotions to a debug rect because the resolved face
+    /// has no glyph for the run's script (glyph id 0 — the `NoCoverage`
+    /// fallback path's render answer, text seam S4).
+    TextRunGlyphCoverageDemotion,
 }
 
-pub(super) const LAYER_POOL_METRIC_NAMES: [LayerPoolMetricName; 16] = [
+pub(super) const LAYER_POOL_METRIC_NAMES: [LayerPoolMetricName; 17] = [
     LayerPoolMetricName::LayerCreated,
     LayerPoolMetricName::LayerMappingUpdated,
     LayerPoolMetricName::SurfaceGrew,
@@ -69,6 +73,7 @@ pub(super) const LAYER_POOL_METRIC_NAMES: [LayerPoolMetricName; 16] = [
     LayerPoolMetricName::SharedRectBufferGrew,
     LayerPoolMetricName::RepaintApplied,
     LayerPoolMetricName::RectGpuWorkApplied,
+    LayerPoolMetricName::TextRunGlyphCoverageDemotion,
 ];
 
 impl LayerPoolMetricName {
@@ -93,6 +98,7 @@ impl LayerPoolMetricName {
             Self::SharedRectBufferGrew => 13,
             Self::RepaintApplied => 14,
             Self::RectGpuWorkApplied => 15,
+            Self::TextRunGlyphCoverageDemotion => 16,
         }
     }
 }

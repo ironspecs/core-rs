@@ -63,6 +63,10 @@ pub(super) struct TextRunRenderState {
     pub(super) pending_lease_dependencies: HashMap<LayerLease, PendingLeaseDependencies>,
     pub(super) prepared_glyph_draws: Vec<PreparedGlyphDraw>,
     pub(super) fallback_debug_runs: Vec<TextRunPaintOp>,
+    /// The glyph-coverage demotion count for the current surface apply
+    /// (reset per `apply_text_runs_to_surface`; the executor folds it into
+    /// `LayerPoolMetricName::TextRunGlyphCoverageDemotion`).
+    pub(super) glyph_coverage_demotion_count: u64,
 }
 
 impl TextRunRenderState {
@@ -193,6 +197,8 @@ impl TextRunRenderState {
 }
 
 #[cfg(test)]
+use super::{LayerConfig, LayerPool, LayerPoolMetricName, LayerPoolRenderFeedback};
+#[cfg(test)]
 use crate::domains::layer_ops::TextLanguageId;
 #[cfg(test)]
 use crate::domains::layer_pool::layer_pool_text_render::create_text_run_render_state;
@@ -201,7 +207,11 @@ use crate::domains::layer_pool::layer_pool_text_render::create_text_run_render_s
 mod tests {
     use std::sync::Arc;
 
+    use bevy::asset::Assets;
+    use bevy::prelude::World;
+    use bevy::render::render_resource::{Sampler, Texture};
     use bevy::render::renderer::{RenderDevice, RenderQueue, WgpuWrapper};
+    use bevy::render::texture::GpuImage;
     use bevy::tasks::block_on;
     use slotmap::SlotMap;
 
@@ -317,5 +327,169 @@ mod tests {
                 .font_registration_state
                 .ready(FontFaceId::EMBEDDED_IBM_PLEX_SANS)
         );
+    }
+
+    fn noop_gpu_image(render_device: &RenderDevice) -> GpuImage {
+        let size = wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        };
+        let texture = render_device
+            .wgpu_device()
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("ui_dom_test_noop_surface"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+        let texture = Texture::from(texture);
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = Sampler::from(
+            render_device
+                .wgpu_device()
+                .create_sampler(&wgpu::SamplerDescriptor::default()),
+        );
+        GpuImage {
+            texture,
+            texture_view,
+            texture_format: wgpu::TextureFormat::Rgba8Unorm,
+            texture_view_format: None,
+            sampler,
+            size,
+            mip_level_count: 1,
+            had_data: false,
+        }
+    }
+
+    fn lease_in_world() -> LayerLease {
+        let mut world = World::new();
+        world.insert_resource(LayerPool::new(LayerConfig::default()));
+        LayerPool::create_layer_lease_in_world(&mut world, (0.0, 0.0, 10.0, 10.0))
+    }
+
+    fn text_run_op(text_run_id: TextRunId) -> TextRunPaintOp {
+        TextRunPaintOp {
+            text_run_id,
+            position_px: [4.0, 6.0],
+            size_px: [120.0, 40.0],
+            font_size_px: 16.0,
+            line_height_px: 20.0,
+            wrap_mode: TextWrapMode::WordOrGlyph,
+            alignment: TextAlign::Left,
+            color_rgba: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+
+    /// A `FontSystem` holding ONLY the catalog's faces (no system fonts), so a
+    /// script the catalog does not cover shapes to glyph id 0 (notdef) — the
+    /// demotion precondition "Thai text, no Thai face".
+    fn catalog_only_font_system(catalog: &TextFontCatalog) -> FontSystem {
+        let mut db = cosmic_text::fontdb::Database::new();
+        for source in catalog.sources_snapshot() {
+            db.load_font_source(source.font_db_source());
+        }
+        FontSystem::new_with_locale_and_db_and_fallback(
+            "en-US".to_string(),
+            db,
+            cosmic_text::PlatformFallback,
+        )
+    }
+
+    /// Folds the render-world demotion count into the `LayerPool` metric
+    /// exactly as the executor's feedback flush does, and returns the counter.
+    fn fold_demotion(state: &TextRunRenderState, pool: &mut LayerPool) -> u64 {
+        let feedback = LayerPoolRenderFeedback {
+            text_run_glyph_coverage_demotion: state.glyph_coverage_demotion_count,
+            ..LayerPoolRenderFeedback::default()
+        };
+        feedback.apply_to(pool);
+        pool.count(LayerPoolMetricName::TextRunGlyphCoverageDemotion)
+    }
+
+    #[test]
+    fn glyph_coverage_demotion_counts() {
+        let (render_device, render_queue) = noop_render_device_and_queue();
+        let mut state = create_text_run_render_state(&render_device, PixelDensity::X1);
+        // Keep the test focused on the demotion path, not the startup warmups,
+        // and drop the system fonts so the catalog is the only face source
+        // (establishing the "no Thai face" precondition).
+        state.preload_warmup_queue = PreloadWarmupQueue::default();
+        state.font_system = catalog_only_font_system(&state.font_catalog);
+        let gpu_image = noop_gpu_image(&render_device);
+        let lease = lease_in_world();
+
+        // Mark the sans face ready, so both runs resolve and shape against it.
+        let mut assets = Assets::<UiDomFontAsset>::default();
+        let asset_id = assets
+            .add(UiDomFontAsset {
+                bytes: Arc::from(&b"x"[..]),
+            })
+            .id();
+        state
+            .font_registration_state
+            .set_required_font_asset_ids(FontFaceId::EMBEDDED_IBM_PLEX_SANS, vec![asset_id]);
+        state.font_registration_state.mark_registered(asset_id);
+        assert!(
+            state
+                .font_registration_state
+                .ready(FontFaceId::EMBEDDED_IBM_PLEX_SANS)
+        );
+
+        let mut text_run_ids = SlotMap::with_key();
+        let english_id = text_run_ids.insert(());
+        let thai_id = text_run_ids.insert(());
+        state.insert_run_record(
+            english_id,
+            RenderTextRunRecord {
+                text: Arc::<str>::from("hello"),
+                language_hint_id: TextLanguageId::English,
+                family: TextFamilyList::default(),
+                weight: FontWeightKw::NORMAL,
+                style: FontStyleKw::Normal,
+            },
+        );
+        state.insert_run_record(
+            thai_id,
+            RenderTextRunRecord {
+                text: Arc::<str>::from("เมนู"),
+                language_hint_id: TextLanguageId::Thai,
+                family: TextFamilyList::default(),
+                weight: FontWeightKw::NORMAL,
+                style: FontStyleKw::Normal,
+            },
+        );
+
+        let surface_context = TextRunSurfaceContext {
+            device: &render_device,
+            queue: &render_queue,
+            gpu_image: &gpu_image,
+            layer_zero_in_image_px: [0.0, 0.0],
+            lease,
+        };
+
+        // Covered side: English shapes with real glyphs — no demotion, so the
+        // counter stays at zero.
+        assert!(
+            state.apply_to_surface(&surface_context, &[text_run_op(english_id)]),
+            "the covered run should apply without pending dependencies",
+        );
+        let mut pool = LayerPool::new(LayerConfig::default());
+        assert_eq!(fold_demotion(&state, &mut pool), 0);
+
+        // Uncovered side: Thai has no Thai face — glyph id 0 (notdef) demotes
+        // the run to a debug rect, which increments the counter.
+        assert!(
+            state.apply_to_surface(&surface_context, &[text_run_op(thai_id)]),
+            "the uncovered run should apply without pending dependencies",
+        );
+        assert_eq!(fold_demotion(&state, &mut pool), 1);
     }
 }

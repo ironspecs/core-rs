@@ -2000,6 +2000,40 @@ an f32 basis.
   its metrics through the public pipeline. Kill criterion (a)
   holds. Proofs 586 → 590; perf pins unmoved.
 
+- **2026-10-22 — PR 4 S4 landed (door 2 OPEN).** One
+  `font_fallback_policy.rs` owns ALL family resolution — a four-rule
+  table (`resolve(requested, script, catalog) -> ResolvedFace {
+  family: FamilyOwned, policy: ResolutionPath }`): (1) requested
+  names, ASCII case-insensitive first-installed match →
+  `RequestedName`; (2) the static generic table (every generic routes
+  to the guaranteed-final face; Plex Mono is NOT embedded — a
+  consumer installs one via the S3 door) → `GenericMapped`; (3)
+  script coverage (J/SC/K → Source Han, English → IBM Plex Sans) →
+  `ScriptCoverage`; (4) the no-face outcome (Thai → the
+  guaranteed-final face) → `NoCoverage`. The Thai `Word →
+  WordOrGlyph` wrap override relocates here as named locale policy;
+  the glyph-id-0 debug-rect demotion is NAMED here. The seam's
+  resolve vocabulary widens to public (`TextLanguageId`,
+  `TextFamilyList` + items, `ResolutionPath` pub+Debug). The
+  pre-S4 `resolve_requested_family`/`resolve_face_id`/
+  `preferred_repo_font_face` in `text_render.rs` are removed; all
+  three call sites route through the table. `LayerPoolMetricName`
+  gains `TextRunGlyphCoverageDemotion` (zero-alloc, enum-indexed),
+  incremented at the demotion decision in `prepare_text_buffer_glyphs`
+  and folded render-world→main through `LayerPoolRenderFeedback`.
+  Door-2 proof (v3 shape): width-differs + the lam-alef contextual
+  ligature (ل+ا, measured 7.252 vs the isolated 8.33+3.332 summed)
+  through the public measure stage; the demotion counter pinned
+  two-sided crate-internally. **Metric vocabulary 16 → 17:** the
+  `LayerPoolMetricName` vocabulary-size pins are `COUNT`-derived and
+  auto-adjust (`metric_name_indices_are_unique_and_in_bounds`,
+  `assert_metric_counts`); `tests/perf_metric.rs` pins RootDom
+  metrics, not LayerPool metrics, so no `perf_metric.rs`
+  vocabulary-size assertion exists to re-pin — the documented cause
+  for any vocabulary move is the S4 counter growth itself, recorded
+  here rather than as a silent re-pin. Kill criterion (b)+(c) hold
+  (as re-expressed in v3). Proofs 590 → 591.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 

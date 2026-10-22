@@ -18,6 +18,7 @@ pub(super) struct LayerPoolRenderFeedback {
     pub(super) shared_rect_buffer_grew: u64,
     pub(super) repaint_applied: u64,
     pub(super) rect_gpu_work_applied: u64,
+    pub(super) text_run_glyph_coverage_demotion: u64,
 }
 
 impl LayerPoolRenderFeedback {
@@ -26,6 +27,7 @@ impl LayerPoolRenderFeedback {
             && self.shared_rect_buffer_grew == 0
             && self.repaint_applied == 0
             && self.rect_gpu_work_applied == 0
+            && self.text_run_glyph_coverage_demotion == 0
     }
 
     pub(super) fn clear(&mut self) {
@@ -53,6 +55,11 @@ impl LayerPoolRenderFeedback {
             LayerPoolMetricName::RectGpuWorkApplied,
             self.rect_gpu_work_applied,
         );
+        increment_metric_count(
+            &mut layer_pool.metrics,
+            LayerPoolMetricName::TextRunGlyphCoverageDemotion,
+            self.text_run_glyph_coverage_demotion,
+        );
     }
 }
 
@@ -66,6 +73,7 @@ mod tests {
         assert!(feedback.is_empty());
 
         feedback.shared_render_state_created = 3;
+        feedback.text_run_glyph_coverage_demotion = 2;
         assert!(!feedback.is_empty());
 
         let mut pool = LayerPool::new(LayerConfig::default());
@@ -76,6 +84,10 @@ mod tests {
         assert_eq!(
             pool.count(LayerPoolMetricName::SharedRenderStateCreated),
             baseline + 3
+        );
+        assert_eq!(
+            pool.count(LayerPoolMetricName::TextRunGlyphCoverageDemotion),
+            2
         );
 
         feedback.clear();

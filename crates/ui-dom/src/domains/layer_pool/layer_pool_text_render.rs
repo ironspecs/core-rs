@@ -161,6 +161,7 @@ pub(super) fn create_text_run_render_state(
         pending_lease_dependencies: HashMap::new(),
         prepared_glyph_draws: Vec::new(),
         fallback_debug_runs: Vec::new(),
+        glyph_coverage_demotion_count: 0,
     }
 }
 
@@ -421,6 +422,7 @@ pub(super) fn apply_text_runs_to_surface(
 fn reset_text_run_surface_state(text_run_state: &mut TextRunRenderState) {
     text_run_state.prepared_glyph_draws.clear();
     text_run_state.fallback_debug_runs.clear();
+    text_run_state.glyph_coverage_demotion_count = 0;
 }
 
 fn prepare_text_run_for_surface(
@@ -463,7 +465,7 @@ fn text_run_record_for_surface(
         );
         return None;
     };
-    let face_id = text_layout::text_render::resolve_face_id(
+    let face_id = text_layout::resolve_face_id(
         &run_record.family,
         run_record.language_hint_id,
         &text_run_state.font_catalog,
@@ -506,6 +508,14 @@ fn prepare_text_buffer_glyphs(
         for glyph in run.glyphs {
             if glyph_requires_debug_fallback(glyph.glyph_id) == TextGlyphFallbackDecision::DebugRect
             {
+                // The demotion decision: a glyph the resolved face cannot cover
+                // (notdef). Counted by
+                // `LayerPoolMetricName::TextRunGlyphCoverageDemotion` (the S4
+                // observability for the `NoCoverage` fallback path).
+                text_run_state.glyph_coverage_demotion_count = text_run_state
+                    .glyph_coverage_demotion_count
+                    .checked_add(1)
+                    .expect("glyph coverage demotion count should not overflow");
                 return true;
             }
             let physical_glyph = glyph_in_retained_pixels(
