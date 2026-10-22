@@ -1984,6 +1984,23 @@ an f32 basis.
   (the fallback policy table — door 2), S5 (RTL/vertical honesty —
   doors 3, 4).
 
+- **2026-10-22 — PR 4 S3 landed (door 1 OPEN).** One
+  `TextFontCatalog` (context-scoped, shared `Arc<RwLock>` state)
+  owns the face list — embedded + consumer-installed — with
+  `install_face(bytes) -> FontInstallReport` as the public consumer
+  door (fontdb-validated at install; garbage → `Rejected`, never a
+  panic). The main world re-installs new sources on a revision
+  check at seam entry; the render world reconciles consumer faces
+  through the extraction pipeline into FontSystem #2.
+  `TextFontFamilyId` is REMOVED — registration readiness is
+  per-`FontFaceId`. The fixture is Noto Naskh Arabic (OFL 1.1,
+  static hinted Regular, 178KB, loaded from disk by the proofs —
+  never embedded; the door's point). Door-1 proof: the face
+  installs in the proof itself and an Arabic string measures with
+  its metrics through the public pipeline. Kill criterion (a)
+  holds. Proofs 586 → 590; perf pins unmoved.
+
+
 ## Vocabulary carried from the redesign (self-contained definitions)
 
 One line per term this document reuses from the landed plans, so nothing
