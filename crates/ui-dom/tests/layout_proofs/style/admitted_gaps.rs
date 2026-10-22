@@ -763,7 +763,7 @@ fn initial_color_is_near_white_by_design() {
 //
 // CURRENT (asserted below): a `font-size: 20px` container with no `line-height`
 // measures its text node's intrinsic line height at exactly `1.0 × font-size`
-// = 20.0 (`effective_line_height_px`, `text_layout/mod.rs:714-722`).
+// = 20.0 (`effective_line_height_px`, `text_layout/mod.rs:773-782`).
 // SPEC-CORRECT: font-metrics-derived normal — Blink's
 // `FontMetrics::lineSpacing`, Gecko's hhea ascent+descent+lineGap (≈1.2 for
 // most text faces).

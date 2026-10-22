@@ -1,3 +1,22 @@
+//! Text layout, measurement, and shaping for `ui-dom`.
+//!
+//! This file owns the shared `cosmic_text::Buffer` constructors, the caret-map
+//! helpers, and the thread-local repo `TextLayoutContext`. It is the ONLY place
+//! a production `cosmic_text::Buffer` is born; the three-stage seam (Measure /
+//! Shape / Rasterize) is described in this module's `README.md`.
+//!
+//! The Buffer rule: `build_text_buffer` and
+//! `build_wrapped_text_buffer_and_byte_map` are the ONLY production
+//! `cosmic_text::Buffer` births. Measurement, the caret-layout path, and the
+//! render world's text-run cache reach a `Buffer` through one of these two —
+//! directly, or via the render entry `text_render::build_render_text_buffer`.
+//!
+//! The `FontSystem` rule: there are exactly two production `cosmic_text::
+//! FontSystem`s — the main thread-local one on `TextLayoutContext` and the
+//! render-owned one on `TextRunRenderState` (`domains/layer_pool`). Each owns a
+//! private fontdb by cosmic-text's design; the shared SOURCE list is
+//! `TextFontCatalog`, not the `FontSystem`s themselves.
+
 mod text_font_catalog;
 mod text_language_id;
 mod text_layout_config;
@@ -126,7 +145,6 @@ pub(crate) struct WrappedTextLineLayout {
     pub(crate) height_px: f32,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WrappedTextLayout {
     pub(crate) width_px: f32,
@@ -150,7 +168,6 @@ pub(crate) struct TextCaretLine {
     pub(crate) stops: Vec<CaretStop>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TextCaretMap {
     pub(crate) lines: Vec<TextCaretLine>,

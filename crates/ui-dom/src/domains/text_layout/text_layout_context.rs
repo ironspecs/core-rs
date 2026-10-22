@@ -133,7 +133,6 @@ impl TextLayoutContext {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub(crate) fn layout_wrapped_text(
         &mut self,

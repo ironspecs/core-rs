@@ -473,7 +473,9 @@ fn row_gap_normal_resolves_to_zero() {
 #[test]
 // DELIBERATE (crate-owned render floor — does NOT flip):
 // - CURRENT: `line-height: 0` is admitted and floored to 1px at RESOLVE time
-//   (`project.rs:137`) with a render backstop (`text_layout/mod.rs:719-722`);
+//   (`project.rs:137`) with a render backstop (`effective_line_height_px`,
+//   `text_layout/mod.rs:773-782`, plus the `.max(1.0)` floors at the two
+//   `Buffer` constructors `text_layout/mod.rs:230`/`:320`);
 //   the text node's intrinsic `line_height_px == 1.0`.
 // - SPEC-CORRECT: CSS 2.1 §10.8 admits `line-height: 0` (zero-height lines).
 //   <https://www.w3.org/TR/CSS21/visudet.html#propdef-line-height>
