@@ -2049,6 +2049,23 @@ an f32 basis.
   registry's Thai/NoCoverage notes should be read with this
   caveat until then.
 
+- **2026-10-22 — PR 4 S5 landed; ALL FOUR DOORS OPEN; the seam is
+  proven open.** Door 3 (RTL): Arabic-leading text auto-detects to
+  rtl runs (cosmic has no paragraph-direction setter — auto-detect
+  is the pinned truth) and the caret map orders mixed-script stops
+  in visual order (Arabic stops progress right-to-left) — both
+  pinned crate-internally per the door-1/2 precedent (run flags and
+  the caret map are not public surface), plus the public proof that
+  `direction: rtl` governs start-alignment through the staged paint
+  op. Two caret-model boundaries registered (deliberate-deferred):
+  the scalar-offset/LTR-first movement model and the unwired
+  point-hit-testing. Door 4 (vertical writing): the named boundary
+  — `writing-mode` stays gated, the gate pin unmoved, the registry
+  row records it as the seam's out-of-v1-scope honesty. The kill
+  criterion is satisfied: the seam expressed every door without
+  narrowing what can be requested. PR 4's implementation is
+  complete (S1–S5); next: the full-body review, then PR 5.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
