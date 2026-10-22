@@ -66,10 +66,15 @@ fold), or the computed read surface (`RootDom::computed_style`).
   `resolved_transition_longhands.rs` (the scheduler slot),
   `group_dirty_classification.rs` (A7's static group-diff table), and
   `field_mapping.rs` (the field-level `for_each_moved_field` compare the
-  transition scheduler keys on). These are **pure data** plus `initial()` and
+  transition scheduler keys on).   These are **pure data** plus `initial()` and
   tiny field helpers; resolution logic lives in the step-3.3 resolver
   (`project.rs`), and the used-value percentage resolution lives in the
-  layout-facing readers (`domains/layout/style.rs`), never here.
+  layout-facing readers (`domains/layout/style.rs`), never here. The grid
+  track-list value (`grid_track_list.rs`) additionally carries the T3.5
+  `GridRepeat` enum + `auto_repeat_span` field: an auto-fill/fit list stores
+  its span's inner tracks as ONE copy plus the `(start, count, kind)` marker,
+  and the layout solver (`domains/layout/grid.rs`) expands it to N copies at
+  layout time (the repetition count is never retained at parse).
 
 ## Architectural approach
 

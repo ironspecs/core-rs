@@ -171,16 +171,61 @@ fn grid_shorthand_and_area_names_still_drop() {
 }
 
 #[test]
-fn grid_auto_fill_and_auto_fit_repeat_drops_for_now() {
+fn grid_repeat_auto_fit_and_auto_fill_admit() {
+    // The T3.5 gate inverts: both auto-repeat forms parse and project
+    // (round-trip through the wire projection), storing one span copy.
+    assert_grid_wire_value(
+        "grid-template-columns",
+        "repeat(auto-fit, minmax(240px, 1fr))",
+        "repeat(auto-fit, minmax(240px, 1fr))",
+    );
+    assert_grid_wire_value(
+        "grid-template-columns",
+        "repeat(auto-fill, minmax(240px, 1fr))",
+        "repeat(auto-fill, minmax(240px, 1fr))",
+    );
+    assert_grid_wire_value(
+        "grid-template-rows",
+        "repeat(auto-fit, minmax(40px, 1fr))",
+        "repeat(auto-fit, minmax(40px, 1fr))",
+    );
+
+    // `repeat(auto-fill)` / `repeat(auto-fit)` bare (no inner list) drop + count.
+    assert_decl_drop(".x { grid-template-columns: repeat(auto-fill) }", 0, 1);
+    assert_decl_drop(".x { grid-template-columns: repeat(auto-fit) }", 0, 1);
+}
+
+#[test]
+fn grid_repeat_nested_repeat_drops() {
+    // A nested `repeat()` inside an auto-repeat's inner list drops + count.
     assert_decl_drop(
-        ".x { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)) }",
+        ".x { grid-template-columns: repeat(auto-fit, repeat(2, 1fr)) }",
         0,
         1,
     );
     assert_decl_drop(
-        ".x { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)) }",
+        ".x { grid-template-columns: repeat(auto-fill, repeat(2, 1fr)) }",
         0,
         1,
+    );
+}
+
+#[test]
+fn grid_repeat_bare_fr_drops_at_parse() {
+    // A bare `fr` span track is the deferred content-based repetition basis
+    // (the zero-basis case): drop + count at parse. A `fr` MAX inside minmax
+    // (the idiom) is admitted.
+    assert_decl_drop(".x { grid-template-columns: repeat(auto-fit, 1fr) }", 0, 1);
+    assert_decl_drop(".x { grid-template-columns: repeat(auto-fill, 1fr) }", 0, 1);
+    assert_decl_drop(
+        ".x { grid-template-columns: repeat(auto-fit, 100px 1fr) }",
+        0,
+        1,
+    );
+    assert_grid_wire_value(
+        "grid-template-columns",
+        "repeat(auto-fit, minmax(240px, 1fr))",
+        "repeat(auto-fit, minmax(240px, 1fr))",
     );
 }
 

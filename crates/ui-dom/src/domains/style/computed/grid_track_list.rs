@@ -27,8 +27,16 @@
 //!   named set's Nth-match indexing (CSS Grid §8.1.3 "exclusively indexed by
 //!   filtering the placement by name" — `text 5` is the 5th line named
 //!   `text`); the fifth registration drops + counts at parse
-//! - value-dedup interning compares FULL content (tracks + name pairs), so two
-//!   identical named templates intern to one key
+//! - value-dedup interning compares FULL content (tracks + name pairs + the
+//!   auto-repeat span), so two identical named templates intern to one key
+//! - `auto_repeat_span` is `Some((start, count, kind))` for an auto-fill/fit
+//!   list: the span's inner tracks are stored as ONE copy at `tracks[start ..
+//!   start+count]` (prefix, span, suffix), and only `AutoFill`/`AutoFit` are
+//!   ever stored in it (a fixed `repeat(N, …)` expands at parse, leaving the
+//!   field `None`). Named lines inside the span are the registrations with a
+//!   `line_index` in `start..=start+count`; they repeat with their tracks when
+//!   the span expands at layout time (the suffix names shift right by
+//!   `(N−1)·count`)
 
 use arrayvec::ArrayVec;
 
@@ -49,15 +57,54 @@ pub(crate) const GRID_LINE_NAME_CAPACITY: usize = 8;
 /// and anything beyond it drops with a counted report.
 pub(crate) const GRID_LINE_NAME_PER_NAME_CAPACITY: usize = 4;
 
+/// The repetition kind a grid track list may carry (grid T3.5, D1).
+///
+/// `None` and `Count(u8)` are declared to close the enum's shape but are never
+/// stored in `auto_repeat_span`: a fixed `repeat(N, …)` keeps its parse-time
+/// expansion (so the span stays `None`), and the span field only ever carries
+/// `AutoFill`/`AutoFit`.
+#[allow(dead_code)] // `None`/`Count` close the enum shape; only AutoFill/AutoFit are span values
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GridRepeat {
+    /// No repetition (a fully expanded list).
+    None,
+    /// A fixed repetition count (declared; fixed repeats expand at parse).
+    Count(u8),
+    /// `repeat(auto-fill, <track-list>)` — repetition count resolved at layout.
+    AutoFill,
+    /// `repeat(auto-fit, <track-list>)` — like `auto-fill` plus empty-track
+    /// collapse after placement.
+    AutoFit,
+}
+
+/// The canonical `repeat(…)` keyword prefix for a span kind (the serialization
+/// helper). Only the two auto-repeat kinds reach here (a self-owned structural
+/// invariant — the span is built by the parser, never by boundary data).
+fn repeat_keyword(kind: GridRepeat) -> &'static str {
+    match kind {
+        GridRepeat::AutoFill => "repeat(auto-fill, ",
+        GridRepeat::AutoFit => "repeat(auto-fit, ",
+        GridRepeat::None | GridRepeat::Count(_) => {
+            unreachable!("auto_repeat_span only ever carries AutoFill/AutoFit")
+        }
+    }
+}
+
 /// An interned grid track list: the expanded track sizes plus the retained
-/// `[name]` line-name registrations.
+/// `[name]` line-name registrations, and (for an auto-fill/fit list) the
+/// auto-repeat span marker.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GridTrackList {
-    /// The expanded track sizes, in order.
+    /// The track sizes, in order. For an auto-repeat list this holds the prefix
+    /// tracks, ONE copy of the span's inner tracks, then the suffix tracks.
     pub(crate) tracks: ArrayVec<GridTrackSize, GRID_TRACK_LIST_CAPACITY>,
     /// `(name_key, line_index)` — a bracket group's names attach to the line
     /// before the following track (a trailing bracket names the final line).
     pub(crate) line_names: ArrayVec<(TextKey, u8), GRID_LINE_NAME_CAPACITY>,
+    /// The auto-fill/fit span marker: `(start_track_index, inner_track_count,
+    /// kind)` where the span's inner list is stored once at
+    /// `tracks[start..start+count]`. `None` for a fully expanded list.
+    pub(crate) auto_repeat_span: Option<(u8, u8, GridRepeat)>,
 }
 
 impl GridTrackList {
@@ -83,31 +130,69 @@ impl GridTrackList {
     }
 
     /// Serializes the list to its canonical CSS token form, re-inserting the
-    /// `[name1 name2]` brackets before (and after) the tracks they attach to.
+    /// `[name1 name2]` brackets before (and after) the tracks they attach to,
+    /// and re-wrapping an auto-fill/fit span in its `repeat(auto-*, …)` form.
     /// `resolve` maps a `TextKey` name to its string (a self-owned structural
     /// invariant — a name key must resolve in its owning store).
     #[must_use]
     pub(crate) fn to_css_string<'a>(&self, resolve: impl Fn(TextKey) -> Option<&'a str>) -> String {
         let mut out = String::new();
         let line_count = self.tracks.len();
-        for line in 0..=line_count {
-            let names: Vec<&str> = self
-                .line_names
-                .iter()
-                .filter(|(_, index)| usize::from(*index) == line)
-                .filter_map(|(key, _)| resolve(*key))
-                .collect();
-            if !names.is_empty() {
-                out.push('[');
-                out.push_str(&names.join(" "));
-                out.push_str("] ");
+        let span = self.auto_repeat_span;
+        let mut line = 0usize;
+        while line <= line_count {
+            if let Some((start, count, kind)) = span
+                && line == usize::from(start)
+            {
+                // Emit the span as `repeat(auto-*, <inner list>)`: the inner
+                // list is the span's one stored copy (its tracks plus the
+                // names at its lines).
+                out.push_str(repeat_keyword(kind));
+                let end = line + usize::from(count);
+                for inner in line..=end {
+                    self.push_line_names(&mut out, inner, &resolve);
+                    if inner < end {
+                        out.push_str(&format_grid_track_size(&self.tracks[inner]));
+                        out.push(' ');
+                    }
+                }
+                // Drop the separator space preceding the closing `)`.
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out.push(')');
+                out.push(' ');
+                line = end;
+                continue;
             }
+            self.push_line_names(&mut out, line, &resolve);
             if line < line_count {
                 out.push_str(&format_grid_track_size(&self.tracks[line]));
                 out.push(' ');
             }
+            line += 1;
         }
         out.trim_end().to_string()
+    }
+
+    /// Appends the `[name1 name2]` bracket group for `line` (if any) to `out`.
+    fn push_line_names<'a>(
+        &self,
+        out: &mut String,
+        line: usize,
+        resolve: &impl Fn(TextKey) -> Option<&'a str>,
+    ) {
+        let names: Vec<&str> = self
+            .line_names
+            .iter()
+            .filter(|(_, index)| usize::from(*index) == line)
+            .filter_map(|(key, _)| resolve(*key))
+            .collect();
+        if !names.is_empty() {
+            out.push('[');
+            out.push_str(&names.join(" "));
+            out.push_str("] ");
+        }
     }
 }
 
@@ -184,5 +269,42 @@ mod tests {
         assert!(list.register_line_name(end, 1));
         let serialized = list.to_css_string(|key| store.resolve(key));
         assert_eq!(serialized, "100px [end]");
+    }
+
+    #[test]
+    fn auto_fit_span_round_trips_repeat_wrapper_and_inner_names() {
+        // `repeat(auto-fit, [main] minmax(240px, 1fr))` stores one span copy
+        // with the `[main]` line name inside, and serializes back to the
+        // `repeat(auto-fit, …)` form.
+        let mut list = GridTrackList::default();
+        let mut store = DeclStore::default();
+        list.tracks.push(GridTrackSize {
+            min: TrackBreadth::Px(240.0),
+            max: TrackMaxBreadth::Fr(1.0),
+        });
+        let main = store.intern("main");
+        assert!(list.register_line_name(main, 0));
+        list.auto_repeat_span = Some((0, 1, GridRepeat::AutoFit));
+        let serialized = list.to_css_string(|key| store.resolve(key));
+        assert_eq!(serialized, "repeat(auto-fit, [main] minmax(240px, 1fr))");
+    }
+
+    #[test]
+    fn auto_fill_span_with_prefix_and_suffix_round_trips() {
+        // `100px repeat(auto-fill, 200px) 300px` — the span is the middle track.
+        let mut list = GridTrackList::default();
+        list.tracks.push(px(100.0, 100.0));
+        list.tracks.push(px(200.0, 200.0));
+        list.tracks.push(px(300.0, 300.0));
+        list.auto_repeat_span = Some((1, 1, GridRepeat::AutoFill));
+        let store = DeclStore::default();
+        let serialized = list.to_css_string(|key| store.resolve(key));
+        assert_eq!(serialized, "100px repeat(auto-fill, 200px) 300px");
+    }
+
+    #[test]
+    fn default_list_has_no_auto_repeat_span() {
+        let list = GridTrackList::default();
+        assert_eq!(list.auto_repeat_span, None);
     }
 }

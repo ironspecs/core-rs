@@ -252,12 +252,17 @@ fn format_areas<'a>(
 
 /// Formats one grid `<track-size>` to its canonical CSS token. A plain track
 /// (matching min and max breadths) formats as its single keyword; a
-/// `minmax(a, b)` whose bounds differ formats as `minmax(a, b)`; an `fr` max
-/// formats as `Nfr` (correction 3 — percent bounds format as `"%"`, never the
-/// former hardcoded `"px"`).
+/// `minmax(a, b)` whose bounds differ formats as `minmax(a, b)`; a bare `fr`
+/// (`{ Auto, Fr }`) formats as `Nfr`, while a `minmax(a, fr)` (a non-`Auto`
+/// min bound) preserves its min bound as `minmax(a, Nfr)` — the T3.5 card-wall
+/// idiom `minmax(240px, 1fr)` round-trips, never collapsing to `1fr` (which
+/// would mis-serialize and re-parse as a bare-fr drop).
 pub(crate) fn format_grid_track_size(size: &GridTrackSize) -> String {
     if let TrackMaxBreadth::Fr(fr) = size.max {
-        return format!("{fr}fr");
+        if size.min == TrackBreadth::Auto {
+            return format!("{fr}fr");
+        }
+        return format!("minmax({}, {fr}fr)", format_track_breadth(size.min));
     }
     match (size.min, size.max) {
         (TrackBreadth::Auto, TrackMaxBreadth::Auto) => "auto".to_string(),

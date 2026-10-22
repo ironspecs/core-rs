@@ -89,7 +89,9 @@ pub(crate) use grid_template_areas::{
     AreaRect, GRID_AREA_COL_CAPACITY, GRID_AREA_NAME_CAPACITY, GRID_AREA_ROW_CAPACITY,
     GridTemplateAreas,
 };
-pub(crate) use grid_track_list::{GRID_TRACK_LIST_CAPACITY, GridTrackList};
+pub(crate) use grid_track_list::{
+    GRID_LINE_NAME_CAPACITY, GRID_TRACK_LIST_CAPACITY, GridRepeat, GridTrackList,
+};
 pub use grid_track_size::{GridTrackSize, TrackBreadth, TrackMaxBreadth};
 pub use group_dirty_classification::GroupDirtyClassification;
 pub use justify_content_kw::JustifyContentKw;

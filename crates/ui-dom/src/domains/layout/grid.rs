@@ -28,16 +28,27 @@
 //!   wrap bounds fold the maximum auto column/row span, so a span exceeding the
 //!   explicit grid grows the implicit grid to match (never an infinite
 //!   `span > grid` wrap loop in `find_auto_auto_row`/`find_auto_auto_col`)
+//! - the T3.5 auto-repeat count is recomputed EVERY pass from the axis's
+//!   definite main size (`N = floor((S + gap) / (rep_size + gap))`, capacity-
+//!   clamped to 12 and floored at 1) — never cached, never retained on the node;
+//!   a container-size change re-runs the whole solve via the dirty-bit doctrine
+//! - auto-fit only: empty span tracks (their cells hold no item) collapse to
+//!   fixed 0 after placement, and the fr distribution re-runs over the
+//!   surviving tracks (auto-fill never collapses)
 #![allow(clippy::needless_pass_by_value)] // LayoutContext is passed by value as a child's owned context, mirroring flow.rs/flex.rs
 
+use arrayvec::ArrayVec;
+
+use crate::domains::style::GRID_LINE_NAME_CAPACITY;
 use crate::domains::style::GRID_TRACK_LIST_CAPACITY;
+use crate::domains::style::TextKey;
 use crate::domains::style::computed::{
-    AlignItemsKw, AreaRect, BoxLength, ComputedGridGroup, GridAutoFlowKw, GridLine,
+    AlignItemsKw, AreaRect, BoxLength, ComputedGridGroup, GridAutoFlowKw, GridLine, GridRepeat,
     GridTemplateAreas, GridTrackList, GridTrackSize, JustifyItemsKw, JustifySelfKw, TrackBreadth,
     TrackMaxBreadth,
 };
 use crate::domains::visitor::inherited_style::InheritedStyleContext;
-use crate::numeric::usize_to_f32;
+use crate::numeric::{f32_to_u32, usize_to_f32};
 use crate::types::{
     DomBoxModel, DomError, DomNode, DomNodeSlotKey, DomRect, LaneRange, LayoutScratch, RootDom,
     RootDomMetricName,
@@ -255,20 +266,6 @@ where
             flex.align_items,
         )
     };
-    // Resolve the explicit + areas dimensions (a short borrow: the areas map
-    // widens the count, the §7.3.1 implicit template).
-    let mut column_tracks = empty_track_array();
-    let col_count = {
-        let columns = root_dom.resolve_inline_track_list(grid_group.template_columns);
-        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
-        resolve_columns(columns, areas, &mut column_tracks)
-    };
-    let mut row_tracks = empty_track_array();
-    let explicit_row_count = {
-        let rows = root_dom.resolve_inline_track_list(grid_group.template_rows);
-        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
-        resolve_rows(rows, areas, &mut row_tracks)
-    };
 
     let entered = enter_node(
         root_dom,
@@ -291,15 +288,67 @@ where
         RootDomMetricName::GridNodesMeasured,
     )?;
 
-    // 2. Placement resolution (D2 + D4): resolve each item's cell and spans via
+    // 2. Column + row expansion (auto-repeat, layout time): the repetition
+    // count is computed from the axis's definite main size and the span's
+    // repetition bases, then the span expands to N copies. The count is
+    // recomputed EVERY pass (no cache — a size change re-runs the whole solve).
+    let (agg_h_min, agg_h_max) =
+        aggregate_item_inline_contributions(&root_dom.layout_scratch, item_range);
+    let mut column_tracks = empty_track_array();
+    let mut column_line_names = ArrayVec::new();
+    let column_expansion = {
+        let columns = root_dom.resolve_inline_track_list(grid_group.template_columns);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_columns_expanded(
+            columns,
+            areas,
+            &mut column_tracks,
+            &mut column_line_names,
+            entered.content_width_px,
+            column_gap_px,
+            agg_h_min,
+            agg_h_max,
+        )
+    };
+    let mut row_tracks = empty_track_array();
+    let mut row_line_names = ArrayVec::new();
+    let row_expansion = {
+        let rows = root_dom.resolve_inline_track_list(grid_group.template_rows);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_rows_expanded(
+            rows,
+            areas,
+            &mut row_tracks,
+            &mut row_line_names,
+            entered.style.height_px,
+            row_gap_px,
+            agg_h_min,
+            agg_h_max,
+        )
+    };
+    if column_expansion.capped {
+        root_dom.increment_metric(RootDomMetricName::GridRepetitionCountCapped);
+    }
+    if row_expansion.capped {
+        root_dom.increment_metric(RootDomMetricName::GridRepetitionCountCapped);
+    }
+    let col_count = column_expansion.count;
+    let explicit_row_count = row_expansion.count;
+
+    // 3. Placement resolution (D2 + D4): resolve each item's cell and spans via
     // the CellMap, writing cell starts and spans into the item lane / view. The
-    // name-resolution context borrows only the interner/store (disjoint from the
-    // layout scratch) and drops before the sizing phases re-borrow `root_dom`.
+    // name-resolution context borrows only the interner/store plus the EXPANDED
+    // line-name slices (disjoint from the layout scratch) and drops before the
+    // sizing phases re-borrow `root_dom`.
     let placement = {
         let line_context = GridLineContext::new(
             &root_dom.computed_texts,
             &root_dom.inline_decl_store,
-            &grid_group,
+            (!column_line_names.is_empty()).then_some(column_line_names.as_slice()),
+            (!row_line_names.is_empty()).then_some(row_line_names.as_slice()),
+            root_dom
+                .inline_decl_store
+                .resolve_grid_areas(grid_group.template_areas),
         );
         resolve_grid_placement(
             &mut root_dom.layout_scratch,
@@ -311,7 +360,16 @@ where
         )
     };
 
-    // 3. Per-column contributions (max h_min / h_max per explicit column, from
+    // Auto-fit collapse: mark the empty span columns (after placement) so the
+    // sizing phase treats them as fixed 0 and re-runs the fr distribution over
+    // the surviving tracks (D3 step 4; auto-fill never collapses).
+    let collapsed_columns = collapsed_auto_fit_columns(
+        &root_dom.layout_scratch,
+        column_expansion.span,
+        placement.col_offset,
+    );
+
+    // 4. Per-column contributions (max h_min / h_max per explicit column, from
     // the resolved placement + spans).
     let (col_h_min, col_h_max) = column_contributions(
         &root_dom.layout_scratch,
@@ -320,7 +378,7 @@ where
         placement.col_offset,
     );
 
-    // 4. Container content width (block → CB width; InlineGrid → D7 intrinsic).
+    // 5. Container content width (block → CB width; InlineGrid → D7 intrinsic).
     let container_content_width = grid_container_content_width(
         &entered,
         &column_tracks,
@@ -330,8 +388,9 @@ where
         column_gap_px,
     );
 
-    // 5. Column track sizing (explicit columns by the phase algorithm, implicit
-    // columns by `auto_columns`).
+    // 6. Column track sizing (explicit columns by the phase algorithm, implicit
+    // columns by `auto_columns`; collapsed auto-fit columns force to fixed 0 so
+    // the fr distribution re-runs over the surviving tracks only).
     let column_range = size_column_tracks(
         &mut root_dom.layout_scratch,
         &column_tracks,
@@ -344,9 +403,10 @@ where
         container_content_width,
         column_gap_px,
         grid_group.auto_columns,
+        &collapsed_columns,
     );
 
-    // 6. Item resolution (resolved width across the span + cross contribution,
+    // 7. Item resolution (resolved width across the span + cross contribution,
     // refold).
     resolve_grid_items(
         root_dom,
@@ -360,7 +420,7 @@ where
         RootDomMetricName::GridNodesMeasured,
     )?;
 
-    // 7. Row track sizing (explicit rows by the phase algorithm, implicit rows
+    // 8. Row track sizing (explicit rows by the phase algorithm, implicit rows
     // by `auto_rows`).
     let row_range = size_row_tracks(
         &mut root_dom.layout_scratch,
@@ -374,7 +434,7 @@ where
     );
     let content_height_px = total_row_height(&root_dom.layout_scratch, row_range, row_gap_px);
 
-    // 8. Placement + abs-pos pass.
+    // 9. Placement + abs-pos pass.
     let placed_content_height_px = place_grid_children(
         root_dom,
         tree_size,
@@ -408,11 +468,13 @@ where
         row_gap_px,
         col_count,
         explicit_row_count,
+        column_line_names.as_slice(),
+        row_line_names.as_slice(),
         &grid_group,
         resolver,
     )?;
 
-    // 9. Container intrinsic contribution (D7).
+    // 10. Container intrinsic contribution (D7).
     let (h_min, h_max) = grid_container_intrinsic_inline_sizes(
         &column_tracks,
         col_count,
@@ -448,44 +510,265 @@ fn empty_track_array() -> [GridTrackSize; GRID_TRACK_LIST_CAPACITY] {
     }; GRID_TRACK_LIST_CAPACITY]
 }
 
-/// Copies the interned explicit column list into the caller's stack array and
+/// The layout-time expansion of one axis's explicit track list: the expanded
+/// track count, whether the repetition count clamped to lane capacity (12), and
+/// the expanded auto-repeat span range `(start, end, kind)` for auto-fit
+/// collapse. Plain data; built by `expand_track_list`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct AxisExpansion {
+    count: usize,
+    capped: bool,
+    /// `(start, end, kind)` — the expanded span's track range `start..end`
+    /// within the explicit list. `None` when the list has no auto-repeat.
+    span: Option<(u8, u8, GridRepeat)>,
+}
+
+/// Expands one stored track list's auto-repeat span (if any) to N copies at
+/// layout time, writing the expanded tracks and the expanded (first-match
+/// effective) line names. `s` is the axis's definite main size; `None` (an
+/// indefinite size) resolves the count to its 1-copy minimum.
+#[allow(clippy::too_many_arguments)]
+fn expand_track_list(
+    list: Option<&GridTrackList>,
+    tracks_out: &mut [GridTrackSize; GRID_TRACK_LIST_CAPACITY],
+    line_names_out: &mut ArrayVec<(TextKey, u8), GRID_LINE_NAME_CAPACITY>,
+    s: Option<f32>,
+    gap: f32,
+    h_min: f32,
+    h_max: f32,
+) -> AxisExpansion {
+    let Some(list) = list else {
+        return AxisExpansion::default();
+    };
+    let mut expansion = AxisExpansion::default();
+    if let Some((start, inner_count, kind)) = list.auto_repeat_span {
+        let start_usize = usize::from(start);
+        let inner_usize = usize::from(inner_count);
+        let (n, capped) =
+            compute_auto_repeat_count(&list.tracks, start, inner_count, s, gap, h_min, h_max);
+        expansion.capped = capped;
+        let mut idx = 0usize;
+        for track in &list.tracks[..start_usize] {
+            tracks_out[idx] = *track;
+            idx += 1;
+        }
+        for _ in 0..n {
+            for track in &list.tracks[start_usize..start_usize + inner_usize] {
+                tracks_out[idx] = *track;
+                idx += 1;
+            }
+        }
+        for track in &list.tracks[start_usize + inner_usize..] {
+            tracks_out[idx] = *track;
+            idx += 1;
+        }
+        expansion.count = idx;
+        expansion.span = Some((
+            start,
+            u8::try_from(start_usize + n * inner_usize).expect("expanded span fits u8"),
+            kind,
+        ));
+        expand_line_names(&list.line_names, start, inner_count, n, line_names_out);
+    } else {
+        for (slot, track) in tracks_out.iter_mut().zip(list.tracks.iter()) {
+            *slot = *track;
+            expansion.count += 1;
+        }
+        for (name, index) in &list.line_names {
+            let _ = line_names_out.try_push((*name, *index));
+        }
+    }
+    expansion
+}
+
+/// The auto-repeat count (CSS Grid §7.2.3.2): `N = floor((S + gap) / (rep_size +
+/// gap))`, where `rep_size` is the sum of the span's repetition bases, clamped
+/// to at least 1 and to the track-lane capacity `floor((12 − prefix − suffix) /
+/// span_count)`. Returns `(N, capped)` — `capped` marks that the capacity clamp
+/// fired (the `grid_repetition_count_capped` metric). Recomputed every pass;
+/// never cached.
+fn compute_auto_repeat_count(
+    stored_tracks: &[GridTrackSize],
+    start: u8,
+    inner_count: u8,
+    s: Option<f32>,
+    gap: f32,
+    h_min: f32,
+    h_max: f32,
+) -> (usize, bool) {
+    let start_usize = usize::from(start);
+    let inner_usize = usize::from(inner_count);
+    let prefix = start_usize;
+    let suffix = stored_tracks.len() - start_usize - inner_usize;
+    let capacity = ((GRID_TRACK_LIST_CAPACITY - prefix - suffix) / inner_usize).max(1);
+    let n_formula = match s {
+        Some(s) => {
+            let rep_size: f32 = stored_tracks[start_usize..start_usize + inner_usize]
+                .iter()
+                .map(|track| span_track_basis(track, s, h_min, h_max))
+                .sum();
+            if rep_size > 0.0 {
+                let quotient = ((s + gap) / (rep_size + gap)).floor();
+                usize::try_from(f32_to_u32(quotient))
+                    .expect("repetition count fits usize")
+                    .max(1)
+            } else {
+                // A zero repetition basis diverges; the capacity clamp bounds it.
+                usize::MAX
+            }
+        }
+        None => 1,
+    };
+    let n = n_formula.min(capacity).max(1);
+    (n, n_formula > capacity)
+}
+
+/// One span track's repetition basis for the count: fixed → px, percent → % of
+/// `s`, `min-content` → `h_min`, `max-content`/`auto` → `h_max`. A bare `fr`
+/// never reaches here (parse-gated); a `fr` MAX inside minmax contributes its
+/// min bound (this match reads the min breadth).
+fn span_track_basis(track: &GridTrackSize, s: f32, h_min: f32, h_max: f32) -> f32 {
+    match track.min {
+        TrackBreadth::Px(px) => px,
+        TrackBreadth::Percent(p) => s * p * 0.01,
+        TrackBreadth::MinContent => h_min,
+        TrackBreadth::MaxContent | TrackBreadth::Auto => h_max,
+    }
+}
+
+/// Expands a list's line names to their expanded (first-match effective)
+/// positions: suffix names shift right by `(N−1)·span_count`; prefix and
+/// first-copy span names keep their stored positions (name resolution is
+/// first-match, so the span's repeated copies are not materialized — their
+/// later positions never win the first match).
+fn expand_line_names(
+    line_names: &[(TextKey, u8)],
+    start: u8,
+    inner_count: u8,
+    n: usize,
+    out: &mut ArrayVec<(TextKey, u8), GRID_LINE_NAME_CAPACITY>,
+) {
+    let start_usize = usize::from(start);
+    let inner_usize = usize::from(inner_count);
+    let shift = u8::try_from((n - 1) * inner_usize).expect("expanded line shift fits u8");
+    for (name, index) in line_names {
+        let index_usize = usize::from(*index);
+        let expanded = if index_usize > start_usize + inner_usize {
+            index_usize + usize::from(shift)
+        } else {
+            index_usize
+        };
+        let _ = out.try_push((
+            *name,
+            u8::try_from(expanded).expect("expanded name index fits u8"),
+        ));
+    }
+}
+
+/// The aggregate inline min/max content contributions over the measured items
+/// (the content-based repetition basis inputs for the count formula).
+fn aggregate_item_inline_contributions(
+    scratch: &LayoutScratch,
+    item_range: LaneRange,
+) -> (f32, f32) {
+    let mut h_min = 0.0f32;
+    let mut h_max = 0.0f32;
+    for entry in scratch.grid_items.slice(item_range) {
+        h_min = h_min.max(entry.view.h_min_content_px);
+        h_max = h_max.max(entry.view.h_max_content_px);
+    }
+    (h_min, h_max)
+}
+
+/// Expands the interned explicit column list into the caller's stack array and
 /// returns the real column count. With no authored template the count defaults
 /// to 1 (D3); a template-areas map widens the count to its column dimension
 /// (the §7.3.1 implicit template — areas beyond the explicit list size `auto`).
-fn resolve_columns(
+#[allow(clippy::too_many_arguments)]
+fn resolve_columns_expanded(
     columns: Option<&GridTrackList>,
     areas: Option<&GridTemplateAreas>,
     column_tracks: &mut [GridTrackSize; GRID_TRACK_LIST_CAPACITY],
-) -> usize {
-    let mut count = 0;
-    if let Some(list) = columns {
-        for (slot, track) in column_tracks.iter_mut().zip(list.tracks.iter()) {
-            *slot = *track;
-            count += 1;
-        }
-    }
+    column_line_names: &mut ArrayVec<(TextKey, u8), GRID_LINE_NAME_CAPACITY>,
+    container_width_px: f32,
+    gap_px: f32,
+    h_min: f32,
+    h_max: f32,
+) -> AxisExpansion {
+    let mut expansion = expand_track_list(
+        columns,
+        column_tracks,
+        column_line_names,
+        Some(container_width_px),
+        gap_px,
+        h_min,
+        h_max,
+    );
     let areas_cols = areas.map_or(0, |areas| usize::from(areas.col_count));
-    count.max(areas_cols).max(1)
+    expansion.count = expansion.count.max(areas_cols).max(1);
+    expansion
 }
 
-/// Copies the interned explicit ROW list into the caller's stack array and
+/// Expands the interned explicit ROW list into the caller's stack array and
 /// returns the real row count (0 for the empty template — all rows implicit,
 /// sized by `grid-auto-rows`, D3). A template-areas map widens the count to its
 /// row dimension (the §7.3.1 implicit template).
-fn resolve_rows(
+#[allow(clippy::too_many_arguments)]
+fn resolve_rows_expanded(
     rows: Option<&GridTrackList>,
     areas: Option<&GridTemplateAreas>,
     row_tracks: &mut [GridTrackSize; GRID_TRACK_LIST_CAPACITY],
-) -> usize {
-    let mut count = 0;
-    if let Some(list) = rows {
-        for (slot, track) in row_tracks.iter_mut().zip(list.tracks.iter()) {
-            *slot = *track;
-            count += 1;
-        }
-    }
+    row_line_names: &mut ArrayVec<(TextKey, u8), GRID_LINE_NAME_CAPACITY>,
+    container_height_px: Option<f32>,
+    gap_px: f32,
+    h_min: f32,
+    h_max: f32,
+) -> AxisExpansion {
+    let mut expansion = expand_track_list(
+        rows,
+        row_tracks,
+        row_line_names,
+        container_height_px,
+        gap_px,
+        h_min,
+        h_max,
+    );
     let areas_rows = areas.map_or(0, |areas| usize::from(areas.row_count));
-    count.max(areas_rows)
+    expansion.count = expansion.count.max(areas_rows);
+    expansion
+}
+
+/// Marks each expanded auto-FIT span column with no occupied cell as collapsed
+/// (the empty tracks collapse to zero after placement, D3 step 4). Auto-fill
+/// never collapses. Returns a bitmap over the explicit column indices.
+fn collapsed_auto_fit_columns(
+    scratch: &LayoutScratch,
+    span: Option<(u8, u8, GridRepeat)>,
+    col_offset: usize,
+) -> [bool; GRID_TRACK_LIST_CAPACITY] {
+    let mut collapsed = [false; GRID_TRACK_LIST_CAPACITY];
+    let Some((start, end, kind)) = span else {
+        return collapsed;
+    };
+    if kind != GridRepeat::AutoFit {
+        return collapsed;
+    }
+    let cell_map = &scratch.cell_map;
+    let rows = cell_map.height();
+    let start = usize::from(start);
+    let end = usize::from(end);
+    for (explicit, slot) in collapsed.iter_mut().enumerate().take(end).skip(start) {
+        let col = col_offset + explicit;
+        let mut occupied = false;
+        for row in 0..rows {
+            if !cell_map.is_free(row, col, 1, 1) {
+                occupied = true;
+                break;
+            }
+        }
+        *slot = !occupied;
+    }
+    collapsed
 }
 
 /// Resolves a definite integer line to a 0-based line index against the
@@ -1613,7 +1896,9 @@ fn empty_track_entry() -> GridTrackEntry {
 /// Sizes the column tracks (D2/D3): explicit columns by the phase algorithm
 /// (init → maximize → fr expand → stretch auto), implicit columns (left of the
 /// offset from negative lines, and right beyond the explicit count) by
-/// `auto_columns` content.
+/// `auto_columns` content. A collapsed auto-fit column (`collapsed[col]`) is
+/// forced to fixed 0 so the fr distribution re-runs over the surviving tracks
+/// only (D3 step 4).
 #[allow(clippy::too_many_arguments)]
 fn size_column_tracks(
     scratch: &mut LayoutScratch,
@@ -1627,6 +1912,7 @@ fn size_column_tracks(
     container_width_px: f32,
     column_gap_px: f32,
     auto_columns: GridTrackSize,
+    collapsed: &[bool; GRID_TRACK_LIST_CAPACITY],
 ) -> LaneRange {
     let range_start = scratch.tracks.begin_range();
 
@@ -1636,12 +1922,17 @@ fn size_column_tracks(
     }
     // Explicit columns.
     for col in 0..col_count {
-        scratch.tracks.push(init_column_track(
-            &column_tracks[col],
-            col_h_min[col],
-            col_h_max[col],
-            container_width_px,
-        ));
+        if collapsed[col] {
+            // A collapsed auto-fit track is fixed 0 (its cells hold no item).
+            scratch.tracks.push(empty_track_entry());
+        } else {
+            scratch.tracks.push(init_column_track(
+                &column_tracks[col],
+                col_h_min[col],
+                col_h_max[col],
+                container_width_px,
+            ));
+        }
     }
     // Right implicit columns (beyond the explicit count).
     let right_implicit = total_col_count.saturating_sub(col_offset + col_count);
@@ -2501,6 +2792,8 @@ fn place_excluded_abs_grid_children<R>(
     row_gap_px: f32,
     col_count: usize,
     explicit_row_count: usize,
+    column_line_names: &[(TextKey, u8)],
+    row_line_names: &[(TextKey, u8)],
     container_group: &ComputedGridGroup,
     resolver: &mut R,
 ) -> Result<(), DomError>
@@ -2566,6 +2859,8 @@ where
                 row_offset,
                 column_gap_px,
                 row_gap_px,
+                column_line_names,
+                row_line_names,
             );
             let (static_left, static_top) = match (area_left, area_top) {
                 (Some(left), Some(top)) => (content_left_px + left, content_top_px + top),
@@ -2594,6 +2889,8 @@ fn resolve_abs_grid_area(
     row_offset: usize,
     column_gap_px: f32,
     row_gap_px: f32,
+    column_line_names: &[(TextKey, u8)],
+    row_line_names: &[(TextKey, u8)],
 ) -> (Option<f32>, Option<f32>) {
     let Some(node) = root_dom.nodes.get(child_key) else {
         return (None, None);
@@ -2602,7 +2899,11 @@ fn resolve_abs_grid_area(
     let context = GridLineContext::new(
         &root_dom.computed_texts,
         &root_dom.inline_decl_store,
-        container_group,
+        Some(column_line_names),
+        Some(row_line_names),
+        root_dom
+            .inline_decl_store
+            .resolve_grid_areas(container_group.template_areas),
     );
     let col = resolve_placement_axis(
         grid.column_start,
@@ -2772,19 +3073,6 @@ where
             flex.gap[0],
         )
     };
-    let mut column_tracks = empty_track_array();
-    let col_count = {
-        let columns = root_dom.resolve_inline_track_list(grid_group.template_columns);
-        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
-        resolve_columns(columns, areas, &mut column_tracks)
-    };
-    let mut row_tracks = empty_track_array();
-    let explicit_row_count = {
-        let rows = root_dom.resolve_inline_track_list(grid_group.template_rows);
-        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
-        resolve_rows(rows, areas, &mut row_tracks)
-    };
-
     let entered = enter_node(
         root_dom,
         tree_size,
@@ -2799,11 +3087,59 @@ where
     let (item_range, order_range) =
         build_grid_item_formation(root_dom, tree_size, key, &child_context, resolver, metric)?;
 
+    // Column + row expansion (auto-repeat) — same as the active path.
+    let (agg_h_min, agg_h_max) =
+        aggregate_item_inline_contributions(&root_dom.layout_scratch, item_range);
+    let mut column_tracks = empty_track_array();
+    let mut column_line_names = ArrayVec::new();
+    let column_expansion = {
+        let columns = root_dom.resolve_inline_track_list(grid_group.template_columns);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_columns_expanded(
+            columns,
+            areas,
+            &mut column_tracks,
+            &mut column_line_names,
+            entered.content_width_px,
+            column_gap_px,
+            agg_h_min,
+            agg_h_max,
+        )
+    };
+    let mut row_tracks = empty_track_array();
+    let mut row_line_names = ArrayVec::new();
+    let row_expansion = {
+        let rows = root_dom.resolve_inline_track_list(grid_group.template_rows);
+        let areas = root_dom.resolve_inline_grid_areas(grid_group.template_areas);
+        resolve_rows_expanded(
+            rows,
+            areas,
+            &mut row_tracks,
+            &mut row_line_names,
+            entered.style.height_px,
+            row_gap_px,
+            agg_h_min,
+            agg_h_max,
+        )
+    };
+    if column_expansion.capped {
+        root_dom.increment_metric(RootDomMetricName::GridRepetitionCountCapped);
+    }
+    if row_expansion.capped {
+        root_dom.increment_metric(RootDomMetricName::GridRepetitionCountCapped);
+    }
+    let col_count = column_expansion.count;
+    let explicit_row_count = row_expansion.count;
+
     let placement = {
         let line_context = GridLineContext::new(
             &root_dom.computed_texts,
             &root_dom.inline_decl_store,
-            &grid_group,
+            (!column_line_names.is_empty()).then_some(column_line_names.as_slice()),
+            (!row_line_names.is_empty()).then_some(row_line_names.as_slice()),
+            root_dom
+                .inline_decl_store
+                .resolve_grid_areas(grid_group.template_areas),
         );
         resolve_grid_placement(
             &mut root_dom.layout_scratch,
@@ -2814,6 +3150,12 @@ where
             &line_context,
         )
     };
+
+    let collapsed_columns = collapsed_auto_fit_columns(
+        &root_dom.layout_scratch,
+        column_expansion.span,
+        placement.col_offset,
+    );
 
     let (col_h_min, col_h_max) = column_contributions(
         &root_dom.layout_scratch,
@@ -2843,6 +3185,7 @@ where
         container_content_width,
         column_gap_px,
         grid_group.auto_columns,
+        &collapsed_columns,
     );
 
     resolve_grid_items(
@@ -3000,6 +3343,7 @@ mod tests {
                 min: TrackBreadth::Auto,
                 max: TrackMaxBreadth::Auto,
             },
+            &[false; GRID_TRACK_LIST_CAPACITY],
         );
         scratch
             .tracks
@@ -3100,5 +3444,108 @@ mod tests {
         assert_eq!(implicit_grid_width_bound(0, 0, 2, 1), 2);
         // The symmetric row-axis fold.
         assert_eq!(implicit_grid_height_bound(0, 0, 2, 3), 3);
+    }
+
+    fn minmax_px_fr(min: f32, fr: f32) -> GridTrackSize {
+        track(TrackBreadth::Px(min), TrackMaxBreadth::Fr(fr))
+    }
+
+    #[test]
+    fn auto_repeat_count_follows_the_fill_formula() {
+        // `repeat(auto-fit, minmax(240px, 1fr))` in 600px → floor(600/240) = 2.
+        let span = [minmax_px_fr(240.0, 1.0)];
+        let (n, capped) = compute_auto_repeat_count(&span, 0, 1, Some(600.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 2);
+        assert!(!capped);
+        // With a 10px gutter: floor((600+10)/(240+10)) = floor(610/250) = 2.
+        let (n, _) = compute_auto_repeat_count(&span, 0, 1, Some(600.0), 10.0, 0.0, 0.0);
+        assert_eq!(n, 2);
+        // 400px → 1 (the clamped minimum).
+        let (n, _) = compute_auto_repeat_count(&span, 0, 1, Some(400.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 1);
+        // 800px → floor(800/240) = 3.
+        let (n, _) = compute_auto_repeat_count(&span, 0, 1, Some(800.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn auto_repeat_count_multi_track_span_sums_bases() {
+        // `repeat(auto-fit, 100px 200px)` in 600px → rep_size 300 → N = 2.
+        let span = [px(100.0, 100.0), px(200.0, 200.0)];
+        let (n, capped) = compute_auto_repeat_count(&span, 0, 2, Some(600.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 2);
+        assert!(!capped);
+    }
+
+    #[test]
+    fn auto_repeat_count_clamps_to_lane_capacity() {
+        // `repeat(auto-fill, 10px)` in 600px → formula wants 60, clamps to 12.
+        let span = [px(10.0, 10.0)];
+        let (n, capped) = compute_auto_repeat_count(&span, 0, 1, Some(600.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 12);
+        assert!(capped);
+    }
+
+    #[test]
+    fn auto_repeat_count_with_prefix_and_suffix_reserves_lane_space() {
+        // `100px repeat(auto-fit, 200px) 100px` → prefix+suffix = 2, so the
+        // capacity for the span is floor((12-2)/1) = 10.
+        let list = [px(100.0, 100.0), px(200.0, 200.0), px(100.0, 100.0)];
+        let (n, capped) = compute_auto_repeat_count(&list, 1, 1, Some(100_000.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 10);
+        assert!(capped);
+    }
+
+    #[test]
+    fn span_track_basis_reads_the_min_bound_for_minmax() {
+        // The idiom's basis is the minmax MIN bound (240), not the fr MAX.
+        let idiom = minmax_px_fr(240.0, 1.0);
+        assert_eq!(span_track_basis(&idiom, 600.0, 0.0, 0.0), 240.0);
+        // Percent resolves against S; content-based reads the contributions.
+        assert_eq!(
+            span_track_basis(
+                &track(TrackBreadth::Percent(50.0), TrackMaxBreadth::Percent(50.0)),
+                600.0,
+                0.0,
+                0.0
+            ),
+            300.0
+        );
+        assert_eq!(
+            span_track_basis(
+                &track(TrackBreadth::MinContent, TrackMaxBreadth::MinContent),
+                600.0,
+                30.0,
+                40.0
+            ),
+            30.0
+        );
+        assert_eq!(
+            span_track_basis(
+                &track(TrackBreadth::Auto, TrackMaxBreadth::Auto),
+                600.0,
+                30.0,
+                40.0
+            ),
+            40.0
+        );
+    }
+
+    #[test]
+    fn expand_line_names_shifts_suffix_names() {
+        // A suffix name (index > start + count) shifts right by (N-1)*count;
+        // prefix and first-copy span names keep their positions (first match).
+        let span_inner = [(TextKey(1), 0u8)];
+        let mut expanded = arrayvec::ArrayVec::<(TextKey, u8), GRID_LINE_NAME_CAPACITY>::new();
+        expand_line_names(&span_inner, 0, 1, 3, &mut expanded);
+        assert_eq!(expanded.as_slice(), &[(TextKey(1), 0)]);
+
+        // `repeat(auto-fit, 100px) [after] 200px`'s `after` is stored at line 2
+        // (start 0, count 1, so the suffix begins at index 2); with N = 3 it
+        // shifts by (3-1)*1 = 2 → line 4.
+        let suffix = [(TextKey(3), 2u8)];
+        let mut out = arrayvec::ArrayVec::<(TextKey, u8), GRID_LINE_NAME_CAPACITY>::new();
+        expand_line_names(&suffix, 0, 1, 3, &mut out);
+        assert_eq!(out.as_slice(), &[(TextKey(3), 4)]);
     }
 }

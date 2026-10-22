@@ -86,7 +86,9 @@ pub use computed::{
     ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TrackBreadth, TrackMaxBreadth,
     TransitionLonghandProperty,
 };
-pub(crate) use computed::{GRID_TRACK_LIST_CAPACITY, GridTemplateAreas, GridTrackList};
+pub(crate) use computed::{
+    GRID_LINE_NAME_CAPACITY, GRID_TRACK_LIST_CAPACITY, GridTemplateAreas, GridTrackList,
+};
 pub(crate) use decl_parse::{name_is_presentation, parse_declaration_block};
 pub(crate) use decl_value::{decl_value_to_css_string, decl_value_to_dom_value};
 

@@ -129,9 +129,13 @@ pub enum RootDomMetricName {
     /// increment per `relayout_active_grid_child` call, i.e. per child the grid
     /// placement walk relayouts).
     GridNodesPlaced,
+    /// Number of times an auto-fill/fit repetition count clamped to the
+    /// track-lane capacity (12 tracks) instead of the fill formula's larger
+    /// integer (grid T3.5's layout-time capacity gate, `grid_repetition_count_capped`).
+    GridRepetitionCountCapped,
 }
 
-pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 43] = [
+pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 44] = [
     RootDomMetricName::HoverPseudoStateSet,
     RootDomMetricName::HoverPseudoStateCleared,
     RootDomMetricName::StyleUpdated,
@@ -175,6 +179,7 @@ pub(crate) const ROOT_DOM_METRIC_NAMES: [RootDomMetricName; 43] = [
     RootDomMetricName::NodesRefolded,
     RootDomMetricName::GridNodesMeasured,
     RootDomMetricName::GridNodesPlaced,
+    RootDomMetricName::GridRepetitionCountCapped,
 ];
 
 impl RootDomMetricName {
@@ -228,6 +233,7 @@ impl RootDomMetricName {
             Self::NodesRefolded => 40,
             Self::GridNodesMeasured => 41,
             Self::GridNodesPlaced => 42,
+            Self::GridRepetitionCountCapped => 43,
         }
     }
 }

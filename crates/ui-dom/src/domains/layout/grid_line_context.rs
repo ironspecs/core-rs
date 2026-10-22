@@ -17,10 +17,14 @@
 //!   (D4 rule 2's order); a name matching multiple lines resolves to the FIRST
 //!   match — the named set is indexed by filtering the placement by name
 //!   (CSS Grid 1 §8.1.3), never a span across the matches
+//! - the explicit name lists it resolves are the LAYOUT-TIME EXPANDED names
+//!   (grid T3.5): an auto-fill/fit span's names sit at their expanded line
+//!   positions (the suffix names shift right by `(N−1)·span_count`; the span's
+//!   first-copy names keep their stored positions, which are already the first
+//!   match) — the expansion is what name resolution sees, never the stored
+//!   single copy
 
-use crate::domains::style::computed::{
-    AreaRect, ComputedGridGroup, GridTemplateAreas, GridTrackList,
-};
+use crate::domains::style::computed::{AreaRect, GridTemplateAreas};
 use crate::domains::style::{DeclStore, TextInterner, TextKey};
 
 /// Which axis a line resolution targets (the named-line maps are per-axis).
@@ -30,32 +34,37 @@ pub(crate) enum GridAxis {
     Row,
 }
 
-/// The container's placement-name resolution context (D3/D4): the explicit
-/// `[name]` line registrations from the two track lists plus the areas map (for
-/// the area-rect shortcut and the implied `<name>-start`/`<name>-end` lines).
+/// The container's placement-name resolution context (D3/D4): the EXPANDED
+/// explicit `[name]` line registrations from the two track lists plus the areas
+/// map (for the area-rect shortcut and the implied `<name>-start`/`<name>-end`
+/// lines). The line-name slices are the layout-time expansion of the retained
+/// track lists (grid T3.5) — `resolve_named` sees the expanded positions.
 pub(crate) struct GridLineContext<'a> {
     computed_texts: &'a TextInterner,
     inline_store: &'a DeclStore,
-    columns: Option<&'a GridTrackList>,
-    rows: Option<&'a GridTrackList>,
+    columns: Option<&'a [(TextKey, u8)]>,
+    rows: Option<&'a [(TextKey, u8)]>,
     areas: Option<&'a GridTemplateAreas>,
 }
 
 impl<'a> GridLineContext<'a> {
-    /// Builds the context from the container's resolved group, borrowing only
-    /// the computed-text interner and the inline store (disjoint from the
-    /// layout scratch the placement passes mutate).
+    /// Builds the context from the resolved group, borrowing only the
+    /// computed-text interner, the inline store, the EXPANDED column/row
+    /// line-name slices, and the areas map (disjoint from the layout scratch
+    /// the placement passes mutate).
     pub(crate) fn new(
         computed_texts: &'a TextInterner,
         inline_store: &'a DeclStore,
-        grid_group: &ComputedGridGroup,
+        columns: Option<&'a [(TextKey, u8)]>,
+        rows: Option<&'a [(TextKey, u8)]>,
+        areas: Option<&'a GridTemplateAreas>,
     ) -> Self {
         Self {
             computed_texts,
             inline_store,
-            columns: inline_store.resolve_track_list(grid_group.template_columns),
-            rows: inline_store.resolve_track_list(grid_group.template_rows),
-            areas: inline_store.resolve_grid_areas(grid_group.template_areas),
+            columns,
+            rows,
+            areas,
         }
     }
 
@@ -67,12 +76,12 @@ impl<'a> GridLineContext<'a> {
     /// `<custom-ident>` form is the first match, never a span across matches.
     pub(crate) fn resolve_named(&self, name: TextKey, axis: GridAxis) -> Option<u32> {
         let name_str = self.computed_texts.resolve(name)?;
-        let list = match axis {
+        let names = match axis {
             GridAxis::Column => self.columns,
             GridAxis::Row => self.rows,
         };
-        if let Some(list) = list {
-            for (key, index) in &list.line_names {
+        if let Some(names) = names {
+            for (key, index) in names {
                 if self.inline_store.resolve(*key) == Some(name_str) {
                     return Some(u32::from(*index));
                 }

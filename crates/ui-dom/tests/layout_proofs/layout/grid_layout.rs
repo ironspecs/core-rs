@@ -22,7 +22,7 @@
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, RootDom,
+    DomNode, DomNodeSlotKey, DomPointerUpdate, DomRect, RootDom, RootDomMetricName,
     domains::layout::MeasurementRecord, node_box,
 };
 
@@ -1731,4 +1731,220 @@ fn grid_area_wire_round_trip() {
     assert_set_attr_str(&mut root, container, "style", &replayed);
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(root.canonical_style_snapshot(container), snapshot);
+}
+
+// — Grid T3.5 auto-fill/auto-fit repetition (`GRID_STEP5_DESIGN.md` D4) — //
+
+#[test]
+// CSS Grid §7.2.3.2: `repeat(auto-fit, minmax(240px, 1fr))` in 600px, 2 items
+// → N = 2, each track 300 (240 base + (600−480)/2 = 60 each); both filled.
+fn grid_repeat_auto_fit_minmax_fr_card_wall() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fit, minmax(240px, 1fr))",
+        "600px",
+    );
+    for _ in 0..2 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_eq!(rects.len(), 3, "container + 2 items");
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 300.0, 40.0, "first card");
+    assert_rect_op_geometry(&rects[2], 300.0, 0.0, 300.0, 40.0, "second card");
+}
+
+#[test]
+// CSS Grid §7.2.3.2: auto-fit collapses empty tracks. 600px, 1 item → N=2
+// created, the empty second track collapses to 0, and the fr distribution
+// re-runs over the surviving track → the item's track gets the full 600.
+fn grid_repeat_auto_fit_collapses_empty_tracks() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fit, minmax(240px, 1fr))",
+        "600px",
+    );
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.width_px,
+        600.0,
+        "the surviving track absorbs the collapsed track's space",
+    );
+}
+
+#[test]
+// CSS Grid §7.2.3.2: auto-FILL never collapses. 600px, 1 item → N=2, no
+// collapse, fr-expand verbatim: both tracks 300 (the empty "ghost" track 300).
+fn grid_repeat_auto_fill_keeps_empty_tracks_flexed() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fill, minmax(240px, 1fr))",
+        "600px",
+    );
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let item_box = border_box_of(&root, item);
+    assert_close(
+        item_box.width_px,
+        300.0,
+        "auto-fill: the item's track is 300 (no collapse of the ghost track)",
+    );
+}
+
+#[test]
+// CSS Grid §7.2.3.2: the count recomputes on container resize (the dirty-bit
+// doctrine re-runs the whole solve). Auto-FILL never collapses, so each track
+// flexes to S/N: 600 → 2 cols (300 each); 400 → 1 col (400); 800 → 3 cols
+// (800/3 each).
+fn grid_repeat_recount_on_container_resize() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fill, minmax(240px, 1fr))",
+        "600px",
+    );
+    let item = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, item, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, item).width_px,
+        300.0,
+        "600px: 2 columns of 300",
+    );
+
+    assert_style_set(&mut root, container, "width", "400px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, item).width_px,
+        400.0,
+        "400px: 1 column of 400",
+    );
+
+    assert_style_set(&mut root, container, "width", "800px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_close(
+        border_box_of(&root, item).width_px,
+        800.0 / 3.0,
+        "800px: 3 columns of 800/3",
+    );
+}
+
+#[test]
+// CSS Grid §7.2.3.2 + §8.2: column-gap joins the count formula's gutter term.
+// `repeat(auto-fit, minmax(240px, 1fr))` + 10px gap at 600 → N = floor(610/250)
+// = 2, tracks (600−10)/2 = 295 each.
+fn grid_repeat_count_with_gutters() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fit, minmax(240px, 1fr))",
+        "600px",
+    );
+    assert_style_set(&mut root, container, "column-gap", "10px");
+    for _ in 0..2 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 295.0, 40.0, "first card");
+    assert_rect_op_geometry(&rects[2], 305.0, 0.0, 295.0, 40.0, "second card");
+}
+
+#[test]
+// CSS Grid §7.2.3.2: a fixed multi-track list's repetition basis is the SUM of
+// the list's bases. `repeat(auto-fit, 100px 200px)` in 600 → rep_size 300, N =
+// floor(600/300) = 2 → four tracks (100,200,100,200).
+fn grid_repeat_multi_track_list_span() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fit, 100px 200px)",
+        "600px",
+    );
+    for _ in 0..4 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_rect_op_geometry(&rects[1], 0.0, 0.0, 100.0, 40.0, "track 1");
+    assert_rect_op_geometry(&rects[2], 100.0, 0.0, 200.0, 40.0, "track 2");
+    assert_rect_op_geometry(&rects[3], 300.0, 0.0, 100.0, 40.0, "track 3");
+    assert_rect_op_geometry(&rects[4], 400.0, 0.0, 200.0, 40.0, "track 4");
+}
+
+#[test]
+// CSS Grid §7.2.3.2 + the 12-track lane capacity: `repeat(auto-fill, 10px)` in
+// 600px → the fill formula wants 60 repetitions, the count clamps to 12, and
+// the `grid_repetition_count_capped` metric increments.
+fn grid_repeat_count_capped_at_lane_capacity() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(&mut root, container, "repeat(auto-fill, 10px)", "600px");
+    root.reset_metrics();
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.count(RootDomMetricName::GridRepetitionCountCapped),
+        1,
+        "the repetition count clamped to lane capacity once"
+    );
+}
+
+#[test]
+// CSS Grid §7.1 + §8.1.3: named lines inside an auto-repeat span repeat with
+// their tracks; `grid-column: main` resolves to the FIRST match (one track,
+// not a span across both `main` lines).
+fn grid_repeat_named_lines_repeat_with_tracks() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_style_set(&mut root, container, "display", "grid");
+    assert_style_set(
+        &mut root,
+        container,
+        "grid-template-columns",
+        "repeat(auto-fit, [main] minmax(240px, 1fr))",
+    );
+    assert_style_set(&mut root, container, "width", "600px");
+    let named = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, named, "grid-column", "main");
+    assert_style_set(&mut root, named, "height", "40px");
+    let auto = assert_append_div_to(&mut root, container);
+    assert_style_set(&mut root, auto, "height", "40px");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    // `main` resolves to the FIRST match (line 0): the named item occupies one
+    // 300px track, and the auto item flows to the second track (both filled, so
+    // auto-fit does not collapse).
+    let named_box = border_box_of(&root, named);
+    assert_close(named_box.left_px, 0.0, "main resolves to the first line");
+    assert_close(
+        named_box.width_px,
+        300.0,
+        "the first-match track is ONE 300px column, not a span",
+    );
+    let auto_box = border_box_of(&root, auto);
+    assert_close(
+        auto_box.left_px,
+        300.0,
+        "auto item flows to the second track",
+    );
+    assert_close(auto_box.width_px, 300.0, "auto item width");
 }

@@ -60,8 +60,8 @@ use smallvec::SmallVec;
 
 use super::computed::{
     AreaRect, GRID_AREA_COL_CAPACITY, GRID_AREA_NAME_CAPACITY, GRID_AREA_ROW_CAPACITY,
-    GridAutoFlowKw, GridLine, GridTemplateAreas, GridTrackList, GridTrackSize, TrackBreadth,
-    TrackMaxBreadth,
+    GridAutoFlowKw, GridLine, GridRepeat, GridTemplateAreas, GridTrackList, GridTrackSize,
+    TrackBreadth, TrackMaxBreadth,
 };
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::DeclDropReport;
@@ -663,22 +663,35 @@ fn parse_flex_basis_length(value: &str) -> Option<DeclLength> {
 // — Grid family — //
 
 /// Parses a grid track list (`grid-template-columns`/`rows`): space-separated
-/// `<track-size>` tokens with `[name]` line-name brackets and
-/// `repeat(<positive-integer>, <track-list>)` expanded at parse. The result
-/// interns value-deduped into the owning store's arena. Gates (each a counted
-/// drop, never a crash): a name over `GRID_LINE_NAME_CAPACITY` registrations,
-/// a name over `GRID_LINE_NAME_PER_NAME_CAPACITY` lines, `repeat(auto-fill|
-/// auto-fit, ...)` (T3.5), a nested `repeat()`, a non-positive/non-integer
-/// repeat count, and an expanded count over `GRID_TRACK_LIST_CAPACITY`.
+/// `<track-size>` tokens with `[name]` line-name brackets and `repeat(…)`
+/// (`repeat(<positive-integer>, <track-list>)` expanded at parse, and
+/// `repeat(auto-fill|auto-fit, <track-list>)` stored as ONE copy plus a span
+/// marker — T3.5). The result interns value-deduped into the owning store's
+/// arena. Gates (each a counted drop, never a crash): a name over
+/// `GRID_LINE_NAME_CAPACITY` registrations, a name over
+/// `GRID_LINE_NAME_PER_NAME_CAPACITY` lines, a nested `repeat()`, a bare `fr`
+/// track inside an auto-fill/fit span (the deferred content-based repetition
+/// basis), a non-positive/non-integer repeat count, an empty/missing inner
+/// list, a second auto-repeat span, and an expanded count over
+/// `GRID_TRACK_LIST_CAPACITY`.
 fn parse_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
     let mut list = GridTrackList::default();
     expand_track_list_tokens(value, store, &mut list)?;
     Some(store.intern_track_list(&list))
 }
 
+/// The repeat-count forms `split_repeat_inner` returns.
+enum RepeatCount {
+    Count(usize),
+    AutoFill,
+    AutoFit,
+}
+
 /// Expands one space-separated track-list token slice into `out`, failing the
 /// whole list on any gate (the `?`-propagated `None`). `[name1 name2]` bracket
 /// groups register their names against the line at the current `tracks.len()`.
+/// A fixed `repeat(N, list)` expands to N copies; an `repeat(auto-fill|auto-fit,
+/// list)` stores the inner list as ONE copy plus `auto_repeat_span`.
 fn expand_track_list_tokens(
     value: &str,
     store: &mut DeclStore,
@@ -694,13 +707,47 @@ fn expand_track_list_tokens(
             if list.contains("repeat(") {
                 return None; // nested repeat — CSS forbids it
             }
-            for _ in 0..count {
-                for inner_token in split_ws_paren_aware(list) {
-                    if inner_token.starts_with('[') {
-                        register_line_names(inner_token, store, out)?;
-                    } else {
-                        out.tracks.try_push(parse_track_size(inner_token)?).ok()?;
+            match count {
+                RepeatCount::Count(n) => {
+                    for _ in 0..n {
+                        for inner_token in split_ws_paren_aware(list) {
+                            if inner_token.starts_with('[') {
+                                register_line_names(inner_token, store, out)?;
+                            } else {
+                                out.tracks.try_push(parse_track_size(inner_token)?).ok()?;
+                            }
+                        }
                     }
+                }
+                kind @ (RepeatCount::AutoFill | RepeatCount::AutoFit) => {
+                    // CSS Grid §7.2.3 admits at most ONE auto-repeat per list; a
+                    // second one has no span field to carry it, so it drops.
+                    if out.auto_repeat_span.is_some() {
+                        return None;
+                    }
+                    let start = u8::try_from(out.tracks.len()).ok()?;
+                    let span_start_len = out.tracks.len();
+                    for inner_token in split_ws_paren_aware(list) {
+                        if inner_token.starts_with('[') {
+                            register_line_names(inner_token, store, out)?;
+                        } else {
+                            let track = parse_track_size(inner_token)?;
+                            if is_bare_fr(track) {
+                                // A bare `fr` span track has a zero repetition
+                                // basis (the deferred content-based repetition
+                                // basis) — drop + count at parse.
+                                return None;
+                            }
+                            out.tracks.try_push(track).ok()?;
+                        }
+                    }
+                    let count = u8::try_from(out.tracks.len() - span_start_len).ok()?;
+                    let grid_repeat = match kind {
+                        RepeatCount::AutoFill => GridRepeat::AutoFill,
+                        RepeatCount::AutoFit => GridRepeat::AutoFit,
+                        RepeatCount::Count(_) => unreachable!("matched the auto arm"),
+                    };
+                    out.auto_repeat_span = Some((start, count, grid_repeat));
                 }
             }
         } else {
@@ -708,6 +755,13 @@ fn expand_track_list_tokens(
         }
     }
     Some(())
+}
+
+/// True when a parsed track is a bare `fr` leaf (`{ Auto, Fr(_) }`) — the
+/// auto-fill/fit span's deferred-admission gate. A `fr` MAX inside `minmax`
+/// (the idiom `minmax(240px, 1fr)`) has a non-`Auto` min bound and is admitted.
+fn is_bare_fr(track: GridTrackSize) -> bool {
+    track.min == TrackBreadth::Auto && matches!(track.max, TrackMaxBreadth::Fr(_))
 }
 
 /// Registers one `[name1 name2]` bracket group's names against the line at the
@@ -771,19 +825,24 @@ fn strip_repeat(token: &str) -> Option<&str> {
     inner.strip_suffix(')')
 }
 
-/// Splits a `repeat` inner into `(positive count, track-list text)`. Rejects
-/// `auto-fill`/`auto-fit` (the T3.5 tier), a non-positive or non-integer
-/// count, and an empty list.
-fn split_repeat_inner(inner: &str) -> Option<(usize, &str)> {
+/// Splits a `repeat` inner into `(count, track-list text)`. Rejects a
+/// non-positive or non-integer count, an empty/missing list, and a
+/// `repeat(...)` with no comma (the bare `repeat(auto-fill)` form). The count
+/// is one of `Count(usize)` / `AutoFill` / `AutoFit`.
+fn split_repeat_inner(inner: &str) -> Option<(RepeatCount, &str)> {
     let (count_text, list) = inner.split_once(',')?;
     let count_text = count_text.trim();
-    if count_text == "auto-fill" || count_text == "auto-fit" {
-        return None;
-    }
-    let count = count_text.parse::<usize>().ok()?;
-    if count == 0 {
-        return None;
-    }
+    let count = match count_text {
+        "auto-fill" => RepeatCount::AutoFill,
+        "auto-fit" => RepeatCount::AutoFit,
+        _ => {
+            let count = count_text.parse::<usize>().ok()?;
+            if count == 0 {
+                return None;
+            }
+            RepeatCount::Count(count)
+        }
+    };
     let list = list.trim();
     if list.is_empty() {
         return None;
@@ -883,13 +942,19 @@ fn parse_minmax_min_bound(text: &str) -> Option<TrackBreadth> {
 }
 
 /// Parses the `minmax` second bound: px, percent, `min-content`, `max-content`,
-/// or `auto` (correction 2 — `auto` is a valid `<track-breadth>` max).
+/// `auto`, or `<flex>` (correction 2 — `auto` is a valid `<track-breadth>` max,
+/// and a `fr` MAX is the T3.5 card-wall idiom `minmax(240px, 1fr)`).
 fn parse_minmax_max_bound(text: &str) -> Option<TrackMaxBreadth> {
     match text {
         "auto" => Some(TrackMaxBreadth::Auto),
         "min-content" => Some(TrackMaxBreadth::MinContent),
         "max-content" => Some(TrackMaxBreadth::MaxContent),
         _ => {
+            if let Some(fr) = text.strip_suffix("fr") {
+                // CSS Grid §7.1: `<flex>` is a non-negative `<number>`; the
+                // negative-fr gate mirrors the leaf `fr` arm.
+                return parse_non_negative_f32(fr).map(TrackMaxBreadth::Fr);
+            }
             if let Some(percent) = text.strip_suffix('%') {
                 // CSS Grid §7.1 rejects negative track sizes; the max bound
                 // drops the negative percentage like the px arm.
@@ -3608,10 +3673,7 @@ mod tests {
         assert_eq!(parse_track_list("repeat(0, 1fr)", &mut store), None);
         assert_eq!(parse_track_list("repeat(-1, 1fr)", &mut store), None);
         assert_eq!(parse_track_list("repeat(1.5, 1fr)", &mut store), None);
-        // auto-fill / auto-fit (the T3.5 tier).
-        assert_eq!(parse_track_list("repeat(auto-fill, 1fr)", &mut store), None);
-        assert_eq!(parse_track_list("repeat(auto-fit, 1fr)", &mut store), None);
-        // Nested repeat.
+        // A nested repeat.
         assert_eq!(
             parse_track_list("repeat(2, repeat(3, 1fr))", &mut store),
             None
@@ -3631,5 +3693,84 @@ mod tests {
         );
         // A valid two-track list still interns (the control).
         assert!(parse_track_list("1fr 1fr", &mut store).is_some());
+    }
+
+    #[test]
+    fn grid_track_list_auto_repeat_stores_one_span_copy() {
+        let mut store = DeclStore::default();
+        let key = parse_track_list("repeat(auto-fit, minmax(240px, 1fr))", &mut store)
+            .expect("auto-fit admits");
+        let list = store.resolve_track_list(key).expect("resolve");
+        // ONE copy of the inner track plus the span marker, not N expanded copies.
+        assert_eq!(list.tracks.len(), 1);
+        assert_eq!(
+            list.tracks[0],
+            track_size(TrackBreadth::Px(240.0), TrackMaxBreadth::Fr(1.0))
+        );
+        assert_eq!(list.auto_repeat_span, Some((0, 1, GridRepeat::AutoFit)));
+
+        let key = parse_track_list("repeat(auto-fill, 100px 200px)", &mut store)
+            .expect("auto-fill admits");
+        let list = store.resolve_track_list(key).expect("resolve");
+        assert_eq!(list.tracks.len(), 2);
+        assert_eq!(list.auto_repeat_span, Some((0, 2, GridRepeat::AutoFill)));
+    }
+
+    #[test]
+    fn grid_track_list_auto_repeat_stores_prefix_and_suffix() {
+        let mut store = DeclStore::default();
+        let key = parse_track_list("100px repeat(auto-fit, 200px) 300px", &mut store)
+            .expect("prefix + span + suffix admits");
+        let list = store.resolve_track_list(key).expect("resolve");
+        assert_eq!(list.tracks.len(), 3);
+        assert_eq!(list.auto_repeat_span, Some((1, 1, GridRepeat::AutoFit)));
+    }
+
+    #[test]
+    fn grid_track_list_auto_repeat_named_lines_store_once() {
+        let mut store = DeclStore::default();
+        let key = parse_track_list("repeat(auto-fit, [main] minmax(240px, 1fr))", &mut store)
+            .expect("auto-fit with names admits");
+        let list = store.resolve_track_list(key).expect("resolve");
+        assert_eq!(list.tracks.len(), 1);
+        assert_eq!(list.auto_repeat_span, Some((0, 1, GridRepeat::AutoFit)));
+        assert_eq!(list.line_names.len(), 1);
+        assert_eq!(store.resolve(list.line_names[0].0), Some("main"));
+        assert_eq!(list.line_names[0].1, 0);
+    }
+
+    #[test]
+    fn grid_track_list_auto_repeat_bare_fr_drops() {
+        let mut store = DeclStore::default();
+        // A bare `fr` span track is the deferred content-based repetition basis
+        // (the zero-basis case): drop + count at parse.
+        assert_eq!(parse_track_list("repeat(auto-fit, 1fr)", &mut store), None);
+        assert_eq!(parse_track_list("repeat(auto-fill, 1fr)", &mut store), None);
+        assert_eq!(parse_track_list("repeat(auto-fit, 2fr)", &mut store), None);
+        // A `fr` MAX inside minmax (the idiom) is admitted.
+        assert!(parse_track_list("repeat(auto-fit, minmax(240px, 1fr))", &mut store).is_some());
+        // A fixed repeat of a bare fr still expands (bare-fr gate is span-only).
+        assert!(parse_track_list("repeat(3, 1fr)", &mut store).is_some());
+    }
+
+    #[test]
+    fn grid_track_list_auto_repeat_nested_empty_and_second_span_drop() {
+        let mut store = DeclStore::default();
+        // Nested repeat inside the span.
+        assert_eq!(
+            parse_track_list("repeat(auto-fit, repeat(2, 1fr))", &mut store),
+            None
+        );
+        // Missing / empty inner list.
+        assert_eq!(parse_track_list("repeat(auto-fill)", &mut store), None);
+        assert_eq!(parse_track_list("repeat(auto-fill, )", &mut store), None);
+        // A second auto-repeat span has no field to carry it (CSS §7.2.3).
+        assert_eq!(
+            parse_track_list(
+                "repeat(auto-fit, 100px) repeat(auto-fill, 200px)",
+                &mut store
+            ),
+            None
+        );
     }
 }
