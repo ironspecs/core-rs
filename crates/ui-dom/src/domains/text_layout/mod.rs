@@ -17,6 +17,9 @@
 //! private fontdb by cosmic-text's design; the shared SOURCE list is
 //! `TextFontCatalog`, not the `FontSystem`s themselves.
 
+mod font_style_kw;
+mod font_weight_kw;
+mod resolved_text_style;
 mod text_font_catalog;
 mod text_language_id;
 mod text_layout_config;
@@ -36,6 +39,9 @@ use crate::types::{
     text_layout_input_and_byte_map_for_white_space, text_layout_input_for_white_space,
 };
 
+pub(crate) use font_style_kw::FontStyleKw;
+pub(crate) use font_weight_kw::FontWeightKw;
+pub(crate) use resolved_text_style::ResolvedTextStyle;
 pub(crate) use text_font_catalog::TextFontCatalog;
 pub(crate) use text_language_id::TextLanguageId;
 pub(crate) use text_layout_config::TextLayoutConfig;
@@ -782,10 +788,10 @@ pub(super) fn effective_line_height_px(
 }
 
 fn text_layout_attrs(request: &TextLayoutRequest<'_>) -> Attrs<'static> {
-    Attrs::new().family(text_render::preferred_repo_font_family(
-        request.font_family_id,
-        request.language_hint_id,
-    ))
+    Attrs::new()
+        .family(text_render::resolve_requested_family(request))
+        .weight(request.weight.cosmic())
+        .style(request.style.cosmic())
 }
 
 pub(super) fn install_text_font_catalog(

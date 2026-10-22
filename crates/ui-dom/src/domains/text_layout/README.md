@@ -29,11 +29,17 @@ not own the resolved font/line-height computation (that is the style system's
   `layout_text_caret_stop_byte_index_at_point`, and the zero-size guards.
 - `text_layout_request.rs` owns `TextLayoutRequest`, the immutable input
   carrier (text, font size, line height, white-space/word-break/wrap policy,
-  alignment, family id, language hint).
+  alignment, the resolved family list, weight, style, direction, and the
+  language hint).
 - `text_render.rs` owns the render-facing helpers: `build_render_text_buffer`
-  (the seam's public render entry), `preferred_repo_font_family`,
-  `ui_sans_repo_font_asset_paths`, `cosmic_wrap`, `cosmic_align`, and the
-  embedded font asset paths.
+  (the seam's public render entry), `resolve_requested_family` +
+  `installed_family_by_name` (S2's first-family-if-installed resolution),
+  `preferred_repo_font_family` (language-routing), `ui_sans_repo_font_asset_paths`,
+  `cosmic_wrap`, `cosmic_align`, and the embedded font asset paths.
+- `font_weight_kw.rs` / `font_style_kw.rs` own the request-carrier weight/style
+  keywords and their `cosmic_text` mappings; `resolved_text_style.rs` owns the
+  `ResolvedTextStyle` handoff bundle the main-world sites carry into the
+  request.
 - `text_font_catalog.rs` owns `TextFontCatalog` (the embedded font binary
   sources); `text_layout_config.rs` owns `TextLayoutConfig` (which catalog a
   context is built from); `text_language_id.rs` owns `TextLanguageId` (the
@@ -73,9 +79,31 @@ cosmic-text's design. What the seam shares — and what any future consumer-door
 or catalog change unifies — is the SOURCE list (`TextFontCatalog`), never the
 FontSystems themselves.
 
-## The zero-size doctrine
+## The TextStyle handoff (text seam S2)
 
-`font-size: 0` is CSS-legal (CSS Fonts 4 §3.5), but cosmic-text asserts a
+The style system hands the seam a resolved text style — the parsed
+`font-family` list plus the resolved weight/style/direction — which
+`TextLayoutRequest` carries into the shaper instead of a hardcoded family id:
+
+- `TextLayoutRequest.family` is the RESOLVED `TextFamilyList` (self-owned
+  names, `domains/style/computed`), not an arena key: the render world reads it
+  from the extracted record (`TextRunSignature` → `ExtractedTextRunRecord` →
+  `RenderTextRunRecord`) and has no document interner. The arena key
+  (`TextFamilyListKey`) lives at the computed-group/declaration level only.
+- `weight: FontWeightKw` (100–900) and `style: FontStyleKw` (`Normal|Italic`)
+  map to `cosmic_text::Weight`/`Style` in `text_layout_attrs`.
+- `direction` reuses the text group's `effective_text_direction()`; cosmic-text
+  0.18.2 has no paragraph-direction setter, so the attrs auto-detect bidi.
+- `text_layout_attrs(request)` resolves family as the requested first
+  family-if-installed (ASCII case-insensitive against the four embedded faces),
+  else today's language-routing (`preferred_repo_font_family`). This is the
+  S4 policy table's rule-1 seed; S4 generalizes to generics, named paths, and
+  per-script tests.
+- The `TextRunSignature` GAINS `family`/`weight`/`style` (so styled runs
+  distinguish) and KEEPS `font_family_id` (Role B: the render-world
+  font-registration grouping key) until S3 removes it.
+
+## The zero-size doctrine`font-size: 0` is CSS-legal (CSS Fonts 4 §3.5), but cosmic-text asserts a
 non-zero font size when it builds a `Buffer`. Every entry point therefore
 guards `font_size_px == 0.0` and returns an honest zero-size answer without
 building a buffer: `measure_intrinsic` returns zero widths (keeping the

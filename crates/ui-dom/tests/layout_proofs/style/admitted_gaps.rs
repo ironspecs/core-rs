@@ -10,26 +10,28 @@
 //!
 //! Purpose: the "within-vocabulary honesty" file. These pins cover declarations
 //! that ARE admitted by the style grammar but whose downstream consumption
-//! diverges from the cited spec — either the computed value is ignored
-//! (`font-family`/`font-weight`/`font-style` resolve but text layout renders
-//! `UiSans` regardless), the computed value IS consumed on-spec (`text-align:
-//! justify`), the closed keyword set drops wider CSS values (`font-style:
-//! oblique`), a white-space mode is folded into another mode's transform
-//! (`white-space: break-spaces` shares `pre-wrap`'s preserve transform),
-//! the `none` ↔ translate transform transition steps rather than interpolating
-//! the identity (a documented follow-up), an authored zero radius
-//! falls back to a control's pill default (range), a content attribute merges
-//! with a property (`dir` vs `direction`), or a content-side channel is the
-//! only live path while the stylesheet channel is dropped (`pointer-events`).
+//! diverges from the cited spec — either the computed value is ignored, the
+//! computed value IS consumed on-spec (`font-family`/`font-weight`/`font-style`
+//! since text seam S2; `text-align: justify`), the closed keyword set drops
+//! wider CSS values (`font-style: oblique`), a white-space mode is folded into
+//! another mode's transform (`white-space: break-spaces` shares `pre-wrap`'s
+//! preserve transform), the `none` ↔ translate transform transition steps
+//! rather than interpolating the identity (a documented follow-up), an authored
+//! zero radius falls back to a control's pill default (range), a content
+//! attribute merges with a property (`dir` vs `direction`), or a content-side
+//! channel is the only live path while the stylesheet channel is dropped
+//! (`pointer-events`).
 //!
 //! Class notes: `off_spec_*` rows are divergent (pinned at current values,
 //! expected to move on-spec); `unsupported_*` rows are unimplemented (D6
-//! admission-gated drop-and-continue); the `text_align_justify_is_consumed` and
-//! `dir_attribute_and_direction_property_merge` and `pointer_events_content_channel`
-//! rows are on-spec keeps; `white_space_pre_line_is_consumed` is an on-spec
-//! keep while `off_spec_break_spaces_approximated_as_pre_wrap` is classed
-//! divergent (folded into `pre-wrap`). B5's preserved candidates split
-//! across the classes: `initial_color_is_near_white_by_design` and
+//! admission-gated drop-and-continue); the `font_family_computed_and_consumed`,
+//! `font_weight_and_style_computed_and_consumed`,
+//! `text_align_justify_is_consumed`, `dir_attribute_and_direction_property_merge`
+//! and `pointer_events_content_channel` rows are on-spec keeps;
+//! `white_space_pre_line_is_consumed` is an on-spec keep while
+//! `off_spec_break_spaces_approximated_as_pre_wrap` is classed divergent
+//! (folded into `pre-wrap`). B5's preserved candidates split across the
+//! classes: `initial_color_is_near_white_by_design` and
 //! `initial_border_widths_are_zero_by_design` are deliberate (crate-owned
 //! defaults pinned permanently), while
 //! `off_spec_line_height_normal_resolves_to_one_times_font_size` is divergent
@@ -88,8 +90,9 @@ fn text_pair_with_css(css: &str) -> (RootDom, DomNodeSlotKey, DomNodeSlotKey, Do
     (root, plain_text, styled_text, styled)
 }
 
-/// Asserts two text nodes' intrinsic min/max content widths are bit-identical.
-fn assert_intrinsics_equal(
+/// Asserts two text nodes' intrinsic min/max content widths differ (consumption
+/// evidence: a different resolved family/weight reaches the shaper).
+fn assert_intrinsics_differ(
     root: &RootDom,
     plain_text: DomNodeSlotKey,
     styled_text: DomNodeSlotKey,
@@ -97,13 +100,10 @@ fn assert_intrinsics_equal(
 ) {
     let plain = text_intrinsic(root, plain_text);
     let styled = text_intrinsic(root, styled_text);
-    assert_eq!(
-        plain.min_content_width_px, styled.min_content_width_px,
-        "{label} should leave min-content width unchanged",
-    );
-    assert_eq!(
-        plain.max_content_width_px, styled.max_content_width_px,
-        "{label} should leave max-content width unchanged",
+    assert!(
+        plain.min_content_width_px != styled.min_content_width_px
+            || plain.max_content_width_px != styled.max_content_width_px,
+        "{label} should change the measured intrinsic width (consumption)",
     );
 }
 
@@ -158,38 +158,20 @@ fn layout_for_white_space(text: &str, white_space: &str, width_px: f32) -> White
     }
 }
 
-// — B4: computed-but-unconsumed font family — //
+// — B4: font family/weight/style consumption (on-spec since text seam S2) — //
 
 #[test]
-// OFF-SPEC (divergent, step-5 follower): CSS Fonts 4 §3.1 `font-family` selects
-// the family used for glyph rendering.
+// ON-SPEC (text seam S2): CSS Fonts 4 §3.1 `font-family` selects the family
+// used for glyph rendering.
 // <https://drafts.csswg.org/css-fonts-4/#font-family-prop>
 //
-// CURRENT (asserted below): `font-family: Source Han Sans` resolves in the
-// computed group (`font_family() == Some("Source Han Sans")`) but the text
-// intrinsic widths are IDENTICAL to a sibling with no family — the family is
-// never consumed by text layout, which renders UiSans regardless.
-// SPEC-CORRECT: text layout resolves the computed family and measures with it,
-// so a Source Han Sans container and a default container measure differently.
-// DISCRIMINATOR: `Source Han Sans` IS in the installed catalog (the Japanese
-// face, `UI_DOM_FONT_SOURCE_HAN_SANS_J_PATH`, `text_render.rs:16-17`), so a
-// consuming engine would resolve it to that face and measure `Hello world` with
-// its Latin advance widths, which differ from the IBM Plex Sans default. A
-// generic `serif` would NOT discriminate: no serif face is installed (the
-// catalog is IBM Plex Sans + three Source Han Sans faces, per
-// `install_text_font_catalog`), so consumption would fall back to the same
-// default and the pin would pass even after moving on-spec.
-// RESIDUAL ASSUMPTION: Source Han Sans's Latin advance widths differ from IBM
-// Plex Sans for this text. If the two faces' metrics coincided for `Hello
-// world`, the width-equality half would be weak (the computed-style assertion
-// that the family resolves would still hold).
-// ROOT CAUSE: `TextFontFamilyId::UiSans` one-variant enum
-// (`text_layout/mod.rs:36-39`), hardcoded in `TextLayoutRequest::for_text`
-// (`text_layout_request.rs:33-48`) and resolved by `preferred_repo_font_family`
-// (`text_render.rs:45-63`).
-// RECLASSIFY: consumption is the named step-5 follower; this pin flips on-spec
-// when the resolved family reaches text layout.
-fn off_spec_font_family_computed_but_unconsumed() {
+// The parsed family list resolves in the computed group, and the request's
+// first-family-if-installed resolution consumes it: `Source Han Sans` IS
+// installed (the Japanese face, `text_render.rs`), so the styled container
+// measures with its Latin advance widths, which differ from the IBM Plex Sans
+// default. (A generic `serif` would NOT discriminate — no serif face is
+// installed — which is why this pin uses a named installed family.)
+fn font_family_computed_and_consumed() {
     let (root, plain_text, styled_text, styled) =
         text_pair_with_css("font-family: Source Han Sans");
 
@@ -197,73 +179,52 @@ fn off_spec_font_family_computed_but_unconsumed() {
         root.computed_style(styled)
             .expect("styled container")
             .font_family(),
-        Some("Source Han Sans"),
+        // The unquoted `Source Han Sans` idents join into one name, which the
+        // parsed serialization re-quotes (whitespace).
+        Some("\"Source Han Sans\"".to_string()),
         "font-family should resolve in the computed group",
     );
 
-    assert_intrinsics_equal(&root, plain_text, styled_text, "font-family");
+    assert_intrinsics_differ(&root, plain_text, styled_text, "font-family");
 }
 
 #[test]
-// OFF-SPEC (divergent, same family as `off_spec_font_family_computed_but_unconsumed`):
-// CSS Fonts 4 §3.2 `font-weight` and §3.3 `font-style` select the weight and
-// style used for glyph rendering.
+// ON-SPEC (text seam S2): CSS Fonts 4 §3.2 `font-weight` and §3.3 `font-style`
+// select the weight and style used for glyph rendering.
 // <https://drafts.csswg.org/css-fonts-4/#font-weight-prop>
 // <https://drafts.csswg.org/css-fonts-4/#font-style-prop>
 //
-// CURRENT (asserted below): `font-weight: bold` computes `weight == 700` and
-// `font-style: italic` computes `style == Keyword::Italic`, but the text
-// intrinsic widths stay identical to the default sibling — neither is consumed
-// (rendered regular/upright via the hardcoded UiSans family).
-// SPEC-CORRECT: text layout consumes the computed weight/style, so the rendered
-// run changes.
 // PIN STRENGTH BY HALF: the weight half discriminates — the installed IBM Plex
 // Sans is a variable font, so a consumed `weight: 700` selects a different
-// advance-width axis instance than the default 400. The style/italic half is
-// inherently weak on this catalog: synthesized obliqing does not change advance
-// widths, so its strength is the computed-style assertion plus render-path
-// reachability, NOT a width difference.
-// ROOT CAUSE: the hardcoded `TextFontFamilyId::UiSans` request
-// (`text_layout_request.rs:33-48`) carries no weight/style into the shaper.
-// RECLASSIFY: consumption rides the same step-5 follower as font-family.
-fn off_spec_font_weight_and_style_computed_but_unconsumed() {
-    enum FontAssertion {
-        Weight,
-        Style,
-    }
+// advance-width axis instance than the default 400 (the width differs). The
+// style/italic half is inherently weak on this catalog: synthesized obliquing
+// does not change advance widths, so its consumption is asserted through the
+// computed-style resolution plus the request/signature surface, NOT a width
+// difference (the measurement is legitimately unchanged — D3's dirty-propagation
+// consequence).
+fn font_weight_and_style_computed_and_consumed() {
+    // Weight half: 700 vs 400 changes the measured intrinsic width.
+    let (root, plain_text, styled_text, styled) = text_pair_with_css("font-weight: bold");
+    assert_eq!(
+        root.computed_style(styled)
+            .expect("styled container")
+            .as_font()
+            .weight,
+        700,
+        "font-weight should compute 700",
+    );
+    assert_intrinsics_differ(&root, plain_text, styled_text, "font-weight");
 
-    let cases = [
-        (
-            "font_weight_bold",
-            "font-weight: bold",
-            FontAssertion::Weight,
-        ),
-        (
-            "font_style_italic",
-            "font-style: italic",
-            FontAssertion::Style,
-        ),
-    ];
-
-    for (name, css, assertion) in cases {
-        let (root, plain_text, styled_text, styled) = text_pair_with_css(css);
-
-        let view = root.computed_style(styled).expect("styled container");
-        match assertion {
-            FontAssertion::Weight => assert_eq!(
-                view.as_font().weight,
-                700,
-                "{name} should compute font-weight 700",
-            ),
-            FontAssertion::Style => assert_eq!(
-                view.as_font().style,
-                Keyword::Italic,
-                "{name} should compute font-style italic",
-            ),
-        }
-
-        assert_intrinsics_equal(&root, plain_text, styled_text, name);
-    }
+    // Style half: italic resolves; the width legitimately stays equal.
+    let (root, _plain_text, _styled_text, styled) = text_pair_with_css("font-style: italic");
+    assert_eq!(
+        root.computed_style(styled)
+            .expect("styled container")
+            .as_font()
+            .style,
+        Keyword::Italic,
+        "font-style should compute italic",
+    );
 }
 
 // — B4: on-spec keep (verified consumed) — //

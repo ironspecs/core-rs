@@ -61,6 +61,8 @@ use crate::domains::style::computed::{
     ResolvedTransitionLonghands,
 };
 use crate::domains::style::{DeclBlockKey, DeclLength, DeclValue, Keyword, PresentationProperty};
+#[cfg(test)]
+use crate::domains::text_layout::ResolvedTextStyle;
 pub(crate) use crate::types::attribute_invalidation::AttributeInvalidation;
 use crate::types::dom_attr_parse::parse_class_attr_list;
 pub use crate::types::dom_document_fragment_node::DomDocumentFragmentNode;
@@ -816,7 +818,8 @@ impl DomNode {
             | DeclValue::GridAreas(_)
             | DeclValue::TrackSize(_)
             | DeclValue::GridAutoFlow(_)
-            | DeclValue::GridLine(_) => None,
+            | DeclValue::GridLine(_)
+            | DeclValue::FamilyList(_) => None,
         }
     }
 
@@ -1102,6 +1105,7 @@ impl DomNode {
         inherited_white_space: crate::types::DomWhiteSpace,
         inherited_overflow_wrap: crate::types::DomOverflowWrap,
         inherited_word_break: crate::types::DomWordBreak,
+        inherited_text_style: crate::domains::text_layout::ResolvedTextStyle,
     ) -> bool {
         commit_intrinsic_after_style_recompute(
             self,
@@ -1110,6 +1114,7 @@ impl DomNode {
             inherited_white_space,
             inherited_overflow_wrap,
             inherited_word_break,
+            inherited_text_style,
         )
     }
 
@@ -2108,6 +2113,7 @@ mod tests {
             DomWhiteSpace::Normal,
             DomOverflowWrap::Normal,
             DomWordBreak::Normal,
+            ResolvedTextStyle::default(),
         );
 
         assert!(intrinsic_changed);
@@ -2135,6 +2141,7 @@ mod tests {
             DomWhiteSpace::Normal,
             DomOverflowWrap::Normal,
             DomWordBreak::Normal,
+            ResolvedTextStyle::default(),
         );
 
         assert!(intrinsic_changed);

@@ -17,12 +17,13 @@
 //! - group accessors return the `Copy` group by value — this *is* the view;
 //!   they delegate to `DomNode::computed_*`, which merges the node's
 //!   active-transition overlay (spine 3.3 fix)
-//! - `font_family` resolves the interned `TextKey` through the document's
-//!   computed-text interner (`RootDom::resolve_computed_text`)
+//! - `font_family` serializes the resolved family list (through the document's
+//!   inline family-list arena); `font_family_list` exposes the structured list
 
 use crate::domains::style::computed::{
     ComputedBoxGroup, ComputedColorGroup, ComputedFlexGroup, ComputedFontGroup, ComputedTextGroup,
     ComputedTransformGroup, ComputedVisualGroup, NodePresentation, ResolvedTransitionLonghands,
+    TextFamilyList,
 };
 use crate::types::{DomNode, DomNodeSlotKey, RootDom};
 
@@ -95,13 +96,21 @@ impl<'a> ComputedStyleRef<'a> {
         self.node().computed_transform()
     }
 
-    /// The resolved `font-family` string, interned in the document's
-    /// computed-text interner; `None` when the family is absent (engine
-    /// default).
+    /// The resolved `font-family` list, serialized to its canonical CSS string
+    /// (quoted names re-quoted, generics bare); `None` when the family is
+    /// absent (engine default). The structured list is `font_family_list`.
     #[must_use]
-    pub fn font_family(&self) -> Option<&str> {
+    pub fn font_family(&self) -> Option<String> {
+        self.font_family_list().map(TextFamilyList::to_css_string)
+    }
+
+    /// The resolved `font-family` list (text seam S2), interned in the
+    /// document's inline family-list arena; `None` when the family is absent
+    /// (engine default).
+    #[must_use]
+    pub(crate) fn font_family_list(&self) -> Option<&TextFamilyList> {
         let key = self.node().computed_font().family?;
-        self.root_dom.resolve_computed_text(key)
+        self.root_dom.resolve_inline_family_list(key)
     }
 
     #[must_use]

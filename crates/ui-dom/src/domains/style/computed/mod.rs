@@ -50,6 +50,7 @@ mod field_mapping;
 mod flex_basis_kw;
 mod flex_direction_kw;
 mod flex_wrap_kw;
+mod font_family_generic;
 mod grid_auto_flow_kw;
 mod grid_line;
 mod grid_template_areas;
@@ -64,6 +65,7 @@ mod overflow_kw;
 mod position_kw;
 pub(crate) mod project;
 mod resolved_transition_longhands;
+mod text_family_list;
 
 pub use align_content_kw::AlignContentKw;
 pub use align_items_kw::AlignItemsKw;
@@ -83,6 +85,7 @@ pub use display_kw::DisplayKw;
 pub use flex_basis_kw::FlexBasisKw;
 pub use flex_direction_kw::FlexDirectionKw;
 pub use flex_wrap_kw::FlexWrapKw;
+pub(crate) use font_family_generic::FontFamilyGeneric;
 pub use grid_auto_flow_kw::GridAutoFlowKw;
 pub use grid_line::GridLine;
 pub(crate) use grid_template_areas::{
@@ -103,5 +106,6 @@ pub use position_kw::PositionKw;
 pub use resolved_transition_longhands::{
     ResolvedTransitionLonghands, TRANSITION_LONGHAND_CAPACITY, TransitionLonghandProperty,
 };
+pub(crate) use text_family_list::{TextFamilyItem, TextFamilyList};
 
 pub(crate) use field_mapping::for_each_moved_field;

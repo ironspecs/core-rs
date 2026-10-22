@@ -40,10 +40,11 @@ use super::{
     CompiledRule, DeclBlockKey, DeclStore, Declaration, GridAreasKey, GridTemplateAreas,
     GridTrackList, GridTrackListKey, NodeLookup, NodeStyleIndex, PrecedenceTuple,
     PseudoStateCounts, RightMostSelector, SelectorSpecificity, SimpleSelector, StyleRuleKey,
-    StyleRuleOrigin, TextKey, append_rule_keys, compute_rule_identity_hash,
+    StyleRuleOrigin, TextFamilyListKey, TextKey, append_rule_keys, compute_rule_identity_hash,
     extract_right_most_selector, parse_css_blocks, parse_selector, pseudo_state_counts,
     selector_matches_node, specificity_for_selector_parts,
 };
+use crate::domains::style::computed::TextFamilyList;
 use crate::types::{DomError, DomNodeSlotKey, DomPseudoState};
 
 #[cfg(test)]
@@ -336,6 +337,14 @@ impl StyleRuntime {
     #[must_use]
     pub(crate) fn resolve_grid_areas(&self, key: GridAreasKey) -> Option<&GridTemplateAreas> {
         self.decl_store.resolve_grid_areas(key)
+    }
+
+    /// Resolves a stylesheet-arena family-list key to its retained
+    /// `TextFamilyList`, so the winners fold can re-intern it into the inline
+    /// arena.
+    #[must_use]
+    pub(crate) fn resolve_family_list(&self, key: TextFamilyListKey) -> Option<&TextFamilyList> {
+        self.decl_store.resolve_family_list(key)
     }
 
     #[must_use]

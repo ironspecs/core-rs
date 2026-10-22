@@ -7,8 +7,8 @@
 use cosmic_text::{Buffer, Family as CosmicFamily, FontSystem};
 
 use super::{
-    TextAlign, TextFontFamilyId, TextLanguageId, TextLayoutRequest, TextWrapMode,
-    build_text_buffer, effective_line_height_px,
+    TextAlign, TextLanguageId, TextLayoutRequest, TextWrapMode, build_text_buffer,
+    effective_line_height_px,
 };
 
 pub(crate) const UI_DOM_FONT_IBM_PLEX_SANS_PATH: &str =
@@ -24,6 +24,15 @@ const UI_TEXT_PREFERRED_SANS_FAMILY: &str = "IBM Plex Sans";
 const UI_TEXT_JAPANESE_PREFERRED_FAMILY: &str = "Source Han Sans";
 const UI_TEXT_SIMPLIFIED_CHINESE_PREFERRED_FAMILY: &str = "Source Han Sans SC";
 const UI_TEXT_KOREAN_PREFERRED_FAMILY: &str = "Source Han Sans K";
+
+/// The four embedded families, by name (the installed set S2's "first family if
+/// installed" checks against; the S4 table generalizes this to the catalog).
+const INSTALLED_FAMILY_NAMES: &[&str] = &[
+    UI_TEXT_PREFERRED_SANS_FAMILY,
+    UI_TEXT_JAPANESE_PREFERRED_FAMILY,
+    UI_TEXT_SIMPLIFIED_CHINESE_PREFERRED_FAMILY,
+    UI_TEXT_KOREAN_PREFERRED_FAMILY,
+];
 
 #[must_use]
 pub(crate) fn build_render_text_buffer(
@@ -41,22 +50,41 @@ pub(crate) fn build_render_text_buffer(
     )
 }
 
+/// S2's attrs family resolution (the S4 table's rule-1 seed): the request's
+/// first family name if installed, else today's language-routing. S4
+/// generalizes this into the full policy table (generics, named paths,
+/// per-script tests).
+#[must_use]
+pub(crate) fn resolve_requested_family(request: &TextLayoutRequest<'_>) -> CosmicFamily<'static> {
+    if let Some(name) = request.family.first_family_name()
+        && let Some(family) = installed_family_by_name(name)
+    {
+        return family;
+    }
+    preferred_repo_font_family(request.language_hint_id)
+}
+
+/// Returns the `CosmicFamily` for one requested family name when that name is
+/// installed (ASCII case-insensitive, CSS Fonts 4 §3.1); `None` otherwise.
+#[must_use]
+pub(crate) fn installed_family_by_name(name: &str) -> Option<CosmicFamily<'static>> {
+    INSTALLED_FAMILY_NAMES
+        .iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(name))
+        .map(|candidate| CosmicFamily::Name(candidate))
+}
+
 #[must_use]
 pub(crate) fn preferred_repo_font_family(
-    font_family_id: TextFontFamilyId,
     language_hint_id: TextLanguageId,
 ) -> CosmicFamily<'static> {
-    match (font_family_id, language_hint_id) {
-        (TextFontFamilyId::UiSans, TextLanguageId::Japanese) => {
-            CosmicFamily::Name(UI_TEXT_JAPANESE_PREFERRED_FAMILY)
-        }
-        (TextFontFamilyId::UiSans, TextLanguageId::SimplifiedChinese) => {
+    match language_hint_id {
+        TextLanguageId::Japanese => CosmicFamily::Name(UI_TEXT_JAPANESE_PREFERRED_FAMILY),
+        TextLanguageId::SimplifiedChinese => {
             CosmicFamily::Name(UI_TEXT_SIMPLIFIED_CHINESE_PREFERRED_FAMILY)
         }
-        (TextFontFamilyId::UiSans, TextLanguageId::Korean) => {
-            CosmicFamily::Name(UI_TEXT_KOREAN_PREFERRED_FAMILY)
-        }
-        (TextFontFamilyId::UiSans, TextLanguageId::English | TextLanguageId::Thai) => {
+        TextLanguageId::Korean => CosmicFamily::Name(UI_TEXT_KOREAN_PREFERRED_FAMILY),
+        TextLanguageId::English | TextLanguageId::Thai => {
             CosmicFamily::Name(UI_TEXT_PREFERRED_SANS_FAMILY)
         }
     }

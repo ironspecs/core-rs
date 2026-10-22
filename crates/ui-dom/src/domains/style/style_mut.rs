@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn set_interns_text_values_resolvable_through_the_inline_store() {
+    fn set_interns_family_list_resolvable_through_the_inline_store() {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let node = root.create_element(DomTag::Div).expect("div");
 
@@ -298,10 +298,14 @@ mod tests {
         let value = *block
             .get(PresentationProperty::FontFamily)
             .expect("font-family");
-        let DeclValue::Text(key) = value else {
-            panic!("font-family should intern to text");
+        let DeclValue::FamilyList(key) = value else {
+            panic!("font-family should intern to a family list");
         };
-        assert_eq!(root.resolve_inline_text(key), Some("ui-sans, sans-serif"));
+        assert_eq!(
+            root.resolve_inline_family_list(key)
+                .map(crate::domains::style::computed::TextFamilyList::to_css_string),
+            Some("ui-sans, sans-serif".to_string())
+        );
     }
 
     #[test]

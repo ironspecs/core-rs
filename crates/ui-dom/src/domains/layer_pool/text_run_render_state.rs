@@ -24,7 +24,8 @@ use wgpu;
 use crate::domains::layer_ops::{
     TextAlign, TextFontFamilyId, TextRunId, TextRunPaintOp, TextWrapMode,
 };
-use crate::domains::text_layout;
+use crate::domains::style::computed::TextFamilyList;
+use crate::domains::text_layout::{self, FontStyleKw, FontWeightKw};
 use crate::render_plugin::UiDomFontAsset;
 use crate::types::{DomWhiteSpace, PixelDensity};
 
@@ -94,6 +95,9 @@ impl TextRunRenderState {
                 text: text_run_change.text,
                 language_hint_id: text_run_change.language_hint_id,
                 font_family_id: text_run_change.font_family_id,
+                family: text_run_change.family,
+                weight: text_run_change.weight,
+                style: text_run_change.style,
             },
         );
     }
@@ -128,8 +132,11 @@ impl TextRunRenderState {
                 text: request.sample_text,
                 white_space: DomWhiteSpace::Normal,
                 word_break: crate::types::DomWordBreak::Normal,
-                font_family_id: request.key.font_family_id,
+                family: TextFamilyList::default(),
                 language_hint_id: request.key.language_hint_id,
+                weight: FontWeightKw::NORMAL,
+                style: FontStyleKw::NORMAL,
+                direction: crate::types::DomTextDirection::Ltr,
                 font_size_px: f32::from_bits(request.key.font_size_bits),
                 line_height_px: None,
                 width_px: None,
@@ -250,6 +257,9 @@ mod tests {
             text: Arc::<str>::from("Settings"),
             language_hint_id: TextLanguageId::English,
             font_family_id: TextFontFamilyId::UiSans,
+            family: TextFamilyList::default(),
+            weight: FontWeightKw::NORMAL,
+            style: FontStyleKw::Normal,
         });
 
         assert_eq!(

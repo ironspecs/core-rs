@@ -1152,7 +1152,7 @@ fn font_family_weight_and_style_inherit() {
             FontAssertion::Family => {
                 assert_eq!(
                     view.font_family(),
-                    Some("ui-sans, sans-serif"),
+                    Some("ui-sans, sans-serif".to_string()),
                     "{name} span should inherit font-family"
                 );
             }

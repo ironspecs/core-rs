@@ -17,15 +17,16 @@
 //!   deliberate: cosmic-text asserts `line_height != 0.0` (`buffer.rs:254`),
 //!   so a zero line height cannot reach the shaper — an engine-dependency
 //!   constraint, not a grammar choice (see the off-spec registry)
-//! - `family == None` means the engine default (`UiSans` today); `Some(TextKey)`
-//!   keys resolve against the document's computed-text interner (arrives with
-//!   the node record in step 3.3a)
+//! - `family == None` means the engine default (no authored family); `Some`
+//!   carries a `TextFamilyListKey` into the owning `DeclStore`'s family-list
+//!   arena (text seam S2 — the structured list replaces the former verbatim
+//!   `TextKey`)
 //! - `weight` is the numeric weight (400 normal, 700 bold); `bolder`/`lighter`
 //!   are resolved against the parent weight at compute time and never stored
 //! - `style` holds exactly `Keyword::Normal | Keyword::Italic`
 
 use crate::domains::style::Keyword;
-use crate::domains::style::TextKey;
+use crate::domains::style::TextFamilyListKey;
 use crate::domains::text_layout::DEFAULT_TEXT_FONT_SIZE_PX;
 
 /// Computed values of the inherited font longhands.
@@ -35,8 +36,8 @@ pub struct ComputedFontGroup {
     pub size_px: f32,
     /// `None` = `normal`; otherwise the resolved line box height in px.
     pub line_height_px: Option<f32>,
-    /// `None` = engine default family (`UiSans`); otherwise an interned key.
-    pub family: Option<TextKey>,
+    /// `None` = engine default family; otherwise an interned family-list key.
+    pub family: Option<TextFamilyListKey>,
     /// Numeric font weight (400 normal, 700 bold).
     pub weight: u16,
     /// `Keyword::Normal | Keyword::Italic` (the admitted font-style set).

@@ -67,7 +67,9 @@ pub use cascade_tier::CascadeTier;
 pub use decl_block::DeclBlock;
 pub use decl_drop_report::{DeclDropReport, StylesheetLoadReport};
 pub use decl_store::{DeclBlockKey, DeclStore};
-pub use decl_value::{DeclLength, DeclValue, GridAreasKey, GridTrackListKey, Precedence, TextKey};
+pub use decl_value::{
+    DeclLength, DeclValue, GridAreasKey, GridTrackListKey, Precedence, TextFamilyListKey, TextKey,
+};
 pub use declaration::Declaration;
 pub use keyword::Keyword;
 pub(crate) use parsed_declaration::ParsedDeclaration;
@@ -653,6 +655,10 @@ fn hash_decl_value(hasher: &mut std::collections::hash_map::DefaultHasher, value
         DeclValue::GridLine(line) => {
             10u8.hash(hasher);
             hash_grid_line(hasher, *line);
+        }
+        DeclValue::FamilyList(key) => {
+            12u8.hash(hasher);
+            key.hash(hasher);
         }
     }
 }

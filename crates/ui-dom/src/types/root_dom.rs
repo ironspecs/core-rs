@@ -42,12 +42,12 @@ use crate::domains::paint::{
 use crate::domains::style::computed::project;
 use crate::domains::style::computed::{
     BoxLength, ComputedGroups, FlexBasisKw, GroupDirtyClassification, ResolvedTransitionLonghands,
-    for_each_moved_field,
+    TextFamilyList, for_each_moved_field,
 };
 use crate::domains::style::{
     ComputedStyleRef, DeclBlock, DeclDropReport, DeclGrammar, DeclLength, DeclStore, DeclValue,
     Declaration, GridAreasKey, GridTemplateAreas, GridTrackList, GridTrackListKey, Keyword,
-    ParsedDeclaration, PresentationProperty, StyleMut, TextInterner, TextKey,
+    ParsedDeclaration, PresentationProperty, StyleMut, TextFamilyListKey, TextInterner, TextKey,
     decl_value_to_css_string, decl_value_to_dom_value, name_is_presentation,
     parse_declaration_block,
 };
@@ -228,11 +228,12 @@ pub struct RootDom {
     pseudo_state: RootDomPseudoState,
     selection: DomSelection,
     transitions: DomTransitionStore,
-    /// The document's computed-text interner (spine 3.3a): computed
-    /// `font-family` keys resolve here. Written by the style pass's
-    /// projection during recompute; read by `ComputedStyleRef::font_family`
-    /// (and, later, paint's font selection). `TextKey` values are
-    /// document-local, exactly like `DomNodeSlotKey`.
+    /// The document's computed-text interner (spine 3.3a): computed grid
+    /// line-name keys resolve here. (Computed `font-family` values moved to the
+    /// inline store's family-list arena in text seam S2.) Written by the style
+    /// pass's projection during recompute; read by grid placement and the
+    /// computed read surface. `TextKey` values are document-local, exactly like
+    /// `DomNodeSlotKey`.
     pub(crate) computed_texts: TextInterner,
     // Root-owned queue of finished DOM event instances awaiting ownership
     // transfer out of `update(...)`.
@@ -1977,6 +1978,17 @@ impl RootDom {
             crate::domains::visitor::inherited_style::inherited_style_context_from_ancestors(
                 self, key,
             )?;
+        let family = inherited_context
+            .effective_font_family()
+            .and_then(|family_key| self.resolve_inline_family_list(family_key))
+            .cloned()
+            .unwrap_or_default();
+        let text_style = crate::domains::text_layout::ResolvedTextStyle::new(
+            family,
+            inherited_context.effective_font_weight(),
+            inherited_context.effective_font_style(),
+            inherited_context.effective_text_direction(),
+        );
         let next_intrinsic =
             crate::domains::paint::measure_text_intrinsic_with_font_size_line_height_white_space_and_wrap_policy(
                 text,
@@ -1985,6 +1997,7 @@ impl RootDom {
                 inherited_context.effective_white_space(),
                 inherited_context.effective_overflow_wrap(),
                 inherited_context.effective_word_break(),
+                text_style,
             );
         let next_text = Arc::<str>::from(text);
         {
@@ -2050,6 +2063,7 @@ impl RootDom {
                     |key| scratch.resolve(key),
                     |key| self.resolve_inline_track_list(key),
                     |key| self.resolve_inline_grid_areas(key),
+                    |key| self.resolve_inline_family_list(key),
                     |key| self.resolve_inline_text(key),
                 ),
             );
@@ -2082,6 +2096,7 @@ impl RootDom {
                         |key| self.resolve_inline_text(key),
                         |key| self.resolve_inline_track_list(key),
                         |key| self.resolve_inline_grid_areas(key),
+                        |key| self.resolve_inline_family_list(key),
                         |key| self.resolve_inline_text(key),
                     );
                     text.push_str(" !important");
@@ -2092,6 +2107,7 @@ impl RootDom {
                         |key| self.resolve_inline_text(key),
                         |key| self.resolve_inline_track_list(key),
                         |key| self.resolve_inline_grid_areas(key),
+                        |key| self.resolve_inline_family_list(key),
                         |key| self.resolve_inline_text(key),
                     )
                 };
@@ -2815,6 +2831,17 @@ impl RootDom {
         key: GridAreasKey,
     ) -> Option<&GridTemplateAreas> {
         self.inline_decl_store.resolve_grid_areas(key)
+    }
+
+    /// Resolves an inline-arena family-list key to its retained
+    /// `TextFamilyList` (the winners fold's reintern target and the computed
+    /// read surface read through this).
+    #[must_use]
+    pub(crate) fn resolve_inline_family_list(
+        &self,
+        key: TextFamilyListKey,
+    ) -> Option<&TextFamilyList> {
+        self.inline_decl_store.resolve_family_list(key)
     }
 
     /// Level accessor over retained state (observability doctrine: levels are
@@ -4950,6 +4977,7 @@ fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue)
             _ => false,
         },
         DeclGrammar::TrackList => matches!(value, DeclValue::TrackList(_)),
+        DeclGrammar::FamilyList => matches!(value, DeclValue::FamilyList(_)),
         DeclGrammar::GridAreas => matches!(value, DeclValue::GridAreas(_)),
         DeclGrammar::GridAutoFlow => matches!(value, DeclValue::GridAutoFlow(_)),
         DeclGrammar::TrackSize => matches!(value, DeclValue::TrackSize(_)),
@@ -6236,10 +6264,12 @@ mod tests {
         let mut root = RootDom::new(RootDomContext::new_cpu());
         let node = root.create_element(DomTag::Div).expect("div");
 
-        // `font-family` uses the `Text` grammar (presentation_property.rs),
-        // which interns the trimmed value VERBATIM: a quoted family name keeps
-        // its literal quotes (no re-encoding), so the ` !important` suffix
-        // round-trips through the style-attribute route unchanged.
+        // `font-family` uses the `FamilyList` grammar (text seam S2), which
+        // strips a quoted name's pair and re-serializes per CSS rules: a name
+        // with whitespace is re-quoted, a generic is emitted bare. The
+        // ` !important` suffix therefore round-trips through the
+        // style-attribute route unchanged (the parsed serialization reproduces
+        // the authored form).
         root.style_mut(node)
             .set("font-family", "\"My Font\", sans-serif !important")
             .expect("important font-family");
@@ -6253,7 +6283,7 @@ mod tests {
         );
 
         // Replaying through the style-attribute route round-trips to the same
-        // snapshot (the quoted family name re-interns verbatim).
+        // snapshot (the family list re-parses to the same serialized form).
         let replayed = snapshot
             .styles
             .iter()

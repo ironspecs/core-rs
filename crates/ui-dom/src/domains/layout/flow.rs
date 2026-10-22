@@ -1541,7 +1541,7 @@ fn resolved_auto_content_height_px(
     }
     let node = root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
     let content_height_px =
-        wrapped_text_content_height_px(node, &entered.inherited_style, content_width_px)
+        wrapped_text_content_height_px(node, &entered.inherited_style, content_width_px, root_dom)
             .unwrap_or(fallback_content_height_px.max(0.0));
     Ok(non_negative_auto_content_height(content_height_px))
 }
@@ -1550,6 +1550,7 @@ pub(super) fn wrapped_text_content_height_px(
     node: &DomNode,
     inherited_style: &InheritedStyleContext,
     content_width_px: f32,
+    root_dom: &RootDom,
 ) -> Option<f32> {
     let text_node = node.as_text()?;
     let font_size_px = inherited_style.effective_font_size_px();
@@ -1565,6 +1566,14 @@ pub(super) fn wrapped_text_content_height_px(
         inherited_style.effective_overflow_wrap(),
         inherited_style.effective_word_break(),
     );
+    request.family = inherited_style
+        .effective_font_family()
+        .and_then(|key| root_dom.resolve_inline_family_list(key))
+        .cloned()
+        .unwrap_or_default();
+    request.weight = inherited_style.effective_font_weight();
+    request.style = inherited_style.effective_font_style();
+    request.direction = inherited_style.effective_text_direction();
     let wrapped_text_height_px = with_repo_text_layout_context(|context| {
         context.measure_wrapped_text_height(&TextLayoutRequest {
             width_px: Some(content_width_px),
@@ -1617,6 +1626,7 @@ fn separate_tree_flow_size(
     node: &DomNode,
     inherited_style: &InheritedStyleContext,
     image_size_px: (f32, f32),
+    root_dom: &RootDom,
 ) -> Result<FlowSize, DomError> {
     let node_inherited_style = inherited_context_from_node(node, inherited_style);
     let style = node_style(node, 0.0, None)?;
@@ -1634,9 +1644,13 @@ fn separate_tree_flow_size(
         intrinsic_element_content_height_px,
     );
     let auto_content_width_px = intrinsic_content_width(intrinsic_box);
-    let auto_content_height_px =
-        wrapped_text_content_height_px(node, &node_inherited_style, auto_content_width_px)
-            .unwrap_or_else(|| intrinsic_content_height(intrinsic_box));
+    let auto_content_height_px = wrapped_text_content_height_px(
+        node,
+        &node_inherited_style,
+        auto_content_width_px,
+        root_dom,
+    )
+    .unwrap_or_else(|| intrinsic_content_height(intrinsic_box));
     let content_size = resolved_content_size_px(
         content_size_style,
         img_intrinsic_aspect_ratio,
@@ -2538,6 +2552,13 @@ mod tests {
         InheritedStyleContext::default()
     }
 
+    /// A standalone root for `separate_tree_flow_size`'s family resolution
+    /// (element-node tests carry no authored family, so the resolver yields the
+    /// default empty list).
+    fn test_root() -> RootDom {
+        RootDom::new(RootDomContext::new_cpu())
+    }
+
     fn resolved_node_style(node: &DomNode) -> NodeStyle {
         node_style(node, 0.0, None).expect("node style")
     }
@@ -2704,18 +2725,26 @@ mod tests {
         let absolute = node_with_groups(|groups| {
             groups.box_.position = PositionKw::Absolute;
         });
-        let absolute_flow =
-            separate_tree_flow_size(&absolute, &default_inherited_style(), (20.0, 10.0))
-                .expect("absolute flow");
+        let absolute_flow = separate_tree_flow_size(
+            &absolute,
+            &default_inherited_style(),
+            (20.0, 10.0),
+            &test_root(),
+        )
+        .expect("absolute flow");
         assert_close(absolute_flow.width_px, 0.0);
         assert_close(absolute_flow.height_px, 0.0);
 
         let hidden = node_with_groups(|groups| {
             groups.box_.display = DisplayKw::None;
         });
-        let hidden_flow =
-            separate_tree_flow_size(&hidden, &default_inherited_style(), (20.0, 10.0))
-                .expect("hidden flow");
+        let hidden_flow = separate_tree_flow_size(
+            &hidden,
+            &default_inherited_style(),
+            (20.0, 10.0),
+            &test_root(),
+        )
+        .expect("hidden flow");
         assert_close(hidden_flow.width_px, 0.0);
         assert_close(hidden_flow.height_px, 0.0);
     }
@@ -2727,8 +2756,13 @@ mod tests {
             groups.box_.width = BoxLength::Px(24.0);
             groups.box_.height = BoxLength::Px(12.0);
         });
-        let flow = separate_tree_flow_size(&hidden, &default_inherited_style(), (20.0, 10.0))
-            .expect("hidden flow");
+        let flow = separate_tree_flow_size(
+            &hidden,
+            &default_inherited_style(),
+            (20.0, 10.0),
+            &test_root(),
+        )
+        .expect("hidden flow");
         assert_close(flow.width_px, 24.0);
         assert_close(flow.height_px, 12.0);
     }
@@ -2745,8 +2779,13 @@ mod tests {
             groups.box_.margin[2] = BoxLength::Px(5.0); // margin-bottom
         });
 
-        let flow = separate_tree_flow_size(&relative, &default_inherited_style(), (20.0, 10.0))
-            .expect("relative flow");
+        let flow = separate_tree_flow_size(
+            &relative,
+            &default_inherited_style(),
+            (20.0, 10.0),
+            &test_root(),
+        )
+        .expect("relative flow");
         assert_close(flow.width_px, 15.0);
         assert_close(flow.height_px, 21.0);
     }
@@ -3084,9 +3123,13 @@ mod tests {
             .node(width_img_key)
             .expect("img should exist")
             .clone();
-        let separate_width_flow =
-            separate_tree_flow_size(&width_node, &default_inherited_style(), (256.0, 96.0))
-                .expect("separate width flow");
+        let separate_width_flow = separate_tree_flow_size(
+            &width_node,
+            &default_inherited_style(),
+            (256.0, 96.0),
+            &width_root,
+        )
+        .expect("separate width flow");
         let mut resolver = IdentityDomLayoutResolver;
         let _ = relayout_tree(
             &mut width_root,
@@ -3109,9 +3152,13 @@ mod tests {
             .node(height_img_key)
             .expect("img should exist")
             .clone();
-        let separate_height_flow =
-            separate_tree_flow_size(&height_node, &default_inherited_style(), (256.0, 96.0))
-                .expect("separate height flow");
+        let separate_height_flow = separate_tree_flow_size(
+            &height_node,
+            &default_inherited_style(),
+            (256.0, 96.0),
+            &height_root,
+        )
+        .expect("separate height flow");
         let _ = relayout_tree(
             &mut height_root,
             height_document_key,

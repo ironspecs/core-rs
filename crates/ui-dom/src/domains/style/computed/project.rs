@@ -148,10 +148,8 @@ fn resolve_font_field(
             };
         }
         PresentationProperty::FontFamily => {
-            if let DeclValue::Text(key) = value
-                && let Some(text) = context.text_source.resolve(key)
-            {
-                groups.font.family = Some(context.computed_texts.intern(text));
+            if let DeclValue::FamilyList(key) = value {
+                groups.font.family = Some(key);
             }
         }
         PresentationProperty::FontWeight => {

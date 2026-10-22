@@ -170,6 +170,23 @@ Migration: replace `Some(px)` box assertions with `BoxLength::Px(px)`, `None`
 with `BoxLength::Auto`, and `[x.0; 4]` margin/padding assertions with
 `[BoxLength::Px(x.0); 4]`.
 
+## Text seam S2: the `font-family` computed value is a list (API break)
+
+The computed `font-family` value moved from a verbatim interned string to a
+parsed, structured family list (text seam S2, `TEXT_SEAM_DESIGN.md` D3). This
+is a **compile-time break** on the computed read surface:
+
+- `ComputedStyleRef::font_family()` returns `Option<String>` (the parsed list
+  serialized per CSS rules — quoted names re-quoted, generics bare) instead of
+  `Option<&str>`. The structured list is available crate-internally as
+  `font_family_list()`.
+- `ComputedFontGroup.family` is now `Option<TextFamilyListKey>` (an interned
+  family-list arena handle) instead of `Option<TextKey>`.
+
+Migration: `font_family()` callers compare `Some("...".to_string())` (or
+`.as_deref()`) instead of `Some("...")`; `as_font().family` is now an opaque
+arena key, not a resolvable text key.
+
 ## Behavior notes (functional, not parse)
 
 - **`style_mut` targets elements only** (`InvalidAttributeTarget` for

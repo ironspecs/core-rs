@@ -19,8 +19,8 @@
 
 use super::cascade_tier::CascadeTier;
 use super::computed::{
-    GridAutoFlowKw, GridLine, GridTemplateAreas, GridTrackList, GridTrackSize, TrackBreadth,
-    TrackMaxBreadth,
+    GridAutoFlowKw, GridLine, GridTemplateAreas, GridTrackList, GridTrackSize, TextFamilyList,
+    TrackBreadth, TrackMaxBreadth,
 };
 use super::keyword::Keyword;
 use crate::types::DomAttributeValue;
@@ -56,6 +56,14 @@ slotmap::new_key_type! {
     /// `DeclStore`; store-relative (value-deduped, so equal maps share one
     /// key). `null()` is the empty-map sentinel (never a live arena entry).
     pub struct GridAreasKey;
+}
+
+slotmap::new_key_type! {
+    /// Opaque handle to an interned `font-family` list owned by a `DeclStore`;
+    /// store-relative (value-deduped, so equal lists share one key — the
+    /// `TextFamilyList` arena, mirroring `GridTrackListKey`). `null()` is the
+    /// empty-list sentinel (never a live arena entry).
+    pub struct TextFamilyListKey;
 }
 
 /// Cascade precedence record for one declaration (field order IS the sort
@@ -103,6 +111,9 @@ pub enum DeclValue {
     GridAutoFlow(GridAutoFlowKw),
     /// A grid placement line (`grid-column-*`/`grid-row-*`).
     GridLine(GridLine),
+    /// A `font-family` list, interned value-deduped into the owning store's
+    /// family-list arena (text seam S2).
+    FamilyList(TextFamilyListKey),
 }
 
 impl DeclValue {
@@ -126,14 +137,16 @@ impl DeclValue {
 /// same store, so a `Text` key here is a self-owned structural invariant — the
 /// `expect` is never on boundary data). `resolve_track_list` resolves a
 /// store-owned interned track list, `resolve_areas` a store-owned interned
-/// areas map, and `resolve_name` the store-interned line/area NAMES those
-/// arena values carry — each likewise a self-owned structural invariant.
+/// areas map, `resolve_family_list` a store-owned interned family list, and
+/// `resolve_name` the store-interned line/area NAMES those arena values carry —
+/// each likewise a self-owned structural invariant.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decl_value_to_css_string<'a>(
     value: &DeclValue,
     resolve_text: impl Fn(TextKey) -> Option<&'a str>,
     resolve_track_list: impl Fn(GridTrackListKey) -> Option<&'a GridTrackList>,
     resolve_areas: impl Fn(GridAreasKey) -> Option<&'a GridTemplateAreas>,
+    resolve_family_list: impl Fn(TextFamilyListKey) -> Option<&'a TextFamilyList>,
     resolve_name: impl Fn(TextKey) -> Option<&'a str>,
 ) -> String {
     match value {
@@ -177,6 +190,9 @@ pub(crate) fn decl_value_to_css_string<'a>(
         DeclValue::TrackSize(size) => format_grid_track_size(size),
         DeclValue::GridAutoFlow(flow) => format_grid_auto_flow(*flow).to_string(),
         DeclValue::GridLine(line) => format_grid_line(*line, &resolve_text),
+        DeclValue::FamilyList(key) => resolve_family_list(*key)
+            .expect("interned family list must resolve in its owning store")
+            .to_css_string(),
     }
 }
 
@@ -206,14 +222,15 @@ fn format_color_rgba(rgba: [f32; 4]) -> String {
 /// `resolve_text` resolves store-owned interned text; it must resolve (the
 /// interner and the block live in the same store, so a `Text` key here is a
 /// self-owned structural invariant — the `expect` is never on boundary data).
-/// `resolve_track_list`/`resolve_areas`/`resolve_name` resolve the
-/// store-interned arena values and their names, likewise.
+/// `resolve_track_list`/`resolve_areas`/`resolve_family_list`/`resolve_name`
+/// resolve the store-interned arena values and their names, likewise.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decl_value_to_dom_value<'a>(
     value: &DeclValue,
     resolve_text: impl Fn(TextKey) -> Option<&'a str>,
     resolve_track_list: impl Fn(GridTrackListKey) -> Option<&'a GridTrackList>,
     resolve_areas: impl Fn(GridAreasKey) -> Option<&'a GridTemplateAreas>,
+    resolve_family_list: impl Fn(TextFamilyListKey) -> Option<&'a TextFamilyList>,
     resolve_name: impl Fn(TextKey) -> Option<&'a str>,
 ) -> DomAttributeValue {
     match value {
@@ -225,6 +242,7 @@ pub(crate) fn decl_value_to_dom_value<'a>(
             resolve_text,
             resolve_track_list,
             resolve_areas,
+            resolve_family_list,
             resolve_name,
         )),
     }
@@ -555,6 +573,7 @@ mod tests {
             resolve_track_list,
             resolve_areas,
             |_key| None,
+            |_key| None,
         )
     }
 
@@ -628,6 +647,7 @@ mod tests {
                 |_key| None,
                 |_key| None,
                 |_key| None,
+                |_key| None,
             ),
             "#000000",
         );
@@ -635,6 +655,7 @@ mod tests {
             decl_value_to_css_string(
                 &DeclValue::Color([1.0, 0.0, 0.0, 0.5]),
                 resolve_none,
+                |_key| None,
                 |_key| None,
                 |_key| None,
                 |_key| None,

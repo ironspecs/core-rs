@@ -184,6 +184,12 @@ pub enum DeclGrammar {
     /// interned value-deduped into the owning store's track-list arena. Capacity
     /// 12 tracks / 8 name registrations (over-capacity drops).
     TrackList,
+    /// A `font-family` list: comma-separated quoted strings (quote pair
+    /// stripped) or unquoted custom-ident sequences, with the generic keywords
+    /// mapping to `Generic(_)`. Interned value-deduped into the owning store's
+    /// family-list arena; empty items, empty lists, and unterminated quotes
+    /// drop (text seam S2).
+    FamilyList,
     /// A grid template-areas map (`grid-template-areas`): quoted string rows of
     /// dot-runs and `<custom-ident>` cells, validated (uniform columns,
     /// rectangularity, capacity) and interned value-deduped into the owning
@@ -353,7 +359,11 @@ static METADATA: [PropertyMetadata; PresentationProperty::COUNT] = [
         PresentationGroup::Font,
         DeclGrammar::LineHeight,
     ),
-    ("font-family", PresentationGroup::Font, DeclGrammar::Text),
+    (
+        "font-family",
+        PresentationGroup::Font,
+        DeclGrammar::FamilyList,
+    ),
     (
         "font-weight",
         PresentationGroup::Font,

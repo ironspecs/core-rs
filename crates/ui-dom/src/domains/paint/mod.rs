@@ -610,6 +610,7 @@ pub(crate) fn measure_text_intrinsic_with_font_size_and_white_space(
         white_space,
         crate::types::DomOverflowWrap::Normal,
         crate::types::DomWordBreak::Normal,
+        crate::domains::text_layout::ResolvedTextStyle::default(),
     )
 }
 
@@ -620,6 +621,7 @@ pub(crate) fn measure_text_intrinsic_with_font_size_line_height_white_space_and_
     white_space: crate::types::DomWhiteSpace,
     overflow_wrap: crate::types::DomOverflowWrap,
     word_break: crate::types::DomWordBreak,
+    text_style: crate::domains::text_layout::ResolvedTextStyle,
 ) -> TextIntrinsic {
     let metrics = with_repo_text_layout_context(|context| {
         let mut request =
@@ -628,6 +630,10 @@ pub(crate) fn measure_text_intrinsic_with_font_size_line_height_white_space_and_
         request.line_height_px = line_height_px;
         request.wrap_mode =
             text_wrap_mode_for_css_intrinsic(white_space, overflow_wrap, word_break);
+        request.family = text_style.family;
+        request.weight = text_style.weight;
+        request.style = text_style.style;
+        request.direction = text_style.direction;
         context.measure_intrinsic(&request)
     });
     text_intrinsic_from_metrics(font_size_px, &metrics)

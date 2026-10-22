@@ -16,9 +16,11 @@
 //!   yet" state to distinguish — the `Default` is the no-parent seed
 //! - effective accessors read the group fields directly, never error
 
+use crate::domains::style::TextFamilyListKey;
 use crate::domains::style::computed::{
     ComputedColorGroup, ComputedFontGroup, ComputedGroups, ComputedTextGroup,
 };
+use crate::domains::text_layout::{FontStyleKw, FontWeightKw};
 use crate::types::{DomOverflowWrap, DomTextAlign, DomTextDirection, DomWhiteSpace, DomWordBreak};
 
 #[cfg(test)]
@@ -70,6 +72,24 @@ impl InheritedStyleContext {
     /// `text_layout::effective_line_height_px`), never here.
     pub(crate) fn effective_line_height_px(&self) -> Option<f32> {
         self.font.line_height_px
+    }
+
+    /// The resolved `font-family` list key (`None` = no authored family). The
+    /// key resolves against the document's inline family-list arena (a
+    /// `TextFamilyListKey` is store-relative); callers with `root_dom` resolve
+    /// it, text seam S2.
+    pub(crate) fn effective_font_family(&self) -> Option<TextFamilyListKey> {
+        self.font.family
+    }
+
+    /// The resolved font weight as the request-carrier `FontWeightKw`.
+    pub(crate) fn effective_font_weight(&self) -> FontWeightKw {
+        FontWeightKw::from_weight(self.font.weight)
+    }
+
+    /// The resolved font style as the request-carrier `FontStyleKw`.
+    pub(crate) fn effective_font_style(&self) -> FontStyleKw {
+        FontStyleKw::from_keyword(self.font.style)
     }
 
     pub(crate) fn effective_text_align(&self) -> DomTextAlign {

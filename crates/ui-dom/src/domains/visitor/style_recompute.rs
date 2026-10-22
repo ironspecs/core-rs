@@ -51,6 +51,8 @@ use crate::domains::style::BoxLength;
 #[cfg(test)]
 use crate::domains::style::StyleRuleOrigin;
 use crate::domains::style::computed::GroupDirtyClassification;
+use crate::domains::style::computed::TextFamilyList;
+use crate::domains::text_layout::ResolvedTextStyle;
 #[cfg(test)]
 use crate::domains::visitor::inherited_style::inherited_style_context_from_ancestors;
 use crate::domains::visitor::inherited_style::{
@@ -63,9 +65,7 @@ use crate::types::{
     DomAttribute, DomAttributeValue, DomIntrinsic, DomTag, RootDomContext, RootDomContextConfig,
     parse_css_color_rgba,
 };
-use crate::types::{
-    DomError, DomOverflowWrap, DomWhiteSpace, DomWordBreak, RootDom, RootDomMetricName,
-};
+use crate::types::{DomError, RootDom, RootDomMetricName};
 
 #[cfg(test)]
 #[tracing::instrument(
@@ -232,15 +232,12 @@ fn recompute_element_style(
         .get(node_key)
         .ok_or(DomError::InvalidNodeKey)?;
     let child_context = inherited_context_from_node(node, inherited_context);
-    recompute_text_metric_intrinsic_for_style_pass(
-        root_dom,
-        node_key,
-        child_context.effective_font_size_px(),
-        child_context.effective_line_height_px(),
-        child_context.effective_white_space(),
-        child_context.effective_overflow_wrap(),
-        child_context.effective_word_break(),
-    )?;
+    let family = child_context
+        .effective_font_family()
+        .and_then(|key| root_dom.resolve_inline_family_list(key))
+        .cloned()
+        .unwrap_or_default();
+    recompute_text_metric_intrinsic_for_style_pass(root_dom, node_key, &child_context, family)?;
 
     clear_node_style_dirty(root_dom, node_key)?;
     Ok(child_context)
@@ -251,15 +248,12 @@ fn recompute_text_style(
     node_key: DomNodeSlotKey,
     inherited_context: &InheritedStyleContext,
 ) -> Result<InheritedStyleContext, DomError> {
-    recompute_text_metric_intrinsic_for_style_pass(
-        root_dom,
-        node_key,
-        inherited_context.effective_font_size_px(),
-        inherited_context.effective_line_height_px(),
-        inherited_context.effective_white_space(),
-        inherited_context.effective_overflow_wrap(),
-        inherited_context.effective_word_break(),
-    )?;
+    let family = inherited_context
+        .effective_font_family()
+        .and_then(|key| root_dom.resolve_inline_family_list(key))
+        .cloned()
+        .unwrap_or_default();
+    recompute_text_metric_intrinsic_for_style_pass(root_dom, node_key, inherited_context, family)?;
     clear_node_style_dirty(root_dom, node_key)?;
     Ok(*inherited_context)
 }
@@ -284,22 +278,25 @@ fn clear_node_style_dirty(
 fn recompute_text_metric_intrinsic_for_style_pass(
     root_dom: &mut RootDom,
     node_key: DomNodeSlotKey,
-    effective_font_size_px: f32,
-    effective_line_height_px: Option<f32>,
-    effective_white_space: DomWhiteSpace,
-    effective_overflow_wrap: DomOverflowWrap,
-    effective_word_break: DomWordBreak,
+    inherited_context: &InheritedStyleContext,
+    family: TextFamilyList,
 ) -> Result<(), DomError> {
     let node = root_dom
         .nodes
         .get_mut(node_key)
         .ok_or(DomError::InvalidNodeKey)?;
     let intrinsic_changed = node.after_style_recompute_intrinsic_update(
-        effective_font_size_px,
-        effective_line_height_px,
-        effective_white_space,
-        effective_overflow_wrap,
-        effective_word_break,
+        inherited_context.effective_font_size_px(),
+        inherited_context.effective_line_height_px(),
+        inherited_context.effective_white_space(),
+        inherited_context.effective_overflow_wrap(),
+        inherited_context.effective_word_break(),
+        ResolvedTextStyle::new(
+            family,
+            inherited_context.effective_font_weight(),
+            inherited_context.effective_font_style(),
+            inherited_context.effective_text_direction(),
+        ),
     );
     if !intrinsic_changed {
         return Ok(());

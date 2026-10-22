@@ -15,9 +15,9 @@
 
 use slotmap::SlotMap;
 
-use super::computed::{GridTemplateAreas, GridTrackList};
+use super::computed::{GridTemplateAreas, GridTrackList, TextFamilyList};
 use super::decl_block::DeclBlock;
-use super::decl_value::{GridAreasKey, GridTrackListKey, TextKey};
+use super::decl_value::{GridAreasKey, GridTrackListKey, TextFamilyListKey, TextKey};
 use super::text_interner::TextInterner;
 
 slotmap::new_key_type! { pub struct DeclBlockKey; }
@@ -25,16 +25,18 @@ slotmap::new_key_type! { pub struct DeclBlockKey; }
 /// Arena of all declaration blocks for one owner (a stylesheet runtime or a
 /// document's inline-style store), plus the text interner the blocks' Text
 /// values resolve against, the value-deduped grid track-list arena (grid T3
-/// `GridTrackList`, which retains `[name]` line names), and the value-deduped
-/// grid template-areas arena. Generational keys make stale-block access a typed
-/// None, never a use-after-free. Blocks are never freed while their owner
-/// lives (stylesheet tombstones keep theirs, matching the rule store's
-/// tombstone semantics today); reclamation policy is open question 6.
+/// `GridTrackList`, which retains `[name]` line names), the value-deduped
+/// `font-family` list arena (text seam S2 `TextFamilyList`), and the
+/// value-deduped grid template-areas arena. Generational keys make stale-block
+/// access a typed None, never a use-after-free. Blocks are never freed while
+/// their owner lives (stylesheet tombstones keep theirs, matching the rule
+/// store's tombstone semantics today); reclamation policy is open question 6.
 #[derive(Debug, Default)]
 pub struct DeclStore {
     blocks: SlotMap<DeclBlockKey, DeclBlock>,
     texts: TextInterner,
     track_lists: SlotMap<GridTrackListKey, GridTrackList>,
+    family_lists: SlotMap<TextFamilyListKey, TextFamilyList>,
     grid_areas: SlotMap<GridAreasKey, GridTemplateAreas>,
 }
 
@@ -118,6 +120,25 @@ impl DeclStore {
         self.grid_areas.get(key)
     }
 
+    /// Interns a `font-family` list value-deduped (the track-list arena's
+    /// shape): equal lists share one key, only a new list is pushed. Lists are
+    /// short and few, so the scan is the honest shape (text seam S2).
+    pub fn intern_family_list(&mut self, list: &TextFamilyList) -> TextFamilyListKey {
+        for (key, existing) in &self.family_lists {
+            if existing == list {
+                return key;
+            }
+        }
+        self.family_lists.insert(list.clone())
+    }
+
+    /// Resolves a family-list key to its retained `TextFamilyList`. A stale or
+    /// out-of-range key is a typed `None` (generational safety).
+    #[must_use]
+    pub fn resolve_family_list(&self, key: TextFamilyListKey) -> Option<&TextFamilyList> {
+        self.family_lists.get(key)
+    }
+
     /// Level accessor over retained state (observability doctrine: levels are
     /// read accessors, not emitted gauges): live declaration blocks.
     #[must_use]
@@ -141,6 +162,12 @@ impl DeclStore {
     #[must_use]
     pub fn interned_grid_areas_count(&self) -> usize {
         self.grid_areas.len()
+    }
+
+    /// Level accessor over retained state: distinct interned family lists.
+    #[must_use]
+    pub fn interned_family_list_count(&self) -> usize {
+        self.family_lists.len()
     }
 }
 

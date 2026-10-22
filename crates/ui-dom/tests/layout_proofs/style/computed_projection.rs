@@ -345,7 +345,7 @@ fn font_family_inherits_the_future_correct_group_value() {
 
     assert_eq!(
         root.computed_style(child).expect("child").font_family(),
-        Some("ui-sans, sans-serif")
+        Some("ui-sans, sans-serif".to_string())
     );
 }
 

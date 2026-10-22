@@ -21,7 +21,8 @@ use crate::domains::layer_ops::{
 };
 use crate::domains::layer_pool::LayerPool;
 use crate::domains::text_layout::{
-    TextLayoutRequest, text_align_for_css_value, text_caret_layout, with_repo_text_layout_context,
+    FontStyleKw, FontWeightKw, TextLayoutRequest, text_align_for_css_value, text_caret_layout,
+    with_repo_text_layout_context,
 };
 use crate::element_controls::{
     ResolvedElementControl, ResolvedRangeControl, checkbox_indicator_rect, number_editor_box_model,
@@ -80,6 +81,41 @@ fn effective_line_height_px(node: &DomNode) -> Option<f32> {
 fn effective_text_align(context: &ElementPaintContext<'_>) -> crate::domains::layer_ops::TextAlign {
     let text = context.node.computed_text();
     text_align_for_css_value(text.align, text.direction)
+}
+
+/// Writes the node's resolved font family/weight/style/direction into one text
+/// request (text seam S2: the main-world construction site reads the computed
+/// font/text groups; the family key resolves through the document's inline
+/// family-list arena).
+fn apply_font_style_to_request(
+    context: &ElementPaintContext<'_>,
+    request: &mut TextLayoutRequest<'_>,
+) {
+    let font = context.node.computed_font();
+    request.family = font
+        .family
+        .and_then(|key| context.root_dom.resolve_inline_family_list(key))
+        .cloned()
+        .unwrap_or_default();
+    request.weight = FontWeightKw::from_weight(font.weight);
+    request.style = FontStyleKw::from_keyword(font.style);
+    request.direction = context.node.computed_text().direction;
+}
+
+/// Builds the styled text-run signature for one control text value, carrying
+/// the resolved family/weight/style so the render world distinguishes styled
+/// runs (Role A) while `font_family_id` stays the Role-B grouping key.
+fn text_run_signature_for(context: &ElementPaintContext<'_>, value: &str) -> TextRunSignature {
+    let mut signature = TextRunSignature::from_text(Arc::<str>::from(value));
+    let font = context.node.computed_font();
+    signature.family = font
+        .family
+        .and_then(|key| context.root_dom.resolve_inline_family_list(key))
+        .cloned()
+        .unwrap_or_default();
+    signature.weight = FontWeightKw::from_weight(font.weight);
+    signature.style = FontStyleKw::from_keyword(font.style);
+    signature
 }
 
 fn select_text_line_height_px(node: &DomNode, content_height_px: f32) -> f32 {
@@ -170,11 +206,12 @@ fn append_select_text_run(context: &mut ElementPaintContext<'_>, value: &str) {
     request.line_height_px = Some(line_height_px);
     request.wrap_mode = TextWrapMode::None;
     request.alignment = effective_text_align(context);
+    apply_font_style_to_request(context, &mut request);
     let origin_top =
         paint_box.origin_top + ((paint_box.content_height - text_height_px).max(0.0) * 0.5);
     let text_run_id = context
         .layer_pool
-        .resolve_text_run_id_from_hint(&TextRunSignature::from_text(Arc::<str>::from(value)), None);
+        .resolve_text_run_id_from_hint(&text_run_signature_for(context, value), None);
     // Zero-size text renders nothing (CSS Fonts 4 §3.5); cosmic-text asserts a
     // non-zero font size, so skip the run rather than reaching cosmic.
     if font_size_px != 0.0 {
@@ -222,13 +259,14 @@ fn append_control_text_run(
         request.wrap_mode = TextWrapMode::None;
     }
     request.alignment = effective_text_align(context);
+    apply_font_style_to_request(context, &mut request);
     let text_height_px = resolved_text_run_height_px(&request, edit_kind, box_model);
     if text_height_px <= 0.0 {
         return;
     }
     let text_run_id = context
         .layer_pool
-        .resolve_text_run_id_from_hint(&TextRunSignature::from_text(Arc::<str>::from(value)), None);
+        .resolve_text_run_id_from_hint(&text_run_signature_for(context, value), None);
     // Zero-size text renders nothing (CSS Fonts 4 §3.5); cosmic-text asserts a
     // non-zero font size, so skip the run rather than reaching cosmic.
     if font_size_px != 0.0 {
@@ -286,6 +324,7 @@ fn append_text_entry_caret_rect(
         request.wrap_mode = TextWrapMode::None;
     }
     request.alignment = effective_text_align(context);
+    apply_font_style_to_request(context, &mut request);
     let caret = text_caret_layout(&request, selection.selection_start);
     let caret_color_rgba = context
         .node

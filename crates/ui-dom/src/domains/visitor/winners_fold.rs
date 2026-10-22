@@ -38,12 +38,14 @@ use crate::domains::style::computed::project::{
     ProjectionContext, parent_inherited_groups, resolve_declaration_into_groups,
     transition_longhands_from_strings,
 };
-use crate::domains::style::computed::{ComputedGroups, GridLine, ResolvedTransitionLonghands};
+use crate::domains::style::computed::{
+    ComputedGroups, GridLine, ResolvedTransitionLonghands, TextFamilyList,
+};
 use crate::domains::style::{
     CascadeTier, DeclBlockKey, DeclLength, DeclStore, DeclValue, Declaration, GridAreasKey,
     GridTemplateAreas, GridTrackList, GridTrackListKey, NodeLookup, NodeStyleIndex, Precedence,
-    PresentationGroup, PresentationProperty, SelectorSpecificity, TextInterner, TextKey,
-    style_index_for_node,
+    PresentationGroup, PresentationProperty, SelectorSpecificity, TextFamilyListKey, TextInterner,
+    TextKey, style_index_for_node,
 };
 use crate::types::dom_node::DomNodeSlotKey;
 use crate::types::{
@@ -270,6 +272,11 @@ fn fold_matched_rules(
                         |k| runtime.resolve_grid_areas(k),
                         inline_store,
                     )),
+                    DeclValue::FamilyList(key) => DeclValue::FamilyList(reintern_family_list(
+                        key,
+                        |k| runtime.resolve_family_list(k),
+                        inline_store,
+                    )),
                     other => other,
                 },
             );
@@ -349,7 +356,10 @@ fn fold_behavior_slot(
     declaration: Declaration,
     precedence: Precedence,
 ) {
-    if matches!(declaration.value, DeclValue::Text(_)) {
+    if matches!(
+        declaration.value,
+        DeclValue::Text(_) | DeclValue::FamilyList(_)
+    ) {
         return;
     }
     fold_slot(winners, declaration.value, declaration.property, precedence);
@@ -372,7 +382,9 @@ fn reintern_text<'a>(
             let text = resolve(key).expect("interned text must resolve in its owning store");
             DeclValue::Text(scratch.intern(text))
         }
-        DeclValue::TrackList(_) | DeclValue::GridAreas(_) => arena(value),
+        DeclValue::TrackList(_) | DeclValue::GridAreas(_) | DeclValue::FamilyList(_) => {
+            arena(value)
+        }
         DeclValue::GridLine(line) => {
             DeclValue::GridLine(reintern_grid_line(line, scratch, &resolve))
         }
@@ -479,6 +491,24 @@ fn reintern_areas<'a>(
         reinterned.names.push((inline_store.intern(text), *rect));
     }
     inline_store.intern_grid_areas(&reinterned)
+}
+
+/// Re-interns a stylesheet-arena family-list value into the inline arena. The
+/// list's names are self-owned (`Arc<str>` — the S2 family-list shape), so the
+/// value clones verbatim with no name remapping; only the store-relative KEY
+/// changes. The null key (the initial empty-list sentinel) is store-independent
+/// and passes through unchanged.
+fn reintern_family_list<'a>(
+    key: TextFamilyListKey,
+    resolve_family_list: impl Fn(TextFamilyListKey) -> Option<&'a TextFamilyList>,
+    inline_store: &mut DeclStore,
+) -> TextFamilyListKey {
+    if key == TextFamilyListKey::default() {
+        return key;
+    }
+    let list =
+        resolve_family_list(key).expect("interned family list must resolve in its owning store");
+    inline_store.intern_family_list(list)
 }
 
 /// The slot update rule: a declaration takes the slot when its precedence is

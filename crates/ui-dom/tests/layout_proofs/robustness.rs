@@ -558,7 +558,7 @@ fn robustness_encoding() {
     // Two rules share specificity/origin; the later rule's declaration wins.
     assert_eq!(
         root.computed_style(target).expect("target").font_family(),
-        Some("\"Source Han Sans\""),
+        Some("\"Source Han Sans\"".to_string()),
     );
 
     // The unquoted CJK form round-trips on its own.
@@ -575,7 +575,7 @@ fn robustness_encoding() {
     assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
     assert_eq!(
         root.computed_style(target).expect("target").font_family(),
-        Some("ヒラギノ角ゴ"),
+        Some("ヒラギノ角ゴ".to_string()),
     );
 
     // (c) NUL byte in a declaration value drops + counts, no crash.

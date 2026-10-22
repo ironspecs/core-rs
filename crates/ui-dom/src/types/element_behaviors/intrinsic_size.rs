@@ -30,7 +30,7 @@ use crate::domains::paint::{
     measure_text_intrinsic, measure_text_intrinsic_with_font_size,
     measure_text_intrinsic_with_font_size_line_height_white_space_and_wrap_policy,
 };
-use crate::domains::text_layout::DEFAULT_TEXT_FONT_SIZE_PX;
+use crate::domains::text_layout::{DEFAULT_TEXT_FONT_SIZE_PX, ResolvedTextStyle};
 use crate::element_controls::{
     ResolvedElementControl, checkbox_default_preferred_size_px, range_default_preferred_size_px,
     resolved_element_control,
@@ -88,6 +88,7 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
     inherited_white_space: DomWhiteSpace,
     inherited_overflow_wrap: DomOverflowWrap,
     inherited_word_break: DomWordBreak,
+    inherited_text_style: ResolvedTextStyle,
 ) -> bool {
     match node {
         DomNode::Element(element)
@@ -135,6 +136,7 @@ pub(crate) fn commit_intrinsic_after_style_recompute(
                     inherited_white_space,
                     inherited_overflow_wrap,
                     inherited_word_break,
+                    inherited_text_style,
                 );
             if matches!(&current_intrinsic, Some(current) if current == &next_intrinsic) {
                 return false;

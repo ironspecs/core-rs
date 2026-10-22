@@ -59,14 +59,16 @@ use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 
 use super::computed::{
-    AreaRect, GRID_AREA_COL_CAPACITY, GRID_AREA_NAME_CAPACITY, GRID_AREA_ROW_CAPACITY,
-    GridAutoFlowKw, GridLine, GridRepeat, GridTemplateAreas, GridTrackList, GridTrackSize,
-    TrackBreadth, TrackMaxBreadth,
+    AreaRect, FontFamilyGeneric, GRID_AREA_COL_CAPACITY, GRID_AREA_NAME_CAPACITY,
+    GRID_AREA_ROW_CAPACITY, GridAutoFlowKw, GridLine, GridRepeat, GridTemplateAreas, GridTrackList,
+    GridTrackSize, TextFamilyItem, TextFamilyList, TrackBreadth, TrackMaxBreadth,
 };
 use super::decl_block::DeclBlock;
 use super::decl_drop_report::DeclDropReport;
 use super::decl_store::DeclStore;
-use super::decl_value::{DeclLength, DeclValue, GridAreasKey, GridTrackListKey, TextKey};
+use super::decl_value::{
+    DeclLength, DeclValue, GridAreasKey, GridTrackListKey, TextFamilyListKey, TextKey,
+};
 use super::declaration::Declaration;
 use super::keyword::Keyword;
 use super::parsed_declaration::ParsedDeclaration;
@@ -495,6 +497,7 @@ fn parse_value(grammar: DeclGrammar, value: &str, store: &mut DeclStore) -> Opti
         DeclGrammar::Text => parse_text(value, store),
         DeclGrammar::Keywords(set) => Keyword::from_name_in(set, value).map(DeclValue::Keyword),
         DeclGrammar::TrackList => parse_track_list(value, store).map(DeclValue::TrackList),
+        DeclGrammar::FamilyList => parse_family_list(value, store).map(DeclValue::FamilyList),
         DeclGrammar::GridAreas => parse_grid_areas(value, store).map(DeclValue::GridAreas),
         DeclGrammar::GridAutoFlow => parse_grid_auto_flow(value).map(DeclValue::GridAutoFlow),
         DeclGrammar::TrackSize => parse_track_size(value).map(DeclValue::TrackSize),
@@ -1356,6 +1359,74 @@ fn parse_text(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
         return None;
     }
     Some(DeclValue::Text(store.intern(trimmed)))
+}
+
+// — Font-family list — //
+
+/// Parses a `font-family` list (text seam S2, `TEXT_SEAM_DESIGN.md` D3):
+/// comma-separated items, each a quoted string (single or double; the quote
+/// pair is stripped) or an unquoted custom-ident sequence (whitespace-separated
+/// tokens joined with single spaces), with the bare generic keywords
+/// (`serif`/`sans-serif`/`monospace`/`system-ui`) mapping to `Generic(_)`.
+/// Empty items, empty lists, unterminated quotes, and over-capacity lists all
+/// drop (return `None` → counted drop by the block parse).
+fn parse_family_list(value: &str, store: &mut DeclStore) -> Option<TextFamilyListKey> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut list = TextFamilyList {
+        items: ArrayVec::new(),
+    };
+    for item in trimmed.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            return None;
+        }
+        let parsed = parse_family_list_item(item)?;
+        if list.items.is_full() {
+            return None;
+        }
+        list.items.push(parsed);
+    }
+    Some(store.intern_family_list(&list))
+}
+
+/// Parses one comma-separated family-list item: a quoted string or an unquoted
+/// custom-ident sequence.
+fn parse_family_list_item(item: &str) -> Option<TextFamilyItem> {
+    let first = item.chars().next()?;
+    if first == '"' || first == '\'' {
+        // Quoted: strip the matching quote pair, keeping the inner name
+        // verbatim (the recorded quoted-family caveat). An unterminated or
+        // stray-inner quote is malformed (drop).
+        let inner = item.get(first.len_utf8()..)?;
+        let inner = inner.strip_suffix(first)?;
+        if inner.contains(first) {
+            return None;
+        }
+        return Some(TextFamilyItem::FamilyName(std::sync::Arc::<str>::from(
+            inner,
+        )));
+    }
+    parse_unquoted_family_item(item)
+}
+
+/// Parses an unquoted family item: a bare generic keyword maps to `Generic`,
+/// otherwise the whitespace-separated tokens are joined into one family name.
+fn parse_unquoted_family_item(item: &str) -> Option<TextFamilyItem> {
+    let tokens: Vec<&str> = item.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    if tokens.len() == 1
+        && let Some(generic) = FontFamilyGeneric::from_name(tokens[0])
+    {
+        return Some(TextFamilyItem::Generic(generic));
+    }
+    Some(TextFamilyItem::FamilyName(std::sync::Arc::<str>::from(
+        tokens.join(" "),
+    )))
 }
 
 /// Validates the closed translate grammar: the whole trimmed string must be
@@ -2938,13 +3009,53 @@ mod tests {
     #[test]
     fn text_grammar_interns_non_empty_and_rejects_empty() {
         let mut store = DeclStore::default();
-        let parsed = parse_value(DeclGrammar::Text, "ui-sans, sans-serif", &mut store)
-            .expect("font-family should parse");
+        let parsed = parse_value(DeclGrammar::Text, "translate(10px)", &mut store)
+            .expect("transform text should parse");
         let DeclValue::Text(key) = parsed else {
-            panic!("font-family should intern to text");
+            panic!("transform should intern to text");
         };
-        assert_eq!(store.resolve(key), Some("ui-sans, sans-serif"));
+        assert_eq!(store.resolve(key), Some("translate(10px)"));
         assert_eq!(parse_value(DeclGrammar::Text, "   ", &mut store), None);
+    }
+
+    #[test]
+    fn family_list_grammar_parses_quoted_generic_and_unquoted_items() {
+        let mut store = DeclStore::default();
+        let parsed = parse_value(
+            DeclGrammar::FamilyList,
+            "\"My Font\", sans-serif, ui-sans, 'Source Han Sans'",
+            &mut store,
+        )
+        .expect("family list should parse");
+        let DeclValue::FamilyList(key) = parsed else {
+            panic!("font-family should intern to a family list");
+        };
+        let list = store.resolve_family_list(key).expect("list resolves");
+        assert_eq!(
+            list.to_css_string(),
+            "\"My Font\", sans-serif, ui-sans, \"Source Han Sans\""
+        );
+    }
+
+    #[test]
+    fn family_list_grammar_drops_malformed_lists() {
+        let mut store = DeclStore::default();
+        for malformed in [
+            "",
+            "   ",
+            ",",
+            "Arial,",
+            "Arial,, sans-serif",
+            "\"Arial",
+            "'Arial",
+            "Arial, \"unterminated",
+        ] {
+            assert_eq!(
+                parse_value(DeclGrammar::FamilyList, malformed, &mut store),
+                None,
+                "{malformed:?} should drop"
+            );
+        }
     }
 
     #[test]

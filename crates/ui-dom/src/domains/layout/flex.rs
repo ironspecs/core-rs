@@ -1417,7 +1417,7 @@ fn measured_auto_content_height(
     }
     let node = node_for_key(root_dom, key)?;
     let content_height_px =
-        wrapped_text_content_height_px(node, &entered.inherited_style, content_width_px)
+        wrapped_text_content_height_px(node, &entered.inherited_style, content_width_px, root_dom)
             .unwrap_or(fallback_content_height_px.max(0.0));
     Ok(non_negative_auto_content_height(content_height_px))
 }

@@ -99,6 +99,8 @@ use wgpu;
 use crate::bevy::icon_assets::{
     RequestedUiIconAtlasAssets, UiIconAtlasManifestAsset, requested_ui_icon_atlas_assets,
 };
+use crate::domains::style::computed::TextFamilyList;
+use crate::domains::text_layout::{FontStyleKw, FontWeightKw};
 use crate::domains::{
     icon_atlas::{
         ValidatedUiIconAtlasEntry, ValidatedUiIconAtlasManifest, alpha_mask_bytes_from_image,
@@ -286,6 +288,9 @@ struct ExtractedTextRunRecord {
     text: std::sync::Arc<str>,
     language_hint_id: TextLanguageId,
     font_family_id: TextFontFamilyId,
+    family: TextFamilyList,
+    weight: FontWeightKw,
+    style: FontStyleKw,
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +298,9 @@ struct RenderTextRunRecord {
     text: std::sync::Arc<str>,
     language_hint_id: TextLanguageId,
     font_family_id: TextFontFamilyId,
+    family: TextFamilyList,
+    weight: FontWeightKw,
+    style: FontStyleKw,
 }
 
 #[derive(Clone, Debug)]
@@ -1769,6 +1777,9 @@ mod tests {
             text: Arc::<str>::from("Density"),
             language_hint_id: TextLanguageId::English,
             font_family_id: super::TextFontFamilyId::UiSans,
+            family: TextFamilyList::default(),
+            weight: FontWeightKw::NORMAL,
+            style: FontStyleKw::Normal,
         }
     }
 
@@ -1796,6 +1807,9 @@ mod tests {
                 text: Arc::<str>::from(text),
                 language_hint_id: TextLanguageId::from_text_hint(text),
                 font_family_id: super::TextFontFamilyId::UiSans,
+                family: TextFamilyList::default(),
+                weight: FontWeightKw::NORMAL,
+                style: FontStyleKw::Normal,
             },
         )
     }
@@ -2288,6 +2302,9 @@ mod tests {
             text: Arc::<str>::from("hello"),
             language_hint_id: TextLanguageId::English,
             font_family_id: super::TextFontFamilyId::UiSans,
+            family: TextFamilyList::default(),
+            weight: FontWeightKw::NORMAL,
+            style: FontStyleKw::Normal,
         };
         let mut font_system = text_render::create_text_run_font_system();
         let cached_buffer =
@@ -2307,31 +2324,19 @@ mod tests {
     #[test]
     fn text_run_repo_font_preference_uses_language_specific_repo_families() {
         assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(
-                TextFontFamilyId::UiSans,
-                TextLanguageId::English,
-            ),
+            text_layout::text_render::preferred_repo_font_family(TextLanguageId::English),
             CosmicFamily::Name(text_layout::text_render::repo_default_sans_serif_family_name())
         );
         assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(
-                TextFontFamilyId::UiSans,
-                TextLanguageId::Japanese,
-            ),
+            text_layout::text_render::preferred_repo_font_family(TextLanguageId::Japanese),
             CosmicFamily::Name("Source Han Sans")
         );
         assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(
-                TextFontFamilyId::UiSans,
-                TextLanguageId::SimplifiedChinese,
-            ),
+            text_layout::text_render::preferred_repo_font_family(TextLanguageId::SimplifiedChinese),
             CosmicFamily::Name("Source Han Sans SC")
         );
         assert_eq!(
-            text_layout::text_render::preferred_repo_font_family(
-                TextFontFamilyId::UiSans,
-                TextLanguageId::Korean,
-            ),
+            text_layout::text_render::preferred_repo_font_family(TextLanguageId::Korean),
             CosmicFamily::Name("Source Han Sans K")
         );
     }
