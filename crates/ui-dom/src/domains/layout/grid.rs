@@ -566,8 +566,9 @@ fn resolve_axis_range(
     let end = lower_grid_line(end, explicit_count, context, axis, GridLineSide::End);
     match (start, end) {
         (LoweredLine::Range(s, e), _) | (_, LoweredLine::Range(s, e)) => {
-            // A multi-match name or `NamedSpan` determines both edges; the
-            // other side defaults to `Auto` (the tested D5 forms).
+            // Only a `NamedSpan` lowers to a `Range`, which determines both
+            // edges; a multi-match name now lowers to `Line(first)`, never a
+            // `Range`. The other side defaults to `Auto` (the tested D5 forms).
             ResolvedAxis::Definite(s, e)
         }
         (LoweredLine::Line(s), LoweredLine::Line(e)) => {

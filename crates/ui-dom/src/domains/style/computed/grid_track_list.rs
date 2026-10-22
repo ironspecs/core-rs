@@ -23,8 +23,10 @@
 //!   tracks.len()` at registration time; a trailing bracket names the final
 //!   line at index `tracks.len()`
 //! - a single name labels at most `GRID_LINE_NAME_PER_NAME_CAPACITY` (4) lines
-//!   in one list; the fifth registration drops + counts at parse (the
-//!   D4 multiple-same-name span rule stays valid up to 4)
+//!   in one list; the cap bounds a name's legitimate multiplicity for the
+//!   named set's Nth-match indexing (CSS Grid §8.1.3 "exclusively indexed by
+//!   filtering the placement by name" — `text 5` is the 5th line named
+//!   `text`); the fifth registration drops + counts at parse
 //! - value-dedup interning compares FULL content (tracks + name pairs), so two
 //!   identical named templates intern to one key
 
@@ -40,8 +42,11 @@ pub(crate) const GRID_TRACK_LIST_CAPACITY: usize = 12;
 /// The maximum `(name, line_index)` registrations one track list retains.
 pub(crate) const GRID_LINE_NAME_CAPACITY: usize = 8;
 
-/// The maximum lines one name may label within one track list (the D4
-/// multiple-same-name span rule's bound).
+/// The maximum lines one name may label within one track list. A name may
+/// legitimately label multiple lines for the named set's Nth-match indexing
+/// (CSS Grid §8.1.3 "exclusively indexed by filtering the placement by name" —
+/// `text 5` is the 5th line named `text`); the cap bounds that multiplicity,
+/// and anything beyond it drops with a counted report.
 pub(crate) const GRID_LINE_NAME_PER_NAME_CAPACITY: usize = 4;
 
 /// An interned grid track list: the expanded track sizes plus the retained
