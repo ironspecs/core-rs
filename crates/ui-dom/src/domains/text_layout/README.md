@@ -169,6 +169,42 @@ family is carried as `cosmic_text::FamilyOwned` (the non-allocating sibling of
 `cosmic_text::Family`). The `ResolutionPath` is read via the seam's public
 `resolve` API in tests, never emitted.
 
+## RTL and vertical honesty (text seam S5)
+
+**RTL — auto-detect is the pinned truth.** cosmic-text 0.18.2 exposes no
+paragraph-direction setter, so `text_layout_attrs` never passes a direction to
+the shaper: bidi is auto-detected from the text, and an Arabic-leading string
+shapes RTL with no direction hint (pinned by `door_3_rtl_runs_carry_rtl_flags`).
+The request's `direction` field therefore governs only start/end alignment
+(`text_align_for_css_value`), never shaping. The caret helpers in `mod.rs`
+(`glyph_left/right_boundary_byte_index`, `glyph_left/right_boundary_x_px`) flip
+caret-stop coordinates on `run.rtl`, and the caret map emits stops in visual
+order for mixed LTR/RTL text — Latin stops left-to-right in logical order, then
+RTL-segment stops continuing left-to-right with reversed (decreasing) byte
+indices (pinned by `door_3_caret_map_orders_visual_runs`).
+
+The run-level `rtl` flag and the caret map are `pub(crate)`-only, so both door-3
+pins land crate-internally (door-1/door-2 precedent); the door's public proof is
+the observable behavior — the direction property governs start/end alignment —
+pinned publicly in `tests/layout_proofs/text/rtl.rs`.
+
+**Named boundaries (caret model).** Two deliberate-deferred boundaries are
+registered in the layout-proof registry, not silently absent:
+
+- the caret MOVEMENT model is scalar-offset/LTR-first — arrow-key motion steps
+  scalar offsets in logical order, with no visual-order (bidi) traversal;
+  `keyboard.rs` owns editing, and the visual-order movement model is out of the
+  seam's v1 scope;
+- point-hit-testing for caret placement is unwired —
+  `text_caret_map`/`text_caret_stop_byte_index_at_point` are the dead entries
+  S1 noted; click-to-place caret positioning is not wired into any production
+  path, and keyboard-only selection is today's editing model.
+
+**Vertical writing — named boundary.** `writing-mode` remains unadmitted (the
+existing `unsupported_property_tail_drops` gate pin stands exactly); vertical
+writing is out of the seam's v1 scope, registered as the gate's allowed honest
+outcome.
+
 ## The zero-size doctrine`font-size: 0` is CSS-legal (CSS Fonts 4 §3.5), but cosmic-text asserts a
 non-zero font size when it builds a `Buffer`. Every entry point therefore
 guards `font_size_px == 0.0` and returns an honest zero-size answer without

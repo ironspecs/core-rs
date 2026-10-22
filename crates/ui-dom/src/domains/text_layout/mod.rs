@@ -1048,4 +1048,145 @@ mod tests {
     fn line_start_indices_lf_only_unchanged() {
         assert_eq!(super::line_start_byte_indices("a\nb"), vec![0, 2]);
     }
+
+    // — text seam S5, door 3 (RTL) — //
+    //
+    // These two pins are the crate-internal half of the door-3 proof. Both
+    // assert through surfaces that are `pub(crate)` only:
+    //
+    // - the run-level `rtl` flag lives on cosmic-text's `LayoutRun`, reachable
+    //   only through the crate-internal `Buffer` shaping path — no public type
+    //   (`TextIntrinsic`, `TextRunPaintOp`, `TextFontCatalog`, `resolve`)
+    //   exposes it (door-1/door-2 precedent: crate-internal where the public
+    //   surface cannot express the claim);
+    // - `TextCaretMap`/`TextCaretLine`/`CaretStop` and `text_caret_map` are
+    //   `pub(crate)`; the public `text_caret_layout` route (the focused-input
+    //   caret rect in `types/element_behaviors/paint.rs`) exposes a single
+    //   collapsed-selection caret x, not the full per-run stop ordering this
+    //   pin asserts.
+    //
+    // Both shape through the DEFAULT repo face, not the OFL Arabic fixture: the
+    // `rtl` flag and the caret stop ordering are bidi auto-detect answers (the
+    // unicode bidi algorithm's run/paragraph direction), independent of the
+    // face. Installing the fixture here would pollute the shared
+    // `TextFontCatalog::repo_default()` singleton and break the
+    // `installed_face_ids().len() == 4` pin in `ui_dom_text_font_catalog.rs`;
+    // the fixture's real-glyph role is carried by the PUBLIC door-2 and door-3
+    // proofs in `tests/layout_proofs/text/` (separate process, via
+    // `font-family`).
+    //
+    // The PUBLIC proof of door 3 is the observable behavior, pinned in
+    // `tests/layout_proofs/text/rtl.rs` (the direction property governs
+    // start/end alignment — the bidi "position effect" the v3 doctrine names).
+
+    #[test]
+    fn door_3_rtl_runs_carry_rtl_flags() {
+        // Door 3 (a): cosmic-text 0.18.2 has NO paragraph-direction setter, so
+        // `text_layout_attrs` never passes a direction — auto-detect is the
+        // pinned truth. The request below carries the default `direction: Ltr`
+        // (unused by shaping), yet an Arabic-leading string still shapes RTL:
+        // the shaped runs carry `rtl` flags with no direction hint.
+        let mut context = default_context();
+        let arabic = TextLayoutRequest::for_text("مرحبا بالعالم", DEFAULT_TEXT_FONT_SIZE_PX);
+        let arabic_buffer =
+            build_wrapped_text_buffer(&mut context.font_system, &context.font_catalog, &arabic);
+        let arabic_runs: Vec<_> = arabic_buffer.layout_runs().collect();
+        assert!(
+            !arabic_runs.is_empty(),
+            "an Arabic-leading string should lay out at least one run",
+        );
+        assert!(
+            arabic_runs.iter().all(|run| run.rtl),
+            "an Arabic-leading string should shape every run RTL with no direction hint",
+        );
+
+        // Control: a Latin-leading string in the same context shapes LTR, so
+        // the flag is a real direction signal, never always-on.
+        let latin = TextLayoutRequest::for_text("Hello world", DEFAULT_TEXT_FONT_SIZE_PX);
+        let latin_buffer =
+            build_wrapped_text_buffer(&mut context.font_system, &context.font_catalog, &latin);
+        assert!(
+            latin_buffer.layout_runs().all(|run| !run.rtl),
+            "a Latin-leading string should shape every run LTR",
+        );
+    }
+
+    #[test]
+    fn door_3_caret_map_orders_visual_runs() {
+        // Door 3 (b): a MIXED LTR/RTL string's caret map orders stops in visual
+        // order. cosmic-text stores the RTL segment's glyphs already visually
+        // ordered (reversed logical order, per-glyph bidi levels), so the caret
+        // map — which emits one stop per glyph boundary in glyph order — yields
+        // Latin stops left-to-right in logical order, then Arabic stops
+        // continuing left-to-right with DECREASING byte indices (the RTL
+        // progression: logical order reversed).
+        let mut context = default_context();
+        let text = "abc مرحبا";
+        // Byte offset where the Arabic text begins (after the Latin prefix and
+        // the separating space); Arabic caret stops land strictly past it.
+        let arabic_byte_start = "abc ".len();
+        let request = TextLayoutRequest::for_text(text, DEFAULT_TEXT_FONT_SIZE_PX);
+        let (buffer, transformed_text, transformed_to_original_byte) =
+            build_wrapped_text_buffer_and_byte_map(
+                &mut context.font_system,
+                &context.font_catalog,
+                &request,
+            );
+        let caret_map =
+            text_caret_map_from_buffer(&transformed_text, &transformed_to_original_byte, &buffer);
+
+        // One visual line: the un-wrapped mixed string is a single run/line.
+        assert_eq!(
+            caret_map.lines.len(),
+            1,
+            "the mixed string should lay out one caret line",
+        );
+        let stops = &caret_map.lines[0].stops;
+
+        // (a) Visual order: stops progress left-to-right (non-decreasing x).
+        for window in stops.windows(2) {
+            assert!(
+                window[0].x_px <= window[1].x_px,
+                "caret stops should progress left-to-right in visual order",
+            );
+        }
+
+        // (b) Run boundary: every Latin stop (byte <= the Arabic start) precedes
+        // every Arabic stop (byte > the Arabic start) — Latin block left, Arabic
+        // block right, matching visual order.
+        let latin_x: Vec<f32> = stops
+            .iter()
+            .filter(|stop| stop.byte_index <= arabic_byte_start)
+            .map(|stop| stop.x_px)
+            .collect();
+        let arabic_x: Vec<f32> = stops
+            .iter()
+            .filter(|stop| stop.byte_index > arabic_byte_start)
+            .map(|stop| stop.x_px)
+            .collect();
+        assert!(
+            !latin_x.is_empty() && !arabic_x.is_empty(),
+            "the mixed string should expose both Latin and Arabic caret stops",
+        );
+        assert!(
+            latin_x
+                .iter()
+                .all(|&left| arabic_x.iter().all(|&right| left < right)),
+            "Latin caret stops should all sit left of the Arabic caret stops",
+        );
+
+        // (c) RTL progression: the Arabic stops' byte indices decrease (logical
+        // order reversed) while their x positions continue left-to-right.
+        let arabic_bytes: Vec<usize> = stops
+            .iter()
+            .filter(|stop| stop.byte_index > arabic_byte_start)
+            .map(|stop| stop.byte_index)
+            .collect();
+        for window in arabic_bytes.windows(2) {
+            assert!(
+                window[0] > window[1],
+                "Arabic caret stops should progress right-to-left (decreasing byte indices)",
+            );
+        }
+    }
 }
