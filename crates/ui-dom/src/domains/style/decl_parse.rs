@@ -280,7 +280,7 @@ pub(crate) fn longhands_for_name(name: &str) -> Option<SmallVec<[PresentationPro
 }
 
 /// True when `name` is a presentation-property write: one of the 71 longhand
-/// names or one of the 16 shorthand names (the `longhands_for_name` admission
+/// names or one of the 18 shorthand names (the `longhands_for_name` admission
 /// surface). The D5 enforcement gate (`set_attr_str`) consults this BEFORE
 /// `DomAttribute::try_from`, so a presentation name never reaches the content
 /// vocabulary's `Custom` fallthrough; `set_attr` applies the same check to
