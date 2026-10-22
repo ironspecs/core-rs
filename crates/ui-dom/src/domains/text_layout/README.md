@@ -113,6 +113,26 @@ The style system hands the seam a resolved text style — the parsed
   removed, and the render world resolves a run's face id from its family list
   (`font_fallback_policy::resolve_face_id`).
 
+### The family-list grammar (text seam S2, D3 + R1/R4)
+
+`font-family` parses in `decl_parse.rs` (`parse_family_list`) and serializes in
+`style/computed/text_family_list.rs` (`to_css_string`):
+
+- comma-separated items, split QUOTE-AWARE — a comma inside a quoted string is
+  name content, not a separator (text seam R1; the pre-R1 `split(',')` dropped
+  `"A, B"`);
+- each item is a quoted string (single or double; the matching pair is
+  stripped) or an unquoted custom-ident sequence; the bare generic keywords
+  (`serif`/`sans-serif`/`monospace`/`system-ui`) parse to `Generic(_)`;
+- empty items, empty lists, unterminated quotes, names containing BOTH quote
+  kinds, and over-capacity lists (the 16-item cap, text seam R2) all drop +
+  count;
+- `to_css_string` is the canonical wire form and round-trips every parseable
+  list: the empty name quotes as `""` (bare drops on replay), quoting prefers
+  double quotes and switches to SINGLE quotes when the name contains `"`, and
+  the both-quotes rejection keeps the admitted set round-trip-closed (text seam
+  R4).
+
 ## The catalog and the consumer door (text seam S3)
 
 `TextFontCatalog` is the single source of truth for "which faces exist". It is

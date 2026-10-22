@@ -3,9 +3,12 @@
 //!
 //! These pins witness the S2 surface the off-spec registry rows' rewrite relies
 //! on: the parsed family list serializes per CSS rules (quoted names re-quoted,
-//! generics bare, malformed lists drop + count), and a resolved weight reaches
-//! the shaper's attrs (700 vs 400 select different variable-font instances, so
-//! the measured width differs).
+//! generics bare, malformed lists drop + count), the split is QUOTE-AWARE (a
+//! comma inside a quoted name is name content — text seam R1), the list
+//! capacity gate drops + counts over 16 and admits 16 (text seam R2), the
+//! serializer round-trip-closes the empty name and the opposite-quote name
+//! (text seam R4), and a resolved weight reaches the shaper's attrs (700 vs 400
+//! select different variable-font instances, so the measured width differs).
 //!
 //! Text intrinsics for a fixed font are bit-identical, so the width-difference
 //! assertions compare exact `f32` literals (deliberate exact checks).
@@ -66,6 +69,100 @@ fn font_family_list_parses_quoted_and_generic() {
     assert_decl_drop(".x { font-family: , }", 0, 1);
     assert_decl_drop(".x { font-family: Arial,, sans-serif }", 0, 1);
     assert_decl_drop(".x { font-family: \"Arial }", 0, 1);
+}
+
+#[test]
+fn font_family_list_parses_quoted_comma_names() {
+    // A comma inside a quoted name is name content, not a separator (text seam
+    // R1): `"A, B"` is ONE name plus the generic, and round-trips re-quoted.
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, target, "class", "x");
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".x { font-family: \"A, B\", sans-serif }",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").font_family(),
+        Some("\"A, B\", sans-serif".to_string())
+    );
+}
+
+#[test]
+fn font_family_list_capacity_gate_drops_over_16_and_admits_16() {
+    // A 9-entry Bootstrap-style system stack plus 7 more named families is
+    // exactly 16 items: it ADMITS (the capacity-16 gate, text seam R2).
+    let system_stack = [
+        "system-ui",
+        "-apple-system",
+        "\"Segoe UI\"",
+        "Roboto",
+        "\"Helvetica Neue\"",
+        "Arial",
+        "sans-serif",
+        "\"Apple Color Emoji\"",
+        "\"Segoe UI Emoji\"",
+    ];
+    let extra = [
+        "ui-sans",
+        "ui-serif",
+        "ui-monospace",
+        "ui-rounded",
+        "\"Source Han Sans\"",
+        "\"IBM Plex Sans\"",
+        "\"Noto Sans\"",
+    ];
+    let sixteen = system_stack
+        .iter()
+        .chain(extra.iter())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_decl_drop(&format!(".x {{ font-family: {sixteen} }}"), 1, 0);
+
+    // A 17th item crosses the capacity: drop + count, no crash.
+    let seventeen = format!("{sixteen}, \"One Too Many\"");
+    assert_decl_drop(&format!(".x {{ font-family: {seventeen} }}"), 0, 1);
+}
+
+#[test]
+fn font_family_name_round_trips_and_both_quotes_drop() {
+    // The empty name round-trips as `""` (bare would drop on replay — text seam
+    // R4).
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, target, "class", "x");
+    assert_load_root_stylesheet(&root, theme_stylesheet_origin(), ".x { font-family: \"\" }");
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").font_family(),
+        Some("\"\"".to_string())
+    );
+
+    // A name holding a double quote round-trips emitted single-quoted (text
+    // seam R4).
+    let (mut world, mut root) = attached_gpu_root_dom_default_viewport_setup();
+    let document_root = root.document_node().0;
+    let target = assert_append_div_to(&mut root, document_root);
+    assert_set_attr_str(&mut root, target, "class", "x");
+    assert_load_root_stylesheet(
+        &root,
+        theme_stylesheet_origin(),
+        ".x { font-family: 'a\"b' }",
+    );
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+    assert_eq!(
+        root.computed_style(target).expect("target").font_family(),
+        Some("'a\"b'".to_string())
+    );
+
+    // A name holding BOTH quote kinds drops + counts (unserializable — text
+    // seam R4).
+    assert_decl_drop(".x { font-family: a'b\"c }", 0, 1);
 }
 
 #[test]

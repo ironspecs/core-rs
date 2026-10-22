@@ -13,7 +13,10 @@
 //! Invariants and rules:
 //!
 //! - `items` holds at most `TEXT_FAMILY_LIST_CAPACITY` items; a list over
-//!   capacity drops at parse, never a silent cap
+//!   capacity drops at parse, never a silent cap. The cap is 16 (text seam R2):
+//!   real-world system stacks (Bootstrap's 9-entry stack) admit with headroom;
+//!   the over-capacity form is a counted drop, registered in the
+//!   layout-proof registry
 //! - a quoted family name's quote pair is stripped at parse and re-added by
 //!   `to_css_string` only when the name needs it (whitespace/punctuation); an
 //!   unquoted generic keyword (`serif`/`sans-serif`/`monospace`/`system-ui`)
@@ -22,7 +25,10 @@
 //!   (same items, same names) intern to one key
 //! - `to_css_string` is the canonical CSS serialization (quote names with
 //!   whitespace/punctuation, emit generics bare), and round-trips through the
-//!   grammar for every parseable list
+//!   grammar for every parseable list. The empty name quotes as `""` (bare
+//!   drops on replay); quoting prefers double quotes and switches to SINGLE
+//!   quotes when the name contains `"`; the parser rejects names containing
+//!   BOTH quote kinds, so the admitted set is round-trip-closed (text seam R4)
 
 use std::sync::Arc;
 
@@ -31,8 +37,10 @@ use arrayvec::ArrayVec;
 use super::font_family_generic::FontFamilyGeneric;
 
 /// The maximum family-name items one `font-family` list may hold (the
-/// design-system standard; larger lists are a named D6-gated follow-up).
-pub(crate) const TEXT_FAMILY_LIST_CAPACITY: usize = 8;
+/// design-system bound, raised from 8 in text seam R2: Bootstrap's 9-entry
+/// system stack plus headroom; the over-capacity form is a counted drop,
+/// registered in the layout-proof registry).
+pub(crate) const TEXT_FAMILY_LIST_CAPACITY: usize = 16;
 
 /// One item in a family list: a named family (quoted or unquoted) or a generic
 /// keyword. A quoted generic (`"serif"`) is a NAME, not the generic keyword —
@@ -65,8 +73,12 @@ impl TextFamilyList {
     }
 
     /// The canonical CSS serialization: family names containing whitespace or
-    /// ASCII punctuation are re-quoted, generics are emitted bare, and items
-    /// are comma-space separated. Round-trips through the grammar.
+    /// ASCII punctuation are re-quoted, the empty name quotes as `""`,
+    /// generics are emitted bare, and items are comma-space separated.
+    /// Round-trips through the grammar. Quoting prefers double quotes and
+    /// switches to SINGLE quotes when the name contains `"` (the parser rejects
+    /// names containing BOTH quote kinds, so every admitted name round-trips —
+    /// text seam R4).
     #[must_use]
     pub(crate) fn to_css_string(&self) -> String {
         let mut out = String::new();
@@ -75,15 +87,19 @@ impl TextFamilyList {
                 out.push_str(", ");
             }
             match item {
-                TextFamilyItem::FamilyName(name) => {
-                    if family_name_needs_quoting(name) {
+                TextFamilyItem::FamilyName(name) => match family_name_quote(name) {
+                    FamilyNameQuote::Bare => out.push_str(name),
+                    FamilyNameQuote::Double => {
                         out.push('"');
                         out.push_str(name);
                         out.push('"');
-                    } else {
-                        out.push_str(name);
                     }
-                }
+                    FamilyNameQuote::Single => {
+                        out.push('\'');
+                        out.push_str(name);
+                        out.push('\'');
+                    }
+                },
                 TextFamilyItem::Generic(generic) => out.push_str(generic.name()),
             }
         }
@@ -91,12 +107,40 @@ impl TextFamilyList {
     }
 }
 
-/// True when a family name must be quoted in the wire form: it contains ASCII
-/// whitespace or punctuation (a non-`<custom-ident>` character). Non-ASCII
-/// characters (CJK, accented names) are bare by the CSS family-name grammar.
+/// How a family name is quoted on the wire.
+enum FamilyNameQuote {
+    /// Bare (a `<custom-ident>`: alphanumeric plus `-`/`_`, non-ASCII).
+    Bare,
+    /// Double-quoted (the preferred form).
+    Double,
+    /// Single-quoted (the name contains a `"`).
+    Single,
+}
+
+/// The wire quoting a family name needs. The empty name is quoted (`""`) so it
+/// does not drop on replay; a name containing `"` switches to single quotes.
+/// A name containing BOTH quote kinds never reaches here (the parser drops it —
+/// text seam R4).
+fn family_name_quote(name: &str) -> FamilyNameQuote {
+    if !family_name_needs_quoting(name) {
+        return FamilyNameQuote::Bare;
+    }
+    if name.contains('"') {
+        FamilyNameQuote::Single
+    } else {
+        FamilyNameQuote::Double
+    }
+}
+
+/// True when a family name must be quoted in the wire form: it is empty (bare
+/// drops on replay) or contains ASCII whitespace or punctuation (a non-`<custom-ident>`
+/// character). Non-ASCII characters (CJK, accented names) are bare by the CSS
+/// family-name grammar.
 fn family_name_needs_quoting(name: &str) -> bool {
-    name.chars()
-        .any(|ch| ch.is_ascii() && !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
+    name.is_empty()
+        || name
+            .chars()
+            .any(|ch| ch.is_ascii() && !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
 }
 
 #[cfg(test)]
@@ -144,5 +188,27 @@ mod tests {
                 .collect(),
         };
         assert_eq!(list.to_css_string(), "ui-sans, ヒラギノ角ゴ");
+    }
+
+    #[test]
+    fn serialization_quotes_the_empty_name_and_switches_to_single_quotes() {
+        // The empty name quotes as `""` — bare would drop on replay (text seam R4).
+        let empty = TextFamilyList {
+            items: [name("")].into_iter().collect(),
+        };
+        assert_eq!(empty.to_css_string(), "\"\"");
+
+        // A name containing a double quote switches to SINGLE quotes (text seam
+        // R4); the preferred double form would leave a stray inner quote.
+        let double_inside = TextFamilyList {
+            items: [name("a\"b")].into_iter().collect(),
+        };
+        assert_eq!(double_inside.to_css_string(), "'a\"b'");
+
+        // A name containing only a single quote still prefers double quotes.
+        let single_inside = TextFamilyList {
+            items: [name("a'b")].into_iter().collect(),
+        };
+        assert_eq!(single_inside.to_css_string(), "\"a'b\"");
     }
 }

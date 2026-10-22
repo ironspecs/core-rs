@@ -50,6 +50,10 @@
 //!   mirroring the longhand's `AUTO_ADMISSIBLE` entry and producing
 //!   `DeclValue::Keyword(Keyword::Auto)`; `expand_padding` does not (padding
 //!   stays `NonNegativeLength` and `auto` keeps dropping)
+//! - the `font-family` list grammar splits comma-separated items QUOTE-AWARE
+//!   (a comma inside a quoted string is name content — text seam R1), strips a
+//!   quoted item's matching quote pair, and rejects names containing BOTH quote
+//!   kinds (they cannot round-trip — text seam R4); see `parse_family_list`
 
 // `parse_declaration_block` is wired into the stylesheet load path (spine
 // step 2); `parse_declaration_strict` is wired into the `style_mut` single
@@ -1364,12 +1368,15 @@ fn parse_text(value: &str, store: &mut DeclStore) -> Option<DeclValue> {
 // — Font-family list — //
 
 /// Parses a `font-family` list (text seam S2, `TEXT_SEAM_DESIGN.md` D3):
-/// comma-separated items, each a quoted string (single or double; the quote
-/// pair is stripped) or an unquoted custom-ident sequence (whitespace-separated
-/// tokens joined with single spaces), with the bare generic keywords
-/// (`serif`/`sans-serif`/`monospace`/`system-ui`) mapping to `Generic(_)`.
-/// Empty items, empty lists, unterminated quotes, and over-capacity lists all
-/// drop (return `None` → counted drop by the block parse).
+/// comma-separated items split QUOTE-AWARE (a comma inside a quoted string is
+/// name content, not a separator — text seam R1), each item a quoted string
+/// (single or double; the quote pair is stripped) or an unquoted custom-ident
+/// sequence (whitespace-separated tokens joined with single spaces), with the
+/// bare generic keywords (`serif`/`sans-serif`/`monospace`/`system-ui`) mapping
+/// to `Generic(_)`. Empty items, empty lists, unterminated quotes, names
+/// containing BOTH quote kinds (unserializable — text seam R4), and
+/// over-capacity lists all drop (return `None` → counted drop by the block
+/// parse).
 fn parse_family_list(value: &str, store: &mut DeclStore) -> Option<TextFamilyListKey> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1378,7 +1385,7 @@ fn parse_family_list(value: &str, store: &mut DeclStore) -> Option<TextFamilyLis
     let mut list = TextFamilyList {
         items: ArrayVec::new(),
     };
-    for item in trimmed.split(',') {
+    for item in split_family_list_items(trimmed) {
         let item = item.trim();
         if item.is_empty() {
             return None;
@@ -1392,8 +1399,41 @@ fn parse_family_list(value: &str, store: &mut DeclStore) -> Option<TextFamilyLis
     Some(store.intern_family_list(&list))
 }
 
+/// Splits a family list at TOP-LEVEL commas: a comma inside a quoted item is
+/// name content, not a separator (text seam R1 — the quote-aware split; the
+/// pre-R1 `split(',')` dropped `font-family: "A, B"`). An unterminated quote
+/// keeps the rest of the value one item, which `parse_family_list_item` then
+/// drops.
+fn split_family_list_items(value: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut start = 0usize;
+    let mut open_quote: Option<char> = None;
+    for (index, ch) in value.char_indices() {
+        match open_quote {
+            None => {
+                if ch == '"' || ch == '\'' {
+                    open_quote = Some(ch);
+                } else if ch == ',' {
+                    items.push(&value[start..index]);
+                    start = index + ch.len_utf8();
+                }
+            }
+            Some(quote) => {
+                if ch == quote {
+                    open_quote = None;
+                }
+            }
+        }
+    }
+    items.push(&value[start..]);
+    items
+}
+
 /// Parses one comma-separated family-list item: a quoted string or an unquoted
-/// custom-ident sequence.
+/// custom-ident sequence. Every accepted name round-trips through
+/// `TextFamilyList::to_css_string` (text seam R4): a quoted name keeps at most
+/// the opposite quote kind, and the unquoted path rejects names containing BOTH
+/// quote kinds.
 fn parse_family_list_item(item: &str) -> Option<TextFamilyItem> {
     let first = item.chars().next()?;
     if first == '"' || first == '\'' {
@@ -1414,6 +1454,9 @@ fn parse_family_list_item(item: &str) -> Option<TextFamilyItem> {
 
 /// Parses an unquoted family item: a bare generic keyword maps to `Generic`,
 /// otherwise the whitespace-separated tokens are joined into one family name.
+/// A name containing BOTH quote kinds drops (text seam R4): the serializer can
+/// wrap it in neither double nor single quotes without a stray inner quote, so
+/// it could not round-trip.
 fn parse_unquoted_family_item(item: &str) -> Option<TextFamilyItem> {
     let tokens: Vec<&str> = item.split_whitespace().collect();
     if tokens.is_empty() {
@@ -1424,8 +1467,12 @@ fn parse_unquoted_family_item(item: &str) -> Option<TextFamilyItem> {
     {
         return Some(TextFamilyItem::Generic(generic));
     }
+    let name = tokens.join(" ");
+    if name.contains('"') && name.contains('\'') {
+        return None;
+    }
     Some(TextFamilyItem::FamilyName(std::sync::Arc::<str>::from(
-        tokens.join(" "),
+        name,
     )))
 }
 
@@ -3056,6 +3103,58 @@ mod tests {
                 "{malformed:?} should drop"
             );
         }
+    }
+
+    #[test]
+    fn family_list_grammar_splits_quote_aware() {
+        let mut store = DeclStore::default();
+        // A comma inside a quoted name is name content, not a separator (text
+        // seam R1): `"A, B"` is ONE name, then the generic.
+        let parsed = parse_value(DeclGrammar::FamilyList, "\"A, B\", sans-serif", &mut store)
+            .expect("a quoted-comma name should parse");
+        let DeclValue::FamilyList(key) = parsed else {
+            panic!("font-family should intern to a family list");
+        };
+        let list = store.resolve_family_list(key).expect("list resolves");
+        assert_eq!(list.items.len(), 2);
+        assert_eq!(
+            list.first_family_name(),
+            Some("A, B"),
+            "the quoted-comma name resolves as one requested name"
+        );
+        // Round-trips through the wire form (the name re-quotes).
+        assert_eq!(list.to_css_string(), "\"A, B\", sans-serif");
+    }
+
+    #[test]
+    fn family_list_grammar_round_trips_empty_and_opposite_quoted_names() {
+        let mut store = DeclStore::default();
+        // The empty name round-trips as `""` (bare would drop on replay — text
+        // seam R4).
+        let parsed = parse_value(DeclGrammar::FamilyList, "\"\"", &mut store)
+            .expect("the empty quoted name should parse");
+        let DeclValue::FamilyList(key) = parsed else {
+            panic!("empty name should intern");
+        };
+        let list = store.resolve_family_list(key).expect("list resolves");
+        assert_eq!(list.to_css_string(), "\"\"");
+
+        // A single-quoted name holding a double quote round-trips emitted
+        // single-quoted (text seam R4).
+        let parsed = parse_value(DeclGrammar::FamilyList, "'a\"b'", &mut store)
+            .expect("a name with a double quote should parse");
+        let DeclValue::FamilyList(key) = parsed else {
+            panic!("opposite-quoted name should intern");
+        };
+        let list = store.resolve_family_list(key).expect("list resolves");
+        assert_eq!(list.to_css_string(), "'a\"b'");
+
+        // A name holding BOTH quote kinds drops (unserializable — text seam R4).
+        assert_eq!(
+            parse_value(DeclGrammar::FamilyList, "a'b\"c", &mut store),
+            None,
+            "a both-quotes name should drop"
+        );
     }
 
     #[test]
