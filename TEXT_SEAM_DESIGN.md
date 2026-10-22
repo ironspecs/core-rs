@@ -1,13 +1,49 @@
 # TEXT_SEAM_DESIGN.md — PR 4: the text seam, proven open (complete design)
 
 Status: `COMPLETE DESIGN — no open questions; transcription is
-mechanical`. Date: 2026-10-22 (v2, same day). Author: the architect.
+mechanical`. Date: 2026-10-22 (v3, same day). Author: the architect.
 Authority: PLAN.md "PR 4 — the text seam" (lines 650–708: the
 three-stage seam, the fallback policy table, the TextStyle handoff,
 the four-door proof gate, the kill criterion, the context-scoped
 catalog ruling, the line-height floor boundary); the text-domain
 survey of 2026-10-22 (call-site map, consumption graves, catalog
 reality).
+
+**v3 changelog (S4 STOP adjudication, 2026-10-22).** The S4
+transcription STOPped on D10(c): door-2 assertion (a) (non-zero
+glyph ids) is unobservable through the public pipeline — glyph ids
+exist only inside crate-internal shaping, and both escapes (a
+test-only public accessor; a crate-internal proof) are foreclosed.
+Adjudicated, WITHOUT relaxing the gate's intent:
+
+- **Door-2 (a) is re-expressed as (c), which is strictly stronger.**
+  The contextual-shaping assertion (a ligatured pair measuring
+  differently than the sum of its isolated characters) is impossible
+  under notdef passthrough — uniform advance, no GSUB engagement. It
+  publicly proves everything (a) proxied. Door 2's public proof is
+  (b) + (c): measure-stage, layout-proofs pipeline.
+- **The demotion becomes countable — a production observability fix,
+  not test-only visibility.** The survey found the debug-rect
+  demotion is SILENT today: a consumer with missing coverage gets
+  debug rects with no signal. `LayerPoolMetricName` gains
+  `TextRunGlyphCoverageDemotion` (enum-indexed, zero-allocation —
+  the doctrine's designed surface; it justifies the demotion
+  policy's production existence and gives S4's named `NoCoverage`
+  path its observable counterpart). Pinned by a crate-internal
+  `layer_pool` test — the render world is extraction-isolated and
+  exercised crate-internally BY PRECEDENT (the door-1 FontSystem #2
+  registration test landed the same way); the counter itself is
+  public production surface.
+- **The seam's resolve vocabulary widens to public**:
+  `TextLanguageId` and `TextFamilyList` become `pub` (they are the
+  policy table's input types; the resolve API is public seam surface
+  by design). `ResolutionPath` is `pub + Debug`. The resolved family
+  is carried as `FamilyOwned` (the non-allocating sibling of
+  `CosmicFamily`).
+- **Kill criterion (c) as re-expressed**: door 2 is achievable —
+  (b)+(c) publicly, the demotion counter crate-internally. The
+  criterion's substance (no test-only visibility, honest public
+  proof) is intact; the gate is NOT abandoned.
 
 **v2 changelog (S2 STOP adjudication, 2026-10-22).** The S2
 transcription STOPped: `TextFontFamilyId` carries TWO roles and the
@@ -254,15 +290,22 @@ Every `ResolutionPath` is observable (the resolved attrs carry it in
 debug form for proofs; no metric — the path is read via the seam's
 public resolve API in tests, not emission).
 
-**Door 2 proof** (depends on door 1): the Arabic fixture installed
-via the consumer API; an Arabic string shaped through the public
-pipeline: (a) the run's glyphs carry non-zero glyph ids (no debug
-demotion); (b) the measured width differs from the same string
+**Door 2 proof** (depends on door 1; v3 shape): the Arabic fixture
+installed via the consumer API; an Arabic string through the public
+pipeline: (a) the measured width differs from the same string
 measured against the default face (the fixture's metrics are in
-use); (c) a contextual-shaping assertion: a two-character sequence
-whose ligatured/contextual forms change advance widths measures
+use); (b) a contextual-shaping assertion — a two-character sequence
+whose ligatured/contextual forms change advance widths (the
+fixture's lam-alef if present, verified empirically) measures
 differently than the sum of the isolated characters — proving real
-shaping, not notdef passthrough.
+shaping, which notdef passthrough CANNOT produce (uniform advance,
+no GSUB engagement; strictly stronger than the v1 glyph-id
+assertion). **Plus** the `LayerPoolMetricName::
+TextRunGlyphCoverageDemotion` counter (v3): the demotion policy's
+production observability — pinned crate-internally in `layer_pool`
+(the render world is extraction-isolated by architecture, exercised
+crate-internally by the door-1 precedent), two-sided (a covered run
+does not increment it; an uncovered-script run does).
 
 ## D6. RTL and vertical honesty (S5, exact)
 
@@ -304,7 +347,7 @@ starts, and the choice recorded in the fixture README.
 | S1 | The full suite green UNCHANGED (structural migration); `cargo xtask lint` (the new READMEs satisfy the required-docs rule); the re-homed test constructions assert through the public builders |
 | S2 | `font_family_list_parses_quoted_and_generic` (comma-split, unquote, generics; malformed drops); `font_family_weight_style_flow_to_the_request` (styled node → request carries family/weight/style; signature distinguishes styled/unstyled runs); `font_weight_maps_to_cosmic_attrs` (700 vs 400 in the request → distinct `Attrs` weight — observable via the seam's public surface); the two `off_spec_font_*` rows REWRITTEN on-spec (consumption asserted); the quoted-family canonical round-trip pin UPDATED (parsed serialization replaces verbatim interning) |
 | S3 | `install_face_accepts_a_valid_font` (report Installed, family names read); `install_face_rejects_garbage_bytes` (Rejected, no panic); `consumer_face_renders_through_the_public_pipeline` (Door 1: measure + raster assert the fixture's metrics/family; the render-world registration observed); `catalog_revision_reloads_the_main_world_context` (install → next seam entry sees the face) |
-| S4 | `fallback_requested_name_wins` (installed name resolves `RequestedName`); `fallback_generic_maps` (sans-serif → IBM Plex; monospace → final face, `GenericMapped`); `fallback_script_coverage_routes_cjk` (the per-script pins, moved); `fallback_no_coverage_is_named` (Thai: `NoCoverage` + the named wrap policy); `fallback_final_face_is_always_installed` (the invariant); `door_2_arabic_shapes_with_real_glyphs` (the three assertions of D5's door 2) |
+| S4 | `fallback_requested_name_wins` (installed name resolves `RequestedName`); `fallback_generic_maps` (sans-serif → IBM Plex; monospace → final face, `GenericMapped`); `fallback_script_coverage_routes_cjk` (the per-script pins, moved); `fallback_no_coverage_is_named` (Thai: `NoCoverage` + the named wrap policy); `fallback_final_face_is_always_installed` (the invariant); `door_2_arabic_shapes_with_real_glyphs` (v3: the width-differs + contextual-ligature assertions through the public pipeline); `glyph_coverage_demotion_counts` (v3: the counter, two-sided, crate-internal `layer_pool`) |
 | S5 | `door_3_rtl_runs_carry_rtl_flags`; `door_3_caret_map_orders_visual_runs`; the two caret-model boundary registry rows; the `writing-mode` gate pin UNMOVED + the vertical boundary row |
 
 Perf/alloc pins re-pin ONLY with documented cause (S2's request
