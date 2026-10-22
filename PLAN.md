@@ -1838,6 +1838,23 @@ an f32 basis.
   spec-text-verified. Divergent registry 6-in-5 → 7-in-6. Proofs
   541 → 542. Next: T3.5 — auto-fill/auto-fit.
 
+- **2026-10-22 — grid T3.5 (auto-fill/auto-fit) landed** on `grid/t35`
+  (`0eaa051`), per `GRID_STEP5_DESIGN.md` v2. The first transcription
+  STOPped on four pin-table defects (all mine): auto-fill sizing is
+  fr-expand-verbatim (300/300, no occupancy awareness — the 360/240
+  figure was wrong), the 800px resize row is 266.67 each, the
+  multi-track span pin uses a fixed `100px 200px` list, and bare `fr`
+  in an auto-fill/fit span drops at parse (the zero-basis divergence;
+  the content-based repetition basis is a named deferred admission) —
+  plus a new lane-capacity clamp (`grid_repetition_count_capped`
+  layout-time metric) and `grid_line_context.rs` resolving against the
+  expanded line names. The card-wall idiom itself exposed a
+  pre-existing parse gap: `minmax(240px, 1fr)` had no `<flex>` arm in
+  the minmax max-bound parser; fixed with correct wire round-trip
+  (never serializes to a bare `1fr`). All 11 pins pass; the
+  auto-fill/auto-fit difference is exactly the collapse. Proofs
+  542 → 553. Next: T4 (`grid-template`/`grid` shorthands), then PR 4.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
