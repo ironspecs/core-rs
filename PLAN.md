@@ -226,11 +226,11 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-533 layout proofs (525 in
+537 layout proofs (529 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-21 after grid T3);
-the off-spec registry (6 divergent proofs in 5 divergent-class
-rows, 5 deliberate,
+cross-cutting `robustness.rs`; updated 2026-10-21 after the grid-area
+cascade fix); the off-spec registry (6 divergent proofs in 5
+divergent-class rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
 share one registry row) as a living divergence map with
@@ -1771,6 +1771,29 @@ an f32 basis.
   container resize; collapsed tracks for auto-fit), then T4
   (shorthand sugar), then PR 4 (the text seam) and PR 5 (the
   `RootDom` decomposition).
+
+- **2026-10-21 — the PR-27 third-party review's three findings
+  (fixed `d4c0d28` and `37a1465`).** (1) `grid-area: <name>` was
+  modeled as a separate `area_name` field that unconditionally won
+  over the placement longhands — a cascade break: `grid-area: header;
+  grid-column-start: 2` ignored the `2`, and re-setting the shorthand
+  between forms left the name stale. Fixed per the margin-shorthand
+  model: `grid-area: <custom-ident>` now expands to all four placement
+  longhands as `Named(name)` (the field deleted), so a later longhand
+  wins its slot (pinned: left 100, header rows, header end — NOT the
+  whole header rect) and re-setting between forms fully replaces
+  (pinned: the `2 / 3` placement, not the header rect). The
+  `Named(name)` longhand resolves per side (area match → that edge,
+  then line match, then documented auto fallback). (2) `grid-area:
+  auto` now resets to Auto instead of becoming a name. (3)
+  `is_custom_ident` now rejects `{span, initial, inherit, unset,
+  revert, revert-layer, auto}` (CSS Values 4 §3.2 + CSS Grid §7.1),
+  routing CSS-wide keywords to the css-wide path instead of name
+  positions. Named wart (recorded): `PresentationProperty::GridArea`
+  remains as a no-op enum variant (the shorthand now expands to the
+  longhands; the variant resolves to `None`) — its removal is a
+  public-API break deferred to the next breaking release, named here.
+  Proofs 533 → 537.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
