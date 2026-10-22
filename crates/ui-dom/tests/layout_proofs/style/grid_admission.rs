@@ -230,6 +230,22 @@ fn grid_repeat_bare_fr_drops_at_parse() {
 }
 
 #[test]
+fn grid_repeat_names_only_span_drops() {
+    // §7.2.3's `<auto-repeat>` requires ≥1 `<track-size>`: a names-only inner
+    // list (`repeat(auto-fill, [x])`) stores zero track sizes and would divide
+    // by zero at layout — drop + count at parse (B1), no layout panic.
+    assert_decl_drop(".x { grid-template-columns: repeat(auto-fill, [x]) }", 0, 1);
+    assert_decl_drop(".x { grid-template-columns: repeat(auto-fit, [x]) }", 0, 1);
+    assert_decl_drop(".x { grid-template-rows: repeat(auto-fill, [x]) }", 0, 1);
+    // A name PLUS a track size still admits (the ≥1 track-size control).
+    assert_grid_wire_value(
+        "grid-template-columns",
+        "repeat(auto-fill, [x] 100px)",
+        "repeat(auto-fill, [x] 100px)",
+    );
+}
+
+#[test]
 fn grid_negative_track_sizes_drop() {
     // CSS Grid §7.1 rejects negative track sizes. The four sign-check sites —
     // the leaf `fr` arm, the leaf `%` arm, the minmax min-bound `%` arm, and

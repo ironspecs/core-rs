@@ -587,6 +587,11 @@ fn expand_track_list(
 /// span_count)`. Returns `(N, capped)` — `capped` marks that the capacity clamp
 /// fired (the `grid_repetition_count_capped` metric). Recomputed every pass;
 /// never cached.
+///
+/// The capacity clamp compares the formula quotient in f32 BEFORE any integer
+/// conversion: the quotient is unbounded for astronomical/infinite definite
+/// sizes, so any value above the lane capacity clamps to it (the metric fires)
+/// and the f32→u32 conversion happens only on the already-clamped value (B2).
 fn compute_auto_repeat_count(
     stored_tracks: &[GridTrackSize],
     start: u8,
@@ -601,26 +606,29 @@ fn compute_auto_repeat_count(
     let prefix = start_usize;
     let suffix = stored_tracks.len() - start_usize - inner_usize;
     let capacity = ((GRID_TRACK_LIST_CAPACITY - prefix - suffix) / inner_usize).max(1);
-    let n_formula = match s {
+    let capacity_f32 = usize_to_f32(capacity);
+    // The fill-formula quotient, UNCLAMPED in f32 (it may be huge or infinite
+    // for astronomical/infinite definite sizes, and infinite for a zero basis).
+    let formula_f32 = match s {
         Some(s) => {
             let rep_size: f32 = stored_tracks[start_usize..start_usize + inner_usize]
                 .iter()
                 .map(|track| span_track_basis(track, s, h_min, h_max))
                 .sum();
             if rep_size > 0.0 {
-                let quotient = ((s + gap) / (rep_size + gap)).floor();
-                usize::try_from(f32_to_u32(quotient))
-                    .expect("repetition count fits usize")
-                    .max(1)
+                ((s + gap) / (rep_size + gap)).floor()
             } else {
                 // A zero repetition basis diverges; the capacity clamp bounds it.
-                usize::MAX
+                f32::INFINITY
             }
         }
-        None => 1,
+        None => 1.0,
     };
-    let n = n_formula.min(capacity).max(1);
-    (n, n_formula > capacity)
+    // Clamp in f32 BEFORE any integer conversion (B2), then convert only the
+    // clamped value (≤ the lane capacity, so it always fits u32).
+    let clamped_f32 = formula_f32.min(capacity_f32).max(1.0);
+    let n = usize::try_from(f32_to_u32(clamped_f32)).expect("clamped count fits u32");
+    (n, formula_f32 > capacity_f32)
 }
 
 /// One span track's repetition basis for the count: fixed → px, percent → % of
@@ -3482,6 +3490,28 @@ mod tests {
         // `repeat(auto-fill, 10px)` in 600px → formula wants 60, clamps to 12.
         let span = [px(10.0, 10.0)];
         let (n, capped) = compute_auto_repeat_count(&span, 0, 1, Some(600.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 12);
+        assert!(capped);
+    }
+
+    #[test]
+    fn auto_repeat_count_clamps_before_f32_to_u32_conversion() {
+        // B2: `repeat(auto-fill, 10px)` against an astronomical definite size.
+        // The quotient (2e11) exceeds u32's range; the clamp happens in f32
+        // FIRST, so the conversion sees only the clamped 12 (no panic).
+        let span = [px(10.0, 10.0)];
+        let (n, capped) =
+            compute_auto_repeat_count(&span, 0, 1, Some(2_000_000_000_000.0), 0.0, 0.0, 0.0);
+        assert_eq!(n, 12);
+        assert!(capped);
+        // An infinite definite size clamps the same way (never reaches f32_to_u32).
+        let (n, capped) =
+            compute_auto_repeat_count(&span, 0, 1, Some(f32::INFINITY), 0.0, 0.0, 0.0);
+        assert_eq!(n, 12);
+        assert!(capped);
+        // A zero basis clamps to capacity (metric fires) rather than panicking.
+        let zero = [px(0.0, 0.0)];
+        let (n, capped) = compute_auto_repeat_count(&zero, 0, 1, Some(600.0), 0.0, 0.0, 0.0);
         assert_eq!(n, 12);
         assert!(capped);
     }

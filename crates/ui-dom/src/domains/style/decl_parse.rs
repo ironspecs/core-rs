@@ -671,9 +671,10 @@ fn parse_flex_basis_length(value: &str) -> Option<DeclLength> {
 /// `GRID_LINE_NAME_CAPACITY` registrations, a name over
 /// `GRID_LINE_NAME_PER_NAME_CAPACITY` lines, a nested `repeat()`, a bare `fr`
 /// track inside an auto-fill/fit span (the deferred content-based repetition
-/// basis), a non-positive/non-integer repeat count, an empty/missing inner
-/// list, a second auto-repeat span, and an expanded count over
-/// `GRID_TRACK_LIST_CAPACITY`.
+/// basis), a names-only (zero track-size) auto-repeat inner list (§7.2.3
+/// requires ≥1 `<track-size>`), a non-positive/non-integer repeat count, an
+/// empty/missing inner list, a second auto-repeat span, and an expanded count
+/// over `GRID_TRACK_LIST_CAPACITY`.
 fn parse_track_list(value: &str, store: &mut DeclStore) -> Option<GridTrackListKey> {
     let mut list = GridTrackList::default();
     expand_track_list_tokens(value, store, &mut list)?;
@@ -742,6 +743,13 @@ fn expand_track_list_tokens(
                         }
                     }
                     let count = u8::try_from(out.tracks.len() - span_start_len).ok()?;
+                    // §7.2.3's `<auto-repeat>` requires ≥1 `<track-size>`: a
+                    // names-only inner list (`repeat(auto-fill, [x])`) has zero
+                    // track sizes and would divide by zero at layout — drop +
+                    // count at parse (B1).
+                    if count == 0 {
+                        return None;
+                    }
                     let grid_repeat = match kind {
                         RepeatCount::AutoFill => GridRepeat::AutoFill,
                         RepeatCount::AutoFit => GridRepeat::AutoFit,
@@ -3772,5 +3780,21 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn grid_track_list_auto_repeat_names_only_span_drops() {
+        let mut store = DeclStore::default();
+        // §7.2.3's `<auto-repeat>` requires ≥1 `<track-size>`: a names-only
+        // inner list stores zero track sizes and would divide by zero at
+        // layout — drop + count at parse (B1).
+        assert_eq!(parse_track_list("repeat(auto-fill, [x])", &mut store), None);
+        assert_eq!(parse_track_list("repeat(auto-fit, [x])", &mut store), None);
+        assert_eq!(
+            parse_track_list("repeat(auto-fill, [x] [y])", &mut store),
+            None
+        );
+        // A name PLUS a track size still admits (the ≥1 track-size control).
+        assert!(parse_track_list("repeat(auto-fill, [x] 100px)", &mut store).is_some());
     }
 }

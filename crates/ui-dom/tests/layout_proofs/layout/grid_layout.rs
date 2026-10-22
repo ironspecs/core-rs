@@ -1910,6 +1910,37 @@ fn grid_repeat_count_capped_at_lane_capacity() {
 }
 
 #[test]
+// CSS Grid §7.2.3.2 + B2: the capacity clamp compares in f32 BEFORE the f32→u32
+// conversion. An astronomical definite size (`width: 2000000000000px`) would
+// push the raw quotient past u32's range; the count clamps to 12 (no panic),
+// and the `grid_repetition_count_capped` metric fires.
+fn grid_repeat_count_clamps_before_conversion() {
+    let (mut world, mut root, container) = grid_container_setup();
+    assert_grid_container(
+        &mut root,
+        container,
+        "repeat(auto-fill, 10px)",
+        "2000000000000px",
+    );
+    for _ in 0..12 {
+        let item = assert_append_div_to(&mut root, container);
+        assert_style_set(&mut root, item, "height", "40px");
+    }
+    root.reset_metrics();
+    assert_root_dom_update(&mut world, &mut root, 0.0, DomPointerUpdate::Unchanged);
+
+    assert_eq!(
+        root.count(RootDomMetricName::GridRepetitionCountCapped),
+        1,
+        "the astronomical width's count clamped to lane capacity once"
+    );
+    // N = 12: twelve 10px tracks, the twelfth item sits at x = 110.
+    let rects = &take_staged_layer_paint_plans(&root)[0].rects;
+    assert_eq!(rects.len(), 13, "container + 12 items");
+    assert_rect_op_geometry(&rects[12], 110.0, 0.0, 10.0, 40.0, "12th track");
+}
+
+#[test]
 // CSS Grid §7.1 + §8.1.3: named lines inside an auto-repeat span repeat with
 // their tracks; `grid-column: main` resolves to the FIRST match (one track,
 // not a span across both `main` lines).
