@@ -226,10 +226,10 @@ sanctioned counter consumer). `RootDomFragment` holds no declarations
 
 ### 2.6 The verification infrastructure (the moat)
 
-537 layout proofs (529 in
+541 layout proofs (533 in
 `style/`/`layout/`/`text/`/`widgets/`/`pipeline/` plus 8 in the
-cross-cutting `robustness.rs`; updated 2026-10-21 after the grid-area
-cascade fix); the off-spec registry (6 divergent proofs in 5
+cross-cutting `robustness.rs`; updated 2026-10-22 after the multi-match
+correction); the off-spec registry (6 divergent proofs in 5
 divergent-class rows, 5 deliberate,
 grouped `unsupported_*` gates, a robustness family — census unit is
 PROOFS, not rows: the font-family and font-weight/style divergences
@@ -1794,6 +1794,29 @@ an f32 basis.
   longhands; the variant resolves to `None`) — its removal is a
   public-API break deferred to the next breaking release, named here.
   Proofs 533 → 537.
+
+- **2026-10-22 — the PR-27 review's "low-confidence" observation is a
+  genuine spec error in the architect's D4 rule (fixed `02862f0`); and
+  the `none` reset admission (`8a141b9`).** The D4 multiple-match rule
+  I designed ("treated as `Span(count)` across the matching lines")
+  does not exist in CSS Grid 1 — §8.1.3's named set is "exclusively
+  indexed by filtering the placement by name" (`text 5` = the 5th
+  line named text), a bare `<custom-ident>` is "treated as if the
+  integer 1 had been specified" (= first match), and `span
+  <custom-ident>` without an integer is span **1** from the first
+  match. Both engines agree (Blink `FirstPosition`, Gecko `aNth = 1`).
+  All three rows of my T3 multi-match pin were therefore wrong
+  (`main` and `span main` asserted span 2 / width 200; correct is
+  span 1 / width 100) and are corrected with wrong-rule vs spec-rule
+  discrimination documented. New interaction pins cover the reviewer's
+  case (`main / 4` → first match + explicit end; `3 / main` →
+  end-side first match with swap; `main / span 2` → span from first
+  match). The transcription escalated and corrected an off-by-one in
+  the architect's new-pin scenarios (0-based vs 1-based mixing) —
+  confirmed. The Nth-match form (`text 5`) stays unadmitted as a
+  named form (the first-match default covers `text 1`). Also admitted:
+  `grid-template-areas: none` as the initial-value reset (the empty
+  map; prior areas clear — pinned). Proofs 537 → 541.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
