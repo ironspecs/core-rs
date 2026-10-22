@@ -28,7 +28,11 @@
 //!   grammar for every parseable list. The empty name quotes as `""` (bare
 //!   drops on replay); quoting prefers double quotes and switches to SINGLE
 //!   quotes when the name contains `"`; the parser rejects names containing
-//!   BOTH quote kinds, so the admitted set is round-trip-closed (text seam R4)
+//!   BOTH quote kinds, so the admitted set is round-trip-closed (text seam R4).
+//!   One documented residual: a QUOTED generic (`"serif"`) parses to a NAME
+//!   (the quoted-generic caveat) but serializes bare as `serif`, which
+//!   re-parses as the generic — the wire form is a fixpoint, the value shifts
+//!   Name → Generic (pre-existing; named by the PR-4 re-review).
 
 use std::sync::Arc;
 
