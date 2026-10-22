@@ -1917,7 +1917,34 @@ an f32 basis.
   `grid_repeat_auto_fit_collapses_gutters_rows`,
   `grid_repeat_auto_fit_middle_collapse_places_flush`); the deviation is
   FIXED, not registered. `grid_repeat_count_with_gutters` (two items — nothing
-  collapses) stays green unchanged. Proofs 561 → 564.
+   collapses) stays green unchanged. Proofs 561 → 564.
+
+- **2026-10-22 — pushes suspended.** The user reported every push
+  triggers the automated third-party reviewer (>$100 in bills); local
+  commits only until told. The automated reviewer's three T3.5 passes
+  converged with our own review rounds (every finding closed).
+
+- **2026-10-22 — grid T4 (`grid-template`/`grid` shorthands) landed**
+  on `grid/t4` (`67320e0`), per `GRID_STEP6_DESIGN.md` v2 — the last
+  grid tier. Pure parse-time expansion into the already-landed
+  longhands (`grid-template` always sets the three template
+  longhands; `grid` always sets all six grid-shaping longhands —
+  CSS shorthand reset semantics), atomic drops, wire longhands-only
+  (the crate's `margin` model; no shorthand recomposition). The first
+  transcription STOPped on two defects: `none` was unrepresentable
+  for track lists (adjudicated symmetrically with T3's
+  `grid-template-areas: none`: the longhand grammars admit `none` →
+  the null-key sentinel, the wire gains the null-key → `"none"` arm,
+  the round-trip holds — a real T0-era gap the tier exposed) and a
+  second gated-behavior pin (`unsupported_grid_property_names_drop`)
+  joined the inversion set. 18 pins pass; proofs 564 → 582. Grid
+  admission T0–T4 is complete: the card-wall and page-shell idioms,
+  auto-fill/auto-fit, and the shorthand sugar all land; the remaining
+  grid boundaries are named (subgrid, baselines, bare-fr and
+  row-axis-content repetition bases, the inline-grid intrinsic fill,
+  the §12.1 re-run, the intrinsic fold's pre-collapse gap phrasing).
+  Next: PR 4 (the text seam, prove-or-abandon), then PR 5 (RootDom
+  decomposition).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
