@@ -2120,8 +2120,42 @@ an f32 basis.
   snapshots (revision, sources) consistently (loop until stable). N2:
   `install_face` documents the no-dedup contract. N4: four doc nits +
   the stale dead-code flag on `wrapped_text_layout_from_buffer`
-  (verified production-live). Layout proofs at remediation: 595 (all
-  green).
+   (verified production-live). Layout proofs at remediation: 595 (all
+   green).
+
+- **2026-10-23 — PR 5 direction adjudicated (owner): bottom-up
+  extraction, not top-down field split.** The newtype sketch is
+  superseded (recorded in the PR 5 section above); the direction,
+  the extraction catalog (E1–E8), and the back-off doctrine live in
+  `PR5_DECOMPOSITION_DESIGN.md` v2. Progressive: one or two
+  extractions per PR, each PR third-party-reviewed, folder
+  structures discovered from evidence rather than prescribed.
+
+- **2026-10-23 — PR 5 begun: E1 + E2 landed (the first bottom-up
+  extractions).** On `rootdom/decomposition`, per
+  `PR5_DECOMPOSITION_DESIGN.md` v2. E1 (`0c004ba`): the tree link
+  machinery re-homed to `types/tree_links.rs` — 24 items
+  (link get/set, append/detach/validate, cycle/no-op/partial-link
+  checks, subtree collect, born-dirty), byte-identical moves
+  (spot-verified), 9 contract tests; one E4 dirty-channel helper
+  pulled along as `append_child_to_parent`'s sole dependency (named
+  as an E4 re-home candidate). E2 (`0407b96`): the id index re-homed
+  to `types/id_index.rs` (4 functions, mechanical self→param), 6
+  contract tests. The first doctrine yields: (1) the assert-variant
+  triage verdicted **(b) meaningful divergence** —
+  `assert_id_is_available` (strict absence, for insertion/import)
+  vs `assert_id_is_available_for` (self-exclusion, for set_attr
+  re-set) — kept both, named in the file header; (2) the first
+  back-off found a REAL entanglement — `index_node_id_if_present`
+  reads through the metric-instrumented `RootDomNodes` proxy, and
+  re-homing it would silently drop a `Get` increment and move a
+  perf pin; it stays, with the named future fix (an insert
+  primitive taking a pre-resolved id — a signature change,
+  deferred). `root_dom.rs` 7,464 → 7,084. The folder verdict,
+  evidence-based: flat primitive files suffice; a `types/tree/`
+  folder emerges only if a third link-shaped primitive shares the
+  same borrow triple (revisit at E4/E1-splice). Full gate green per
+  commit; perf pins unmoved; the 48-fn contract unchanged.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)
