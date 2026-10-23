@@ -102,6 +102,9 @@ use crate::types::element_behaviors::{
     presented_options_row_is_highlighted, presented_options_row_source_index,
     set_select_source_option_selected_attrs, string_attr_value,
 };
+use crate::types::id_index::{
+    assert_id_is_available, assert_id_is_available_for, next_id_from_attr, replace_indexed_id,
+};
 use crate::types::primitives::PointPx;
 use crate::types::root_dom_context::RootDomContext;
 use crate::types::root_dom_fragment::RootDomFragment;
@@ -1213,7 +1216,8 @@ impl RootDom {
     /// Inserts one node into the root-owned slot store and updates the element
     /// id lookup if that node is an element carrying an `id` attribute.
     fn insert_node(&mut self, node: DomNode) -> Result<DomNodeSlotKey, DomError> {
-        self.assert_id_is_available(
+        assert_id_is_available(
+            &self.id_lookup,
             node.as_element()
                 .and_then(|element| element.attrs.id.as_deref()),
         )?;
@@ -1584,7 +1588,8 @@ impl RootDom {
             let fragment_node = fragment
                 .node(fragment_key)
                 .ok_or(DomError::InvalidNodeKey)?;
-            self.assert_id_is_available(
+            assert_id_is_available(
+                &self.id_lookup,
                 fragment_node
                     .as_element()
                     .and_then(|element| element.attrs.id.as_deref()),
@@ -1782,7 +1787,7 @@ impl RootDom {
         let is_id_attribute = attribute == DomAttribute::Id;
         let previous_id = self.current_element_id(key);
         let next_id = next_id_from_attr(&attribute, value.as_ref())?;
-        self.assert_id_is_available_for(key, next_id.as_deref())?;
+        assert_id_is_available_for(&self.id_lookup, key, next_id.as_deref())?;
         let attribute_for_refresh = attribute.clone();
         let current_node = self.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
         let previous_layer_kind = layer_kind_for_node(current_node);
@@ -1836,7 +1841,7 @@ impl RootDom {
         }
 
         if is_id_attribute {
-            self.replace_indexed_id(key, previous_id, next_id);
+            replace_indexed_id(&mut self.id_lookup, key, previous_id, next_id);
         }
         if attribute_for_refresh == DomAttribute::Value {
             let (edit_kind, current_value) = {
@@ -2667,16 +2672,6 @@ impl RootDom {
         Ok(())
     }
 
-    fn assert_id_is_available(&self, id: Option<&str>) -> Result<(), DomError> {
-        let Some(id) = id else {
-            return Ok(());
-        };
-        if self.id_lookup.contains_key(id) {
-            return Err(DomError::DuplicateElementId);
-        }
-        Ok(())
-    }
-
     fn index_node_id_if_present(&mut self, key: DomNodeSlotKey) {
         let Some(id) = self
             .nodes
@@ -2689,39 +2684,11 @@ impl RootDom {
         self.id_lookup.insert(id, key);
     }
 
-    fn assert_id_is_available_for(
-        &self,
-        key: DomNodeSlotKey,
-        id: Option<&str>,
-    ) -> Result<(), DomError> {
-        let Some(id) = id else {
-            return Ok(());
-        };
-        match self.id_lookup.get(id) {
-            Some(existing_key) if *existing_key != key => Err(DomError::DuplicateElementId),
-            _ => Ok(()),
-        }
-    }
-
     fn current_element_id(&self, key: DomNodeSlotKey) -> Option<String> {
         self.nodes
             .get(key)
             .and_then(DomNode::as_element)
             .and_then(|element| element.attrs.id.clone())
-    }
-
-    fn replace_indexed_id(
-        &mut self,
-        key: DomNodeSlotKey,
-        previous_id: Option<String>,
-        next_id: Option<String>,
-    ) {
-        if let Some(previous_id) = previous_id {
-            self.id_lookup.remove(&previous_id);
-        }
-        if let Some(next_id) = next_id {
-            self.id_lookup.insert(next_id, key);
-        }
     }
 
     fn mark_dirty_for_invalidation(
@@ -4593,21 +4560,6 @@ fn range_drag_subtree_point(session: &ActiveRangeDragSession, root_point: PointP
     PointPx {
         x_px: root_point.x_px + session.root_to_subtree_point_offset.x_px,
         y_px: root_point.y_px + session.root_to_subtree_point_offset.y_px,
-    }
-}
-
-pub(crate) fn next_id_from_attr(
-    attribute: &DomAttribute,
-    value: Option<&DomAttributeValue>,
-) -> Result<Option<String>, DomError> {
-    if *attribute != DomAttribute::Id {
-        return Ok(None);
-    }
-
-    match value {
-        None => Ok(None),
-        Some(DomAttributeValue::String(value)) => Ok(Some(value.clone())),
-        _ => Err(DomError::InvalidAttributeValue),
     }
 }
 

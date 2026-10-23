@@ -51,9 +51,9 @@ use crate::types::dom_query_selector::{
     query_selector_from as query_selector_from_in_store,
 };
 use crate::types::dom_tag::DomTag;
+use crate::types::id_index::next_id_from_attr;
 #[cfg(test)]
 use crate::types::root_dom::RootDom;
-use crate::types::root_dom::next_id_from_attr;
 #[cfg(test)]
 use crate::types::root_dom_context::RootDomContext;
 use crate::types::tree_links::{

@@ -55,6 +55,7 @@ pub mod dom_text_node;
 pub mod dom_transition;
 pub mod element_behaviors;
 mod event_listener_name_bits;
+mod id_index;
 mod layout_scratch;
 pub mod paint_config;
 pub mod pixel_density;
