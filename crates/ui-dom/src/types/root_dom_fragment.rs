@@ -53,11 +53,12 @@ use crate::types::dom_query_selector::{
 use crate::types::dom_tag::DomTag;
 #[cfg(test)]
 use crate::types::root_dom::RootDom;
-use crate::types::root_dom::{
-    append_child_to_parent, collect_subtree_keys, detach_node_from_parent, next_id_from_attr,
-};
+use crate::types::root_dom::next_id_from_attr;
 #[cfg(test)]
 use crate::types::root_dom_context::RootDomContext;
+use crate::types::tree_links::{
+    append_child_to_parent, collect_subtree_keys, detach_node_from_parent,
+};
 use crate::types::{
     DomAttribute, DomAttributeValue, DomError, DomEventListenerOwner, parse_authored_value_input,
 };

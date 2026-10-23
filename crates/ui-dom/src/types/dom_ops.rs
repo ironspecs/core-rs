@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::types::DomError;
 use crate::types::dom_node::{DomNode, DomNodeSlotKey};
-use crate::types::root_dom::append_child_to_parent;
 use crate::types::root_dom_fragment::RootDomFragment;
+use crate::types::tree_links::append_child_to_parent;
 use slotmap::SlotMap;
 
 pub(crate) fn append_fragment_children_into_owner<F>(
