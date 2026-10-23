@@ -19,9 +19,17 @@
 //!   a malformed face is a `Rejected` report
 //! - every mutation bumps `revision`; the context re-installs only the newly
 //!   appended sources when the revision changes (never re-loads embedded faces)
+//! - `revision` is mirrored in an `Arc<AtomicU64>` reachable without the
+//!   catalog lock; `install_face` keeps the mirror in sync under the write
+//!   lock, so the per-measure fast path reads the revision with one relaxed
+//!   atomic load and takes the lock only when the revision changes
+//! - `consistent_snapshot()` reads `(revision, sources)` under ONE guard, so
+//!   the returned revision describes exactly the returned sources (consistent
+//!   by construction — no retry loop)
 //! - the four embedded faces own the fixed ids `0..4`; consumer faces receive
 //!   freshly allocated ids
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use arrayvec::ArrayVec;
@@ -81,6 +89,11 @@ struct CatalogState {
 #[derive(Clone, Debug)]
 pub struct TextFontCatalog {
     inner: Arc<RwLock<CatalogState>>,
+    /// Lock-free mirror of `CatalogState.revision`: kept in sync by
+    /// `install_face` under the write lock, so the per-measure fast path reads
+    /// the revision with one relaxed atomic load instead of taking the catalog
+    /// lock.
+    revision: Arc<AtomicU64>,
 }
 
 impl TextFontCatalog {
@@ -120,26 +133,34 @@ impl TextFontCatalog {
             id,
         });
         state.family_names.push(family_names.clone());
-        state.revision = state
+        let new_revision = state
             .revision
             .checked_add(1)
             .expect("catalog revision should not overflow");
+        state.revision = new_revision;
+        // Keep the lock-free mirror in sync under the write lock.
+        self.revision.store(new_revision, Ordering::Relaxed);
         FontInstallReport::Installed { id, family_names }
     }
 
-    /// The catalog revision; bumps on every successful `install_face`. The
-    /// main-world context compares this at seam entry to decide whether to
-    /// install newly appended sources.
+    /// The catalog revision, read lock-free: one relaxed atomic load. Bumps on
+    /// every successful `install_face`. The main-world context compares this at
+    /// seam entry to decide whether to install newly appended sources; on the
+    /// unchanged-revision path this load is the whole per-measure cost.
     #[must_use]
     pub(crate) fn revision(&self) -> u64 {
-        self.inner.read().revision
+        self.revision.load(Ordering::Relaxed)
     }
 
-    /// A snapshot of the current sources (embedded + consumer), in catalog
-    /// order. Allocation happens here, on the rare revision-change path only.
+    /// A self-consistent `(revision, sources)` pair: both are read under ONE
+    /// catalog read guard, so the returned revision describes exactly the
+    /// returned sources — a concurrent `install_face` (write lock) cannot
+    /// interpose. The `Arc` clones are cheap; the `Vec` allocation happens
+    /// here, on the rare revision-change path only.
     #[must_use]
-    pub(crate) fn sources_snapshot(&self) -> Vec<FaceSource> {
-        self.inner.read().sources.clone()
+    pub(crate) fn consistent_snapshot(&self) -> (u64, Vec<FaceSource>) {
+        let state = self.inner.read();
+        (state.revision, state.sources.clone())
     }
 
     /// Resolves one requested family name to the installed face it routes to
@@ -234,6 +255,7 @@ impl TextFontCatalog {
                 revision: 0,
                 next_face_id: FontFaceId::EMBEDDED_FACE_COUNT,
             })),
+            revision: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -337,5 +359,43 @@ mod tests {
         assert_eq!(catalog.revision(), before + 1);
         assert_eq!(catalog.installed_face_ids().len(), 5);
         assert!(catalog.installed_face_ids().contains(&id));
+    }
+
+    #[test]
+    fn consistent_snapshot_stays_self_consistent_under_concurrent_installs() {
+        // The append-only / one-increment-per-install invariant: every
+        // successful `install_face` appends exactly one source AND bumps the
+        // revision by exactly one, so a self-consistent snapshot always
+        // satisfies `sources.len() == embedded_count + revision` exactly.
+        const INSTALLS: u64 = 50;
+        let catalog = fresh_catalog();
+        let embedded_count = u64::try_from(catalog.consistent_snapshot().1.len())
+            .expect("embedded source count fits u64");
+
+        let writer_catalog = catalog.clone();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..INSTALLS {
+                let report = writer_catalog.install_face(EMBEDDED_SOURCES[0]);
+                assert!(matches!(report, FontInstallReport::Installed { .. }));
+            }
+        });
+
+        // Read the snapshot in a loop while the writer installs; every returned
+        // (revision, sources) pair must be self-consistent.
+        loop {
+            let (revision, sources) = catalog.consistent_snapshot();
+            assert_eq!(
+                u64::try_from(sources.len()).expect("source count fits u64"),
+                embedded_count + revision,
+                "the snapshot's sources must be exactly what its revision accounts for"
+            );
+            if revision == INSTALLS {
+                break;
+            }
+        }
+
+        writer
+            .join()
+            .expect("the installer thread should not panic");
     }
 }

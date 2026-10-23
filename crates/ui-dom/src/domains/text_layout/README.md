@@ -151,7 +151,8 @@ the render world both read the same state.
   name table so the fallback table can route to it by name.
 - **Both worlds** — the main-world `TextLayoutContext` installs every catalog
   source at birth and re-installs (sources only) when the catalog revision
-  changes, checked cheaply at seam entry. The render world's
+  changes, checked at seam entry: one relaxed atomic load per measure, and the
+  catalog lock is taken only when the revision changes. The render world's
   `UiDomTextFontCatalog` resource enumerates the same list: embedded handles
   plus the consumer faces the extract pipeline mints and registers into
   FontSystem #2.

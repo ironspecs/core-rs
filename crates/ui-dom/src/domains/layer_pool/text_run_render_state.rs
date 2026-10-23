@@ -457,7 +457,7 @@ mod tests {
     /// demotion precondition "Thai text, no Thai face".
     fn catalog_only_font_system(catalog: &TextFontCatalog) -> FontSystem {
         let mut db = cosmic_text::fontdb::Database::new();
-        for source in catalog.sources_snapshot() {
+        for source in catalog.consistent_snapshot().1 {
             db.load_font_source(source.font_db_source());
         }
         FontSystem::new_with_locale_and_db_and_fallback(

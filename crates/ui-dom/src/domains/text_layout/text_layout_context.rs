@@ -15,6 +15,9 @@
 //!   no extra cosmic measurement per node
 //! - the thread-local repo context is created once from
 //!   `TextLayoutConfig::repo_default`
+//! - `refresh_font_catalog` checks the catalog revision with one relaxed
+//!   atomic load at seam entry and takes the catalog lock (one self-consistent
+//!   snapshot) only when the revision has changed
 
 use cosmic_text::FontSystem;
 
@@ -58,9 +61,12 @@ impl TextLayoutContext {
             .db_mut()
             .set_sans_serif_family(text_render::repo_default_sans_serif_family_name());
         let font_catalog = config.font_catalog;
-        install_text_font_catalog_sources(&mut font_system, &font_catalog);
-        let installed_source_count = font_catalog.sources_snapshot().len();
-        let installed_revision = font_catalog.revision();
+        // One self-consistent snapshot installs the sources AND records the
+        // (revision, count) pair, so the recorded revision describes exactly
+        // the sources installed — a concurrent install cannot land between the
+        // install and the record (it is caught by the next refresh instead).
+        let (installed_revision, installed_source_count) =
+            install_text_font_catalog_sources(&mut font_system, &font_catalog);
         Self {
             font_system,
             font_catalog,
@@ -71,32 +77,23 @@ impl TextLayoutContext {
 
     /// Re-installs newly appended catalog sources when the catalog's revision
     /// has moved since this context last installed (the consumer door's main-
-    /// world routing). Cheap: one atomic-free read-lock compare at seam entry;
-    /// the re-install itself only runs on a change.
+    /// world routing). Hot path: one relaxed atomic load per measure; the
+    /// catalog lock (and its self-consistent snapshot) is taken only when the
+    /// revision changes.
     fn refresh_font_catalog(&mut self) {
-        // Snapshot (revision, sources) consistently: loop until the revision is
-        // stable across the snapshot read, so an install landing mid-refresh
-        // cannot leave this context ahead of its sources — the revision we
-        // record must describe exactly the sources we installed. Reads revision
-        // first (cheap) and only snapshots sources on a change.
-        loop {
-            let revision = self.font_catalog.revision();
-            if revision == self.installed_revision {
-                return;
-            }
-            let sources = self.font_catalog.sources_snapshot();
-            if self.font_catalog.revision() != revision {
-                // An install landed between the two reads: retry with the fresh
-                // revision so the installed set matches the revision we record.
-                continue;
-            }
-            for source in &sources[self.installed_source_count..] {
-                install_text_font_source(&mut self.font_system, source);
-            }
-            self.installed_source_count = sources.len();
-            self.installed_revision = revision;
+        // Lock-free fast path: one relaxed atomic load vs the cached revision.
+        if self.font_catalog.revision() == self.installed_revision {
             return;
         }
+        // The revision moved: take ONE self-consistent snapshot (a single read
+        // guard), then install only the newly appended sources. Consistent by
+        // construction — no retry loop.
+        let (revision, sources) = self.font_catalog.consistent_snapshot();
+        for source in &sources[self.installed_source_count..] {
+            install_text_font_source(&mut self.font_system, source);
+        }
+        self.installed_source_count = sources.len();
+        self.installed_revision = revision;
     }
 
     #[must_use]

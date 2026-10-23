@@ -808,15 +808,19 @@ fn text_layout_attrs<'a>(
         .style(request.style.cosmic())
 }
 
-/// Installs every source in the catalog into one `FontSystem`. Called once at
-/// context birth.
+/// Installs every source in the catalog into one `FontSystem` under a single
+/// self-consistent snapshot, returning `(revision, source_count)` so the caller
+/// records the exact revision that describes exactly the sources installed.
+/// Called once at context birth.
 pub(super) fn install_text_font_catalog_sources(
     font_system: &mut FontSystem,
     font_catalog: &TextFontCatalog,
-) {
-    for source in font_catalog.sources_snapshot() {
-        install_text_font_source(font_system, &source);
+) -> (u64, usize) {
+    let (revision, sources) = font_catalog.consistent_snapshot();
+    for source in &sources {
+        install_text_font_source(font_system, source);
     }
+    (revision, sources.len())
 }
 
 /// Installs one catalog source into a `FontSystem` (the incremental re-install
