@@ -706,41 +706,68 @@ centralization changes rendered output for some scripts (pin flips where
 observable); RTL exposes that our caret and alignment models are
 LTR-first (real work, or the gate's point 3 names the boundary).
 
-### PR 5 — `RootDom` decomposition (last) `SETTLED in direction`
+### PR 5 — `RootDom` decomposition (last) `SETTLED in direction — AMENDED 2026-10-23 to bottom-up extraction`
 
-**The design (advice accepted 2026-10-18):** narrow newtypes with the
-existing facade:
+**The design (adjudicated 2026-10-23; SUPERSEDES the 2026-10-18
+newtype sketch below, which is retained for the record):** the
+decomposition is **bottom-up, not top-down**. The root fields are not
+divided by topic. Instead: find the common algorithms at the bottom
+of the file, draw them out as fast, testable primitives (free
+functions over explicit memory shapes; lookup maps for configured
+behavior), and let the top-level fields sort themselves by their
+actual content and means afterward. Rationale (the owner's
+adjudication): the newtype sketch is the OOP shape — state-owning
+topic objects with unique method surfaces, which manufactures the
+split-borrow coupling it claims to solve (the structural survey's
+"hardest problems" only exist *after* nesting the fields). The
+library's established idiom is the opposite: lookup maps to
+functionality keyed by configured behavior, and good primitives
+building up a *shape of memory being operated on* per visit through
+the tree, single-pass where possible — memory-efficient and local to
+the sections of the tree being changed (the dominant workloads are
+mostly-static retained trees and animations within a surface). The
+full extraction catalog, the behavior-table design, and the
+back-off doctrine live in `PR5_DECOMPOSITION_DESIGN.md` (v2).
 
-```rust
-pub struct RootDom {
-    tree: RootDomTree,               // nodes, links, ids, fragments, hit-test state
-    styling: RootDomStyling,         // inline decl store, computed texts, style revision
-    transitions: RootDomTransitions, // scheduler state, active nodes, clock
-}
-```
+**The back-off doctrine (owner adjudication 2026-10-23):** any
+extraction may back off when it runs into complications or deviance
+— those complications are likely bugs or performance opportunities.
+Misalignment between parts that should look the same is often
+pointlessly misnamed, misstructured, or arranged differently for no
+benefit, and can be renamed or restructured for tangible memory or
+speed wins first; genuine divergence stays bespoke with a named
+note.
 
-One file per subsystem with its own impl (structural rules 1/5 hold).
-**The compatibility contract, stated precisely:** the 48 `pub fn` on
-`RootDom` stay public, as thin delegations on the facade — no
-consumer-visible change without a named decision recorded here. The
-remaining ~70 `pub(crate)` and private methods (the actual body of
-`root_dom.rs`) distribute to the subsystems, which is where the line count
-goes. Follow-on ownership correction, sequenced INSIDE this PR (it is not
-a trigger from outside): the popup/options system leaves `RootDom` for the
-widget layer (`control_widgets.rs`/`element_behaviors/`).
+**The compatibility contract (unchanged):** the 48 `pub fn` on
+`RootDom` stay public — no consumer-visible change without a named
+decision recorded here. The popup/options system still leaves
+`RootDom` for the widget layer, now as the behavior-table
+extraction rather than a subsystem move.
 
-**Migration policy:** structural-migration — one subsystem at a time,
-byte-identical where behavior must not move, full gate per move.
+**Migration policy (unchanged in spirit, restated for extraction):**
+one primitive at a time; rename/restructure prep lands as its own
+changeset, extraction as the next; full gate per commit; perf pins
+never regress silently (an extraction that IMPROVES a pinned window
+gets the documented-cause re-pin — good news is recorded, not
+smuggled).
 
-**Honest cost (stated for the reviewer):** no user-visible win. It is a
-large mechanical diff whose only return is that the crate's core file
-stops absorbing everything. It is sequenced last precisely because it is
-the least valuable per risk at any earlier point — and its scope should be
-re-evaluated when it starts: if work earlier in the arc has already shrunk
-`root_dom.rs` materially, this PR descopes to match (the challenge is
-welcomed; what it may NOT do is fire on PR 1, whose items do not touch
-`root_dom.rs` materially — the file stands as it is until this PR's own
-moves begin).
+**Honest cost, re-stated:** the top-down sketch's cost was "no
+user-visible win, hygiene only." The bottom-up direction's return is
+tangible per extraction: deduplicated algorithms, smaller memory
+shapes, faster shared walks, a killed bug class (bespoke
+cleanup-on-removal), and testable primitives — the line-count
+reduction in `root_dom.rs` is the side effect, not the goal.
+
+---
+
+~~**The 2026-10-18 sketch (SUPERSEDED, retained for the record):**~~
+~~narrow newtypes with the existing facade (`tree: RootDomTree`,
+`styling: RootDomStyling`, `transitions: RootDomTransitions`), one
+file per subsystem, the ~70 `pub(crate)`/private methods distributed
+to the subsystems. Superseded 2026-10-23 per the adjudication above:
+the sketch undercounts the file's real cohesion (the survey's field
+census found ~7 clusters, not 3), and its nesting manufactures the
+borrow-split problem the operations don't otherwise have.~~
 
 ---
 
