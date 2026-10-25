@@ -2193,8 +2193,38 @@ an f32 basis.
    disclosed). `root_dom.rs` now 7,125 with 618 lines in the two new
    primitives. Folder verdict: still flat; the grouping signal (same
    borrow triple at every pass) has not appeared; the
-   `dirty_channel` ↔ `tree_links` two-module cycle is benign and
-   documented.
+  `dirty_channel` ↔ `tree_links` two-module cycle is benign and
+  documented.
+
+- **2026-10-23 — PR 5: the E3 access-pattern correction + the E1
+  splice unification** on `rootdom/e1-splice` (PR to follow).
+  `ff152fe`: the third-party review's complexity note was a real
+  specification failure in MY brief — `purge_scroll_offsets` had
+  changed from O(removed) remove-each to O(store×removed) retain
+  riding inside a "behavior-preserving" migration; the row-by-row
+  audit (embedded as a doc comment on the table) confirmed it was
+  the only regressed row, and the `remove_each_in` leaf restores
+  the removal-side access pattern. `retain_not_in_map` became dead
+  and was removed per the moot-functionality rule (disclosed).
+  `9e706bf`: the unified splice — ONE generic
+  `splice_fragment_children_into_store` walk serving both
+  fragment→fragment and fragment→live. The two-walk textual diff
+  triaged: 3 pointless misalignments ALIGNED (the iterative walk
+  with its per-import `HashMap` allocation is gone — a real win;
+  the closure-text-creation and the duplicate id-assert helper
+  died), 5 meaningful divergences absorbed (born-dirty, per-node
+  metrics, parent-dirty, layer-queue notes → `SpliceJournal` +
+  wrapper), zero genuine. The metrics-proxy theme got its
+  principled resolution: a 3-method `NodeStore` trait
+  (`types/node_store.rs`) where instrumentation lives in the store
+  IMPL — the live store routes through its instrumented inherent
+  methods, no `DerefMut` coercion, no pin movement; `SpliceJournal`
+  is fixed-capacity zero-alloc and metric EMISSION stays at the
+  root boundary (`emit_splice_journal_metrics`) per the
+  metrics-never-passed-down invariant. `dom_ops.rs` deleted. New
+  perf pin: `fragment_import_preserves_the_pre_splice_metric_counts`
+  — the extraction's observability contract. `root_dom.rs` now
+  7,060.
 
 - **2026-10-25 — PR 5: E3 follow-up + E1 phase 2 (the unified splice)
   landed.** Two commits. (1) The purge-complexity correction
