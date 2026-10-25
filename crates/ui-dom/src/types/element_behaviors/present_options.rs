@@ -15,6 +15,10 @@ use crate::types::{
     RootDom,
 };
 
+use super::popup::{
+    presented_options_popup_shell_key, resolve_presented_options_datalist_key_for_owner,
+};
+
 const PRESENTED_OPTIONS_ROW_HEIGHT_PX: f32 = 28.0;
 pub(crate) const PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX: f32 = 8.0;
 pub(crate) const PRESENTED_OPTIONS_VERTICAL_PADDING_PX: f32 = 5.0;
@@ -200,11 +204,12 @@ pub(crate) fn collect_presented_option_records_from_owner_source(
 ) -> Result<Vec<PresentedOptionRecord>, DomError> {
     let source_root_key = match owner_kind {
         PresentedOptionsOwnerKind::Select => owner_key,
-        PresentedOptionsOwnerKind::TextInput => root_dom
-            .resolve_presented_options_datalist_key_for_owner(owner_key)
-            .expect("text-input presented options should resolve a datalist"),
+        PresentedOptionsOwnerKind::TextInput => {
+            resolve_presented_options_datalist_key_for_owner(root_dom, owner_key)
+                .expect("text-input presented options should resolve a datalist")
+        }
     };
-    let popup_shell_key = root_dom.presented_options_popup_shell_key(owner_key);
+    let popup_shell_key = presented_options_popup_shell_key(root_dom, owner_key);
     let mut option_records = Vec::new();
     let mut node_stack = vec![source_root_key];
     while let Some(current_key) = node_stack.pop() {

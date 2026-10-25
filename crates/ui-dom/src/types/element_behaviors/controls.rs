@@ -40,6 +40,10 @@ use crate::types::{
 use super::activation::{
     dispatch_click_and_apply_after_click, keyboard_activation_click_point_for_target,
 };
+use super::popup::{
+    apply_presented_options_text_input_keyboard_navigation_for_owner,
+    close_presented_options_for_blurred_owner, open_presented_options_for_focused_text_input_owner,
+};
 use super::range::{mark_active_range_drag_dirty, start_range_drag_session};
 use super::text_entry::{
     apply_default_text_behavior_and_dispatch_input_from_keyboard_input,
@@ -302,38 +306,39 @@ pub(crate) fn range_value_string_for_point(
     ))
 }
 
-/// Thin hook over the popup method that stays on `RootDom` (E6-b): keyboard
-/// navigation for a text input with a presented-options (datalist) popup.
+/// Thin hook over the popup lifecycle (E6-b): keyboard navigation for a text
+/// input with a presented-options (datalist) popup.
 pub(crate) fn presented_options_keyboard_navigation(
     root: &mut RootDom,
     owner_key: DomNodeSlotKey,
     input: &KeyboardInput,
     event_stayed_unblocked: bool,
 ) -> Result<bool, DomError> {
-    root.apply_presented_options_text_input_keyboard_navigation_for_owner(
+    apply_presented_options_text_input_keyboard_navigation_for_owner(
+        root,
         owner_key,
         input,
         event_stayed_unblocked,
     )
 }
 
-/// Thin hook over the popup method that stays on `RootDom` (E6-b): open the
-/// presented-options popup for a newly focused text input owner.
+/// Thin hook over the popup lifecycle (E6-b): open the presented-options popup
+/// for a newly focused text input owner.
 pub(crate) fn presented_options_focus(
     root: &mut RootDom,
     target_key: DomNodeSlotKey,
 ) -> Result<(), DomError> {
-    let _ = root.open_presented_options_for_focused_text_input_owner(target_key)?;
+    let _ = open_presented_options_for_focused_text_input_owner(root, target_key)?;
     Ok(())
 }
 
-/// Thin hook over the popup method that stays on `RootDom` (E6-b): close the
-/// presented-options popup for a blurred text input owner.
+/// Thin hook over the popup lifecycle (E6-b): close the presented-options
+/// popup for a blurred text input owner.
 pub(crate) fn presented_options_blur(
     root: &mut RootDom,
     target_key: DomNodeSlotKey,
 ) -> Result<(), DomError> {
-    let _ = root.close_presented_options_for_blurred_owner(target_key)?;
+    let _ = close_presented_options_for_blurred_owner(root, target_key)?;
     Ok(())
 }
 

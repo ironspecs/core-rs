@@ -29,7 +29,9 @@ use crate::domains::text_layout::{
 use crate::domains::visitor::inherited_style::{
     InheritedStyleContext, inherited_context_from_node,
 };
-use crate::types::element_behaviors::{ElementPaintContext, append_specialized_element_paint_ops};
+use crate::types::element_behaviors::{
+    ElementPaintContext, append_specialized_element_paint_ops, presented_options_popup_shell_key,
+};
 use crate::types::primitives::PointPx;
 use crate::types::{
     DomBoxModel, DomElementNode, DomError, DomIntrinsic, DomLayerKind, DomNode, DomNodeSlotKey,
@@ -255,7 +257,7 @@ fn derive_child_paint_ops_into_plan(
         let parent_node = root_dom.node(parent_key).ok_or(DomError::InvalidNodeKey)?;
         let parent_is_select = node_is_select_element(Some(parent_node));
         let select_popup_shell_key = if parent_is_select {
-            root_dom.presented_options_popup_shell_key(parent_key)
+            presented_options_popup_shell_key(root_dom, parent_key)
         } else {
             None
         };
@@ -374,7 +376,7 @@ fn clear_paint_repaint_state_from_node(
         .clear_paint_repaint_state();
     let parent_is_select = node_is_select_element(root_dom.node(current_key));
     let select_popup_shell_key = if parent_is_select {
-        root_dom.presented_options_popup_shell_key(current_key)
+        presented_options_popup_shell_key(root_dom, current_key)
     } else {
         None
     };

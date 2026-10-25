@@ -1,8 +1,8 @@
 //! Select default-behavior hooks (PR 5, E6-a).
 //!
 //! This file owns the `<select>` control kind's thin hooks over the popup
-//! methods that stay on `RootDom` for now (E6-b moves the popup itself). The
-//! select's keyboard, click-commit, and blur handlers delegate to
+//! lifecycle that lives in `popup.rs` (E6-b). The select's keyboard,
+//! click-commit, and blur handlers delegate to
 //! `apply_select_keyboard_default_for_owner`,
 //! `apply_select_click_default_for_target`, and
 //! `close_select_popup_for_blurred_owner` respectively.
@@ -11,6 +11,13 @@ use bevy::input::keyboard::KeyboardInput;
 
 use crate::types::{DomError, DomNodeSlotKey, RootDom};
 
+use super::popup::{
+    apply_select_click_default_for_target, apply_select_keyboard_default_for_owner,
+    close_select_popup_for_blurred_owner,
+};
+
+#[cfg(test)]
+use super::popup::presented_options_popup_shell_key;
 #[cfg(test)]
 use crate::types::{DomAttribute, DomAttributeValue, DomTag, RootDomContext};
 
@@ -22,7 +29,7 @@ pub(crate) fn select_on_keyboard(
     _shift_key: bool,
     event_stayed_unblocked: bool,
 ) -> Result<bool, DomError> {
-    root.apply_select_keyboard_default_for_owner(target_key, input, event_stayed_unblocked)
+    apply_select_keyboard_default_for_owner(root, target_key, input, event_stayed_unblocked)
 }
 
 /// The select row's click-commit hook.
@@ -30,7 +37,7 @@ pub(crate) fn select_click_commit(
     root: &mut RootDom,
     target_key: DomNodeSlotKey,
 ) -> Result<bool, DomError> {
-    root.apply_select_click_default_for_target(target_key)
+    apply_select_click_default_for_target(root, target_key)
 }
 
 /// The select row's blur hook.
@@ -38,7 +45,7 @@ pub(crate) fn select_on_blur(
     root: &mut RootDom,
     target_key: DomNodeSlotKey,
 ) -> Result<(), DomError> {
-    let _ = root.close_select_popup_for_blurred_owner(target_key)?;
+    let _ = close_select_popup_for_blurred_owner(root, target_key)?;
     Ok(())
 }
 
@@ -90,7 +97,7 @@ mod tests {
             select_on_keyboard(&mut root, owner_key, &input, false, true).expect("select keyboard");
 
         assert!(applied);
-        assert!(root.presented_options_popup_shell_key(owner_key).is_some());
+        assert!(presented_options_popup_shell_key(&root, owner_key).is_some());
     }
 
     #[test]

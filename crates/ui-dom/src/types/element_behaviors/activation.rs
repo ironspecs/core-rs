@@ -32,6 +32,7 @@ use crate::types::{
 
 use super::behavior_table::{behavior_row, resolve_kind_for_element};
 use super::dom_event_dispatch_outcome::DomEventDispatchOutcome;
+use super::popup::apply_select_popup_row_click_default_for_target;
 
 #[cfg(test)]
 use crate::types::{DomPointerUpdate, DomTag, RootDomContext};
@@ -292,7 +293,7 @@ pub(crate) fn commit_after_click_after_dispatch(
     root: &mut RootDom,
     target_key: DomNodeSlotKey,
 ) -> Result<bool, DomError> {
-    if root.apply_select_popup_row_click_default_for_target(target_key)? {
+    if apply_select_popup_row_click_default_for_target(root, target_key)? {
         return Ok(true);
     }
     let Some(element) = root.node(target_key).and_then(DomNode::as_element) else {

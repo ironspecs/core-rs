@@ -23,6 +23,7 @@ use crate::types::{
 };
 
 use super::controls::{count_unicode_scalars, presented_options_keyboard_navigation};
+use super::popup::reopen_presented_options_for_text_input_value_change;
 
 #[cfg(test)]
 use crate::types::{DomTag, RootDomContext};
@@ -182,7 +183,7 @@ pub(crate) fn apply_default_text_behavior_and_dispatch_input_from_keyboard_input
                 selection_direction: TextSelectionDirection::None,
             }));
             let _ = root.dispatch_input_event_to_target_key(target_key, next_value)?;
-            root.reopen_presented_options_for_text_input_value_change(target_key)?;
+            reopen_presented_options_for_text_input_value_change(root, target_key)?;
             Ok(true)
         }
     }
