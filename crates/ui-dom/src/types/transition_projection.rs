@@ -424,9 +424,10 @@ fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue)
     }
 }
 
-/// Returns the elapsed seconds of `transition` at `now_s`, clamped to the
-/// transition's effective `[start, end]` window (used by the scheduler to
-/// report cancellation elapsed time).
+/// Returns the elapsed seconds of `transition` at `now_s` (used by the
+/// scheduler to report cancellation elapsed time). Only the upper bound is
+/// clamped to `effective_end_s()`; a `now_s` before `effective_start_s()`
+/// yields a negative elapsed time (the lower bound is not clamped).
 pub(crate) fn transition_elapsed_s_at(transition: &DomTransition, now_s: f64) -> f64 {
     now_s.min(transition.effective_end_s()) - transition.effective_start_s()
 }
