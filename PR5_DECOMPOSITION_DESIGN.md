@@ -187,13 +187,17 @@ independently reviewable:
   two shells triage-align first); the popup's state machine and
   commit logic become the select/datalist rows' internals; the
   facade's popup methods leave `RootDom`.
-- **E6-c — context narrowing + the session slot.** The
-  `BehaviorContext` narrows to the disjoint field borrows the rows
-  demonstrably need (evidence from E6-a/b); `pressed_pointer_click_target`
-  + `active_range_drag_session` unify into ONE
-  `Option<PointerSession>` with a kind tag (confirm the mutual
-  exclusion empirically first — if both can be live, that's a
-  latent bug, report verbatim).
+- **E6-c — context narrowing.** The `BehaviorContext` narrows to the
+  disjoint field borrows the rows demonstrably need (evidence from
+  E6-a/b). ~~the session slot~~ **The session-slot unification is
+  REJECTED on evidence (2026-10-25):** E6-b's empirical trace found
+  a range drag keeps BOTH `pressed_pointer_click_target` and
+  `active_range_drag_session` live simultaneously (a range
+  engagement is press-PLUS-drag: the press record dispatches the
+  click on pointer-up; the drag session drives pointer-moves). The
+  mutual-exclusion premise was false; the two slots are two stages
+  of one engagement — honest state, not duplicated state. The
+  fields stay separate.
 
 - **Memory shape**: the element's configured behavior
   (`ElementControl`/role — already resolved by
@@ -321,5 +325,8 @@ contract).
 | E4 | the metric proxy blocks SlotMap-coerced extraction | the `NodeStore` trait (E1-phase-2) is the principled resolution |
 | E1-phase-2 | the unified splice first aligned DOWN to recursion | FIXED (`0175e16` — iterative work stack, no HashMap); the D1(a′) direction rule was born here |
 | E1-phase-2 | `append_child_to_parent`'s per-append cycle check + `current_layer_root_key` walk make deep builds/imports O(depth²) (measured: 10k-depth splice test, 10.95s, dominated by this pre-existing cost) | **open opportunity** — the cycle check is only needed when appending an already-linked node (fresh births can't cycle); a future optimization, needs its own design pass (any fix must keep the layer-root walk's semantics and the metric counts) |
+| E6-b | the datalist click-commit (`apply_presented_options_click_default_for_target`) is a PRE-EXISTING dead feature: its driving descriptor variant (`DomElementOnActivation::PresentedOptions`) is never constructed (pre-dates the arc; E6-a only removed the dead dispatch arm). Clicking a datalist row never commits | widget/editing epic (a feature completion, not a migration fix — never smuggled) |
+| E6-b | the session-slot unification premise FAILED empirically (press+drag coexist in a range engagement) | REJECTED (recorded in the E6 entry) |
+| E6-b | module-README gap list (required-docs rule): `structural-lint/{rules,engine}`, `ui-dom/src/domains/{,paint,style/computed,composite,layer_ops,render_ops}`, `ui-dom/src/bevy` | standing docs debt, to be scheduled |
 | E5 | the capture phase is O(depth²) — `ancestor_count_to_root` plus a per-ancestor `ancestor_key_at_distance` re-walk the ancestor path | **open opportunity** — preserved byte-identically (an algorithm/perf change needs its own reviewed commit per rule 4); a reused path buffer or a collect-then-reverse walk would be O(depth), adjudicated against D1(a′) (reused buffer vs the walk's current zero-allocation) |
 | E7 | the transition tick's per-node effects do not factor into a journal | **backed off (c)** — inline `&mut RootDom` mutations (dirty walks, layer queues, event dispatch with the popup transition-end hook) with semantic marks-vs-events ordering; extraction would be a batch (rule 4) or a borrow-conflicting closure over `&mut self` |
