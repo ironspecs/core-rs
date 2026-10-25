@@ -63,7 +63,7 @@ Import rules:
 
 - the fragment root node itself is not imported
 - descendant structure is preserved
-- duplicate element ids fail before partial import
+- a fragment id colliding with a destination id fails before partial import (fragment-internal duplicates are unreachable via the authoring API)
 - unreachable fragment nodes are discarded when the fragment is dropped
 
 ## DOM-Shaped Traversal

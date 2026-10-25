@@ -22,8 +22,16 @@
 //!
 //! Invariants and rules:
 //!
-//! - duplicate element ids fail BEFORE any partial import (the id validation
-//!   pass runs up front, against the destination id lookup)
+//! - the walk is an ITERATIVE VISITOR with an explicit work stack — no
+//!   recursion, per the arc's visitor-not-batch / no-free-recursion doctrine
+//!   (D1(a′)): a fragment nested arbitrarily deep imports with bounded state,
+//!   never touching the call stack beyond one frame per walk
+//! - duplicate element ids: the up-front validation pass catches a fragment
+//!   id that collides with a DESTINATION id, before any insert; a duplicate
+//!   INTERNAL to the fragment is not in the destination lookup yet, so it
+//!   fails mid-import at the per-node assert (`insert_spliced_node`) —
+//!   unreachable via the authoring API, which enforces fragment-local id
+//!   uniqueness
 //! - the fragment root itself is never imported; only its reachable children
 //!   are, in document order
 //! - unreachable fragment nodes are skipped (only nodes reachable from the
@@ -32,14 +40,21 @@
 //!   (`InvalidParentTarget`)
 //! - the journal counters are plain `u64` fields — zero allocation, no
 //!   per-event buffers; the walk only increments them
+//! - metric emission is grouped by type at the boundary
+//!   (`emit_splice_journal_metrics`), a deliberate ordering change from the
+//!   pre-unification live walk's per-node interleave (counts are pinned; only
+//!   the fill order changed)
 //!
-//! Extraction note (PR 5, E1 phase 2): this replaces two near-duplicate
-//! walks — `dom_ops.rs::append_fragment_children_into_owner` (fragment →
-//! fragment, recursive) and `root_dom.rs::import_fragment_children_into_parent`
-//! (fragment → live, iterative with an `imported_key_by_fragment_key` map).
-//! The iterative form's map existed only to resolve the live parent for a flat
-//! walk; the recursive form carries the parent on the stack, so unification
-//! aligned on the recursive shape and dropped that per-import allocation.
+//! Extraction note (PR 5, E1 phase 2; corrected 2026-10-25): this replaces
+//! two near-duplicate walks — `dom_ops.rs::append_fragment_children_into_owner`
+//! (fragment → fragment, recursive) and
+//! `root_dom.rs::import_fragment_children_into_parent` (fragment → live,
+//! iterative with an `imported_key_by_fragment_key` map). The first
+//! unification aligned on the recursive shape and dropped the map — the WRONG
+//! direction (D1(a′)): recursion moved the live walk's explicit bounded state
+//! onto an unbounded call stack. The walk now aligns toward the better memory
+//! shape: iterative, with the destination parent carried on each work-stack
+//! entry (so the map stays gone), never on the call stack.
 use std::collections::HashMap;
 
 use crate::types::DomError;
@@ -119,8 +134,12 @@ fn assert_splice_parent_is_valid<S: NodeStore>(
 }
 
 /// Validates that every element id reachable from the fragment's top-level
-/// children is available in the destination id lookup, failing the whole
-/// import before any node is written (fail-before-partial-import).
+/// children is available in the DESTINATION id lookup, failing the import
+/// before any node is written. This pass catches destination conflicts only:
+/// a duplicate id internal to the fragment is not in the destination lookup
+/// yet, so it would instead fail mid-import at `insert_spliced_node`'s
+/// per-node assert — unreachable via the authoring API, which enforces
+/// fragment-local id uniqueness.
 fn assert_fragment_ids_are_available(
     id_lookup: &HashMap<String, DomNodeSlotKey>,
     fragment: &RootDomFragment,
@@ -137,23 +156,21 @@ fn assert_subtree_ids_available(
     fragment: &RootDomFragment,
     key: DomNodeSlotKey,
 ) -> Result<(), DomError> {
-    let node = fragment.node(key).ok_or(DomError::InvalidNodeKey)?;
-    assert_id_is_available(
-        id_lookup,
-        node.as_element()
-            .and_then(|element| element.attrs.id.as_deref()),
-    )?;
-    let mut child_key = node
-        .first_child(|key| fragment.node(key))
-        .map(|(key, _)| key);
-    while let Some(current_child_key) = child_key {
-        let child = fragment
-            .node(current_child_key)
-            .ok_or(DomError::InvalidNodeKey)?;
-        child_key = child
-            .next_sibling(|key| fragment.node(key))
-            .map(|(key, _)| key);
-        assert_subtree_ids_available(id_lookup, fragment, current_child_key)?;
+    // Iterative pre-order visitor over an explicit key stack: children are
+    // pushed in reverse sibling order so they pop back in DOM order, matching
+    // the recursive walk's depth-first visit exactly (so the first duplicate
+    // id is reported from the same node as before).
+    let mut stack: Vec<DomNodeSlotKey> = vec![key];
+    while let Some(current_key) = stack.pop() {
+        let node = fragment.node(current_key).ok_or(DomError::InvalidNodeKey)?;
+        assert_id_is_available(
+            id_lookup,
+            node.as_element()
+                .and_then(|element| element.attrs.id.as_deref()),
+        )?;
+        visit_children_in_reverse_sibling_order(fragment, current_key, |child_key| {
+            stack.push(child_key);
+        });
     }
     Ok(())
 }
@@ -167,50 +184,71 @@ fn splice_fragment_subtree_into_store<S: NodeStore>(
     fragment_key: DomNodeSlotKey,
     journal: &mut SpliceJournal,
 ) -> Result<DomNodeSlotKey, DomError> {
-    let fragment_node = fragment
-        .node(fragment_key)
-        .ok_or(DomError::InvalidNodeKey)?;
-    let imported_key = match fragment_node {
-        DomNode::Document(_) | DomNode::DocumentFragment(_) => {
-            return Err(DomError::InvalidParentTarget);
+    // Iterative pre-order visitor over an explicit work stack. Each entry is
+    // `(source_fragment_key, destination_parent_key)`: the destination parent
+    // carries the source→imported correspondence on the stack, so no
+    // `imported_key_by_fragment_key` map is needed. Children are pushed in
+    // reverse sibling order so they pop back in DOM order, preserving the
+    // pre-order import sequence the journal and insertion order observe.
+    let mut stack: Vec<(DomNodeSlotKey, DomNodeSlotKey)> = Vec::new();
+    stack.push((fragment_key, parent_key));
+    let mut imported_root_key: Option<DomNodeSlotKey> = None;
+
+    while let Some((source_key, destination_key)) = stack.pop() {
+        let fragment_node = fragment.node(source_key).ok_or(DomError::InvalidNodeKey)?;
+        let imported_key = match fragment_node {
+            DomNode::Document(_) | DomNode::DocumentFragment(_) => {
+                return Err(DomError::InvalidParentTarget);
+            }
+            DomNode::Element(_) => insert_spliced_node(
+                store,
+                id_lookup,
+                fragment_node.clone_for_owner_document(owner_root),
+                journal,
+            )?,
+            DomNode::Text(text_node) => insert_spliced_node(
+                store,
+                id_lookup,
+                DomNode::text(owner_root, text_node.data().into()),
+                journal,
+            )?,
+        };
+        if imported_root_key.is_none() {
+            imported_root_key = Some(imported_key);
         }
-        DomNode::Element(_) => insert_spliced_node(
-            store,
-            id_lookup,
-            fragment_node.clone_for_owner_document(owner_root),
-            journal,
-        )?,
-        DomNode::Text(text_node) => insert_spliced_node(
-            store,
-            id_lookup,
-            DomNode::text(owner_root, text_node.data().into()),
-            journal,
-        )?,
-    };
-
-    store.append_child_to_parent(parent_key, imported_key)?;
-
-    let mut child_key = fragment_node
-        .first_child(|key| fragment.node(key))
-        .map(|(key, _)| key);
-    while let Some(current_child_key) = child_key {
-        let child = fragment
-            .node(current_child_key)
-            .ok_or(DomError::InvalidNodeKey)?;
-        child_key = child
-            .next_sibling(|key| fragment.node(key))
-            .map(|(key, _)| key);
-        splice_fragment_subtree_into_store(
-            owner_root,
-            store,
-            id_lookup,
-            imported_key,
-            fragment,
-            current_child_key,
-            journal,
-        )?;
+        store.append_child_to_parent(destination_key, imported_key)?;
+        visit_children_in_reverse_sibling_order(fragment, source_key, |child_key| {
+            stack.push((child_key, imported_key));
+        });
     }
-    Ok(imported_key)
+
+    // The walk is seeded with the subtree root, so it is always the first
+    // entry popped and the first key created.
+    Ok(imported_root_key.expect("the splice walk is seeded with the subtree root"))
+}
+
+/// Visits a fragment node's children in reverse sibling order (last child
+/// first), so a caller can push them onto a work stack and pop them back in
+/// DOM order. Walking the doubly-linked sibling chain backward avoids a
+/// per-node buffer.
+fn visit_children_in_reverse_sibling_order(
+    fragment: &RootDomFragment,
+    key: DomNodeSlotKey,
+    mut visit: impl FnMut(DomNodeSlotKey),
+) {
+    let Some(node) = fragment.node(key) else {
+        return;
+    };
+    let mut child_key = node
+        .last_child(|child_key| fragment.node(child_key))
+        .map(|(child_key, _)| child_key);
+    while let Some(current_child_key) = child_key {
+        visit(current_child_key);
+        child_key = fragment
+            .node(current_child_key)
+            .and_then(|child| child.previous_sibling(|sibling_key| fragment.node(sibling_key)))
+            .map(|(sibling_key, _)| sibling_key);
+    }
 }
 
 fn insert_spliced_node<S: NodeStore>(
@@ -412,5 +450,74 @@ mod tests {
         // No partial import: the destination store gained nothing.
         assert_eq!(nodes.len(), 2);
         assert_eq!(journal.node_slot_allocations, 0);
+    }
+
+    /// A fragment nested 10,000 elements deep imports through the live path
+    /// without recursing: the iterative work-stack walk keeps the state on an
+    /// explicit bounded stack, so no call-stack overflow occurs (the pre-fix
+    /// recursive walk would overflow at this depth). The imported chain must be
+    /// exactly as deep as authored, with no cycle and no truncation.
+    #[test]
+    fn splice_imports_a_pathologically_deep_fragment_without_recursion() {
+        const DEPTH: u64 = 10_000;
+
+        // Build a single chain `DEPTH` levels deep: level 0 under the fragment
+        // root, level N under level N-1. Tiny plain divs, no styles.
+        let mut fragment = RootDomFragment::new();
+        let fragment_root = fragment.document_fragment_key();
+        let top = fragment.create_element(DomTag::Div).expect("top level");
+        fragment
+            .append_child(fragment_root, top)
+            .expect("top level attach");
+        let mut parent = top;
+        for _ in 1..DEPTH {
+            let child = fragment.create_element(DomTag::Div).expect("level node");
+            fragment.append_child(parent, child).expect("level attach");
+            parent = child;
+        }
+
+        // Import through the live path: the instrumented node store with the
+        // born-dirty journal flag set.
+        let mut nodes = RootDomNodes::with_key();
+        let root = nodes.insert_with_key(DomNode::document);
+        let mut id_lookup = HashMap::new();
+        let mut journal = SpliceJournal {
+            born_dirty: true,
+            ..SpliceJournal::default()
+        };
+
+        let imported = splice_fragment_children_into_store(
+            root,
+            &mut nodes,
+            &mut id_lookup,
+            root,
+            &fragment,
+            &mut journal,
+        )
+        .expect("deep fragment import must succeed without recursion");
+
+        // One top-level chain of DEPTH element nodes.
+        assert_eq!(imported.len(), 1);
+        assert_eq!(journal.node_slot_allocations, DEPTH);
+
+        // Walk the links down and spot-check the depth: exactly DEPTH, no
+        // cycle, no truncation.
+        let mut cursor = imported[0];
+        let mut depth = 1_u64;
+        while let Some(child) = nodes
+            .get(cursor)
+            .and_then(DomNode::first_child_key_for_store)
+        {
+            cursor = child;
+            depth += 1;
+            assert!(
+                depth <= DEPTH,
+                "imported chain grew past the authored depth"
+            );
+        }
+        assert_eq!(
+            depth, DEPTH,
+            "the imported chain must be exactly DEPTH deep"
+        );
     }
 }

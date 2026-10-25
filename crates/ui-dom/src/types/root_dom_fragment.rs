@@ -219,8 +219,10 @@ impl RootDomFragment {
     /// in this fragment-owned tree.
     ///
     /// The source fragment root itself is not imported. Only children
-    /// reachable from that root are appended, in order. Duplicate element ids
-    /// fail before partial import.
+    /// reachable from that root are appended, in order. A source fragment id
+    /// that collides with a destination id fails before partial import; a
+    /// duplicate id internal to the source fragment is unreachable via the
+    /// authoring API (which enforces fragment-local id uniqueness).
     pub fn append_fragment(
         &mut self,
         parent_key: DomNodeSlotKey,
