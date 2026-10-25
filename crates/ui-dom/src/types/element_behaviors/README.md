@@ -42,9 +42,12 @@ Row hooks take `&mut RootDom` exactly as the former methods did — the stage-a
 context. That shape is deliberate and temporary: it proves the dispatch shape
 first; the narrowed `BehaviorContext` (a visit-memory struct of the disjoint
 fields the rows demonstrably need) is E6-c's evidence-driven work, since those
-fields are only knowable once the rows exist. The session slot
-(`pressed_pointer_click_target` + `active_range_drag_session`) is E6-c's
-unification target, gated on empirical confirmation of mutual exclusion.
+fields are only knowable once the rows exist. The two pointer-engagement slots
+(`pressed_pointer_click_target` and `active_range_drag_session`) stay separate
+— E6-b's empirical trace found a range engagement keeps both live at once (the
+press record dispatches the click on pointer-up; the drag session drives
+pointer-moves), so the session-slot unification was REJECTED on evidence. E6-c
+is the context narrowing only.
 
 ## Invariants, rules, and decisions
 

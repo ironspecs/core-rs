@@ -3,8 +3,9 @@
 //! This file owns the presented-options behavior *definitions*: the select
 //! and text-input datalist owner kinds, the popup row and anchor record
 //! types, the popup role/state constants, and the popup measurement and
-//! record-reading helpers. The presented-options lifecycle methods that
-//! execute those definitions live on `RootDom` in `types/root_dom.rs`.
+//! record-reading helpers. The presented-options lifecycle that executes
+//! those definitions lives in `popup.rs`, and the popup DOM construction it
+//! drives lives in `popup_shell.rs` (PR 5, E6-b).
 
 use crate::domains::layout::{layer_kind_for_node, node_box_from_ref};
 use crate::numeric::usize_to_f32;
