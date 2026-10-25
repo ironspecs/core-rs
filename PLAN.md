@@ -2157,6 +2157,45 @@ an f32 basis.
   same borrow triple (revisit at E4/E1-splice). Full gate green per
   commit; perf pins unmoved; the 48-fn contract unchanged.
 
+- **2026-10-23 — PR 5: E4 + E3 landed** on `rootdom/e3-e4` (PR to
+  follow). E4 (`d36f698`, `types/dirty_channel.rs`): the dirty
+  channel re-homed (the parameterized walk + the
+  classification→marks policy table; the E1-pulled-along helper
+  re-homed correctly). The headline finding: the design's "one
+  parameterized walk over `&mut SlotMap`" is BLOCKED by the
+  observability boundary — `RootDomNodes` is a metric-instrumented
+  proxy and `DerefMut` coercion would silently drop `Get`/`GetMut`
+  counts (the first attempt moved 5 perf pins DOWNWARD — lost
+  observability, not a speed win — and was correctly reverted).
+  Verdict (c): the instrumented live walk and the raw store walk
+  stay deliberately unmerged. **Cross-cutting theme (now twice:
+  E2's back-off, E4's (c)): the metrics-instrumented
+  `RootDomNodes` proxy shapes what may be extracted — observability
+  is load-bearing, not decoration.** The trio triage: layout+style
+  were already one walk; paint is genuinely divergent (the
+  damage-rect walk stays in the paint domain); the
+  layer-membership-flip walk is a different operation ((c), named).
+  E3 (`e21db35`, `types/purge.rs` + the static `PURGE_DEPENDENTS`
+  table in `remove_node`): 7 purge-only dependents in today's exact
+  order; `blur`, the hover-cleanup (purge+dirty, (b)), and the
+  derived-key/entangled teardown (c) stay bespoke with named notes;
+  the table stays in root_dom.rs because extracting it would force
+  private fields `pub(crate)` (a visibility leak the doctrine
+  rejects). **Latent bug surfaced, honestly NOT fixed (architect
+  ruling):** `DomSelection::DocumentSelected` is never purged —
+  its anchor/focus would survive removal. Unreachable today (the
+  variant is never constructed — an incomplete feature); left as-is
+  with a named note and deferred to the editing epic (which owns
+  the dead caret entries). E3 grew `root_dom.rs` +113 — the table,
+  tests, and notes are net-new infrastructure; the win is the bug
+  class becoming visible, not line count. A dead redundant
+  focused-element clear was dropped (behavior-preserving,
+  disclosed). `root_dom.rs` now 7,125 with 618 lines in the two new
+  primitives. Folder verdict: still flat; the grouping signal (same
+  borrow triple at every pass) has not appeared; the
+  `dirty_channel` ↔ `tree_links` two-module cycle is benign and
+  documented.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
