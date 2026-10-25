@@ -2334,7 +2334,59 @@ an f32 basis.
   exactly E6-c's job to discover. Full gate green per commit; the 15
   `perf_metric` pins and the `perf_allocation` pin unmoved; the 48-fn
   contract unchanged; the existing keyboard/widget regression tests
-  stayed byte-identical (they are the dispatch-shape net).
+   stayed byte-identical (they are the dispatch-shape net).
+
+- **2026-10-25 — PR 5: E6-b landed** (PR #39, `e988c8c`): the popup
+  leaves `RootDom` for `element_behaviors/popup.rs`/
+  `popup_shell.rs` (45 methods → free fns over `&mut RootDom`; the
+  select/datalist construction was ALREADY unified by E6-a — the
+  anticipated builder dedup had nothing to align; the paint
+  special-case became a widget-owned query; the transition-end
+  hook's popup predicate moved while the queue push stayed inline
+  in the backed-off tick — named note). The private-field test pin
+  (`pending_layer_remove_roots` direct write) re-expressed through
+  the real public path (close → `set_transition` → `sync_transitions`
+  → `drain_pending_layer_remove_roots`), zero test-only visibility.
+  `root_dom.rs` 5,643 → 4,456. Also: the types/ and
+  element_behaviors/ module READMEs; the census test strengthened
+  (`ControlKind::ALL` iteration + a compile-time length belt);
+  `ControlKind` re-homed per rule 1; the module-README gap list
+  recorded as standing docs debt. **Surfaced, deferred to the
+  widget/editing epic:** the datalist row click-commit is a
+  PRE-EXISTING dead feature (its descriptor variant is never
+  constructed — clicking a datalist row never commits); recorded in
+  the ledger, never smuggled.
+
+- **2026-10-25 — PR 5: E6-c, a clean negative result (docs-only).**
+  The `BehaviorContext` narrowing is **REJECTED on evidence**: the
+  row-usage inventory (recorded in the design doc's E6 entry) shows
+  behaviors are genuinely document-wide — the popup is wired
+  through the shared input-control/text-entry paths, only a
+  minority of hooks are narrow, and narrowing would mean splitting
+  shared bodies. The rows stay on `&mut RootDom`. The session-slot
+  unification was rejected in E6-b on empirical evidence
+  (press+drag coexist in a range engagement — the mutual-exclusion
+  premise was false). Two E6-c sub-proposals went up against the
+  evidence and both were honestly rejected; the +1 `Get` from
+  E6-a's table indirection persists (recorded, not fixed — its fix
+  was contingent on the rejected narrowing).
+
+- **2026-10-25 — PR 5 complete; the arc (PRs 1–5) is done.** The
+  extraction catalog (E1–E8) is fully adjudicated: E1 links +
+  unified splice, E2 id index, E3 purge table, E4 dirty channel, E5
+  propagation visitor, E6 behavior table, E7 projection leaves;
+  honest back-offs recorded for the E7 tick (orchestration, not a
+  hidden walk), the paint damage-rect walk and the layer-flip walk
+  (genuine divergences), and the E2 metrics-proxy function. Final
+  state: `root_dom.rs` 7,464 → 4,456 (−40%); nine tested primitive
+  files in types/ plus the element_behaviors/ per-kind behavior
+  files; the 48-`pub fn` facade contract never moved; no perf pin
+  moved except documented improvements. The fields stayed flat —
+  the design's D3 prediction verified: no borrow-triple grouping
+  ever emerged from the primitives' signatures. The opportunity
+  ledger (two O(depth²) sites, the datalist dead feature, the
+  `DocumentSelected` purge gap, the README debt list, the deferred
+  insert primitive) is the durable yield for future epics.
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

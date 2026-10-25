@@ -12,10 +12,13 @@
 //!
 //! - `RootDom` owns the document slot store and all tree mutation authority
 //! - `RootDom` keeps the default-behavior facade seams (focus, blur, pointer,
-//!   keyboard, and the presented-options popup); the per-kind default-behavior
-//!   hooks and the generic activation lifecycle live in
-//!   `types/element_behaviors/` (PR 5, E6-a), and the seams resolve a control
-//!   kind, look up the behavior table, and invoke the row's hook.
+//!   keyboard); the per-kind default-behavior rows and the generic activation
+//!   lifecycle live in `types/element_behaviors/` (PR 5, E6-a), and the seams
+//!   resolve a control kind, look up the behavior table, and invoke the row's
+//!   hook. The presented-options popup machinery lives in
+//!   `types/element_behaviors/popup.rs`/`popup_shell.rs` (E6-b); what remains
+//!   here is only the popup-adjacent transition-end hook (the layer-removal
+//!   queue push) and the seams' invocations.
 //! - attachment state here describes Bevy presentation lifecycle only
 //! - node-level data must not absorb root-owned indexing or lifecycle policy
 //!
