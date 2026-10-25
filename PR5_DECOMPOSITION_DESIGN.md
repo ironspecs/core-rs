@@ -42,6 +42,20 @@ triaged:
   rename/restructure toward alignment FIRST (its own behavior-
   preserving changeset), then extract. This is where the tangible
   memory/speed wins live.
+- **(a′) ALIGNMENT HAS A DIRECTION, and the direction is the
+  architect's call** (adjudicated 2026-10-25 after the splice
+  recursion miss): when two instances disagree in SHAPE, align toward
+  the better memory shape — never average them, never default to
+  whichever is convenient. The direction rules, in order:
+  (i) explicit bounded state beats implicit unbounded state — an
+  iterative visitor with an explicit work buffer beats recursion
+  (call-stack depth is unbounded state; the arc's doctrine is "no
+  free recursion"; rule 4 is visitor-not-batch);
+  (ii) a reused/borrowed buffer beats a per-call allocation;
+  (iii) one pass beats two. A transcriber that finds itself aligning
+  a visitor DOWN to recursion (or a borrowed buffer UP to an
+  allocation) has the direction backwards — STOP and escalate
+  instead of proceeding.
 - **(b) Meaningful divergence** — an instance does extra work
   (metrics, dirty marks, notifications). Action: the extra moves
   into the primitive's journal/context parameter; the algorithm
@@ -268,3 +282,14 @@ contract).
 | E6 session slot | −1 field; "one active engagement" by construction |
 | E6 popup builder | select/datalist construction dedup |
 | E7 tick | one active-set walk for the animation workload |
+
+## D7. The opportunity ledger (grows per stage; the doctrine's yield)
+
+| Found in | Finding | Disposition |
+|---|---|---|
+| E2 | `index_node_id_if_present` is coupled to the metric-instrumented `RootDomNodes::get` | deferred insert primitive (pre-resolved id signature) |
+| E3 | `DomSelection::DocumentSelected` is never purged (unreachable today — never constructed) | editing epic, with the dead caret entries |
+| E3 follow-up | scroll-offset purge changed access class in migration | FIXED (`remove_each_in`, `ff152fe`); the audit is a doc comment on the table |
+| E4 | the metric proxy blocks SlotMap-coerced extraction | the `NodeStore` trait (E1-phase-2) is the principled resolution |
+| E1-phase-2 | the unified splice first aligned DOWN to recursion | FIXED (`0175e16` — iterative work stack, no HashMap); the D1(a′) direction rule was born here |
+| E1-phase-2 | `append_child_to_parent`'s per-append cycle check + `current_layer_root_key` walk make deep builds/imports O(depth²) (measured: 10k-depth splice test, 10.95s, dominated by this pre-existing cost) | **open opportunity** — the cycle check is only needed when appending an already-linked node (fresh births can't cycle); a future optimization, needs its own design pass (any fix must keep the layer-root walk's semantics and the metric counts) |
