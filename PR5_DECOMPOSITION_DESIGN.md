@@ -167,6 +167,34 @@ misalignment signals to triage, the win.
 
 ### E6 — The behavior table (the deep extraction)
 
+**Staged (amended 2026-10-25):** E6 lands in three stages, each
+independently reviewable:
+
+- **E6-a — the table skeleton + the lifecycle.** The static
+  `ControlKind → BehaviorRow` table (enum-indexed, zero-alloc — a
+  lookup map, not a HashMap); the generic activation lifecycle
+  (press → dispatch → commit/revert) extracted as one state machine
+  whose per-kind seams invoke the row's hooks; EVERY control kind
+  becomes a row in one pass (the per-row work is mechanical: today's
+  per-kind methods become free fns in one
+  `element_behaviors/<kind>.rs` file per kind — the folder earns its
+  keep). Stage-a rows take `&mut RootDom` (today's context — the
+  dispatch-shape proof; the narrowed `BehaviorContext` is E6-c's
+  evidence-driven work, since the fields the rows actually need are
+  only knowable once the rows exist).
+- **E6-b — the popup migration.** The select/datalist popup
+  construction dedups into one `build_options_popup` builder (the
+  two shells triage-align first); the popup's state machine and
+  commit logic become the select/datalist rows' internals; the
+  facade's popup methods leave `RootDom`.
+- **E6-c — context narrowing + the session slot.** The
+  `BehaviorContext` narrows to the disjoint field borrows the rows
+  demonstrably need (evidence from E6-a/b); `pressed_pointer_click_target`
+  + `active_range_drag_session` unify into ONE
+  `Option<PointerSession>` with a kind tag (confirm the mutual
+  exclusion empirically first — if both can be live, that's a
+  latent bug, report verbatim).
+
 - **Memory shape**: the element's configured behavior
   (`ElementControl`/role — already resolved by
   `resolved_element_control_for_key`) as the KEY; a per-kind row of
