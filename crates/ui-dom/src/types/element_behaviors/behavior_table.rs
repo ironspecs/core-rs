@@ -14,8 +14,9 @@
 //! - the table is complete by construction: every `ControlKind` arm maps to a
 //!   row (the census test pins this), even a row with every hook `None`
 //!   (that is "today's no-op" for a kind with no default behavior).
-//! - row hooks take `&mut RootDom` exactly as today's methods did (stage-a
-//!   context); the narrowed `BehaviorContext` is E6-c's evidence work.
+//! - row hooks take `&mut RootDom` exactly as today's methods did (E6-c's
+//!   evidence-gated narrowing was REJECTED — the rows are document-wide; see
+//!   the module README's Architectural approach).
 //! - the row field set matches the seams the inventory found: keyboard,
 //!   pointer-down, click-commit, focus, and blur. There is no `on_text_input`
 //!   or `on_transition_end` row today — text input runs inside the keyboard

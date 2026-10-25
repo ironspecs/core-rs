@@ -5,8 +5,8 @@
 //! styles, and layer ordering. The former `RootDom` methods
 //! `append_presented_options_popup_shell_and_rows`,
 //! `append_presented_options_row_element`, and the three `set_*_style_attrs`
-//! setters re-homed here as free functions over `&mut RootDom` (stage-a
-//! context; the narrowed `BehaviorContext` is E6-c's work).
+//! setters re-homed here as free functions over `&mut RootDom` (E6-c's
+//! evidence-gated narrowing was REJECTED — the rows are document-wide).
 //!
 //! Invariants and rules:
 //!

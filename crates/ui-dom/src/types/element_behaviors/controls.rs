@@ -9,7 +9,8 @@
 //! Invariants and rules:
 //!
 //! - these helpers take `&mut RootDom` exactly as their former `RootDom`
-//!   methods did (stage-a context; the narrowed `BehaviorContext` is E6-c).
+//!   methods did (E6-c's evidence-gated narrowing was REJECTED — the rows are
+//!   document-wide; see the module README's Architectural approach).
 //! - `input_control_on_keyboard` and `input_control_pointer_down` are the
 //!   former `apply_input_control_on_keyboard` / `apply_on_pointer_down`
 //!   `InputControl` arms, byte-identical bodies modulo `self → root`; they

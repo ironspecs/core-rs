@@ -4,8 +4,8 @@
 //! open/close/move/highlight state machine, the commit-and-dispatch logic, the
 //! facade seam entry points (keyboard/click/blur/focus/reopen), and the popup
 //! query accessors. The former `RootDom` popup methods re-homed here as free
-//! functions over `&mut RootDom` (stage-a context; the narrowed
-//! `BehaviorContext` is E6-c's work). DOM construction lives in
+//! functions over `&mut RootDom` (E6-c's evidence-gated narrowing was
+//! REJECTED — the rows are document-wide). DOM construction lives in
 //! `popup_shell.rs`; the definitions/records/measurement live in
 //! `present_options.rs`.
 //!

@@ -198,6 +198,53 @@ independently reviewable:
   mutual-exclusion premise was false; the two slots are two stages
   of one engagement — honest state, not duplicated state. The
   fields stay separate.
+  **E6-c outcome — REJECTED on evidence (2026-10-25): "behaviors are
+  document-wide."** The stage-a usage inventory (below, the deliverable)
+  shows the rows cannot be narrowed to a disjoint-field `BehaviorContext`
+  replacing `&mut RootDom`:
+
+  | Row file | Hooks / entry points | `RootDom` accesses (transitive) |
+  |---|---|---|
+  | `button.rs` | `button_on_keyboard` | nodes, event dispatch+queue, metrics, layout box read |
+  | `checkbox.rs` | `checkbox_click_commit` | nodes, event dispatch (input/change), metrics |
+  | `range.rs` | `apply_default_range_drag_for_point`, `start_range_drag_session`, `mark_active_range_drag_dirty`, `finish_range_drag_change_if_dirty` | range-drag session, nodes, selection, focus, `set_attr`, event dispatch |
+  | `text_entry.rs` | `text_edit_on_keyboard`, `text_edit_pointer_down`, `ensure_text_selection_for_target`, `apply_default_text_behavior_and_dispatch_input_from_keyboard_input` | nodes, selection, focus, `set_attr`, event dispatch, **popup** (`presented_options_keyboard_navigation`, `reopen_presented_options_for_text_input_value_change`) |
+  | `select.rs` | `select_on_keyboard`, `select_click_commit`, `select_on_blur` | **popup (full)** — delegates entirely to `popup.rs` |
+  | `controls.rs` | `input_control_on_keyboard`, `input_control_pointer_down`, `apply_input_keyboard_step_on_keydown`, `apply_input_keyboard_click_on_keyup`, `set_control_value_and_dispatch_input{,_change}`, `control_value_event_string`, `resolved_element_control_for_key`, `resolved_control_part_for_key`, `range_value_string_for_point`, `presented_options_keyboard_navigation`, `presented_options_focus`, `presented_options_blur` | nodes, selection, focus, `set_attr`, event dispatch, range-drag session, metrics + event dispatch (checkbox keyup), **popup** (`presented_options_focus`/`blur`/`keyboard_navigation`) |
+  | `popup.rs` | select/datalist popup lifecycle (keyboard/click/blur/focus/reopen seams, state machine, commit) | nodes (read + iterate + `root`), **id index** (`get_element_by_id`), `set_attr`, **styling** (`style_mut`), **tree mutation** (`remove_node`), event dispatch, box measurement |
+  | `popup_shell.rs` | `append_presented_options_popup_shell_and_rows` + row/shell/scroll/style setters | **tree mutation** (`create_element`, `create_text_node`, `append_child`), **layer ordering** (`set_layout_layer_order`), **styling** (`style_mut`), `set_attr`, box measurement |
+  | `activation.rs` | `dispatch_click_and_apply_after_click`, `apply_after_click_before_dispatch`, `revert_after_click_after_canceled_dispatch`, `commit_after_click_after_dispatch`, `pressed_pointer_click_target_from_raw_target`, `keyboard_activation_click_point_for_target`, `target_has_disabled_attr` | nodes, `set_attr` (checkbox toggle pre-apply/revert), event dispatch+queue, metrics, **popup** (`apply_select_popup_row_click_default_for_target` in the commit step), layout box read |
+
+  (`set_attr` on `id` maintains the id index and every `set_attr` routes
+  through the dirty channel; `push_emitted_event` increments
+  `EmittedEventAllocation`, so "event queue" implies a metric increment.
+  "Text measurement" is not a row access: the rows read layout boxes
+  (`node_box_from_ref`) and popup height
+  (`measure_presented_options_popup_height_px`);
+  `measured_text_width_px` is used only by `intrinsic_size.rs`/`dom_node.rs`.)
+
+  Findings that reject the narrowing: (1) the popup (`popup.rs` +
+  `popup_shell.rs`, serving select AND the datalist text-input) is
+  document-wide — tree mutation (create/append/remove), styling, layer
+  ordering, the id index, `set_attr`, node iteration, and box measurement,
+  exactly the design's own gate condition; (2) the "non-popup" rows are not
+  separable from the popup — checkbox/number/range/text-input share
+  `presented_options_focus`/`presented_options_blur` as their `on_focus`/
+  `on_blur` hooks, and the shared input-control/text-entry keyboard paths
+  invoke `presented_options_keyboard_navigation` and
+  `reopen_presented_options_for_text_input_value_change` (the datalist
+  text-input popup lifecycle); (3) only a minority of hooks — button
+  keyboard, checkbox commit, input-control pointer-down, range drag — are
+  cleanly narrow (nodes + selection + focus + sessions + events + metrics +
+  `set_attr`), and they share files with the wide paths while the table's
+  per-seam fn-pointer types stay uniform (the keyboard seam — select +
+  text-input — and the focus/blur seam — popup — must stay `&mut RootDom`).
+  A narrow context would therefore either carry the whole document
+  (defeating the purpose) or require splitting the popup seams out of the
+  shared input-control/text-entry paths (a semantic refactor of row bodies,
+  violating the byte-shape rule). The rows stay on `&mut RootDom`. The
+  E6-a +1 node-store `Get` re-fetch persists (the fix was contingent on the
+  narrowed context carrying the resolved target — recorded, not fixed).
 
 - **Memory shape**: the element's configured behavior
   (`ElementControl`/role — already resolved by
@@ -327,6 +374,7 @@ contract).
 | E1-phase-2 | `append_child_to_parent`'s per-append cycle check + `current_layer_root_key` walk make deep builds/imports O(depth²) (measured: 10k-depth splice test, 10.95s, dominated by this pre-existing cost) | **open opportunity** — the cycle check is only needed when appending an already-linked node (fresh births can't cycle); a future optimization, needs its own design pass (any fix must keep the layer-root walk's semantics and the metric counts) |
 | E6-b | the datalist click-commit (`apply_presented_options_click_default_for_target`) is a PRE-EXISTING dead feature: its driving descriptor variant (`DomElementOnActivation::PresentedOptions`) is never constructed (pre-dates the arc; E6-a only removed the dead dispatch arm). Clicking a datalist row never commits | widget/editing epic (a feature completion, not a migration fix — never smuggled) |
 | E6-b | the session-slot unification premise FAILED empirically (press+drag coexist in a range engagement) | REJECTED (recorded in the E6 entry) |
+| E6-c | the `BehaviorContext` narrowing is REJECTED on evidence: the usage inventory shows the rows are document-wide (popup construction + popup seams wired into the shared input-control/text-entry focus/blur/keyboard paths); only a minority of hooks are cleanly narrow | rows stay on `&mut RootDom`; the +1 node-store `Get` re-fetch persists (the fix was contingent on the narrowed context carrying the resolved target) |
 | E6-b | module-README gap list (required-docs rule): `structural-lint/{rules,engine}`, `ui-dom/src/domains/{,paint,style/computed,composite,layer_ops,render_ops}`, `ui-dom/src/bevy` | standing docs debt, to be scheduled |
 | E5 | the capture phase is O(depth²) — `ancestor_count_to_root` plus a per-ancestor `ancestor_key_at_distance` re-walk the ancestor path | **open opportunity** — preserved byte-identically (an algorithm/perf change needs its own reviewed commit per rule 4); a reused path buffer or a collect-then-reverse walk would be O(depth), adjudicated against D1(a′) (reused buffer vs the walk's current zero-allocation) |
 | E7 | the transition tick's per-node effects do not factor into a journal | **backed off (c)** — inline `&mut RootDom` mutations (dirty walks, layer queues, event dispatch with the popup transition-end hook) with semantic marks-vs-events ordering; extraction would be a batch (rule 4) or a borrow-conflicting closure over `&mut self` |

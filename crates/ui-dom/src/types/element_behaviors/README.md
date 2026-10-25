@@ -38,16 +38,22 @@ up the row, and invoke the row's hook. It does not own the document memory
 
 ## Architectural approach
 
-Row hooks take `&mut RootDom` exactly as the former methods did — the stage-a
-context. That shape is deliberate and temporary: it proves the dispatch shape
-first; the narrowed `BehaviorContext` (a visit-memory struct of the disjoint
-fields the rows demonstrably need) is E6-c's evidence-driven work, since those
-fields are only knowable once the rows exist. The two pointer-engagement slots
+Row hooks take `&mut RootDom` exactly as the former methods did. That shape is
+no longer temporary: E6-c's evidence-gated narrowing was REJECTED (2026-10-25)
+— the usage inventory showed the rows are document-wide, not a disjoint-field
+borrow. The popup (select + the datalist text-input) needs tree mutation,
+styling, layer ordering, the id index, and box measurement, and the shared
+input-control/text-entry paths wire the popup lifecycle into the
+checkbox/number/range/text-input rows' focus/blur and keyboard seams. Only a
+minority of hooks (button keyboard, checkbox commit, pointer-down, range drag)
+are cleanly narrow, and they share files with the wide paths while the table's
+per-seam hook types stay uniform. Narrowing would have to carry the whole
+document or split shared function bodies — neither is a disjoint-field-borrow
+win — so the rows keep `&mut RootDom`. The two pointer-engagement slots
 (`pressed_pointer_click_target` and `active_range_drag_session`) stay separate
-— E6-b's empirical trace found a range engagement keeps both live at once (the
-press record dispatches the click on pointer-up; the drag session drives
-pointer-moves), so the session-slot unification was REJECTED on evidence. E6-c
-is the context narrowing only.
+(E6-b rejected the session-slot unification on evidence; a range engagement is
+press-PLUS-drag). See `PR5_DECOMPOSITION_DESIGN.md`'s E6 entry for the usage
+inventory table.
 
 ## Invariants, rules, and decisions
 
