@@ -52,8 +52,7 @@ use crate::domains::style::{
     parse_declaration_block,
 };
 use crate::domains::visitor::event_target::{
-    DomPointEventTarget, dispatch_event_from_point_and_finish, dispatch_event_to_target_and_finish,
-    topmost_event_target_from_point,
+    DomPointEventTarget, dispatch_event_from_point_and_finish, topmost_event_target_from_point,
 };
 use crate::domains::visitor::pseudo_state::{
     active_pointer_target_from_attached_point, active_pointer_target_from_point,
@@ -106,6 +105,10 @@ use crate::types::element_behaviors::{
     presented_options_row_is_highlighted, presented_options_row_source_index,
     set_select_source_option_selected_attrs, string_attr_value,
 };
+use crate::types::event_pointer::{
+    event_point, hover_pointer_event, pointer_moved, pointer_pressed, pointer_released,
+};
+use crate::types::event_propagation::propagate;
 use crate::types::id_index::{
     assert_id_is_available, assert_id_is_available_for, next_id_from_attr, replace_indexed_id,
 };
@@ -2923,9 +2926,9 @@ impl RootDom {
         if !event.bubbles() && !self.target_has_exact_listener(target_key, event.name)? {
             return Ok(DomEventDispatchOutcome::NotDispatched);
         }
-        Ok(DomEventDispatchOutcome::Dispatched(
-            dispatch_event_to_target_and_finish(self, target_key, event)?,
-        ))
+        Ok(DomEventDispatchOutcome::Dispatched(propagate(
+            self, target_key, event,
+        )?))
     }
 
     pub(crate) fn apply_default_behavior_from_keyboard_input(
@@ -4911,51 +4914,14 @@ fn queue_newly_connected_layer_roots_in_subtree(
     }
 }
 
-fn event_point(event: &DomEvent) -> Option<PointPx> {
-    match event.detail {
-        DomEventDetail::Pointer(detail) => Some(PointPx {
-            x_px: detail.client_x,
-            y_px: detail.client_y,
-        }),
-        DomEventDetail::Wheel(detail) => Some(PointPx {
-            x_px: detail.client_x,
-            y_px: detail.client_y,
-        }),
-        _ => None,
-    }
-}
-
-fn pointer_moved(previous_pointer: Option<DomPointerState>, pointer: DomPointerState) -> bool {
-    previous_pointer.is_none_or(|previous| {
-        (previous.x_px - pointer.x_px).abs() > f32::EPSILON
-            || (previous.y_px - pointer.y_px).abs() > f32::EPSILON
-    })
-}
-
-fn hover_pointer_event(pointer: DomPointerState) -> DomPointerEvent {
-    DomPointerEvent {
-        pointer_id: 1,
-        pointer_type: DomPointerType::Mouse,
-        is_primary: true,
-        button: None,
-        buttons: u16::from(pointer.primary_button_down),
-        client_x: pointer.x_px,
-        client_y: pointer.y_px,
-        modifiers: DomModifierState::default(),
-    }
-}
-
-fn pointer_pressed(previous_pointer: Option<DomPointerState>, pointer: DomPointerState) -> bool {
-    previous_pointer.map_or(pointer.primary_button_down, |previous| {
-        !previous.primary_button_down && pointer.primary_button_down
-    })
-}
-
-fn pointer_released(previous_pointer: Option<DomPointerState>, pointer: DomPointerState) -> bool {
-    previous_pointer
-        .is_some_and(|previous| previous.primary_button_down && !pointer.primary_button_down)
-}
-
+// Extraction note (PR 5, E5): the pure pointer-input leaves (`event_point`,
+// `pointer_moved`, `hover_pointer_event`, `pointer_pressed`,
+// `pointer_released`) re-homed to `types/event_pointer.rs` — they read only
+// their parameters. `hover_layer_intersects_removed_keys` STAYS here: it is a
+// hover-layer purge predicate (an E3-domain concern whose only caller is
+// `clear_hover_for_removed_keys`), not a pointer-event constructor, and its
+// parameter type `HoveredLayerEntry` is root-owned. Back-off doctrine verdict
+// (c): genuine divergence from the pointer-event constructor group.
 fn hover_layer_intersects_removed_keys(
     hovered_layer: &HoveredLayerEntry,
     removed_keys: &[DomNodeSlotKey],

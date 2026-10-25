@@ -55,6 +55,8 @@ pub mod dom_text_node;
 pub mod dom_transition;
 pub mod element_behaviors;
 mod event_listener_name_bits;
+mod event_pointer;
+pub(crate) mod event_propagation;
 mod id_index;
 mod layout_scratch;
 mod node_store;

@@ -14,39 +14,40 @@
 //! - traverse presented Bevy layers by rect check
 //! - descend the matching DOM subtree by rect check
 //! - resolve the final event target
-//! - perform capture/target/bubble propagation from that resolved target
+//! - delegate capture/target/bubble propagation to the E5 `propagate`
+//!   primitive in `types/event_propagation.rs`
 //!
 //! Invariants and rules:
 //!
-//! - point dispatch stays in one contained file
-//! - the visitor owns the mutable dispatch context for the full flow
-//! - listeners see only the dispatch facade, never the owned event directly
+//! - point target resolution stays in one contained file
 //! - Bevy-layer selection stays iterative and allocation-free
-//! - propagation walks parents iteratively and never allocates an ancestry path
-//! - `dispatch_event_to_target(...)` returns sink-eligible finished events,
-//!   while `dispatch_event_to_target_and_finish(...)` exposes the full finished
-//!   event for owners that need cancellation truth
+//! - `propagate(...)` returns the full finished event (with default-prevented
+//!   and propagation-stop state written back) for owners that need
+//!   cancellation truth; `dispatch_event_to_target(...)` returns the
+//!   sink-eligible finished event, or `None` when prevented or stopped
 //!
 //! Constraints this file is protecting:
 //!
-//! - do not split target search and propagation into separate visitor files
 //! - do not build path products for later replay
 //! - do not move hover/active bookkeeping into event dispatch
+//! - do not re-own the propagation walk (its home is `event_propagation.rs`)
 //! - do not borrow out the owned mutable event context to listeners
 use bevy::prelude::{Entity, World};
 
 use crate::domains::hit_test::hit_test_from_dom_subtree_cluster_local;
 use crate::domains::layer_hit::topmost_attached_layer_hit_from_root_point;
-use crate::types::dom_event::{DomEvent, DomEventDispatchContext};
+use crate::types::dom_event::DomEvent;
+use crate::types::event_propagation::{dispatch_event_to_target, propagate};
 use crate::types::primitives::PointPx;
-use crate::types::{DomError, DomEventName, DomNodeSlotKey, RootDom};
+use crate::types::{DomError, DomNodeSlotKey, RootDom};
 
 #[cfg(test)]
 use crate::domains::hit_test::hit_test_from_dom_subtree_local;
 #[cfg(test)]
 use crate::types::{
-    DomEventDetail, DomEventListenerContext, DomModifierState, DomMouseButton, DomNode,
-    DomPointerEvent, DomPointerState, DomPointerType, DomPointerUpdate, DomTag, RootDomContext,
+    DomEventDetail, DomEventListenerContext, DomEventName, DomModifierState, DomMouseButton,
+    DomNode, DomPointerEvent, DomPointerState, DomPointerType, DomPointerUpdate, DomTag,
+    RootDomContext,
 };
 #[cfg(test)]
 use crate::{LayerConfig, LayerPool, LayerPoolRenderJobQueue, UiDomRenderSupport};
@@ -88,7 +89,7 @@ pub(crate) fn dispatch_event_from_point_and_finish(
     else {
         return Ok(None);
     };
-    let event = dispatch_event_to_target_and_finish(root_dom, target.target_key, event)?;
+    let event = propagate(root_dom, target.target_key, event)?;
     Ok(Some(DomPointEventDispatch { target, event }))
 }
 
@@ -130,40 +131,6 @@ pub(crate) fn topmost_point_event_target_from_point(
 }
 
 #[allow(dead_code)]
-pub(crate) fn dispatch_event_to_target(
-    root_dom: &mut RootDom,
-    target_key: DomNodeSlotKey,
-    event: DomEvent,
-) -> Result<Option<DomEvent>, DomError> {
-    let dispatched_event = dispatch_event_to_target_and_finish(root_dom, target_key, event)?;
-    if dispatched_event.default_prevented || dispatched_event.propagation.stopped {
-        return Ok(None);
-    }
-    Ok(Some(dispatched_event))
-}
-
-pub(crate) fn dispatch_event_to_target_and_finish(
-    root_dom: &mut RootDom,
-    target_key: DomNodeSlotKey,
-    event: DomEvent,
-) -> Result<DomEvent, DomError> {
-    root_dom.node(target_key).ok_or(DomError::InvalidNodeKey)?;
-    let mut dispatch = DomEventDispatchContext::new(event);
-    dispatch.set_target_key(target_key);
-    dispatch_capture_to_target(root_dom, target_key, &mut dispatch)?;
-    if !dispatch.propagation_stopped() && !dispatch.immediate_propagation_stopped() {
-        dispatch_target(root_dom, target_key, &mut dispatch);
-    }
-    if dispatch.event().bubbles()
-        && !dispatch.propagation_stopped()
-        && !dispatch.immediate_propagation_stopped()
-    {
-        dispatch_bubble_from_target_parent(root_dom, target_key, &mut dispatch)?;
-    }
-    Ok(dispatch.finish_with_event())
-}
-
-#[allow(dead_code)]
 pub(crate) fn visit_topmost_event_target_from_point<F>(
     root_dom: &RootDom,
     world: &World,
@@ -192,129 +159,6 @@ fn nearest_non_text_target(
         }
         key = node.parent_key().ok_or(DomError::InvalidNodeKey)?;
     }
-}
-
-fn dispatch_capture_to_target(
-    root_dom: &mut RootDom,
-    target_key: DomNodeSlotKey,
-    dispatch: &mut DomEventDispatchContext,
-) -> Result<(), DomError> {
-    let ancestor_count = ancestor_count_to_root(root_dom, target_key)?;
-    for distance_up in (1..=ancestor_count).rev() {
-        let ancestor_key = ancestor_key_at_distance(root_dom, target_key, distance_up)?;
-        dispatch.enter_phase(crate::types::DomEventPhase::Capturing, ancestor_key);
-        dispatch_node_phase_listeners(root_dom, ancestor_key, dispatch, true);
-        if dispatch.propagation_stopped() || dispatch.immediate_propagation_stopped() {
-            return Ok(());
-        }
-    }
-    Ok(())
-}
-
-fn dispatch_target(
-    root_dom: &mut RootDom,
-    target_key: DomNodeSlotKey,
-    dispatch: &mut DomEventDispatchContext,
-) {
-    dispatch.enter_phase(crate::types::DomEventPhase::AtTarget, target_key);
-    dispatch_node_phase_listeners(root_dom, target_key, dispatch, true);
-    if dispatch.immediate_propagation_stopped() {
-        return;
-    }
-    dispatch_node_phase_listeners(root_dom, target_key, dispatch, false);
-}
-
-fn dispatch_bubble_from_target_parent(
-    root_dom: &mut RootDom,
-    target_key: DomNodeSlotKey,
-    dispatch: &mut DomEventDispatchContext,
-) -> Result<(), DomError> {
-    let mut current_key = node_parent_key(root_dom, target_key)?;
-    while let Some(key) = current_key {
-        dispatch.enter_phase(crate::types::DomEventPhase::Bubbling, key);
-        dispatch_node_phase_listeners(root_dom, key, dispatch, false);
-        if dispatch.propagation_stopped() || dispatch.immediate_propagation_stopped() {
-            return Ok(());
-        }
-        current_key = node_parent_key(root_dom, key)?;
-    }
-    Ok(())
-}
-
-fn dispatch_node_phase_listeners(
-    root_dom: &mut RootDom,
-    key: DomNodeSlotKey,
-    dispatch: &mut DomEventDispatchContext,
-    capture: bool,
-) {
-    let event_name = dispatch.event().name;
-    let Some(node) = root_dom.node(key) else {
-        return;
-    };
-    let listeners = node.dispatched_listeners_for_phase(event_name, capture);
-    for dispatched_listener in listeners {
-        dispatched_listener.listener.invoke(root_dom, dispatch);
-        if dispatched_listener.options.once {
-            remove_once_listener_from_node(root_dom, key, event_name, &dispatched_listener);
-        }
-        if dispatch.immediate_propagation_stopped() {
-            return;
-        }
-    }
-}
-
-fn remove_once_listener_from_node(
-    root_dom: &mut RootDom,
-    key: DomNodeSlotKey,
-    event_name: DomEventName,
-    dispatched_listener: &crate::types::dom_node::DomDispatchedEventListener,
-) {
-    let Some(node) = root_dom.nodes.get_mut(key) else {
-        return;
-    };
-    let _removed = node.remove_event_listener(
-        event_name,
-        dispatched_listener.listener.clone(),
-        Some(dispatched_listener.options),
-    );
-}
-
-fn ancestor_count_to_root(
-    root_dom: &RootDom,
-    target_key: DomNodeSlotKey,
-) -> Result<usize, DomError> {
-    let mut count = 0;
-    let mut current_key = node_parent_key(root_dom, target_key)?;
-    while let Some(key) = current_key {
-        count += 1;
-        current_key = node_parent_key(root_dom, key)?;
-    }
-    Ok(count)
-}
-
-fn ancestor_key_at_distance(
-    root_dom: &RootDom,
-    target_key: DomNodeSlotKey,
-    distance_up: usize,
-) -> Result<DomNodeSlotKey, DomError> {
-    let mut remaining = distance_up;
-    let mut current_key = target_key;
-    while remaining > 0 {
-        let Some(parent_key) = node_parent_key(root_dom, current_key)? else {
-            return Err(DomError::InvalidNodeKey);
-        };
-        current_key = parent_key;
-        remaining -= 1;
-    }
-    Ok(current_key)
-}
-
-fn node_parent_key(
-    root_dom: &RootDom,
-    key: DomNodeSlotKey,
-) -> Result<Option<DomNodeSlotKey>, DomError> {
-    let node = root_dom.node(key).ok_or(DomError::InvalidNodeKey)?;
-    Ok(node.parent_key())
 }
 
 #[cfg(test)]
