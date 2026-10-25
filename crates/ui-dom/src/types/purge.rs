@@ -3,7 +3,7 @@
 //! What this file represents:
 //!
 //! - the leaf primitives that drop a removed node key from a retained
-//!   dependent store: `retain_not_in_map` (map-shaped), `retain_not_in_vec`
+//!   dependent store: `remove_each_in` (map-shaped), `retain_not_in_vec`
 //!   (vec-shaped), and `clear_if_in` / `clear_if_in_by` (option-shaped)
 //!
 //! Ownership boundary:
@@ -20,21 +20,43 @@
 //! - a `clear_if_in` clears the option only when its key IS in `removed`, and
 //!   never manufactures a value otherwise
 //!
+//! The two map-shaped access patterns (PR 5, E3 follow-up):
+//!
+//! - `remove_each_in` iterates the REMOVED set and removes each key from the
+//!   map: O(removed) with `HashMap::remove`. Use it for the removal case —
+//!   the store is large and only a handful of keys are being dropped. This is
+//!   the shape the pre-E3 scroll-offset purge had, and it is the only map-
+//!   shaped purge currently in use.
+//! - a "filter the store" leaf (iterating the STORE and dropping every entry
+//!   whose key is in `removed`: O(store × removed) with a linear
+//!   `removed.contains`) is deliberately ABSENT. That shape applies when
+//!   filtering the store is the semantic intent, but no current map-shaped
+//!   dependent is that case — the vec-shaped dependents use `retain_not_in_vec`
+//!   for it. E3's `retain_not_in_map` was therefore removed in the follow-up
+//!   rather than left as dead code.
+//!
+//! Choosing the wrong side is a silent access-pattern regression, not a
+//! correctness bug (both leaves produce the same final map) — which is why
+//! each call site's pre-extraction shape is the authority (see `root_dom.rs`'s
+//! `PURGE_DEPENDENTS` audit note).
+//!
 //! Extraction note (PR 5, E3): these are free functions, not a trait
 //! implemented for `HashMap`/`Vec`/`BTreeSet`. Structural rule 1 names the
 //! impl file after the self type (`hash_map.rs`, `vec.rs`, ...), which would
-//! scatter three one-line bodies across three std-type files; the free
-//! functions keep one honest file for the purge leaves.
+//! scatter the one-line bodies across std-type files; the free functions keep
+//! one honest file for the purge leaves.
 use std::collections::HashMap;
 
 use crate::types::dom_node::DomNodeSlotKey;
 
-/// Keeps every map entry whose node key is NOT in `removed`.
-pub(crate) fn retain_not_in_map<V>(
-    map: &mut HashMap<DomNodeSlotKey, V>,
-    removed: &[DomNodeSlotKey],
-) {
-    map.retain(|key, _| !removed.contains(key));
+/// Removes every key in `removed` from the map.
+///
+/// Iterates the REMOVED set (O(removed)); use it for the removal case — a
+/// large store from which a handful of keys are being dropped.
+pub(crate) fn remove_each_in<V>(map: &mut HashMap<DomNodeSlotKey, V>, removed: &[DomNodeSlotKey]) {
+    for key in removed {
+        map.remove(key);
+    }
 }
 
 /// Keeps every vec member whose node key is NOT in `removed`, preserving order.
@@ -69,18 +91,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retain_not_in_map_keeps_only_non_removed_keys() {
+    fn remove_each_in_removes_every_removed_key_and_keeps_the_rest() {
         let mut slots = slotmap::SlotMap::with_key();
         let a = slots.insert(());
         let b = slots.insert(());
         let c = slots.insert(());
-        let mut map: HashMap<DomNodeSlotKey, f32> = HashMap::from([(a, 1.0), (b, 2.0), (c, 3.0)]);
+        let d = slots.insert(());
+        // A large store with a small removed set is exactly the removal case:
+        // the leaf must walk the removed slice, not the store.
+        let mut map: HashMap<DomNodeSlotKey, f32> =
+            HashMap::from([(a, 1.0), (b, 2.0), (c, 3.0), (d, 4.0)]);
 
-        retain_not_in_map(&mut map, &[b]);
+        remove_each_in(&mut map, &[b, c]);
 
         assert!(map.contains_key(&a));
         assert!(!map.contains_key(&b));
-        assert!(map.contains_key(&c));
+        assert!(!map.contains_key(&c));
+        assert!(map.contains_key(&d));
+    }
+
+    #[test]
+    fn remove_each_in_is_a_noop_when_nothing_is_removed() {
+        let mut slots = slotmap::SlotMap::with_key();
+        let a = slots.insert(());
+        let b = slots.insert(());
+        let mut map: HashMap<DomNodeSlotKey, f32> = HashMap::from([(a, 1.0), (b, 2.0)]);
+
+        remove_each_in(&mut map, &[]);
+
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&a));
+        assert!(map.contains_key(&b));
     }
 
     #[test]
@@ -144,13 +185,10 @@ mod tests {
         let mut slots = slotmap::SlotMap::with_key();
         let a = slots.insert(());
         let b = slots.insert(());
-        let mut map: HashMap<DomNodeSlotKey, f32> = HashMap::from([(a, 1.0), (b, 2.0)]);
         let mut vec = vec![a, b];
 
-        retain_not_in_map(&mut map, &[]);
         retain_not_in_vec(&mut vec, &[]);
 
-        assert_eq!(map.len(), 2);
         assert_eq!(vec, vec![a, b]);
     }
 }

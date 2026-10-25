@@ -110,7 +110,7 @@ use crate::types::id_index::{
     assert_id_is_available, assert_id_is_available_for, next_id_from_attr, replace_indexed_id,
 };
 use crate::types::primitives::PointPx;
-use crate::types::purge::{clear_if_in, clear_if_in_by, retain_not_in_map, retain_not_in_vec};
+use crate::types::purge::{clear_if_in, clear_if_in_by, remove_each_in, retain_not_in_vec};
 use crate::types::root_dom_context::RootDomContext;
 use crate::types::root_dom_fragment::RootDomFragment;
 use crate::types::root_dom_metrics::RootDomMetricTally;
@@ -1706,7 +1706,7 @@ impl RootDom {
     }
 
     fn purge_scroll_offsets(&mut self, removed_keys: &[DomNodeSlotKey]) {
-        retain_not_in_map(&mut self.vertical_scroll_offset_by_node, removed_keys);
+        remove_each_in(&mut self.vertical_scroll_offset_by_node, removed_keys);
     }
 
     fn purge_layer_append_roots(&mut self, removed_keys: &[DomNodeSlotKey]) {
@@ -5189,6 +5189,33 @@ type PurgeDependent = fn(&mut RootDom, &[DomNodeSlotKey]);
 ///   (`remove_collected_subtree_keys`): the inline/id purges are derived-key
 ///   (keyed by block key / id string, not node key) and are entangled with
 ///   node-slot removal in the same pass
+///
+/// Access-pattern audit against the pre-E3 shapes (PR 5, E3 follow-up): every
+/// row's leaf must walk the same side its pre-E3 code walked, or the
+/// extraction silently changed the complexity (see `purge.rs`'s two map-shaped
+/// access patterns). Pre-E3 shapes are from
+/// `git show e21db35~1:crates/ui-dom/src/types/root_dom.rs`:
+///
+/// - "active element" — pre-E3 `clear_active_for_removed_keys`: one
+///   `is_some_and(|key| removed.contains(&key))` on an option. Leaf:
+///   `clear_if_in` (option-shaped contains). O(removed), unchanged.
+/// - "selection" — pre-E3 `clear_focus_selection_for_removed_keys`'s
+///   `TextSelected` arm: one `removed.contains(&target)` on an option. Leaf:
+///   `purge_selection` (contains). O(removed), unchanged.
+/// - "pressed pointer target" — pre-E3 `clear_focus_selection_for_removed_keys`
+///   `is_some_and(|target| removed.contains(&target.target_key))`. Leaf:
+///   `clear_if_in_by`. O(removed), unchanged.
+/// - "active range drag session" — same pre-E3 option-contains shape. Leaf:
+///   `clear_if_in_by`. O(removed), unchanged.
+/// - "scroll offsets" — pre-E3 `for removed_key in &removed_keys { map.remove
+///   (removed_key) }` (remove-each, O(removed)). E3's `retain_not_in_map` was
+///   the WRONG side (O(store × removed)); corrected to `remove_each_in`
+///   (O(removed)) — the access pattern is restored, not changed.
+/// - "layer append roots" — pre-E3 `pending_layer_append_roots.retain(|key|
+///   !removed_keys.contains(key))` (retain, O(store × removed)). Leaf:
+///   `retain_not_in_vec`. Unchanged.
+/// - "layer remove roots" — same pre-E3 retain shape. Leaf:
+///   `retain_not_in_vec`. Unchanged.
 const PURGE_DEPENDENTS: &[(&str, PurgeDependent)] = &[
     ("active element", RootDom::purge_active_element),
     ("selection", RootDom::purge_selection),
@@ -7121,5 +7148,38 @@ mod tests {
         assert!(!root.vertical_scroll_offset_by_node.contains_key(&removed));
         assert!(!root.pending_layer_append_roots.contains(&removed));
         assert!(!root.pending_layer_remove_roots.contains(&removed));
+    }
+
+    #[test]
+    fn scroll_offset_purge_drops_only_the_removed_keys_from_a_large_store() {
+        // The removal-side fixture: a large retained scroll-offset store and a
+        // small removed set. The scroll-offsets row must walk the removed set
+        // (O(removed)), not the store — the complexity is documented in the
+        // PURGE_DEPENDENTS audit note and in purge.rs's header; here the
+        // observable contract is that only the removed keys leave the store.
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.document_node().0;
+
+        let removed = root.create_element(DomTag::Div).expect("removed");
+        root.append_child(document, removed)
+            .expect("append removed");
+        let mut survivors = Vec::new();
+        for _ in 0..64 {
+            let key = root.create_element(DomTag::Div).expect("survivor");
+            root.append_child(document, key).expect("append survivor");
+            root.vertical_scroll_offset_by_node.insert(key, 1.0);
+            survivors.push(key);
+        }
+        root.vertical_scroll_offset_by_node.insert(removed, 7.5);
+
+        root.remove_node(removed).expect("remove node");
+
+        assert!(!root.vertical_scroll_offset_by_node.contains_key(&removed));
+        for key in survivors {
+            assert!(
+                root.vertical_scroll_offset_by_node.contains_key(&key),
+                "surviving scroll offset should remain"
+            );
+        }
     }
 }
