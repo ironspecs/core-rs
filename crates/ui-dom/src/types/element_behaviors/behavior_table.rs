@@ -8,9 +8,9 @@
 //!
 //! Invariants and rules:
 //!
-//! - `ControlKind` is the single behavior KEY: `resolve_kind` maps an element
-//!   to its kind, and the facade seams on `RootDom` resolve the kind, look up
-//!   the row, and invoke the row's hook.
+//! - `ControlKind` (in `control_kind.rs`) is the single behavior KEY:
+//!   `resolve_kind` maps an element to its kind, and the facade seams on
+//!   `RootDom` resolve the kind, look up the row, and invoke the row's hook.
 //! - the table is complete by construction: every `ControlKind` arm maps to a
 //!   row (the census test pins this), even a row with every hook `None`
 //!   (that is "today's no-op" for a kind with no default behavior).
@@ -30,6 +30,7 @@ use crate::types::{DomElementNode, DomError, DomNodeSlotKey, DomTag, RootDom};
 
 use super::button::button_on_keyboard;
 use super::checkbox::checkbox_click_commit;
+use super::control_kind::ControlKind;
 use super::controls::{
     input_control_on_keyboard, input_control_pointer_down, presented_options_blur,
     presented_options_focus,
@@ -41,22 +42,6 @@ use super::text_entry::{text_edit_on_keyboard, text_edit_pointer_down};
 use crate::types::dom_attr_node::DomAttributeNode;
 #[cfg(test)]
 use crate::types::{DomAttribute, DomAttributeValue, DomNode, RootDomContext};
-
-/// The closed set of control kinds a DOM element can resolve to.
-///
-/// This is the behavior-table key. It is deliberately finer than the legacy
-/// per-seam enums (`DomElementOnKeyboard::InputControl` covers four kinds
-/// here) so that each kind's row is a single dispatch shape.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ControlKind {
-    Button,
-    Checkbox,
-    Number,
-    Range,
-    TextInput,
-    Textarea,
-    Select,
-}
 
 /// The keyboard seam hook signature (the whole focused-element keyboard path).
 pub(crate) type KeyboardHook =
@@ -154,6 +139,12 @@ const BEHAVIOR_TABLE: [BehaviorRow; 7] = [
     },
 ];
 
+// Belt-and-suspenders: the table length and the census length are pinned
+// together at compile time (`ControlKind::ALL` is otherwise exercised only by
+// the census test). The exhaustive `match` in `behavior_row` remains the
+// per-variant guard.
+const _: () = assert!(BEHAVIOR_TABLE.len() == ControlKind::ALL.len());
+
 /// Returns the row for one control kind. This is the enum-indexed lookup.
 #[must_use]
 pub(crate) const fn behavior_row(kind: ControlKind) -> &'static BehaviorRow {
@@ -201,18 +192,13 @@ mod tests {
     use super::*;
 
     /// Every control kind resolves to a row — the census. Even a kind whose
-    /// row is all `None` hooks is present (that is "today's no-op").
+    /// row is all `None` hooks is present (that is "today's no-op"). The
+    /// iteration derives from `ControlKind::ALL` (the exhaustive source), so
+    /// adding a variant without a row fails this test; the exhaustive `match`
+    /// in `behavior_row` remains the compile-time guard.
     #[test]
     fn every_control_kind_has_a_behavior_row() {
-        for kind in [
-            ControlKind::Button,
-            ControlKind::Checkbox,
-            ControlKind::Number,
-            ControlKind::Range,
-            ControlKind::TextInput,
-            ControlKind::Textarea,
-            ControlKind::Select,
-        ] {
+        for kind in ControlKind::ALL {
             let _row = behavior_row(kind);
         }
     }

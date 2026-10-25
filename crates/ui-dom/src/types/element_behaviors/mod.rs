@@ -4,6 +4,7 @@ mod activation;
 mod behavior_table;
 mod button;
 mod checkbox;
+mod control_kind;
 mod controls;
 mod dom_event_dispatch_outcome;
 mod intrinsic_size;
