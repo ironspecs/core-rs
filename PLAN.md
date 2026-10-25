@@ -2293,11 +2293,48 @@ an f32 basis.
   marks-vs-events ordering is semantic — a journal would accumulate
   effects into a batch (rule 4) or need a borrow-conflicting closure
   over `&mut self`. `root_dom.rs` 7,060 → 6,661 (−399); four new
-  primitive files (1,217 lines with tests). Folder verdict: still flat
-  `types/` primitive files; the E5/E7 primitives borrow `RootDom` /
-  computed groups, not a shared field triple. Full gate green per
-  commit; the 15 `perf_metric` pins unmoved; the 48-fn contract
-  unchanged.
+   primitive files (1,217 lines with tests). Folder verdict: still flat
+   `types/` primitive files; the E5/E7 primitives borrow `RootDom` /
+   computed groups, not a shared field triple. Full gate green per
+   commit; the 15 `perf_metric` pins unmoved; the 48-fn contract
+   unchanged.
+
+- **2026-10-25 — PR 5: E6-a landed** on `rootdom/e6-behavior-table`
+  (PR to follow): the behavior table skeleton + the generic activation
+  lifecycle + every control kind as a row. The static enum-indexed
+  `ControlKind → BehaviorRow` table
+  (`types/element_behaviors/behavior_table.rs`) replaces the six
+  per-seam behavior enums as the dispatch KEY; `resolve_kind` maps an
+  element to its kind, and the `RootDom` facade seams
+  (keyboard/focus/blur/pointer-down/pointer-up) shrink to
+  resolve-kind → lookup → invoke. The generic click lifecycle
+  (press → dispatch → commit/revert) re-homed to
+  `element_behaviors/activation.rs` as free fns over `&mut RootDom`;
+  its commit invokes the row's `on_click_commit` hook. Per-kind hooks
+  re-homed to `button.rs` / `checkbox.rs` / `range.rs` /
+  `text_entry.rs` / `select.rs`; the shared input-control helpers
+  (keyboard, pointer-down, keyboard-step, keyup, value-dispatch — the
+  four input kinds' shared dispatch shape that branches on
+  `ResolvedElementControl`) to `controls.rs` with a named note. The
+  popup's ~45 methods STAY on `RootDom` (E6-b); the select/datalist
+  rows are thin hooks over them. **Triage:** (b) the four input kinds
+  share one keyboard/pointer-down shape — kept shared, not split (the
+  per-kind split is E6-c evidence work; splitting would also add a
+  node-store `Get` on the Released path). The `on_activation` and
+  `on_keyboard` `PresentedOptions` variants are DEAD (never set by any
+  descriptor) — named, not removed. The fn-pointer table requires a
+  hook to re-fetch its target via `root.node()` (stage-a `&mut RootDom`
+  context): the click-commit path adds one node-store `Get` per
+  activation vs the inlined method — not in any pinned scenario, to be
+  narrowed by E6-c's `BehaviorContext`. `root_dom.rs` 6,661 → 5,643
+  (−1,018); seven new/expanded behavior files (1,701 lines with
+  tests). Folder verdict: `element_behaviors/` now earns its keep as
+  the per-kind behavior ownership boundary, but the rows still borrow
+  `&mut RootDom` whole — no shared field triple has emerged, which is
+  exactly E6-c's job to discover. Full gate green per commit; the 15
+  `perf_metric` pins and the `perf_allocation` pin unmoved; the 48-fn
+  contract unchanged; the existing keyboard/widget regression tests
+  stayed byte-identical (they are the dispatch-shape net).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

@@ -11,8 +11,11 @@
 //! Invariants and rules:
 //!
 //! - `RootDom` owns the document slot store and all tree mutation authority
-//! - `RootDom` owns the default-behavior lifecycle methods (activation, focus,
-//!   blur, pointer, keyboard, and presented-options default behavior)
+//! - `RootDom` keeps the default-behavior facade seams (focus, blur, pointer,
+//!   keyboard, and the presented-options popup); the per-kind default-behavior
+//!   hooks and the generic activation lifecycle live in
+//!   `types/element_behaviors/` (PR 5, E6-a), and the seams resolve a control
+//!   kind, look up the behavior table, and invoke the row's hook.
 //! - attachment state here describes Bevy presentation lifecycle only
 //! - node-level data must not absorb root-owned indexing or lifecycle policy
 //!
@@ -59,8 +62,7 @@ use crate::domains::visitor::pseudo_state::{
 use crate::domains::visitor::winners_fold::{CollectedWinners, collect_winners};
 use crate::domains::{ExternalLayerTarget, LayerLease, LayerPool, LayerPoolPolicy};
 use crate::element_controls::{
-    NumericStepDirection, ResolvedElementControl, range_value_string_from_point,
-    resolved_control_part_from_point, resolved_element_control, resolved_text_edit_kind,
+    ResolvedElementControl, resolved_element_control, resolved_text_edit_kind,
 };
 use crate::types::dirty_channel::{
     DirtyFlag, attribute_invalidation_from_classification, mark_dirty_up_to_layer_root,
@@ -69,8 +71,8 @@ use crate::types::dirty_channel::{
 use crate::types::dom_attr_node::DomAttributeNode;
 use crate::types::dom_event::{
     DomEvent, DomEventDetail, DomEventListener, DomEventListenerOptions, DomEventName,
-    DomFocusEvent, DomModifierState, DomMouseButton, DomMouseEvent, DomPointerEvent,
-    DomPointerType, DomTransitionEvent, DomValueChangeEvent, DomWheelDeltaMode, DomWheelEvent,
+    DomFocusEvent, DomModifierState, DomMouseButton, DomPointerEvent, DomPointerType,
+    DomTransitionEvent, DomValueChangeEvent, DomWheelDeltaMode, DomWheelEvent,
 };
 use crate::types::dom_event_listener::{
     add_event_listener_to_node, remove_event_listener_from_node,
@@ -90,17 +92,21 @@ use crate::types::dom_tag::{DomElementEditKind, DomTag};
 use crate::types::dom_transition::{DomTransition, DomTransitionStore};
 use crate::types::dom_transition::{DomTransitionConfig, transition_spec_for_longhands};
 use crate::types::element_behaviors::{
-    ActiveRangeDragSession, DomElementAfterClick, DomElementAfterFocus, DomElementOnActivation,
-    DomElementOnBlur, DomElementOnKeyboard, DomElementOnPointer, DomElementPresentOptionsBehavior,
-    DomEventDispatchOutcome, PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX, PRESENTED_OPTIONS_ROLE_ROW,
+    ActiveRangeDragSession, DomElementPresentOptionsBehavior, DomEventDispatchOutcome,
+    PRESENTED_OPTIONS_HORIZONTAL_PADDING_PX, PRESENTED_OPTIONS_ROLE_ROW,
     PRESENTED_OPTIONS_ROLE_SCROLL, PRESENTED_OPTIONS_ROLE_SHELL, PRESENTED_OPTIONS_STATE_CLOSING,
     PRESENTED_OPTIONS_STATE_OPEN, PRESENTED_OPTIONS_VERTICAL_PADDING_PX, PresentedOptionRecord,
     PresentedOptionsOwnerKind, PresentedOptionsPopupAnchor, PressedPointerClickTarget,
-    choose_presented_options_highlighted_index, collect_direct_child_element_keys,
-    collect_presented_option_records_from_owner_source, measure_presented_options_popup_height_px,
+    apply_default_range_drag_for_point,
+    apply_default_text_behavior_and_dispatch_input_from_keyboard_input as apply_default_text_behavior,
+    behavior_row, choose_presented_options_highlighted_index, collect_direct_child_element_keys,
+    collect_presented_option_records_from_owner_source, count_unicode_scalars,
+    dispatch_click_and_apply_after_click, ensure_text_selection_for_target,
+    finish_range_drag_change_if_dirty, measure_presented_options_popup_height_px,
     presented_options_popup_anchor_for_owner, presented_options_popup_state,
     presented_options_role_value, presented_options_row_content_height_px,
     presented_options_row_is_highlighted, presented_options_row_source_index,
+    pressed_pointer_click_target_from_raw_target, resolve_kind,
     set_select_source_option_selected_attrs, string_attr_value,
 };
 use crate::types::event_pointer::{
@@ -812,7 +818,7 @@ impl RootDom {
             }),
         );
         let _ = self.dispatch_pointer_event_from_point_and_record(world, parent, event)?;
-        self.apply_default_range_drag_for_point(point)?;
+        apply_default_range_drag_for_point(self, point)?;
         Ok(())
     }
 
@@ -1094,7 +1100,7 @@ impl RootDom {
             self.set_pseudo_state_for_element(key, DomPseudoState::FocusVisible)?;
         }
         self.pseudo_state.focused_element_key = Some(key);
-        self.ensure_text_selection_for_target(key);
+        ensure_text_selection_for_target(self, key);
         self.apply_after_focus(key)?;
         self.dispatch_focus_transition_event(key, DomEventName::FocusIn, previous_focus)?;
         self.dispatch_focus_transition_event(key, DomEventName::Focus, previous_focus)?;
@@ -2395,97 +2401,15 @@ impl RootDom {
         self.dispatch_value_change_event_to_target_key(target_key, DomEventName::Change, value)
     }
 
+    /// The text-input seam: delegates to the shared text-edit behavior in
+    /// `element_behaviors/text_entry.rs`. Kept as a method because the paint
+    /// caret test drives it directly.
     pub(crate) fn apply_default_text_behavior_and_dispatch_input_from_keyboard_input(
         &mut self,
         input: &KeyboardInput,
         shift_key: bool,
     ) -> Result<bool, DomError> {
-        if input.state != ButtonState::Pressed {
-            return Ok(false);
-        }
-        let Some(target_key) = self.focused_element_key() else {
-            return Ok(false);
-        };
-        let element = self
-            .node(target_key)
-            .and_then(DomNode::as_element)
-            .ok_or(DomError::InvalidAttributeTarget)?;
-        let edit_kind = resolved_text_edit_kind(element);
-        if matches!(edit_kind, DomElementEditKind::None)
-            || matches!(
-                element.attrs.attributes.get(&DomAttribute::Disabled),
-                Some(DomAttributeValue::Bool(true))
-            )
-        {
-            return Ok(false);
-        }
-        let readonly = matches!(
-            element.attrs.attributes.get(&DomAttribute::ReadOnly),
-            Some(DomAttributeValue::Bool(true))
-        );
-        let selection = match self.selection {
-            DomSelection::TextSelected(selection) if selection.target_element == target_key => {
-                selection
-            }
-            _ => panic!("focused editable element should own live text selection"),
-        };
-        let value = match element.attrs.attributes.get(&DomAttribute::Value) {
-            Some(DomAttributeValue::String(value)) => value.clone(),
-            None => panic!("editable element value attribute should exist"),
-            Some(_) => panic!("editable element value attribute should stay string"),
-        };
-        let Some(behavior) = default_text_behavior_result(
-            &value,
-            edit_kind,
-            selection.selection_start,
-            selection.selection_end,
-            selection.selection_direction,
-            input,
-            shift_key,
-        ) else {
-            return Ok(false);
-        };
-        match behavior {
-            DefaultTextBehaviorResult::SetSelection {
-                selection_start,
-                selection_end,
-                selection_direction,
-            } => {
-                self.selection = DomSelection::TextSelected(TextSelection {
-                    target_element: target_key,
-                    selection_start,
-                    selection_end,
-                    selection_direction,
-                });
-                Ok(true)
-            }
-            DefaultTextBehaviorResult::ReplaceValue {
-                next_value,
-                next_caret_offset,
-            } => {
-                if readonly {
-                    return Ok(false);
-                }
-                assert!(
-                    next_caret_offset <= count_unicode_scalars(&next_value),
-                    "default text behavior should keep the caret within the next value",
-                );
-                self.set_attr(
-                    target_key,
-                    DomAttribute::Value,
-                    Some(DomAttributeValue::String(next_value.clone())),
-                )?;
-                self.selection = DomSelection::TextSelected(TextSelection {
-                    target_element: target_key,
-                    selection_start: next_caret_offset,
-                    selection_end: next_caret_offset,
-                    selection_direction: TextSelectionDirection::None,
-                });
-                let _ = self.dispatch_input_event_to_target_key(target_key, next_value)?;
-                self.reopen_presented_options_for_text_input_value_change(target_key)?;
-                Ok(true)
-            }
-        }
+        apply_default_text_behavior(self, input, shift_key)
     }
 
     fn dispatch_value_change_event_to_target_key(
@@ -2908,11 +2832,6 @@ impl RootDom {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ActivationPreDispatchState {
-    Checkbox { checked_before: bool },
-}
-
 impl RootDom {
     pub(crate) fn point_event_target_key_from_attached_point(
         &self,
@@ -2945,67 +2864,33 @@ impl RootDom {
         let Some(target_key) = self.focused_element_key() else {
             return Ok(false);
         };
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
+        let Some(kind) = resolve_kind(self, target_key) else {
             return Ok(false);
         };
-        match element.behavior().on_keyboard {
-            DomElementOnKeyboard::None => Ok(false),
-            DomElementOnKeyboard::Button => {
-                self.apply_button_on_keyboard(target_key, input, event_stayed_unblocked)
-            }
-            DomElementOnKeyboard::InputControl => self.apply_input_control_on_keyboard(
-                target_key,
-                input,
-                shift_key,
-                event_stayed_unblocked,
-            ),
-            DomElementOnKeyboard::Select => self.apply_select_keyboard_default_for_owner(
-                target_key,
-                input,
-                event_stayed_unblocked,
-            ),
-            DomElementOnKeyboard::TextEdit => self.apply_text_edit_on_keyboard(
-                target_key,
-                input,
-                shift_key,
-                event_stayed_unblocked,
-            ),
-            DomElementOnKeyboard::PresentedOptions => self
-                .apply_presented_options_text_input_keyboard_navigation_for_owner(
-                    target_key,
-                    input,
-                    event_stayed_unblocked,
-                ),
+        match behavior_row(kind).on_keyboard {
+            Some(hook) => hook(self, target_key, input, shift_key, event_stayed_unblocked),
+            None => Ok(false),
         }
     }
 
     pub(crate) fn apply_after_focus(&mut self, target_key: DomNodeSlotKey) -> Result<(), DomError> {
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
+        let Some(kind) = resolve_kind(self, target_key) else {
             return Ok(());
         };
-        match element.behavior().after_focus {
-            DomElementAfterFocus::None => {}
-            DomElementAfterFocus::PresentedOptions => {
-                let _ = self.open_presented_options_for_focused_text_input_owner(target_key)?;
-            }
+        match behavior_row(kind).on_focus {
+            Some(hook) => hook(self, target_key),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     pub(crate) fn apply_on_blur(&mut self, target_key: DomNodeSlotKey) -> Result<(), DomError> {
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
+        let Some(kind) = resolve_kind(self, target_key) else {
             return Ok(());
         };
-        match element.behavior().on_blur {
-            DomElementOnBlur::None => {}
-            DomElementOnBlur::Select => {
-                let _ = self.close_select_popup_for_blurred_owner(target_key)?;
-            }
-            DomElementOnBlur::PresentedOptions => {
-                let _ = self.close_presented_options_for_blurred_owner(target_key)?;
-            }
+        match behavior_row(kind).on_blur {
+            Some(hook) => hook(self, target_key),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     pub(crate) fn apply_pointer_down_default_lifecycles(
@@ -3015,11 +2900,17 @@ impl RootDom {
         default_target: Option<DomPointEventTarget>,
     ) -> Result<(), DomError> {
         self.pressed_pointer_click_target =
-            self.pressed_pointer_click_target_from_raw_target(raw_target_key);
+            pressed_pointer_click_target_from_raw_target(self, raw_target_key);
         let Some(target) = default_target else {
             return Ok(());
         };
-        self.apply_on_pointer_down(target, point)
+        let Some(kind) = resolve_kind(self, target.target_key) else {
+            return Ok(());
+        };
+        match behavior_row(kind).on_pointer_down {
+            Some(hook) => hook(self, target, point),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn apply_pointer_up_default_lifecycles(
@@ -3027,7 +2918,7 @@ impl RootDom {
         point: PointPx,
         raw_target_key: Option<DomNodeSlotKey>,
     ) -> Result<(), DomError> {
-        self.finish_range_drag_change_if_dirty()?;
+        finish_range_drag_change_if_dirty(self)?;
         let pressed_click_target = self.pressed_pointer_click_target.take();
         let Some(pressed_click_target) = pressed_click_target else {
             return Ok(());
@@ -3035,653 +2926,8 @@ impl RootDom {
         if raw_target_key != Some(pressed_click_target.target_key) {
             return Ok(());
         }
-        let _ =
-            self.dispatch_click_and_apply_after_click(pressed_click_target.target_key, point)?;
+        let _ = dispatch_click_and_apply_after_click(self, pressed_click_target.target_key, point)?;
         Ok(())
-    }
-
-    pub(crate) fn apply_default_range_drag_for_point(
-        &mut self,
-        point: PointPx,
-    ) -> Result<(), DomError> {
-        let Some(session) = self.active_range_drag_session.clone() else {
-            return Ok(());
-        };
-        let Some(ResolvedElementControl::Range(control)) =
-            self.resolved_element_control_for_key(session.target_key)
-        else {
-            self.active_range_drag_session = None;
-            return Ok(());
-        };
-        if control.disabled {
-            self.active_range_drag_session = None;
-            return Ok(());
-        }
-        let subtree_point = range_drag_subtree_point(&session, point);
-        let next_value =
-            self.range_value_string_for_point(session.target_key, subtree_point, control)?;
-        let changed = self.set_control_value_and_dispatch_input(session.target_key, next_value)?;
-        self.mark_active_range_drag_dirty(session.target_key, changed);
-        Ok(())
-    }
-
-    fn apply_button_on_keyboard(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        input: &KeyboardInput,
-        event_stayed_unblocked: bool,
-    ) -> Result<bool, DomError> {
-        if input.state == ButtonState::Released {
-            if !event_stayed_unblocked {
-                return Ok(false);
-            }
-            return self.apply_button_keyboard_click_on_keyup(target_key, input);
-        }
-        if input.state != ButtonState::Pressed || !event_stayed_unblocked {
-            return Ok(false);
-        }
-        self.apply_button_keyboard_click_on_keydown(target_key, input)
-    }
-
-    fn apply_input_control_on_keyboard(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        input: &KeyboardInput,
-        shift_key: bool,
-        event_stayed_unblocked: bool,
-    ) -> Result<bool, DomError> {
-        if input.state == ButtonState::Released {
-            if !event_stayed_unblocked {
-                return Ok(false);
-            }
-            return self.apply_input_keyboard_click_on_keyup(target_key, input);
-        }
-        if input.state != ButtonState::Pressed || !event_stayed_unblocked {
-            return Ok(false);
-        }
-        if let Some(applied) = self.apply_input_keyboard_step_on_keydown(target_key, input)? {
-            return Ok(applied);
-        }
-        if self.apply_presented_options_text_input_keyboard_navigation_for_owner(
-            target_key,
-            input,
-            event_stayed_unblocked,
-        )? {
-            return Ok(true);
-        }
-        self.ensure_text_selection_for_target(target_key);
-        self.apply_default_text_behavior_and_dispatch_input_from_keyboard_input(input, shift_key)
-    }
-
-    fn apply_text_edit_on_keyboard(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        input: &KeyboardInput,
-        shift_key: bool,
-        event_stayed_unblocked: bool,
-    ) -> Result<bool, DomError> {
-        if input.state != ButtonState::Pressed || !event_stayed_unblocked {
-            return Ok(false);
-        }
-        if self.apply_presented_options_text_input_keyboard_navigation_for_owner(
-            target_key,
-            input,
-            event_stayed_unblocked,
-        )? {
-            return Ok(true);
-        }
-        self.ensure_text_selection_for_target(target_key);
-        self.apply_default_text_behavior_and_dispatch_input_from_keyboard_input(input, shift_key)
-    }
-
-    fn apply_on_pointer_down(
-        &mut self,
-        target: DomPointEventTarget,
-        root_point: PointPx,
-    ) -> Result<(), DomError> {
-        let target_key = target.target_key;
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
-            return Ok(());
-        };
-        match element.behavior().on_pointer {
-            DomElementOnPointer::None => Ok(()),
-            DomElementOnPointer::TextEdit => {
-                self.ensure_text_selection_for_target(target_key);
-                Ok(())
-            }
-            DomElementOnPointer::InputControl => {
-                let Some(control) = self.resolved_element_control_for_key(target_key) else {
-                    return Ok(());
-                };
-                if matches!(control, ResolvedElementControl::TextInput) {
-                    self.ensure_text_selection_for_target(target_key);
-                    return Ok(());
-                }
-                let Some(control_part) =
-                    self.resolved_control_part_for_key(target_key, target.subtree_point)?
-                else {
-                    return Ok(());
-                };
-                match (control, control_part) {
-                    (
-                        ResolvedElementControl::Number(control),
-                        crate::element_controls::ResolvedElementControlPart::NumberDecrementButton,
-                    ) if !control.disabled && !control.readonly => self
-                        .set_control_value_and_dispatch_input_change(
-                            target_key,
-                            control
-                                .numeric
-                                .stepped_value_string(NumericStepDirection::Decrement),
-                        )
-                        .map(|_| ()),
-                    (
-                        ResolvedElementControl::Number(control),
-                        crate::element_controls::ResolvedElementControlPart::NumberIncrementButton,
-                    ) if !control.disabled && !control.readonly => self
-                        .set_control_value_and_dispatch_input_change(
-                            target_key,
-                            control
-                                .numeric
-                                .stepped_value_string(NumericStepDirection::Increment),
-                        )
-                        .map(|_| ()),
-                    (ResolvedElementControl::Range(control), _) if !control.disabled => {
-                        self.start_range_drag_session(
-                            target_key,
-                            root_point,
-                            target.subtree_point,
-                        )?;
-                        let next_value = self.range_value_string_for_point(
-                            target_key,
-                            target.subtree_point,
-                            control,
-                        )?;
-                        let changed =
-                            self.set_control_value_and_dispatch_input(target_key, next_value)?;
-                        self.mark_active_range_drag_dirty(target_key, changed);
-                        Ok(())
-                    }
-                    _ => Ok(()),
-                }
-            }
-        }
-    }
-
-    pub(crate) fn ensure_text_selection_for_target(&mut self, target_key: DomNodeSlotKey) {
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
-            self.set_selection(DomSelection::None);
-            return;
-        };
-        let current_value = match element.attrs.attributes.get(&DomAttribute::Value) {
-            Some(DomAttributeValue::String(value)) => value.clone(),
-            None => String::new(),
-            Some(_) => panic!("editable element value attribute should stay string"),
-        };
-        match resolved_text_edit_kind(element) {
-            DomElementEditKind::None => {
-                self.set_selection(DomSelection::None);
-            }
-            DomElementEditKind::SingleLine | DomElementEditKind::MultiLine => {
-                if matches!(
-                    self.selection(),
-                    DomSelection::TextSelected(selection) if selection.target_element == target_key
-                ) {
-                    return;
-                }
-                let value_len = count_unicode_scalars(&current_value);
-                self.set_selection(DomSelection::TextSelected(TextSelection {
-                    target_element: target_key,
-                    selection_start: value_len,
-                    selection_end: value_len,
-                    selection_direction: TextSelectionDirection::None,
-                }));
-            }
-        }
-    }
-
-    fn apply_input_keyboard_step_on_keydown(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        input: &KeyboardInput,
-    ) -> Result<Option<bool>, DomError> {
-        let Some(control) = self.resolved_element_control_for_key(target_key) else {
-            return Ok(Some(false));
-        };
-        match control {
-            ResolvedElementControl::Checkbox(_) | ResolvedElementControl::Textarea => {
-                Ok(Some(false))
-            }
-            ResolvedElementControl::Number(control) => {
-                let Some(next_value) =
-                    numeric_keyboard_value_string(control.numeric, &input.logical_key)
-                else {
-                    return Ok(None);
-                };
-                if control.disabled || control.readonly {
-                    return Ok(Some(false));
-                }
-                self.set_control_value_and_dispatch_input_change(target_key, next_value)
-                    .map(Some)
-            }
-            ResolvedElementControl::Range(control) => {
-                let Some(next_value) =
-                    numeric_keyboard_value_string(control.numeric, &input.logical_key)
-                else {
-                    return Ok(Some(false));
-                };
-                if control.disabled {
-                    return Ok(Some(false));
-                }
-                self.set_control_value_and_dispatch_input_change(target_key, next_value)
-                    .map(Some)
-            }
-            ResolvedElementControl::TextInput => Ok(None),
-        }
-    }
-
-    fn apply_button_keyboard_click_on_keydown(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        input: &KeyboardInput,
-    ) -> Result<bool, DomError> {
-        if input.repeat
-            || !matches!(input.logical_key, Key::Enter)
-            || self.target_has_disabled_attr(target_key)?
-        {
-            return Ok(false);
-        }
-        let point = self.keyboard_activation_click_point_for_target(target_key)?;
-        self.dispatch_click_and_apply_after_click(target_key, point)
-    }
-
-    fn apply_button_keyboard_click_on_keyup(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        input: &KeyboardInput,
-    ) -> Result<bool, DomError> {
-        if !matches!(input.logical_key, Key::Space) || self.target_has_disabled_attr(target_key)? {
-            return Ok(false);
-        }
-        let point = self.keyboard_activation_click_point_for_target(target_key)?;
-        self.dispatch_click_and_apply_after_click(target_key, point)
-    }
-
-    fn apply_input_keyboard_click_on_keyup(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        input: &KeyboardInput,
-    ) -> Result<bool, DomError> {
-        if !matches!(input.logical_key, Key::Space) {
-            return Ok(false);
-        }
-        let Some(ResolvedElementControl::Checkbox(control)) =
-            self.resolved_element_control_for_key(target_key)
-        else {
-            return Ok(false);
-        };
-        if control.disabled {
-            return Ok(false);
-        }
-        let point = self.keyboard_activation_click_point_for_target(target_key)?;
-        self.dispatch_click_and_apply_after_click(target_key, point)
-    }
-
-    fn pressed_pointer_click_target_from_raw_target(
-        &self,
-        target_key: Option<DomNodeSlotKey>,
-    ) -> Option<PressedPointerClickTarget> {
-        let target_key = target_key?;
-        let _element = self.node(target_key).and_then(DomNode::as_element)?;
-        if self.target_has_disabled_attr(target_key).ok()? {
-            return None;
-        }
-        Some(PressedPointerClickTarget { target_key })
-    }
-
-    fn dispatch_click_and_apply_after_click(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        point: PointPx,
-    ) -> Result<bool, DomError> {
-        let pre_activation_state = self.apply_after_click_before_dispatch(target_key)?;
-        let outcome = self.dispatch_click_event_to_target_key(target_key, point)?;
-        let default_prevented = outcome.default_prevented();
-        if let Some(event) = outcome.into_sink_eligible_bubbled_event() {
-            self.push_emitted_event(event);
-        }
-        if default_prevented {
-            self.revert_after_click_after_canceled_dispatch(target_key, pre_activation_state)?;
-            return Ok(false);
-        }
-        self.commit_after_click_after_dispatch(target_key)
-    }
-
-    fn dispatch_click_event_to_target_key(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        point: PointPx,
-    ) -> Result<DomEventDispatchOutcome, DomError> {
-        let outcome = self.dispatch_event_to_target_key_and_finish(
-            target_key,
-            DomEvent::new(
-                DomEventName::Click,
-                DomEventDetail::Mouse(DomMouseEvent {
-                    button: Some(crate::types::dom_event::DomMouseButton::Primary),
-                    buttons: 0,
-                    client_x: point.x_px,
-                    client_y: point.y_px,
-                    modifiers: crate::types::dom_event::DomModifierState::default(),
-                }),
-            ),
-        )?;
-        if matches!(outcome, DomEventDispatchOutcome::Dispatched(_)) {
-            self.increment_metric(RootDomMetricName::ClickDispatched);
-        }
-        Ok(outcome)
-    }
-
-    fn apply_after_click_before_dispatch(
-        &mut self,
-        target_key: DomNodeSlotKey,
-    ) -> Result<Option<ActivationPreDispatchState>, DomError> {
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
-            return Ok(None);
-        };
-        match Self::resolved_on_activation_for_element(element) {
-            DomElementOnActivation::None
-            | DomElementOnActivation::Select
-            | DomElementOnActivation::PresentedOptions => Ok(None),
-            DomElementOnActivation::Toggle => {
-                let Some(ResolvedElementControl::Checkbox(control)) =
-                    resolved_element_control(element)
-                else {
-                    return Ok(None);
-                };
-                if control.disabled {
-                    return Ok(None);
-                }
-                self.set_attr(
-                    target_key,
-                    DomAttribute::Checked,
-                    Some(DomAttributeValue::Bool(!control.checked)),
-                )?;
-                self.increment_metric(RootDomMetricName::ActivationPreApplied);
-                Ok(Some(ActivationPreDispatchState::Checkbox {
-                    checked_before: control.checked,
-                }))
-            }
-        }
-    }
-
-    fn revert_after_click_after_canceled_dispatch(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        pre_activation_state: Option<ActivationPreDispatchState>,
-    ) -> Result<(), DomError> {
-        let Some(pre_activation_state) = pre_activation_state else {
-            return Ok(());
-        };
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
-            return Ok(());
-        };
-        if Self::resolved_on_activation_for_element(element) != DomElementOnActivation::Toggle {
-            return Ok(());
-        }
-        match pre_activation_state {
-            ActivationPreDispatchState::Checkbox { checked_before } => {
-                self.set_attr(
-                    target_key,
-                    DomAttribute::Checked,
-                    Some(DomAttributeValue::Bool(checked_before)),
-                )?;
-                self.increment_metric(RootDomMetricName::ActivationCanceled);
-            }
-        }
-        Ok(())
-    }
-
-    fn commit_after_click_after_dispatch(
-        &mut self,
-        target_key: DomNodeSlotKey,
-    ) -> Result<bool, DomError> {
-        if self.apply_select_popup_row_click_default_for_target(target_key)? {
-            return Ok(true);
-        }
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
-            return Ok(false);
-        };
-        match Self::resolved_on_activation_for_element(element) {
-            DomElementOnActivation::None => Ok(true),
-            DomElementOnActivation::Select => {
-                self.apply_select_click_default_for_target(target_key)
-            }
-            DomElementOnActivation::Toggle => {
-                let Some(ResolvedElementControl::Checkbox(control)) =
-                    resolved_element_control(element)
-                else {
-                    return Ok(true);
-                };
-                if control.disabled {
-                    return Ok(false);
-                }
-                let Some(current_value) = self.control_value_event_string(target_key)? else {
-                    return Ok(false);
-                };
-                let _ =
-                    self.dispatch_input_event_to_target_key(target_key, current_value.clone())?;
-                let _ = self.dispatch_change_event_to_target_key(target_key, current_value)?;
-                self.increment_metric(RootDomMetricName::ActivationCommitted);
-                Ok(true)
-            }
-            DomElementOnActivation::PresentedOptions => {
-                self.apply_presented_options_click_default_for_target(target_key)
-            }
-        }
-    }
-
-    fn resolved_on_activation_for_element(
-        element: &crate::types::DomElementNode,
-    ) -> DomElementOnActivation {
-        if element.behavior().after_click != DomElementAfterClick::Activate {
-            return DomElementOnActivation::None;
-        }
-        match element.behavior().on_activation {
-            DomElementOnActivation::None => DomElementOnActivation::None,
-            DomElementOnActivation::Select => DomElementOnActivation::Select,
-            DomElementOnActivation::PresentedOptions => DomElementOnActivation::PresentedOptions,
-            DomElementOnActivation::Toggle => {
-                if matches!(
-                    resolved_element_control(element),
-                    Some(ResolvedElementControl::Checkbox(_))
-                ) {
-                    DomElementOnActivation::Toggle
-                } else {
-                    DomElementOnActivation::None
-                }
-            }
-        }
-    }
-
-    fn target_has_disabled_attr(&self, target_key: DomNodeSlotKey) -> Result<bool, DomError> {
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
-            return Err(DomError::InvalidAttributeTarget);
-        };
-        Ok(matches!(
-            element.attrs.attributes.get(&DomAttribute::Disabled),
-            Some(DomAttributeValue::Bool(true))
-        ))
-    }
-
-    fn keyboard_activation_click_point_for_target(
-        &self,
-        target_key: DomNodeSlotKey,
-    ) -> Result<PointPx, DomError> {
-        let node = self.node(target_key).ok_or(DomError::InvalidNodeKey)?;
-        let border_box = node_box_from_ref(node).border_box;
-        Ok(PointPx {
-            x_px: border_box.left_px + border_box.width_px * 0.5,
-            y_px: border_box.top_px + border_box.height_px * 0.5,
-        })
-    }
-
-    fn resolved_element_control_for_key(
-        &self,
-        key: DomNodeSlotKey,
-    ) -> Option<ResolvedElementControl> {
-        let element = self.node(key)?.as_element()?;
-        resolved_element_control(element)
-    }
-
-    fn resolved_control_part_for_key(
-        &self,
-        key: DomNodeSlotKey,
-        point: PointPx,
-    ) -> Result<Option<crate::element_controls::ResolvedElementControlPart>, DomError> {
-        let Some(element) = self.node(key).and_then(DomNode::as_element) else {
-            return Ok(None);
-        };
-        Ok(resolved_control_part_from_point(
-            element,
-            node_box_from_ref(self.node(key).ok_or(DomError::InvalidNodeKey)?),
-            point,
-        ))
-    }
-
-    fn range_value_string_for_point(
-        &self,
-        key: DomNodeSlotKey,
-        point: PointPx,
-        control: crate::element_controls::ResolvedRangeControl,
-    ) -> Result<String, DomError> {
-        Ok(range_value_string_from_point(
-            node_box_from_ref(self.node(key).ok_or(DomError::InvalidNodeKey)?),
-            control,
-            point,
-        ))
-    }
-
-    fn start_range_drag_session(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        root_point: PointPx,
-        subtree_point: PointPx,
-    ) -> Result<(), DomError> {
-        let focus_entry_value = self
-            .control_value_event_string(target_key)?
-            .unwrap_or_else(|| String::from("0"));
-        self.active_range_drag_session = Some(ActiveRangeDragSession {
-            target_key,
-            root_to_subtree_point_offset: PointPx {
-                x_px: subtree_point.x_px - root_point.x_px,
-                y_px: subtree_point.y_px - root_point.y_px,
-            },
-            focus_entry_value,
-            dirty: false,
-        });
-        Ok(())
-    }
-
-    fn mark_active_range_drag_dirty(&mut self, target_key: DomNodeSlotKey, changed: bool) {
-        if !changed {
-            return;
-        }
-        if let Some(session) = self.active_range_drag_session.as_mut()
-            && session.target_key == target_key
-        {
-            session.dirty = true;
-        }
-    }
-
-    fn finish_range_drag_change_if_dirty(&mut self) -> Result<(), DomError> {
-        let Some(session) = self.active_range_drag_session.take() else {
-            return Ok(());
-        };
-        if !session.dirty {
-            return Ok(());
-        }
-        let Some(current_value) = self.control_value_event_string(session.target_key)? else {
-            return Ok(());
-        };
-        if current_value != session.focus_entry_value {
-            let _ = self.dispatch_change_event_to_target_key(session.target_key, current_value)?;
-        }
-        Ok(())
-    }
-
-    fn set_control_value_and_dispatch_input_change(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        next_value: String,
-    ) -> Result<bool, DomError> {
-        let changed = self.set_control_value_and_dispatch_input(target_key, next_value.clone())?;
-        if !changed {
-            return Ok(false);
-        }
-        let _ = self.dispatch_change_event_to_target_key(target_key, next_value)?;
-        Ok(true)
-    }
-
-    fn set_control_value_and_dispatch_input(
-        &mut self,
-        target_key: DomNodeSlotKey,
-        next_value: String,
-    ) -> Result<bool, DomError> {
-        let current_value = self
-            .control_value_event_string(target_key)?
-            .unwrap_or_default();
-        if current_value == next_value {
-            return Ok(false);
-        }
-        self.set_attr(
-            target_key,
-            DomAttribute::Value,
-            Some(DomAttributeValue::String(next_value.clone())),
-        )?;
-        if self.focused_element_key() == Some(target_key)
-            && matches!(
-                self.node(target_key)
-                    .and_then(DomNode::as_element)
-                    .map(resolved_text_edit_kind),
-                Some(DomElementEditKind::SingleLine | DomElementEditKind::MultiLine)
-            )
-        {
-            let value_len = count_unicode_scalars(&next_value);
-            self.set_selection(DomSelection::TextSelected(TextSelection {
-                target_element: target_key,
-                selection_start: value_len,
-                selection_end: value_len,
-                selection_direction: TextSelectionDirection::None,
-            }));
-        }
-        let _ = self.dispatch_input_event_to_target_key(target_key, next_value)?;
-        Ok(true)
-    }
-
-    fn control_value_event_string(
-        &self,
-        target_key: DomNodeSlotKey,
-    ) -> Result<Option<String>, DomError> {
-        let Some(element) = self.node(target_key).and_then(DomNode::as_element) else {
-            return Err(DomError::InvalidAttributeTarget);
-        };
-        let value = match resolved_element_control(element) {
-            Some(ResolvedElementControl::Checkbox(control)) => Some(control.checked.to_string()),
-            Some(ResolvedElementControl::Number(control)) => {
-                Some(format!("{}", control.numeric.display_value_px()))
-            }
-            Some(ResolvedElementControl::Range(control)) => {
-                Some(format!("{}", control.numeric.display_value_px()))
-            }
-            Some(ResolvedElementControl::TextInput | ResolvedElementControl::Textarea) => {
-                match element.attrs.attributes.get(&DomAttribute::Value) {
-                    Some(DomAttributeValue::String(value)) => Some(value.clone()),
-                    None => Some(String::new()),
-                    Some(_) => return Err(DomError::InvalidAttributeValue),
-                }
-            }
-            None => None,
-        };
-        Ok(value)
     }
 }
 
@@ -4511,13 +3757,6 @@ impl RootDom {
     }
 }
 
-fn range_drag_subtree_point(session: &ActiveRangeDragSession, root_point: PointPx) -> PointPx {
-    PointPx {
-        x_px: root_point.x_px + session.root_to_subtree_point_offset.x_px,
-        y_px: root_point.y_px + session.root_to_subtree_point_offset.y_px,
-    }
-}
-
 // Extraction note (PR 5, E7): the transition inverse-projection and
 // payload-validation leaves (`decl_value_for_groups` + its edge/keyword
 // mappers, `validate_transition_payload`, `transition_longhand_property`,
@@ -4735,263 +3974,6 @@ fn remove_collected_subtree_keys(
     for &removed_key in removed_keys {
         let removed = nodes.remove(removed_key);
         assert!(removed.is_some(), "validated subtree key should remove");
-    }
-}
-
-fn count_unicode_scalars(value: &str) -> usize {
-    value.chars().count()
-}
-
-fn numeric_keyboard_value_string(
-    control: crate::element_controls::ResolvedNumericControl,
-    logical_key: &Key,
-) -> Option<String> {
-    match logical_key {
-        Key::ArrowDown => control.keyboard_step_value_string("ArrowDown"),
-        Key::ArrowLeft => control.keyboard_step_value_string("ArrowLeft"),
-        Key::ArrowUp => control.keyboard_step_value_string("ArrowUp"),
-        Key::ArrowRight => control.keyboard_step_value_string("ArrowRight"),
-        Key::Home => control.keyboard_step_value_string("Home"),
-        Key::End => control.keyboard_step_value_string("End"),
-        Key::PageDown => control.keyboard_step_value_string("PageDown"),
-        Key::PageUp => control.keyboard_step_value_string("PageUp"),
-        _ => None,
-    }
-}
-
-fn byte_index_for_unicode_scalar_offset(value: &str, scalar_offset: usize) -> usize {
-    if scalar_offset == count_unicode_scalars(value) {
-        return value.len();
-    }
-    value
-        .char_indices()
-        .nth(scalar_offset)
-        .map(|(byte_index, _)| byte_index)
-        .expect("unicode scalar offset should stay within the current value")
-}
-
-fn replaced_unicode_scalar_selection(
-    value: &str,
-    selection_start: usize,
-    selection_end: usize,
-    replacement: &str,
-) -> (String, usize) {
-    let replace_start = byte_index_for_unicode_scalar_offset(value, selection_start);
-    let replace_end = byte_index_for_unicode_scalar_offset(value, selection_end);
-    let mut next_value =
-        String::with_capacity(value.len() - (replace_end - replace_start) + replacement.len());
-    next_value.push_str(&value[..replace_start]);
-    next_value.push_str(replacement);
-    next_value.push_str(&value[replace_end..]);
-    (
-        next_value,
-        selection_start + count_unicode_scalars(replacement),
-    )
-}
-
-enum DefaultTextBehaviorResult {
-    SetSelection {
-        selection_start: usize,
-        selection_end: usize,
-        selection_direction: TextSelectionDirection,
-    },
-    ReplaceValue {
-        next_value: String,
-        next_caret_offset: usize,
-    },
-}
-
-#[allow(clippy::too_many_lines)]
-fn default_text_behavior_result(
-    value: &str,
-    edit_kind: DomElementEditKind,
-    selection_start: usize,
-    selection_end: usize,
-    selection_direction: TextSelectionDirection,
-    input: &KeyboardInput,
-    shift_key: bool,
-) -> Option<DefaultTextBehaviorResult> {
-    let scalar_count = count_unicode_scalars(value);
-    assert!(
-        selection_start <= selection_end,
-        "selection start should not exceed selection end",
-    );
-    assert!(
-        selection_start <= scalar_count,
-        "selection start should stay within the current value",
-    );
-    assert!(
-        selection_end <= scalar_count,
-        "selection end should stay within the current value",
-    );
-    let selection_is_collapsed = selection_start == selection_end;
-    assert!(
-        !selection_is_collapsed || selection_direction == TextSelectionDirection::None,
-        "collapsed text selection should keep direction none",
-    );
-    assert!(
-        selection_is_collapsed || selection_direction != TextSelectionDirection::None,
-        "extended text selection should keep a forward or backward direction",
-    );
-    let replacement_text = if matches!(edit_kind, DomElementEditKind::MultiLine)
-        && matches!(input.logical_key, Key::Enter)
-    {
-        Some("\n")
-    } else if matches!(input.logical_key, Key::Character(_) | Key::Space)
-        && let Some(text) = input.text.as_ref()
-        && !text.is_empty()
-    {
-        Some(text.as_str())
-    } else {
-        None
-    };
-    let (anchor_offset, focus_offset) = match selection_direction {
-        TextSelectionDirection::None => (selection_end, selection_end),
-        TextSelectionDirection::Forward => (selection_start, selection_end),
-        TextSelectionDirection::Backward => (selection_end, selection_start),
-    };
-    if let Some(replacement_text) = replacement_text {
-        let (next_value, next_caret_offset) = replaced_unicode_scalar_selection(
-            value,
-            selection_start,
-            selection_end,
-            replacement_text,
-        );
-        return Some(DefaultTextBehaviorResult::ReplaceValue {
-            next_value,
-            next_caret_offset,
-        });
-    }
-    if !selection_is_collapsed && matches!(input.logical_key, Key::Backspace | Key::Delete) {
-        let (next_value, next_caret_offset) =
-            replaced_unicode_scalar_selection(value, selection_start, selection_end, "");
-        return Some(DefaultTextBehaviorResult::ReplaceValue {
-            next_value,
-            next_caret_offset,
-        });
-    }
-    match input.logical_key {
-        Key::Backspace => {
-            if focus_offset == 0 {
-                return None;
-            }
-            let delete_start = byte_index_for_unicode_scalar_offset(value, focus_offset - 1);
-            let delete_end = byte_index_for_unicode_scalar_offset(value, focus_offset);
-            let mut next_value = String::with_capacity(value.len() - (delete_end - delete_start));
-            next_value.push_str(&value[..delete_start]);
-            next_value.push_str(&value[delete_end..]);
-            Some(DefaultTextBehaviorResult::ReplaceValue {
-                next_value,
-                next_caret_offset: focus_offset - 1,
-            })
-        }
-        Key::Delete => {
-            if focus_offset == scalar_count {
-                return None;
-            }
-            let delete_start = byte_index_for_unicode_scalar_offset(value, focus_offset);
-            let delete_end = byte_index_for_unicode_scalar_offset(value, focus_offset + 1);
-            let mut next_value = String::with_capacity(value.len() - (delete_end - delete_start));
-            next_value.push_str(&value[..delete_start]);
-            next_value.push_str(&value[delete_end..]);
-            Some(DefaultTextBehaviorResult::ReplaceValue {
-                next_value,
-                next_caret_offset: focus_offset,
-            })
-        }
-        Key::ArrowLeft if shift_key && focus_offset > 0 => {
-            let next_focus_offset = focus_offset - 1;
-            let next_selection_direction = match next_focus_offset.cmp(&anchor_offset) {
-                std::cmp::Ordering::Equal => TextSelectionDirection::None,
-                std::cmp::Ordering::Greater => TextSelectionDirection::Forward,
-                std::cmp::Ordering::Less => TextSelectionDirection::Backward,
-            };
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: next_focus_offset.min(anchor_offset),
-                selection_end: next_focus_offset.max(anchor_offset),
-                selection_direction: next_selection_direction,
-            })
-        }
-        Key::ArrowLeft if !selection_is_collapsed => {
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start,
-                selection_end: selection_start,
-                selection_direction: TextSelectionDirection::None,
-            })
-        }
-        Key::ArrowLeft if focus_offset > 0 => Some(DefaultTextBehaviorResult::SetSelection {
-            selection_start: focus_offset - 1,
-            selection_end: focus_offset - 1,
-            selection_direction: TextSelectionDirection::None,
-        }),
-        Key::ArrowRight if shift_key && focus_offset < scalar_count => {
-            let next_focus_offset = focus_offset + 1;
-            let next_selection_direction = match next_focus_offset.cmp(&anchor_offset) {
-                std::cmp::Ordering::Equal => TextSelectionDirection::None,
-                std::cmp::Ordering::Greater => TextSelectionDirection::Forward,
-                std::cmp::Ordering::Less => TextSelectionDirection::Backward,
-            };
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: next_focus_offset.min(anchor_offset),
-                selection_end: next_focus_offset.max(anchor_offset),
-                selection_direction: next_selection_direction,
-            })
-        }
-        Key::ArrowRight if !selection_is_collapsed => {
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: selection_end,
-                selection_end,
-                selection_direction: TextSelectionDirection::None,
-            })
-        }
-        Key::ArrowRight if focus_offset < scalar_count => {
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: focus_offset + 1,
-                selection_end: focus_offset + 1,
-                selection_direction: TextSelectionDirection::None,
-            })
-        }
-        Key::Home if shift_key && focus_offset > 0 => {
-            let next_focus_offset = 0;
-            let next_selection_direction = if anchor_offset == 0 {
-                TextSelectionDirection::None
-            } else {
-                TextSelectionDirection::Backward
-            };
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: 0,
-                selection_end: anchor_offset.max(next_focus_offset),
-                selection_direction: next_selection_direction,
-            })
-        }
-        Key::Home if !selection_is_collapsed || focus_offset > 0 => {
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: 0,
-                selection_end: 0,
-                selection_direction: TextSelectionDirection::None,
-            })
-        }
-        Key::End if shift_key && focus_offset < scalar_count => {
-            let next_focus_offset = scalar_count;
-            let next_selection_direction = if anchor_offset == scalar_count {
-                TextSelectionDirection::None
-            } else {
-                TextSelectionDirection::Forward
-            };
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: anchor_offset.min(next_focus_offset),
-                selection_end: next_focus_offset,
-                selection_direction: next_selection_direction,
-            })
-        }
-        Key::End if !selection_is_collapsed || focus_offset < scalar_count => {
-            Some(DefaultTextBehaviorResult::SetSelection {
-                selection_start: scalar_count,
-                selection_end: scalar_count,
-                selection_direction: TextSelectionDirection::None,
-            })
-        }
-        _ => None,
     }
 }
 
