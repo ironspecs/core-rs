@@ -1,0 +1,416 @@
+//! The unified fragment-import splice walk (PR 5, E1 phase 2).
+//!
+//! What this file represents:
+//!
+//! - ONE splice algorithm that imports a detached `RootDomFragment`'s root
+//!   children under a destination parent, in DOM order, into either a live
+//!   document's node store or a fragment-owned node store
+//! - the `SpliceJournal`: the caller-owned, fixed-capacity struct that carries
+//!   the live-vs-fragment differences as data (born-dirty marks, per-node
+//!   metric counts) so the walk itself stays one algorithm
+//!
+//! Ownership boundary:
+//!
+//! - the walk is generic over `NodeStore`; it never reads `RootDom` fields
+//!   beyond the destination store and id lookup, so live and fragment
+//!   destinations share one implementation
+//! - the walk performs the structural work (build → intrinsic update →
+//!   born-dirty-via-journal → insert → id-index → append) and fills the
+//!   journal; the CALLER translates the journal into metric increments. The
+//!   walk never emits metrics itself (see `root_dom_metrics.rs`: metrics are
+//!   not passed down to lower-level functions)
+//!
+//! Invariants and rules:
+//!
+//! - duplicate element ids fail BEFORE any partial import (the id validation
+//!   pass runs up front, against the destination id lookup)
+//! - the fragment root itself is never imported; only its reachable children
+//!   are, in document order
+//! - unreachable fragment nodes are skipped (only nodes reachable from the
+//!   fragment root's child chain are walked)
+//! - `Document`/`DocumentFragment` nodes inside the fragment are rejected
+//!   (`InvalidParentTarget`)
+//! - the journal counters are plain `u64` fields — zero allocation, no
+//!   per-event buffers; the walk only increments them
+//!
+//! Extraction note (PR 5, E1 phase 2): this replaces two near-duplicate
+//! walks — `dom_ops.rs::append_fragment_children_into_owner` (fragment →
+//! fragment, recursive) and `root_dom.rs::import_fragment_children_into_parent`
+//! (fragment → live, iterative with an `imported_key_by_fragment_key` map).
+//! The iterative form's map existed only to resolve the live parent for a flat
+//! walk; the recursive form carries the parent on the stack, so unification
+//! aligned on the recursive shape and dropped that per-import allocation.
+use std::collections::HashMap;
+
+use crate::types::DomError;
+use crate::types::dom_node::{DomIntrinsic, DomNode, DomNodeSlotKey};
+use crate::types::element_behaviors::DomElementIntrinsicKind;
+use crate::types::id_index::assert_id_is_available;
+use crate::types::node_store::NodeStore;
+use crate::types::root_dom_fragment::RootDomFragment;
+use crate::types::tree_links::mark_node_born_dirty;
+
+#[cfg(test)]
+use crate::types::dom_tag::DomTag;
+#[cfg(test)]
+use crate::types::raw_node_store::RawNodeStore;
+#[cfg(test)]
+use crate::types::root_dom_nodes::{RootDomNodes, RootDomNodesMetricName};
+#[cfg(test)]
+use crate::types::{DomAttribute, DomAttributeValue};
+#[cfg(test)]
+use slotmap::SlotMap;
+
+/// The live-vs-fragment divergence journal for one splice.
+///
+/// The walk fills the counters as it imports nodes; the caller translates them
+/// into metric increments. `born_dirty` marks the live document's per-node
+/// born-dirty behavior (the fragment store never marks dirty — it never runs
+/// layout/paint). All fields are fixed and zero-allocation.
+#[derive(Default)]
+pub(crate) struct SpliceJournal {
+    /// Mark every imported node born-dirty before insert (live document only).
+    pub(crate) born_dirty: bool,
+    /// Imported node count (one `NodeSlotAllocation` per node).
+    pub(crate) node_slot_allocations: u64,
+    /// Imported text-node count (one `TextStorageAllocation` per text node).
+    pub(crate) text_storage_allocations: u64,
+    /// Nodes whose `after_create_intrinsic_update` measured text
+    /// (`TextIntrinsicMeasurement`).
+    pub(crate) text_intrinsic_measurements: u64,
+    /// Nodes whose intrinsic recomputed an image (`ImgIntrinsicRecomputation`).
+    pub(crate) img_intrinsic_recomputations: u64,
+    /// Nodes whose intrinsic updated image state (`ImgIntrinsicStateUpdate`).
+    pub(crate) img_intrinsic_state_updates: u64,
+}
+
+/// Splices one fragment's root children under `parent_key` in the destination
+/// store, returning the imported top-level child keys in DOM order.
+pub(crate) fn splice_fragment_children_into_store<S: NodeStore>(
+    owner_root: DomNodeSlotKey,
+    store: &mut S,
+    id_lookup: &mut HashMap<String, DomNodeSlotKey>,
+    parent_key: DomNodeSlotKey,
+    fragment: &RootDomFragment,
+    journal: &mut SpliceJournal,
+) -> Result<Vec<DomNodeSlotKey>, DomError> {
+    assert_splice_parent_is_valid(store, parent_key)?;
+    let top_level_child_keys = fragment.top_level_child_keys();
+    assert_fragment_ids_are_available(id_lookup, fragment, &top_level_child_keys)?;
+    let mut imported_keys = Vec::new();
+    for child_key in top_level_child_keys {
+        let imported_key = splice_fragment_subtree_into_store(
+            owner_root, store, id_lookup, parent_key, fragment, child_key, journal,
+        )?;
+        imported_keys.push(imported_key);
+    }
+    Ok(imported_keys)
+}
+
+fn assert_splice_parent_is_valid<S: NodeStore>(
+    store: &S,
+    parent_key: DomNodeSlotKey,
+) -> Result<(), DomError> {
+    let parent = store.get(parent_key).ok_or(DomError::InvalidNodeKey)?;
+    if !parent.is_parent_node() {
+        return Err(DomError::InvalidParentTarget);
+    }
+    Ok(())
+}
+
+/// Validates that every element id reachable from the fragment's top-level
+/// children is available in the destination id lookup, failing the whole
+/// import before any node is written (fail-before-partial-import).
+fn assert_fragment_ids_are_available(
+    id_lookup: &HashMap<String, DomNodeSlotKey>,
+    fragment: &RootDomFragment,
+    top_level_child_keys: &[DomNodeSlotKey],
+) -> Result<(), DomError> {
+    for &child_key in top_level_child_keys {
+        assert_subtree_ids_available(id_lookup, fragment, child_key)?;
+    }
+    Ok(())
+}
+
+fn assert_subtree_ids_available(
+    id_lookup: &HashMap<String, DomNodeSlotKey>,
+    fragment: &RootDomFragment,
+    key: DomNodeSlotKey,
+) -> Result<(), DomError> {
+    let node = fragment.node(key).ok_or(DomError::InvalidNodeKey)?;
+    assert_id_is_available(
+        id_lookup,
+        node.as_element()
+            .and_then(|element| element.attrs.id.as_deref()),
+    )?;
+    let mut child_key = node
+        .first_child(|key| fragment.node(key))
+        .map(|(key, _)| key);
+    while let Some(current_child_key) = child_key {
+        let child = fragment
+            .node(current_child_key)
+            .ok_or(DomError::InvalidNodeKey)?;
+        child_key = child
+            .next_sibling(|key| fragment.node(key))
+            .map(|(key, _)| key);
+        assert_subtree_ids_available(id_lookup, fragment, current_child_key)?;
+    }
+    Ok(())
+}
+
+fn splice_fragment_subtree_into_store<S: NodeStore>(
+    owner_root: DomNodeSlotKey,
+    store: &mut S,
+    id_lookup: &mut HashMap<String, DomNodeSlotKey>,
+    parent_key: DomNodeSlotKey,
+    fragment: &RootDomFragment,
+    fragment_key: DomNodeSlotKey,
+    journal: &mut SpliceJournal,
+) -> Result<DomNodeSlotKey, DomError> {
+    let fragment_node = fragment
+        .node(fragment_key)
+        .ok_or(DomError::InvalidNodeKey)?;
+    let imported_key = match fragment_node {
+        DomNode::Document(_) | DomNode::DocumentFragment(_) => {
+            return Err(DomError::InvalidParentTarget);
+        }
+        DomNode::Element(_) => insert_spliced_node(
+            store,
+            id_lookup,
+            fragment_node.clone_for_owner_document(owner_root),
+            journal,
+        )?,
+        DomNode::Text(text_node) => insert_spliced_node(
+            store,
+            id_lookup,
+            DomNode::text(owner_root, text_node.data().into()),
+            journal,
+        )?,
+    };
+
+    store.append_child_to_parent(parent_key, imported_key)?;
+
+    let mut child_key = fragment_node
+        .first_child(|key| fragment.node(key))
+        .map(|(key, _)| key);
+    while let Some(current_child_key) = child_key {
+        let child = fragment
+            .node(current_child_key)
+            .ok_or(DomError::InvalidNodeKey)?;
+        child_key = child
+            .next_sibling(|key| fragment.node(key))
+            .map(|(key, _)| key);
+        splice_fragment_subtree_into_store(
+            owner_root,
+            store,
+            id_lookup,
+            imported_key,
+            fragment,
+            current_child_key,
+            journal,
+        )?;
+    }
+    Ok(imported_key)
+}
+
+fn insert_spliced_node<S: NodeStore>(
+    store: &mut S,
+    id_lookup: &mut HashMap<String, DomNodeSlotKey>,
+    mut node: DomNode,
+    journal: &mut SpliceJournal,
+) -> Result<DomNodeSlotKey, DomError> {
+    assert_id_is_available(
+        id_lookup,
+        node.as_element()
+            .and_then(|element| element.attrs.id.as_deref()),
+    )?;
+    node.after_create_intrinsic_update()?;
+    record_journal_intrinsic_metrics(&node, journal);
+    let is_text_node = matches!(node, DomNode::Text(_));
+    if journal.born_dirty {
+        mark_node_born_dirty(&mut node);
+    }
+    let key = store.insert(node);
+    journal.node_slot_allocations += 1;
+    if is_text_node {
+        journal.text_storage_allocations += 1;
+    }
+    index_spliced_node_id_if_present(store, id_lookup, key);
+    Ok(key)
+}
+
+/// Records the per-node intrinsic work into the journal counters, mirroring
+/// `RootDom::record_intrinsic_metrics_for_node` without emitting metrics
+/// directly (metrics are the caller's translation of the journal).
+fn record_journal_intrinsic_metrics(node: &DomNode, journal: &mut SpliceJournal) {
+    match node.intrinsic() {
+        DomIntrinsic::Text(_) => journal.text_intrinsic_measurements += 1,
+        DomIntrinsic::Img(_) => {
+            journal.img_intrinsic_recomputations += 1;
+            journal.img_intrinsic_state_updates += 1;
+        }
+        DomIntrinsic::NotMeasured
+            if matches!(
+                node,
+                DomNode::Element(element)
+                    if element.behavior().intrinsic_kind == DomElementIntrinsicKind::Img
+            ) =>
+        {
+            journal.img_intrinsic_state_updates += 1;
+        }
+        _ => {}
+    }
+}
+
+fn index_spliced_node_id_if_present<S: NodeStore>(
+    store: &S,
+    id_lookup: &mut HashMap<String, DomNodeSlotKey>,
+    key: DomNodeSlotKey,
+) {
+    let Some(id) = store
+        .get(key)
+        .and_then(DomNode::as_element)
+        .and_then(|element| element.attrs.id.clone())
+    else {
+        return;
+    };
+    id_lookup.insert(id, key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a source fragment: one `div#subject` element with one text child.
+    fn source_fragment_with_id_and_text() -> RootDomFragment {
+        let mut source = RootDomFragment::new();
+        let source_root = source.document_fragment_key();
+        let parent = source.create_element(DomTag::Div).expect("parent");
+        let child = source.create_text_node("hello").expect("child");
+        source
+            .set_attr(
+                parent,
+                DomAttribute::Id,
+                Some(DomAttributeValue::String("subject".to_string())),
+            )
+            .expect("parent id");
+        source
+            .append_child(source_root, parent)
+            .expect("parent attach");
+        source.append_child(parent, child).expect("child attach");
+        source
+    }
+
+    #[test]
+    fn raw_splice_imports_structure_and_ids_without_born_dirty() {
+        let mut nodes = SlotMap::with_key();
+        let root = nodes.insert_with_key(DomNode::document);
+        let mut id_lookup = HashMap::new();
+        let fragment = source_fragment_with_id_and_text();
+
+        let mut store = RawNodeStore(&mut nodes);
+        let mut journal = SpliceJournal::default();
+        let imported = splice_fragment_children_into_store(
+            root,
+            &mut store,
+            &mut id_lookup,
+            root,
+            &fragment,
+            &mut journal,
+        )
+        .expect("splice should succeed");
+
+        // Structure: one top-level element with one text child.
+        assert_eq!(imported.len(), 1);
+        let parent_key = imported[0];
+        let child_key = nodes
+            .get(parent_key)
+            .and_then(DomNode::first_child_key_for_store)
+            .expect("imported child");
+        assert!(matches!(nodes.get(child_key), Some(DomNode::Text(_))));
+
+        // The element id is indexed into the destination lookup.
+        assert_eq!(id_lookup.get("subject"), Some(&parent_key));
+
+        // A raw (fragment) splice records no born-dirty intent, but still
+        // counts its per-node work in the journal for the caller to translate.
+        assert!(!journal.born_dirty);
+        assert_eq!(journal.node_slot_allocations, 2);
+        assert_eq!(journal.text_storage_allocations, 1);
+        assert_eq!(journal.text_intrinsic_measurements, 1);
+    }
+
+    #[test]
+    fn live_splice_marks_born_dirty_indexes_ids_and_counts_node_store_metrics() {
+        let mut nodes = RootDomNodes::with_key();
+        let root = nodes.insert_with_key(DomNode::document);
+        let mut id_lookup = HashMap::new();
+        let fragment = source_fragment_with_id_and_text();
+
+        let mut journal = SpliceJournal {
+            born_dirty: true,
+            ..SpliceJournal::default()
+        };
+        let imported = splice_fragment_children_into_store(
+            root,
+            &mut nodes,
+            &mut id_lookup,
+            root,
+            &fragment,
+            &mut journal,
+        )
+        .expect("splice should succeed");
+
+        assert_eq!(imported.len(), 1);
+        let parent_key = imported[0];
+        assert_eq!(id_lookup.get("subject"), Some(&parent_key));
+
+        // The live splice routes node-store access through the instrumented
+        // proxy: one Insert + one Get per imported node (2 nodes here), and
+        // the journal records the born-dirty intent the live walk carries.
+        assert_eq!(nodes.count(RootDomNodesMetricName::Insert), 2);
+        assert!(nodes.count(RootDomNodesMetricName::Get) >= 2);
+        assert!(journal.born_dirty);
+        assert_eq!(journal.node_slot_allocations, 2);
+        assert_eq!(journal.text_storage_allocations, 1);
+    }
+
+    #[test]
+    fn splice_rejects_duplicate_ids_before_partial_import() {
+        let mut nodes = SlotMap::with_key();
+        let root = nodes.insert_with_key(DomNode::document);
+        let mut id_lookup = HashMap::new();
+        // A destination element already owns "dup".
+        let existing = nodes.insert(DomNode::element(root, DomTag::Span));
+        id_lookup.insert("dup".to_string(), existing);
+
+        let mut source = RootDomFragment::new();
+        let source_root = source.document_fragment_key();
+        let imported = source.create_element(DomTag::Button).expect("imported");
+        source
+            .set_attr(
+                imported,
+                DomAttribute::Id,
+                Some(DomAttributeValue::String("dup".to_string())),
+            )
+            .expect("id");
+        source.append_child(source_root, imported).expect("attach");
+
+        let mut store = RawNodeStore(&mut nodes);
+        let mut journal = SpliceJournal::default();
+        let error = splice_fragment_children_into_store(
+            root,
+            &mut store,
+            &mut id_lookup,
+            root,
+            &source,
+            &mut journal,
+        )
+        .expect_err("duplicate id should fail");
+
+        assert_eq!(error, DomError::DuplicateElementId);
+        // No partial import: the destination store gained nothing.
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(journal.node_slot_allocations, 0);
+    }
+}

@@ -27,8 +27,8 @@ mod support;
 
 use bevy::prelude::World;
 use ui_dom::{
-    DomNodeSlotKey, DomPointerState, DomPointerUpdate, DomTag, RootDom, RootDomMetricName,
-    RootDomMetricName::*, RootDomNodesMetricName,
+    DomNodeSlotKey, DomPointerState, DomPointerUpdate, DomTag, RootDom, RootDomFragment,
+    RootDomMetricName, RootDomMetricName::*, RootDomNodesMetricName,
 };
 
 /// Builds the shared chip scenario: one `.chip` div under the document root
@@ -934,5 +934,42 @@ fn fixed_layer_relayout_does_not_churn_node_store() {
         snapshot.count(RootDomNodesMetricName::Remove),
         0,
         "layout update should not remove nodes for a pure fixed-position relayout"
+    );
+}
+
+/// The unified splice (PR 5, E1 phase 2) must preserve the live import's
+/// metric counts: one `NodeSlotAllocation` per imported node, one
+/// `TextStorageAllocation` per imported text node, and one node-store `Insert`
+/// per imported node. This is the observable half of the journal — the walk
+/// records the counts, and `append_fragment` translates them.
+#[test]
+fn fragment_import_preserves_the_pre_splice_metric_counts() {
+    let (_world, mut root) = support::attached_gpu_root_dom_default_viewport_setup();
+
+    let mut fragment = RootDomFragment::new();
+    let fragment_root = fragment.document_fragment_key();
+    let chip = fragment.create_element(DomTag::Div).expect("div");
+    let label = fragment.create_text_node("label").expect("text");
+    fragment
+        .append_child(fragment_root, chip)
+        .expect("append chip");
+    fragment.append_child(chip, label).expect("append label");
+
+    root.reset_metrics();
+    root.reset_node_metrics();
+
+    let document_root = root.document_node().0;
+    root.append_fragment(document_root, fragment)
+        .expect("fragment import");
+
+    // One element + one text node: two node slots, one text storage.
+    let snapshot = root.metrics();
+    assert_eq!(snapshot.count(NodeSlotAllocation), 2);
+    assert_eq!(snapshot.count(TextStorageAllocation), 1);
+    // The instrumented node store counts one Insert per imported node.
+    assert_eq!(root.node_count(RootDomNodesMetricName::Insert), 2);
+    assert!(
+        root.node_count(RootDomNodesMetricName::Get) >= 2,
+        "id indexing reads each imported node through the instrumented store"
     );
 }

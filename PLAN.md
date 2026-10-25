@@ -2182,19 +2182,54 @@ an f32 basis.
   the table stays in root_dom.rs because extracting it would force
   private fields `pub(crate)` (a visibility leak the doctrine
   rejects). **Latent bug surfaced, honestly NOT fixed (architect
-  ruling):** `DomSelection::DocumentSelected` is never purged —
-  its anchor/focus would survive removal. Unreachable today (the
-  variant is never constructed — an incomplete feature); left as-is
-  with a named note and deferred to the editing epic (which owns
-  the dead caret entries). E3 grew `root_dom.rs` +113 — the table,
-  tests, and notes are net-new infrastructure; the win is the bug
-  class becoming visible, not line count. A dead redundant
-  focused-element clear was dropped (behavior-preserving,
-  disclosed). `root_dom.rs` now 7,125 with 618 lines in the two new
-  primitives. Folder verdict: still flat; the grouping signal (same
-  borrow triple at every pass) has not appeared; the
-  `dirty_channel` ↔ `tree_links` two-module cycle is benign and
-  documented.
+   ruling):** `DomSelection::DocumentSelected` is never purged —
+   its anchor/focus would survive removal. Unreachable today (the
+   variant is never constructed — an incomplete feature); left as-is
+   with a named note and deferred to the editing epic (which owns
+   the dead caret entries). E3 grew `root_dom.rs` +113 — the table,
+   tests, and notes are net-new infrastructure; the win is the bug
+   class becoming visible, not line count. A dead redundant
+   focused-element clear was dropped (behavior-preserving,
+   disclosed). `root_dom.rs` now 7,125 with 618 lines in the two new
+   primitives. Folder verdict: still flat; the grouping signal (same
+   borrow triple at every pass) has not appeared; the
+   `dirty_channel` ↔ `tree_links` two-module cycle is benign and
+   documented.
+
+- **2026-10-25 — PR 5: E3 follow-up + E1 phase 2 (the unified splice)
+  landed.** Two commits. (1) The purge-complexity correction
+  (`ff152fe`): the third-party E3 review found `purge_scroll_offsets`
+  had regressed from the pre-E3 remove-each shape (`for key in removed
+  { map.remove(key) }`, O(removed)) to `retain_not_in_map`
+  (O(store × removed)). `types/purge.rs` gained `remove_each_in`; the
+  scroll-offsets row switched back; the `PURGE_DEPENDENTS` table now
+  carries a per-row before/after access-pattern audit (only the scroll
+  row had moved; the option/vec rows were already the right shape).
+  `retain_not_in_map` was removed rather than left dead — the only
+  map-shaped dependent is the removal case. (2) The unified splice
+  (`refactor`, E1 phase 2): the two near-duplicate import walks —
+  `dom_ops.rs` (fragment → fragment, recursive) and `root_dom.rs`'s
+  iterative `import_fragment_children_into_parent` (fragment → live,
+  with an `imported_key_by_fragment_key` map) — were diffed and triaged:
+  traversal (recursive vs iterative+map) = (a) pointless misalignment,
+  aligned on the recursive shape (drops the per-import map); text-node
+  closure and duplicate id-assert helper = (a), aligned; born-dirty
+  marks, post-import parent dirty marks, layer-queue, and per-node
+  metric counts = (b) meaningful divergence, absorbed by a fixed-capacity
+  `SpliceJournal` the caller owns; the metrics-proxy boundary = resolved
+  by a three-method `NodeStore` trait (in `node_store.rs`) implemented by
+  `RootDomNodes` (routes `get`/`insert` through the instrumented inherent
+  methods; `append_child_to_parent` through the raw field) and a local
+  `RawNodeStore` wrapper over `SlotMap` — no `DerefMut` coercion, so the
+  `Get`/`Insert` node-store pins stay put. Metrics are emitted by the
+  `RootDom` wrapper from the journal (never passed down, per
+  `root_dom_metrics.rs`). `dom_ops.rs` deleted; new `types/splice.rs`,
+  `types/node_store.rs`, `types/raw_node_store.rs`. Contract tests: the
+  walk's own unit tests (raw + live + duplicate-id) plus
+  `perf_metric.rs::fragment_import_preserves_the_pre_splice_metric_counts`.
+  `root_dom.rs` 7,125 → 7,060 (net −65 across both commits: +60 in the
+  purge audit, −125 in the splice; the three new primitive files total
+  545 lines).
 
 
 ## Vocabulary carried from the redesign (self-contained definitions)

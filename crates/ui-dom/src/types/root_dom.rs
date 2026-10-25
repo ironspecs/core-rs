@@ -118,9 +118,10 @@ use crate::types::root_dom_nodes::RootDomNodes;
 use crate::types::root_dom_nodes::{
     RootDomNodesMetricHistoryIter, RootDomNodesMetricName, RootDomNodesMetrics,
 };
+use crate::types::splice::{SpliceJournal, splice_fragment_children_into_store};
 use crate::types::tree_links::{
     append_child_to_parent, collect_subtree_keys, current_layer_root_key, detach_node_from_parent,
-    mark_node_born_dirty, node_is_connected_to_root, push_unique_key,
+    node_is_connected_to_root, push_unique_key,
 };
 use crate::types::{
     DomAttribute, DomAttributeValue, DomCanonicalSnapshot, DomCanonicalStyleSnapshot, DomError,
@@ -1210,12 +1211,54 @@ impl RootDom {
         }
         self.increment_metric(RootDomMetricName::FragmentTopLevelKeyListAllocation);
         self.increment_metric(RootDomMetricName::FragmentImportValidationStackAllocation);
-        let imported_keys = self.import_fragment_children_into_parent(parent_key, &fragment)?;
+        let mut journal = SpliceJournal {
+            born_dirty: true,
+            ..SpliceJournal::default()
+        };
+        let imported_keys = splice_fragment_children_into_store(
+            self.root,
+            &mut self.nodes,
+            &mut self.id_lookup,
+            parent_key,
+            &fragment,
+            &mut journal,
+        )?;
+        self.emit_splice_journal_metrics(&journal);
+        // Imported nodes are born dirty on their own flags, but the style
+        // and paint gates read the enclosing layer root, so the parent chain
+        // must propagate all three flags for the first update to restyle,
+        // relayout, and repaint the imported subtree.
+        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Layout);
+        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Style);
+        mark_full_repaint_up_to_layout_root(self, parent_key);
         for imported_key in imported_keys {
             self.queue_layer_append_root(imported_key);
         }
         drop(fragment);
         Ok(())
+    }
+
+    /// Translates a filled `SpliceJournal` into root metric increments.
+    ///
+    /// The splice walk records what it did into the journal; metrics are
+    /// emitted here, at the root mutation boundary, because metrics are never
+    /// passed down to lower-level functions (`root_dom_metrics.rs`).
+    fn emit_splice_journal_metrics(&mut self, journal: &SpliceJournal) {
+        for _ in 0..journal.text_intrinsic_measurements {
+            self.increment_metric(RootDomMetricName::TextIntrinsicMeasurement);
+        }
+        for _ in 0..journal.img_intrinsic_recomputations {
+            self.increment_metric(RootDomMetricName::ImgIntrinsicRecomputation);
+        }
+        for _ in 0..journal.img_intrinsic_state_updates {
+            self.increment_metric(RootDomMetricName::ImgIntrinsicStateUpdate);
+        }
+        for _ in 0..journal.node_slot_allocations {
+            self.increment_metric(RootDomMetricName::NodeSlotAllocation);
+        }
+        for _ in 0..journal.text_storage_allocations {
+            self.increment_metric(RootDomMetricName::TextStorageAllocation);
+        }
     }
 
     /// Inserts one node into the root-owned slot store and updates the element
@@ -1483,88 +1526,6 @@ impl RootDom {
         Some([total_x_px, total_y_px])
     }
 
-    fn import_fragment_children_into_parent(
-        &mut self,
-        parent_key: DomNodeSlotKey,
-        fragment: &RootDomFragment,
-    ) -> Result<Vec<DomNodeSlotKey>, DomError> {
-        let Some(parent) = self.node(parent_key) else {
-            return Err(DomError::InvalidNodeKey);
-        };
-        if !parent.is_parent_node() {
-            return Err(DomError::InvalidParentTarget);
-        }
-        let Some(mut fragment_key) = first_fragment_import_key(fragment)? else {
-            return Ok(Vec::new());
-        };
-        self.assert_fragment_ids_are_available_in_root(fragment)?;
-        let fragment_root = fragment.document_fragment_key();
-        let mut imported_top_level_keys = Vec::new();
-        let mut imported_key_by_fragment_key = HashMap::new();
-        loop {
-            let fragment_node = fragment
-                .node(fragment_key)
-                .ok_or(DomError::InvalidNodeKey)?;
-            let live_parent_key = parent_key_for_imported_fragment_node(
-                fragment,
-                fragment_root,
-                fragment_key,
-                parent_key,
-                &imported_key_by_fragment_key,
-            )?;
-            let imported_key =
-                self.import_fragment_node_into_parent(live_parent_key, fragment_node)?;
-            imported_key_by_fragment_key.insert(fragment_key, imported_key);
-            if fragment_node.parent_key() == Some(fragment_root) {
-                imported_top_level_keys.push(imported_key);
-            }
-            let Some(next_fragment_key) =
-                next_fragment_import_key(fragment, fragment_root, fragment_key)?
-            else {
-                break;
-            };
-            fragment_key = next_fragment_key;
-        }
-        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Layout);
-        // Imported nodes are born dirty on their own flags, but the style
-        // and paint gates read the enclosing layer root, so the parent chain
-        // must propagate all three flags for the first update to restyle,
-        // relayout, and repaint the imported subtree.
-        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Style);
-        mark_full_repaint_up_to_layout_root(self, parent_key);
-        Ok(imported_top_level_keys)
-    }
-
-    fn import_fragment_node_into_parent(
-        &mut self,
-        parent_key: DomNodeSlotKey,
-        fragment_node: &DomNode,
-    ) -> Result<DomNodeSlotKey, DomError> {
-        let mut imported_node = match fragment_node {
-            DomNode::Document(_) | DomNode::DocumentFragment(_) => {
-                return Err(DomError::InvalidParentTarget);
-            }
-            DomNode::Element(_) => fragment_node.clone_for_owner_document(self.root),
-            DomNode::Text(text_node) => DomNode::text(self.root, text_node.data().into()),
-        };
-        imported_node.after_create_intrinsic_update()?;
-        self.record_intrinsic_metrics_for_node(&imported_node);
-        let is_text_node = matches!(imported_node, DomNode::Text(_));
-        mark_node_born_dirty(&mut imported_node);
-        let imported_key = self.nodes.insert(imported_node);
-        self.increment_metric(RootDomMetricName::NodeSlotAllocation);
-        if is_text_node {
-            self.increment_metric(RootDomMetricName::TextStorageAllocation);
-        }
-        self.index_node_id_if_present(imported_key);
-        append_child_to_parent(&mut self.nodes, parent_key, imported_key)?;
-        // The imported element is born style-dirty (mark_node_born_dirty above);
-        // the style pass resolves its groups on the next frame. Fragment
-        // `set_attr` never projected groups while detached (the projection
-        // channel died in spine 3.3g-2a); the pass is now the only writer.
-        Ok(imported_key)
-    }
-
     fn replace_active_element_key(&mut self, next_active_element_key: Option<DomNodeSlotKey>) {
         if self.pseudo_state.active_element_key == next_active_element_key {
             return;
@@ -1578,33 +1539,6 @@ impl RootDom {
             .is_ok()
         {
             self.pseudo_state.active_element_key = Some(key);
-        }
-    }
-
-    fn assert_fragment_ids_are_available_in_root(
-        &self,
-        fragment: &RootDomFragment,
-    ) -> Result<(), DomError> {
-        let Some(mut fragment_key) = first_fragment_import_key(fragment)? else {
-            return Ok(());
-        };
-        let fragment_root = fragment.document_fragment_key();
-        loop {
-            let fragment_node = fragment
-                .node(fragment_key)
-                .ok_or(DomError::InvalidNodeKey)?;
-            assert_id_is_available(
-                &self.id_lookup,
-                fragment_node
-                    .as_element()
-                    .and_then(|element| element.attrs.id.as_deref()),
-            )?;
-            let Some(next_fragment_key) =
-                next_fragment_import_key(fragment, fragment_root, fragment_key)?
-            else {
-                return Ok(());
-            };
-            fragment_key = next_fragment_key;
         }
     }
 
@@ -5057,65 +4991,6 @@ fn scroll_content_height_px_for_node(
 ) -> Result<f32, DomError> {
     let node = root_dom.node(key).ok_or(DomError::InvalidNodeKey)?;
     Ok(node.layout().content_height_px.max(0.0))
-}
-
-fn first_fragment_import_key(
-    fragment: &RootDomFragment,
-) -> Result<Option<DomNodeSlotKey>, DomError> {
-    let fragment_root = fragment.document_fragment_key();
-    Ok(fragment
-        .node(fragment_root)
-        .ok_or(DomError::InvalidNodeKey)?
-        .first_child_key_for_store())
-}
-
-fn next_fragment_import_key(
-    fragment: &RootDomFragment,
-    fragment_root: DomNodeSlotKey,
-    current_key: DomNodeSlotKey,
-) -> Result<Option<DomNodeSlotKey>, DomError> {
-    let node = fragment.node(current_key).ok_or(DomError::InvalidNodeKey)?;
-    if let Some(child_key) = node.first_child_key_for_store() {
-        return Ok(Some(child_key));
-    }
-    if let Some(sibling_key) = node.next_sibling_key_for_store() {
-        return Ok(Some(sibling_key));
-    }
-    let mut ancestor_key = node.parent_key();
-    while let Some(current_ancestor_key) = ancestor_key {
-        if current_ancestor_key == fragment_root {
-            return Ok(None);
-        }
-        let ancestor = fragment
-            .node(current_ancestor_key)
-            .ok_or(DomError::InvalidNodeKey)?;
-        if let Some(sibling_key) = ancestor.next_sibling_key_for_store() {
-            return Ok(Some(sibling_key));
-        }
-        ancestor_key = ancestor.parent_key();
-    }
-    Ok(None)
-}
-
-fn parent_key_for_imported_fragment_node(
-    fragment: &RootDomFragment,
-    fragment_root: DomNodeSlotKey,
-    fragment_key: DomNodeSlotKey,
-    default_parent_key: DomNodeSlotKey,
-    imported_key_by_fragment_key: &HashMap<DomNodeSlotKey, DomNodeSlotKey>,
-) -> Result<DomNodeSlotKey, DomError> {
-    let fragment_parent_key = fragment
-        .node(fragment_key)
-        .ok_or(DomError::InvalidNodeKey)?
-        .parent_key()
-        .ok_or(DomError::InvalidParentTarget)?;
-    if fragment_parent_key == fragment_root {
-        return Ok(default_parent_key);
-    }
-    imported_key_by_fragment_key
-        .get(&fragment_parent_key)
-        .copied()
-        .ok_or(DomError::InvalidNodeKey)
 }
 
 // Extraction note (PR 5, E4): this walk and its per-node helper

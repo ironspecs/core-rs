@@ -178,6 +178,24 @@ impl DerefMut for RootDomNodes {
     }
 }
 
+impl crate::types::node_store::NodeStore for RootDomNodes {
+    fn get(&self, key: DomNodeSlotKey) -> Option<&DomNode> {
+        RootDomNodes::get(self, key)
+    }
+
+    fn insert(&mut self, value: DomNode) -> DomNodeSlotKey {
+        RootDomNodes::insert(self, value)
+    }
+
+    fn append_child_to_parent(
+        &mut self,
+        parent_key: DomNodeSlotKey,
+        child_key: DomNodeSlotKey,
+    ) -> Result<DomNodeSlotKey, crate::types::DomError> {
+        crate::types::tree_links::append_child_to_parent(&mut self.nodes, parent_key, child_key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

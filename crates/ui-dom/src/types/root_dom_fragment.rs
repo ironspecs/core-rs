@@ -43,7 +43,6 @@ use crate::types::dom_event_name::DomEventName;
 use crate::types::dom_node::{
     DomIntrinsic, DomNode, DomNodeSlotKey, measure_text_intrinsic_from_content,
 };
-use crate::types::dom_ops::append_fragment_children_into_owner;
 use crate::types::dom_query_selector::{
     DomQuerySelectorStore, query_selector as query_selector_in_store,
     query_selector_all as query_selector_all_in_store,
@@ -52,10 +51,12 @@ use crate::types::dom_query_selector::{
 };
 use crate::types::dom_tag::DomTag;
 use crate::types::id_index::next_id_from_attr;
+use crate::types::raw_node_store::RawNodeStore;
 #[cfg(test)]
 use crate::types::root_dom::RootDom;
 #[cfg(test)]
 use crate::types::root_dom_context::RootDomContext;
+use crate::types::splice::{SpliceJournal, splice_fragment_children_into_store};
 use crate::types::tree_links::{
     append_child_to_parent, collect_subtree_keys, detach_node_from_parent,
 };
@@ -225,13 +226,15 @@ impl RootDomFragment {
         parent_key: DomNodeSlotKey,
         fragment: &RootDomFragment,
     ) -> Result<(), DomError> {
-        append_fragment_children_into_owner(
+        let mut store = RawNodeStore(&mut self.nodes);
+        let mut journal = SpliceJournal::default();
+        let _ = splice_fragment_children_into_store(
             self.root,
-            &mut self.nodes,
+            &mut store,
             &mut self.id_lookup,
             parent_key,
             fragment,
-            &mut |owner_root, text| DomNode::text(owner_root, text.into()),
+            &mut journal,
         )?;
         Ok(())
     }
