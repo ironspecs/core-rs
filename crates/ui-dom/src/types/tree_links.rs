@@ -7,6 +7,7 @@
 //!   first_child, last_child, previous_sibling, next_sibling}` links
 //! - the fast append/detach/validate/collect primitives over that shape
 //! - the ancestor walks that compute the current layer root for a key
+//! - the born-dirty per-node mark (`mark_node_born_dirty`)
 //!
 //! Invariants and rules:
 //!
@@ -28,13 +29,15 @@
 //!   documents share one implementation
 //!
 //! Extraction note (PR 5, E1): `mark_layout_dirty_up_to_layer_root_for_store`
-//! is dirty-channel (E4) material, not link machinery — it lives here only
-//! because `append_child_to_parent`'s byte-identical body calls it. When E4
-//! lands it is a re-home candidate.
+//! was dirty-channel (E4) material, not link machinery — it lived here only
+//! because `append_child_to_parent`'s byte-identical body called it. It moved
+//! to `types/dirty_channel.rs` in E4; `append_child_to_parent` still calls it,
+//! now through that module's re-homed function.
 use slotmap::SlotMap;
 
 use crate::domains::layout::layer_kind_for_node;
 use crate::types::DomError;
+use crate::types::dirty_channel::mark_layout_dirty_up_to_layer_root_for_store;
 use crate::types::dom_node::{DomNode, DomNodeSlotKey};
 
 #[cfg(test)]
@@ -53,28 +56,6 @@ pub(crate) fn current_layer_root_key(
         current_key = node.parent_key();
     }
     None
-}
-
-fn mark_layout_dirty_up_to_layer_root_for_store(
-    nodes: &mut SlotMap<DomNodeSlotKey, DomNode>,
-    key: DomNodeSlotKey,
-) {
-    let Some(layer_root_key) = current_layer_root_key(nodes, key) else {
-        return;
-    };
-    let mut current_key = Some(key);
-    while let Some(current) = current_key {
-        let (was_dirty, parent_key) = {
-            let Some(node) = nodes.get_mut(current) else {
-                return;
-            };
-            (node.mark_layout_dirty(), node.parent_key())
-        };
-        if was_dirty || current == layer_root_key {
-            return;
-        }
-        current_key = parent_key;
-    }
 }
 
 pub(crate) fn push_unique_key(keys: &mut Vec<DomNodeSlotKey>, key: DomNodeSlotKey) {

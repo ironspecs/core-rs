@@ -21,6 +21,7 @@
 //! - put behavior in the owning modules; keep these shapes literal
 mod attribute_invalidation;
 pub mod box_model;
+mod dirty_channel;
 pub mod dom_after_attr_write_intrinsic_update;
 pub mod dom_attr_node;
 mod dom_attr_parse;

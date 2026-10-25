@@ -65,6 +65,10 @@ use crate::element_controls::{
     NumericStepDirection, ResolvedElementControl, range_value_string_from_point,
     resolved_control_part_from_point, resolved_element_control, resolved_text_edit_kind,
 };
+use crate::types::dirty_channel::{
+    DirtyFlag, attribute_invalidation_from_classification, mark_dirty_up_to_layer_root,
+    mark_newly_attached_subtree_dirty,
+};
 use crate::types::dom_attr_node::DomAttributeNode;
 use crate::types::dom_event::{
     DomEvent, DomEventDetail, DomEventListener, DomEventListenerOptions, DomEventName,
@@ -1161,25 +1165,25 @@ impl RootDom {
         let previous_parent_key = self.node(child_key).and_then(DomNode::parent_key);
         let appended_key = append_child_to_parent(&mut self.nodes, parent_key, child_key)?;
         if let Some(previous_parent_key) = previous_parent_key {
-            mark_dirty_up_to_layer_root(self, previous_parent_key, DirtyFlag::Layout);
+            mark_dirty_up_to_layer_root(&mut self.nodes, previous_parent_key, DirtyFlag::Layout);
             mark_full_repaint_up_to_layout_root(self, previous_parent_key);
         } else {
-            mark_newly_attached_subtree_dirty(self, appended_key);
+            mark_newly_attached_subtree_dirty(&mut self.nodes, appended_key);
             queue_newly_connected_layer_roots_in_subtree(self, appended_key);
         }
-        mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Layout);
+        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Layout);
         // Style matching depends on tree position (type selectors, class
         // rules, inheritance), so an insertion must arm the enclosing layer
         // root's style phase just like attribute changes and hover do;
         // otherwise the new subtree is laid out and painted with unstyled
         // attrs until some later trigger marks the layer root style-dirty.
-        mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Style);
+        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Style);
         mark_full_repaint_up_to_layout_root(self, parent_key);
         if self
             .node(appended_key)
             .is_some_and(|node| layer_kind_for_node(node) != crate::types::DomLayerKind::None)
         {
-            mark_dirty_up_to_layer_root(self, appended_key, DirtyFlag::Layout);
+            mark_dirty_up_to_layer_root(&mut self.nodes, appended_key, DirtyFlag::Layout);
             mark_full_repaint_up_to_layout_root(self, appended_key);
         }
         Ok(appended_key)
@@ -1520,12 +1524,12 @@ impl RootDom {
             };
             fragment_key = next_fragment_key;
         }
-        mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Layout);
+        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Layout);
         // Imported nodes are born dirty on their own flags, but the style
         // and paint gates read the enclosing layer root, so the parent chain
         // must propagate all three flags for the first update to restyle,
         // relayout, and repaint the imported subtree.
-        mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Style);
+        mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Style);
         mark_full_repaint_up_to_layout_root(self, parent_key);
         Ok(imported_top_level_keys)
     }
@@ -1728,7 +1732,7 @@ impl RootDom {
         let previous_parent_key = detach_node_from_parent(&mut self.nodes, key)?;
 
         if let Some(parent_key) = previous_parent_key {
-            mark_dirty_up_to_layer_root(self, parent_key, DirtyFlag::Layout);
+            mark_dirty_up_to_layer_root(&mut self.nodes, parent_key, DirtyFlag::Layout);
             mark_full_repaint_up_to_layout_root(self, parent_key);
         }
         for removed_key in &removed_keys {
@@ -2714,7 +2718,7 @@ impl RootDom {
     }
 
     pub(crate) fn mark_layout_dirty_for_attribute_change(&mut self, key: DomNodeSlotKey) {
-        mark_dirty_up_to_layer_root(self, key, DirtyFlag::Layout);
+        mark_dirty_up_to_layer_root(&mut self.nodes, key, DirtyFlag::Layout);
     }
 
     pub(crate) fn mark_paint_dirty_for_attribute_change(&mut self, key: DomNodeSlotKey) {
@@ -2722,7 +2726,7 @@ impl RootDom {
     }
 
     pub(crate) fn mark_style_dirty_for_attribute_change(&mut self, key: DomNodeSlotKey) {
-        mark_dirty_up_to_layer_root(self, key, DirtyFlag::Style);
+        mark_dirty_up_to_layer_root(&mut self.nodes, key, DirtyFlag::Style);
     }
 
     fn mark_previous_layer_dirty_when_membership_changes(
@@ -4941,83 +4945,6 @@ fn decl_value_matches_grammar(property: PresentationProperty, value: &DeclValue)
     }
 }
 
-/// Projects the A7 dirty classification back into the `AttributeInvalidation`
-/// flags the shared upward-invalidation machinery consumes (`remeasure_text`
-/// maps to the style flag, which the pass remeasures text under).
-fn attribute_invalidation_from_classification(
-    classification: GroupDirtyClassification,
-) -> AttributeInvalidation {
-    let mut invalidation = AttributeInvalidation::default();
-    if classification.layout {
-        invalidation = invalidation.with_layout();
-    }
-    if classification.paint {
-        invalidation = invalidation.with_paint();
-    }
-    if classification.remeasure_text {
-        invalidation = invalidation.with_style();
-    }
-    if classification.reevaluate_layer_membership {
-        invalidation = invalidation.with_layer_membership();
-    }
-    invalidation
-}
-
-fn mark_dirty_up_to_layer_root(root_dom: &mut RootDom, key: DomNodeSlotKey, dirty_flag: DirtyFlag) {
-    // Mutation dirtiness never crosses a layer boundary. A later layout pass
-    // may still propagate solved size changes to parent layers, but that is a
-    // separate pipeline and must not be inferred from retained dirty bits.
-    let Some(layer_root_key) = current_layer_root_key(&root_dom.nodes, key) else {
-        return;
-    };
-    let mut current_key = Some(key);
-    while let Some(current) = current_key {
-        let (was_dirty, parent_key) = {
-            let Some(node) = root_dom.nodes.get_mut(current) else {
-                return;
-            };
-            let was_dirty = match dirty_flag {
-                DirtyFlag::Layout => node.mark_layout_dirty(),
-                DirtyFlag::Style => node.mark_style_dirty(),
-            };
-            (was_dirty, node.parent_key())
-        };
-        if current == layer_root_key {
-            return;
-        }
-        if was_dirty && matches!(dirty_flag, DirtyFlag::Layout) {
-            return;
-        }
-        current_key = parent_key;
-    }
-}
-
-fn mark_newly_attached_subtree_dirty(root_dom: &mut RootDom, subtree_root_key: DomNodeSlotKey) {
-    let mut stack = vec![subtree_root_key];
-    while let Some(current_key) = stack.pop() {
-        let child_keys = {
-            let Some(node) = root_dom.nodes.get_mut(current_key) else {
-                continue;
-            };
-            node.mark_style_dirty();
-            node.mark_layout_dirty();
-            node.mark_full_layer_repaint();
-
-            let mut child_keys = Vec::new();
-            let mut next_child_key = node.first_child_key_for_store();
-            while let Some(child_key) = next_child_key {
-                child_keys.push(child_key);
-                next_child_key = root_dom
-                    .nodes
-                    .get(child_key)
-                    .and_then(DomNode::next_sibling_key_for_store);
-            }
-            child_keys
-        };
-        stack.extend(child_keys.into_iter().rev());
-    }
-}
-
 fn queue_newly_connected_layer_roots_in_subtree(
     root_dom: &mut RootDom,
     subtree_root_key: DomNodeSlotKey,
@@ -5182,6 +5109,13 @@ fn parent_key_for_imported_fragment_node(
         .ok_or(DomError::InvalidNodeKey)
 }
 
+// Extraction note (PR 5, E4): this walk and its per-node helper
+// `mark_previous_layer_node_dirty` STAY in `root_dom.rs` rather than joining
+// `types/dirty_channel.rs`. They are not the plain ancestor dirty channel:
+// the walk starts at the parent, skips marking until it has crossed the
+// current layer root, marks the previous-layer remainder, and stops at the
+// previous layer root — a layer-membership flip, not an attr-change dirty
+// mark. Back-off doctrine verdict (c): genuine divergence.
 fn mark_previous_layer_remainder_dirty(
     root_dom: &mut RootDom,
     key: DomNodeSlotKey,
@@ -5222,12 +5156,6 @@ fn mark_previous_layer_node_dirty(
     let paint_already_dirty = !invalidation.paint() || node.mark_full_layer_repaint();
     let style_already_dirty = !invalidation.style() || node.mark_style_dirty();
     layout_already_dirty && paint_already_dirty && style_already_dirty
-}
-
-#[derive(Clone, Copy)]
-enum DirtyFlag {
-    Layout,
-    Style,
 }
 
 fn transition_elapsed_s_at(transition: &DomTransition, now_s: f64) -> f64 {
