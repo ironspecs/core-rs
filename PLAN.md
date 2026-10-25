@@ -2261,6 +2261,44 @@ an f32 basis.
   purge audit, −125 in the splice; the three new primitive files total
   545 lines).
 
+- **2026-10-25 — PR 5: E5 + E7 landed** on `rootdom/e5-e7` (PR to
+  follow). E5 (`cc22fe1`): the propagation walk re-homed to
+  `types/event_propagation.rs` as the `propagate` primitive (the
+  rename of `dispatch_event_to_target_and_finish`; a byte-identical,
+  iterative, allocation-free capture→target→bubble walk).
+  `domains/visitor/event_target.rs` keeps only target RESOLUTION
+  (hit testing) and delegates propagation — the split is target-search
+  vs propagation, not two visitor files. The pure pointer-input leaves
+  (`event_point`, `pointer_moved`, `hover_pointer_event`,
+  `pointer_pressed`, `pointer_released`) re-homed to
+  `types/event_pointer.rs`; `hover_layer_intersects_removed_keys`
+  stays ((c): a hover-purge predicate over the root-owned
+  `HoveredLayerEntry`, not a pointer-event constructor). The discovered
+  propagation contract: capture (root→target, `capture:true` only) →
+  target (`capture:true` then `capture:false`) → bubble (parent→root,
+  `capture:false` only); "record-if-bubbled" is already call-site
+  journal data (the walk returns the finished event). 6 + 5 contract
+  tests. **Opportunity (not taken, no re-pin): the capture phase is
+  O(depth²)** — `ancestor_count_to_root` plus a per-ancestor
+  `ancestor_key_at_distance` re-walk — preserved byte-identically
+  rather than re-shaped under an algorithm/perf change. E7
+  (`83bb3a3`): the pure transition inverse-projection and validation
+  leaves (`decl_value_for_groups` + edge/keyword mappers,
+  `validate_transition_payload`, `transition_longhand_property`,
+  `decl_value_matches_grammar`, `transition_elapsed_s_at`) re-homed
+  to `types/transition_projection.rs`; 7 contract tests. **The tick
+  backed off (c):** `sync_transitions_at_current_time`'s per-node
+  effects are inline `&mut RootDom` mutations (dirty walks, layer
+  queues, event dispatch with the popup transition-end hook) whose
+  marks-vs-events ordering is semantic — a journal would accumulate
+  effects into a batch (rule 4) or need a borrow-conflicting closure
+  over `&mut self`. `root_dom.rs` 7,060 → 6,661 (−399); four new
+  primitive files (1,217 lines with tests). Folder verdict: still flat
+  `types/` primitive files; the E5/E7 primitives borrow `RootDom` /
+  computed groups, not a shared field triple. Full gate green per
+  commit; the 15 `perf_metric` pins unmoved; the 48-fn contract
+  unchanged.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
