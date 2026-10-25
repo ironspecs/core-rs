@@ -76,6 +76,7 @@ pub mod root_dom_nodes_metric_history_iter;
 pub mod root_dom_nodes_metric_name;
 mod simple_selector;
 mod splice;
+mod transition_projection;
 mod tree_links;
 mod white_space;
 
