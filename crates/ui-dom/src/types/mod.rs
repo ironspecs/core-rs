@@ -61,6 +61,7 @@ mod layout_scratch;
 pub mod paint_config;
 pub mod pixel_density;
 pub mod primitives;
+mod purge;
 pub mod root_dom;
 pub mod root_dom_context;
 pub mod root_dom_context_config;

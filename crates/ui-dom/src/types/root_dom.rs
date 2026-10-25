@@ -110,6 +110,7 @@ use crate::types::id_index::{
     assert_id_is_available, assert_id_is_available_for, next_id_from_attr, replace_indexed_id,
 };
 use crate::types::primitives::PointPx;
+use crate::types::purge::{clear_if_in, clear_if_in_by, retain_not_in_map, retain_not_in_vec};
 use crate::types::root_dom_context::RootDomContext;
 use crate::types::root_dom_fragment::RootDomFragment;
 use crate::types::root_dom_metrics::RootDomMetricTally;
@@ -1640,12 +1641,12 @@ impl RootDom {
         Err(DomError::InvalidPseudoStateTarget)
     }
 
-    fn clear_pseudo_state_for_removed_keys(&mut self, removed_keys: &[DomNodeSlotKey]) {
-        self.clear_hover_for_removed_keys(removed_keys);
-        self.clear_active_for_removed_keys(removed_keys);
-        self.clear_focus_selection_for_removed_keys(removed_keys);
-    }
-
+    // Extraction note (PR 5, E3): the hovered-layers purge stays bespoke
+    // rather than joining the purge table. Clearing a hovered layer removes
+    // its chain entries AND clears each surviving ancestor's Hover pseudo
+    // state, which marks that ancestor style-dirty. The purge and the dirty
+    // mark are not separable without changing behavior. Back-off doctrine
+    // verdict (b): purge + journal.
     fn clear_hover_for_removed_keys(&mut self, removed_keys: &[DomNodeSlotKey]) {
         let previous_hovered_layers = self.take_hovered_layers();
         let mut next_hovered_layers = Vec::with_capacity(previous_hovered_layers.len());
@@ -1661,45 +1662,59 @@ impl RootDom {
         self.store_hovered_layers(next_hovered_layers);
     }
 
-    fn clear_active_for_removed_keys(&mut self, removed_keys: &[DomNodeSlotKey]) {
-        if self
-            .pseudo_state
-            .active_element_key
-            .is_some_and(|key| removed_keys.contains(&key))
-        {
-            self.pseudo_state.active_element_key = None;
+    /// Runs every purge-only dependent in the static dependents table, in the
+    /// table's order (which is today's exact cleanup order).
+    fn purge_dependents(&mut self, removed_keys: &[DomNodeSlotKey]) {
+        for &(_, purge) in PURGE_DEPENDENTS {
+            purge(self, removed_keys);
         }
     }
 
-    fn clear_focus_selection_for_removed_keys(&mut self, removed_keys: &[DomNodeSlotKey]) {
-        if self
-            .pseudo_state
-            .focused_element_key
-            .is_some_and(|key| removed_keys.contains(&key))
-        {
-            self.pseudo_state.focused_element_key = None;
-            self.selection = DomSelection::None;
-        }
+    fn purge_active_element(&mut self, removed_keys: &[DomNodeSlotKey]) {
+        clear_if_in(&mut self.pseudo_state.active_element_key, removed_keys);
+    }
+
+    // Extraction note (PR 5, E3): the selection purge is bespoke (not a
+    // `clear_if_in` leaf) because it is a two-trigger clear with a latent
+    // gap: it clears only `TextSelected` whose target is removed, never
+    // `DocumentSelected` (whose anchor/focus nodes would be removed). That
+    // gap is unreachable today (`DocumentSelected` is never constructed), so
+    // the behavior is preserved as-is rather than silently "fixed".
+    fn purge_selection(&mut self, removed_keys: &[DomNodeSlotKey]) {
         if matches!(
             self.selection,
             DomSelection::TextSelected(selection) if removed_keys.contains(&selection.target_element)
         ) {
             self.selection = DomSelection::None;
         }
-        if self
-            .pressed_pointer_click_target
-            .as_ref()
-            .is_some_and(|target| removed_keys.contains(&target.target_key))
-        {
-            self.pressed_pointer_click_target = None;
-        }
-        if self
-            .active_range_drag_session
-            .as_ref()
-            .is_some_and(|session| removed_keys.contains(&session.target_key))
-        {
-            self.active_range_drag_session = None;
-        }
+    }
+
+    fn purge_pressed_pointer_target(&mut self, removed_keys: &[DomNodeSlotKey]) {
+        clear_if_in_by(
+            &mut self.pressed_pointer_click_target,
+            removed_keys,
+            |target| target.target_key,
+        );
+    }
+
+    fn purge_active_range_drag_session(&mut self, removed_keys: &[DomNodeSlotKey]) {
+        clear_if_in_by(
+            &mut self.active_range_drag_session,
+            removed_keys,
+            |session| session.target_key,
+        );
+    }
+
+    fn purge_scroll_offsets(&mut self, removed_keys: &[DomNodeSlotKey]) {
+        retain_not_in_map(&mut self.vertical_scroll_offset_by_node, removed_keys);
+    }
+
+    fn purge_layer_append_roots(&mut self, removed_keys: &[DomNodeSlotKey]) {
+        retain_not_in_vec(&mut self.pending_layer_append_roots, removed_keys);
+    }
+
+    fn purge_layer_remove_roots(&mut self, removed_keys: &[DomNodeSlotKey]) {
+        retain_not_in_vec(&mut self.pending_layer_remove_roots, removed_keys);
     }
 
     /// Removes one non-root node together with its full subtree from the
@@ -1720,14 +1735,8 @@ impl RootDom {
         {
             self.blur();
         }
-        self.clear_pseudo_state_for_removed_keys(&removed_keys);
-        for removed_key in &removed_keys {
-            self.vertical_scroll_offset_by_node.remove(removed_key);
-        }
-        self.pending_layer_append_roots
-            .retain(|key| !removed_keys.contains(key));
-        self.pending_layer_remove_roots
-            .retain(|key| !removed_keys.contains(key));
+        self.clear_hover_for_removed_keys(&removed_keys);
+        self.purge_dependents(&removed_keys);
 
         let previous_parent_key = detach_node_from_parent(&mut self.nodes, key)?;
 
@@ -5158,6 +5167,44 @@ fn mark_previous_layer_node_dirty(
     layout_already_dirty && paint_already_dirty && style_already_dirty
 }
 
+/// One purge-only dependent's purge operation: clears the dependent store of
+/// every key in `removed`.
+type PurgeDependent = fn(&mut RootDom, &[DomNodeSlotKey]);
+
+/// The static purge-on-remove dependents table (PR 5, E3).
+///
+/// Each row names one purge-only dependent and the purge that drops removed
+/// keys from it. The row ORDER is today's exact `remove_node` cleanup order —
+/// order preservation is behavior preservation.
+///
+/// The census that stays bespoke (NOT in this table) is recorded here so the
+/// completeness test can assert the boundary:
+///
+/// - the focused element is purged by `blur()` (a focus-loss lifecycle with
+///   events), not by a pure purge
+/// - the hovered layers purge also marks surviving ancestors style-dirty
+///   (`clear_hover_for_removed_keys`)
+/// - the transitions active set, the inline declaration store, the id index,
+///   and the node-slot removal all live in the final teardown loop
+///   (`remove_collected_subtree_keys`): the inline/id purges are derived-key
+///   (keyed by block key / id string, not node key) and are entangled with
+///   node-slot removal in the same pass
+const PURGE_DEPENDENTS: &[(&str, PurgeDependent)] = &[
+    ("active element", RootDom::purge_active_element),
+    ("selection", RootDom::purge_selection),
+    (
+        "pressed pointer target",
+        RootDom::purge_pressed_pointer_target,
+    ),
+    (
+        "active range drag session",
+        RootDom::purge_active_range_drag_session,
+    ),
+    ("scroll offsets", RootDom::purge_scroll_offsets),
+    ("layer append roots", RootDom::purge_layer_append_roots),
+    ("layer remove roots", RootDom::purge_layer_remove_roots),
+];
+
 fn transition_elapsed_s_at(transition: &DomTransition, now_s: f64) -> f64 {
     now_s.min(transition.effective_end_s()) - transition.effective_start_s()
 }
@@ -7008,5 +7055,71 @@ mod tests {
                 "{name} should not be presentation"
             );
         }
+    }
+
+    #[test]
+    fn purge_dependents_table_covers_the_census_in_todays_order() {
+        let names: Vec<&str> = PURGE_DEPENDENTS.iter().map(|(name, _)| *name).collect();
+        let census = [
+            "active element",
+            "selection",
+            "pressed pointer target",
+            "active range drag session",
+            "scroll offsets",
+            "layer append roots",
+            "layer remove roots",
+        ];
+        assert_eq!(
+            names,
+            census.to_vec(),
+            "purge table must match the census in today's exact order"
+        );
+    }
+
+    #[test]
+    fn remove_node_purges_every_purge_only_dependent() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root.document_node().0;
+        let removed = root.create_element(DomTag::Div).expect("removed create");
+        let sibling = root.create_element(DomTag::Div).expect("sibling create");
+        root.append_child(document, removed)
+            .expect("append removed");
+        root.append_child(document, sibling)
+            .expect("append sibling");
+
+        // Populate every purge-only dependent on the removed key. The focused
+        // element stays on the sibling so the blur() lifecycle is not exercised
+        // by this purge-table test (blur is a separate, event-emitting concern).
+        root.pseudo_state.active_element_key = Some(removed);
+        root.pseudo_state.focused_element_key = Some(sibling);
+        root.selection = DomSelection::TextSelected(TextSelection {
+            target_element: removed,
+            selection_start: 0,
+            selection_end: 0,
+            selection_direction: TextSelectionDirection::None,
+        });
+        root.pressed_pointer_click_target = Some(PressedPointerClickTarget {
+            target_key: removed,
+        });
+        root.active_range_drag_session = Some(ActiveRangeDragSession {
+            target_key: removed,
+            root_to_subtree_point_offset: PointPx::default(),
+            focus_entry_value: String::new(),
+            dirty: false,
+        });
+        root.vertical_scroll_offset_by_node.insert(removed, 42.0);
+        root.pending_layer_append_roots.push(removed);
+        root.pending_layer_remove_roots.push(removed);
+
+        root.remove_node(removed).expect("remove node");
+
+        assert_eq!(root.pseudo_state.active_element_key, None);
+        assert_eq!(root.pseudo_state.focused_element_key, Some(sibling));
+        assert_eq!(root.selection, DomSelection::None);
+        assert_eq!(root.pressed_pointer_click_target, None);
+        assert_eq!(root.active_range_drag_session, None);
+        assert!(!root.vertical_scroll_offset_by_node.contains_key(&removed));
+        assert!(!root.pending_layer_append_roots.contains(&removed));
+        assert!(!root.pending_layer_remove_roots.contains(&removed));
     }
 }
