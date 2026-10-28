@@ -2388,6 +2388,34 @@ an f32 basis.
   `DocumentSelected` purge gap, the README debt list, the deferred
   insert primitive) is the durable yield for future epics.
 
+- **2026-10-25 — the v0.6.0 client-review dents, adjudicated and
+  landing** on `fix/v060-review-dents`. Five dents, five narrow
+  fixes (one per dispatch, per the narrowed-task doctrine). Dent 5
+  (`5baeb13` + `713a265`): lane indices named as indices in the
+  flex and grid lanes. Dent 2 (`c3dc854`): the grid cell-map's
+  row-invariant multiply hoisted out of the per-cell loops. Dent 4
+  — the saga with the arc's best lesson in it: the walker's
+  dirty-subtree query was recursive (the dent), then iterative with
+  a RootDom scratch field (`dfef614`), then — after the owner asked
+  why pass scratch lived on the document and noted the graph's
+  parent links ARE the traversal state — the walk was recognized as
+  re-deriving at query time what the dirty channel already computes
+  at mark time. `c36dd48`: **the walk died entirely**; the layout
+  gate reads the layer root's own flag (the paint gate's exact
+  twin), sound because (a) the channel marks up to AND INCLUDING
+  the layer root, (b) marks are epoch-monotone so early-stop is a
+  memo of completed work, (c) the composite pass processes layer
+  roots parents-first (now a stated composite invariant). Every
+  perf window moved DOWNWARD with documented causes (22→18,
+  107→103, 145→139, 70→68 node-store Gets — the walk's reads died);
+  `tree_needs_paint` was production-dead and died with it.
+  **Meta-lesson recorded: behavior-touching briefs must carry the
+  full invariant model and the exact audit interpretation rules —
+  the transcriber verifies evidence against stated invariants,
+  never re-derives them.** (The first dispatch's omission invited a
+  misreading of early-stop as non-propagation.) Dents 3 (flex.rs
+  phase split) and 1 (grid placement resolve-once) remain.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
