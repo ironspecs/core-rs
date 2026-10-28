@@ -11,7 +11,8 @@
 //!
 //! Invariants and rules:
 //!
-//! - row-major: bit `(row * 64 + col)` is the cell `(row, col)`; each row spans
+//! - row-major: cell `(row, col)` is bit `col % 64` of word
+//!   `row * words_per_row + col / 64`; each row spans
 //!   `words_per_row = ceil(width / 64)` `u64` words
 //! - `is_free`/`claim` are the two closed operations the placement algorithm
 //!   uses; `is_free` treats out-of-bounds cells as free (cells beyond the
@@ -65,12 +66,12 @@ impl GridCellMap {
             if r >= self.height {
                 continue; // rows beyond the map are free
             }
+            let base = self.row_word_base(r);
             for c in col..col.saturating_add(col_span) {
                 if c >= self.width {
                     continue; // columns beyond the map are free
                 }
-                let index = self.bit_index(r, c);
-                if self.bits[index] & Self::bit_mask(c) != 0 {
+                if self.bits[base + c / 64] & Self::bit_mask(c) != 0 {
                     return false;
                 }
             }
@@ -83,9 +84,9 @@ impl GridCellMap {
     pub(crate) fn claim(&mut self, row: usize, col: usize, row_span: usize, col_span: usize) {
         self.ensure_size(row + row_span, col + col_span);
         for r in row..row + row_span {
+            let base = self.row_word_base(r);
             for c in col..col + col_span {
-                let index = self.bit_index(r, c);
-                self.bits[index] |= Self::bit_mask(c);
+                self.bits[base + c / 64] |= Self::bit_mask(c);
             }
         }
     }
@@ -137,9 +138,9 @@ impl GridCellMap {
         self.width = cols;
     }
 
-    /// The backing word index for cell `(row, col)`.
-    fn bit_index(&self, row: usize, col: usize) -> usize {
-        row * self.words_per_row + col / 64
+    /// The backing word index where row `row` begins (its first `u64` word).
+    fn row_word_base(&self, row: usize) -> usize {
+        row * self.words_per_row
     }
 
     /// The bit within a word for column `col`.
@@ -207,5 +208,16 @@ mod tests {
         );
         assert!(!map.is_free(0, 70, 1, 1));
         assert!(map.is_free(0, 0, 1, 1));
+    }
+
+    #[test]
+    fn row_word_base_is_row_times_words_per_row() {
+        let mut map = GridCellMap::default();
+        // Width past 64 columns makes words_per_row = ceil(65 / 64) = 2.
+        map.claim(0, 64, 1, 1);
+        assert_eq!(map.words_per_row, 2);
+        assert_eq!(map.row_word_base(0), 0);
+        assert_eq!(map.row_word_base(1), 2);
+        assert_eq!(map.row_word_base(7), 14);
     }
 }
