@@ -1119,10 +1119,10 @@ fn resolve_grid_placement(
     // (D2; `1 − min(start)`). Zero when no definite start resolves negative.
     let mut min_col = 0i32;
     let mut min_row = 0i32;
-    for order_pos in 0..order_len {
+    for order_index in 0..order_len {
         let view = scratch
             .grid_items
-            .get(order_entry_dom_index(scratch, order_range, order_pos))
+            .get(order_entry_dom_index(scratch, order_range, order_index))
             .view;
         if let ResolvedAxis::Definite(start, _) =
             resolve_item_axis(&view, col_count, context, GridAxis::Column)
@@ -1141,8 +1141,8 @@ fn resolve_grid_placement(
     scratch.cell_map.reset();
 
     // Pass 1: both axes definite (D4 step 1).
-    for order_pos in 0..order_len {
-        let dom_index = order_entry_dom_index(scratch, order_range, order_pos);
+    for order_index in 0..order_len {
+        let dom_index = order_entry_dom_index(scratch, order_range, order_index);
         let view = scratch.grid_items.get(dom_index).view;
         let col = translate_axis(
             resolve_item_axis(&view, col_count, context, GridAxis::Column),
@@ -1159,8 +1159,8 @@ fn resolve_grid_placement(
 
     // Pass 2: locked to the major axis (D4 step 2): definite major axis, auto
     // minor axis — scan the minor axis for the first free span.
-    for order_pos in 0..order_len {
-        let dom_index = order_entry_dom_index(scratch, order_range, order_pos);
+    for order_index in 0..order_len {
+        let dom_index = order_entry_dom_index(scratch, order_range, order_index);
         let view = scratch.grid_items.get(dom_index).view;
         let col = translate_axis(
             resolve_item_axis(&view, col_count, context, GridAxis::Column),
@@ -1335,10 +1335,10 @@ fn max_auto_spans(
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
     let mut max_col = 1usize;
     let mut max_row = 1usize;
-    for order_pos in 0..order_len {
+    for order_index in 0..order_len {
         let view = scratch
             .grid_items
-            .get(order_entry_dom_index(scratch, order_range, order_pos))
+            .get(order_entry_dom_index(scratch, order_range, order_index))
             .view;
         let col = resolve_item_axis(&view, col_count, context, GridAxis::Column);
         let row = resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row);
@@ -1357,9 +1357,13 @@ fn max_auto_spans(
     (max_col, max_row)
 }
 
-/// The order lane's `dom_index` at `order_pos` within `order_range`.
-fn order_entry_dom_index(scratch: &LayoutScratch, order_range: LaneRange, order_pos: usize) -> u32 {
-    scratch.order.slice(order_range)[order_pos].dom_index
+/// The order lane's `dom_index` at `order_index` within `order_range`.
+fn order_entry_dom_index(
+    scratch: &LayoutScratch,
+    order_range: LaneRange,
+    order_index: usize,
+) -> u32 {
+    scratch.order.slice(order_range)[order_index].dom_index
 }
 
 /// True for row-major auto-flow (`Row`/`RowDense`).
@@ -1465,8 +1469,8 @@ fn place_remaining_autos(
     let mut cursor_row = 0usize;
     let mut cursor_col = 0usize;
 
-    for order_pos in 0..order_len {
-        let dom_index = order_entry_dom_index(scratch, order_range, order_pos);
+    for order_index in 0..order_len {
+        let dom_index = order_entry_dom_index(scratch, order_range, order_index);
         let view = scratch.grid_items.get(dom_index).view;
         let col = translate_axis(
             resolve_item_axis(&view, col_count, context, GridAxis::Column),
@@ -1926,7 +1930,7 @@ fn vertical_border_padding_px(sides: BoxSides) -> f32 {
 }
 
 /// Computes the per-column max `h_min`/`h_max` item contributions, grouping
-/// order-lane positions by `col = index % col_count` (D2's span model reduced
+/// order-lane indices by `col = index % col_count` (D2's span model reduced
 /// to the all-auto row-major fill).
 fn column_contributions(
     scratch: &LayoutScratch,
@@ -2146,7 +2150,7 @@ fn resolve_implicit_col_width(
 /// The count of surviving gutters across `count` adjacent explicit tracks: a
 /// gutter survives iff BOTH adjacent tracks are non-collapsed (CSS Grid
 /// §7.2.2.2 — a gutter touching a collapsed track on either side collapses).
-/// `collapsed` is explicit-indexed and the sizing phase's slice positions are
+/// `collapsed` is explicit-indexed and the sizing phase's slice indices are
 /// the explicit indices, so the adjacent pairs are `(0,1) .. (count-2, count-1)`.
 fn surviving_explicit_gutter_count(collapsed: &[bool], count: usize) -> usize {
     (0..count.saturating_sub(1))
@@ -2254,7 +2258,7 @@ fn run_track_sizing_phases(
                 .sum();
             let mut free = remaining + flex_base_sum;
             // A frozen bitmap marks tracks removed from the pool (indexed by
-            // slice position; `entries.len()` is bounded by the track-list
+            // slice index; `entries.len()` is bounded by the track-list
             // capacity, so a fixed bitmap is zero-allocation).
             let mut frozen = [false; GRID_TRACK_LIST_CAPACITY];
             loop {
@@ -2334,10 +2338,10 @@ where
     R: DomLayoutResolver + ?Sized,
 {
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
-    for order_pos in 0..order_len {
+    for order_index in 0..order_len {
         let (dom_index, view, horizontal_bp, vertical_bp, track_width_px) = {
             let order_entries = root_dom.layout_scratch.order.slice(order_range);
-            let order_entry = order_entries[order_pos];
+            let order_entry = order_entries[order_index];
             let entry = root_dom
                 .layout_scratch
                 .grid_items
@@ -2681,10 +2685,10 @@ where
         collapsed: solve.collapsed_rows,
     };
     let mut placed_item_count = 0usize;
-    for order_pos in 0..item_count {
+    for order_index in 0..item_count {
         let (dom_index, cell_left, cell_top, track_width, row_height) = {
             let order_entries = root_dom.layout_scratch.order.slice(solve.order_range);
-            let order_entry = order_entries[order_pos];
+            let order_entry = order_entries[order_index];
             let entry = root_dom
                 .layout_scratch
                 .grid_items
