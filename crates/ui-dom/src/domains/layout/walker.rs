@@ -17,6 +17,10 @@
 //! - there must be exactly one shared `TreeWalker` implementation in `ui-dom`
 //! - this file must not grow a second implicit walker through special-case
 //!   recursion or wrapper-specific subtree traversal
+//! - the dirty-tree query (`tree_contains_dirty_node`) is an iterative visitor
+//!   over a RootDom-owned reused work buffer (D1(a′)); it never recurses, so a
+//!   deep tree must not grow the call stack or allocate per scan in steady
+//!   state
 //! - public helpers here expose stored node state; they must not re-solve DOM
 //!   semantics beyond what the layout/composite seam already expects
 //! - layer/overflow/position gates and the relative-offset bridge read the
@@ -49,6 +53,8 @@ use super::style::{
 };
 
 #[cfg(test)]
+use super::style::clear_layout_dirty;
+#[cfg(test)]
 use crate::domains::layout::IdentityDomLayoutResolver;
 #[cfg(test)]
 use crate::domains::visitor::style_recompute::recompute_dirty_style_subtree_for_layer_root;
@@ -69,7 +75,7 @@ use crate::types::{
 /// }
 /// ```
 pub(crate) fn tree_needs_layout(
-    root_dom: &RootDom,
+    root_dom: &mut RootDom,
     tree_root: DomNodeSlotKey,
 ) -> Result<bool, DomError> {
     tree_contains_dirty_node(root_dom, tree_root, true)
@@ -87,7 +93,7 @@ pub(crate) fn tree_needs_layout(
 /// ```
 #[allow(dead_code)]
 pub(crate) fn tree_needs_paint(
-    root_dom: &RootDom,
+    root_dom: &mut RootDom,
     tree_root: DomNodeSlotKey,
 ) -> Result<bool, DomError> {
     tree_contains_dirty_node(root_dom, tree_root, false)
@@ -333,31 +339,65 @@ fn is_layer_root_key(root_dom: &RootDom, node_key: DomNodeSlotKey) -> bool {
         .is_some_and(|node| layer_kind_for_node(node) != DomLayerKind::None)
 }
 
+/// Returns whether any node in the subtree rooted at `key` is still dirty for
+/// the requested pass (layout when `check_layout`, paint otherwise), so
+/// composite can decide whether that tree still needs work.
+///
+/// The walk is an iterative pre-order visitor over the RootDom-owned
+/// `dirty_scan_stack` work buffer (D1(a′)), never recursion. Children are
+/// pushed in reverse sibling order (last child first, via the
+/// `last_child`/`previous_sibling` links) so they pop back in DOM order,
+/// preserving the previous recursive walk's depth-first coverage exactly. The
+/// predicate is any-dirty — order-insensitive — and the walk still stops at the
+/// first dirty node, so the only thing that changed is which dirty node is
+/// reported first; the returned `bool` is unchanged.
+///
+/// The buffer is cleared here and its capacity is kept at the high-water mark,
+/// so a warmed document's gate scan allocates nothing (the crate's
+/// zero-allocation steady-state rule).
+///
+/// Layer-root children (and their subtrees) are skipped exactly as before:
+/// dirtiness inside a layer subtree is reached by a separate walk rooted at
+/// that layer, never from here.
 fn tree_contains_dirty_node(
-    root_dom: &RootDom,
+    root_dom: &mut RootDom,
     key: DomNodeSlotKey,
     check_layout: bool,
 ) -> Result<bool, DomError> {
-    let node = root_dom.nodes.get(key).ok_or(DomError::InvalidNodeKey)?;
-    if check_layout && layout_dirty_from_ref(node) {
-        return Ok(true);
-    }
-    if !check_layout && paint_dirty_from_ref(node) {
-        return Ok(true);
-    }
-
-    let mut child_key = node.first_child_key_for_store();
-    while let Some(current_child_key) = child_key {
-        let child_node = root_dom
+    // Iterative pre-order visitor over the reused work buffer. Every node is
+    // fetched once when popped (dirty check) and once in its parent's
+    // reverse-sibling loop (link/layer lookahead), so the node-store access
+    // count matches the recursive walk's two-reads-per-child shape.
+    let stack = &mut root_dom.dirty_scan_stack;
+    stack.clear();
+    stack.push(key);
+    while let Some(current_key) = stack.pop() {
+        let node = root_dom
             .nodes
-            .get(current_child_key)
+            .get(current_key)
             .ok_or(DomError::InvalidNodeKey)?;
-        child_key = child_node.next_sibling_key_for_store();
-        if layer_kind_for_node(child_node) != crate::types::DomLayerKind::None {
-            continue;
-        }
-        if tree_contains_dirty_node(root_dom, current_child_key, check_layout)? {
+        if check_layout && layout_dirty_from_ref(node) {
             return Ok(true);
+        }
+        if !check_layout && paint_dirty_from_ref(node) {
+            return Ok(true);
+        }
+
+        // Push children in reverse sibling order so they pop back in DOM
+        // order, matching the recursive walk's first-to-last descent. Layer
+        // roots are skipped before they are pushed, so their subtrees are
+        // never walked from here — exactly as the recursion skipped them.
+        let mut child_key = node.last_child_key_for_store();
+        while let Some(sibling_key) = child_key {
+            let child_node = root_dom
+                .nodes
+                .get(sibling_key)
+                .ok_or(DomError::InvalidNodeKey)?;
+            child_key = child_node.previous_sibling_key_for_store();
+            if layer_kind_for_node(child_node) != DomLayerKind::None {
+                continue;
+            }
+            stack.push(sibling_key);
         }
     }
 
@@ -982,5 +1022,130 @@ mod tests {
             relayout_tree(&mut root, child, (20.0, 16.0), &mut resolver).expect("child layout");
 
         assert_eq!(result, LayoutPassResult::default());
+    }
+
+    /// Clears one node's layout-dirty bit so a dirty-query contract test can
+    /// isolate exactly which node still carries the mark.
+    fn clear_layout_dirty_for(root: &mut RootDom, key: DomNodeSlotKey) {
+        clear_layout_dirty(root.nodes.get_mut(key).expect("node should exist"));
+    }
+
+    #[test]
+    fn tree_contains_dirty_node_finds_a_dirty_deep_descendant() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root_key(&root);
+        let parent = root.create_element(DomTag::Div).expect("parent");
+        let child = root.create_element(DomTag::Div).expect("child");
+        let leaf = root.create_element(DomTag::Div).expect("leaf");
+        root.append_child(document, parent)
+            .expect("document -> parent");
+        root.append_child(parent, child).expect("parent -> child");
+        root.append_child(child, leaf).expect("child -> leaf");
+
+        // Every freshly-appended node is born layout-dirty. Clear the
+        // ancestors so only the deepest leaf carries the mark; the query must
+        // descend document -> parent -> child to reach it.
+        clear_layout_dirty_for(&mut root, document);
+        clear_layout_dirty_for(&mut root, parent);
+        clear_layout_dirty_for(&mut root, child);
+        assert_eq!(node_layout_dirty(&root, leaf), Some(true));
+
+        assert!(tree_needs_layout(&mut root, document).expect("dirty query"));
+    }
+
+    #[test]
+    fn tree_contains_dirty_node_returns_false_for_a_fully_clean_tree() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root_key(&root);
+        let parent = root.create_element(DomTag::Div).expect("parent");
+        let child = root.create_element(DomTag::Div).expect("child");
+        root.append_child(document, parent)
+            .expect("document -> parent");
+        root.append_child(parent, child).expect("parent -> child");
+
+        clear_layout_dirty_for(&mut root, document);
+        clear_layout_dirty_for(&mut root, parent);
+        clear_layout_dirty_for(&mut root, child);
+
+        assert!(!tree_needs_layout(&mut root, document).expect("clean query"));
+    }
+
+    #[test]
+    fn tree_contains_dirty_node_returns_true_immediately_for_a_dirty_root() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root_key(&root);
+        let parent = root.create_element(DomTag::Div).expect("parent");
+        let child = root.create_element(DomTag::Div).expect("child");
+        root.append_child(document, parent)
+            .expect("document -> parent");
+        root.append_child(parent, child).expect("parent -> child");
+
+        // Dirty root, clean descendants: the walk must stop at the root
+        // without descending, so it records exactly one node-store Get.
+        clear_layout_dirty_for(&mut root, parent);
+        clear_layout_dirty_for(&mut root, child);
+        assert_eq!(node_layout_dirty(&root, document), Some(true));
+        root.reset_node_metrics();
+
+        assert!(tree_needs_layout(&mut root, document).expect("dirty-root query"));
+        assert_eq!(
+            root.node_count(RootDomNodesMetricName::Get),
+            1,
+            "a dirty root must answer without walking its descendants"
+        );
+    }
+
+    #[test]
+    fn tree_contains_dirty_node_walks_a_pathologically_deep_tree_without_recursion() {
+        const DEPTH: usize = 2_000;
+
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root_key(&root);
+        let mut parent = document;
+        let mut keys = Vec::with_capacity(DEPTH + 1);
+        keys.push(document);
+        for _ in 0..DEPTH {
+            let child = root.create_element(DomTag::Div).expect("level node");
+            root.append_child(parent, child).expect("level attach");
+            keys.push(child);
+            parent = child;
+        }
+
+        // Clear every ancestor's layout-dirty bit but keep the deepest leaf
+        // dirty, so the query must descend the full DEPTH chain to answer. The
+        // iterative work stack keeps the depth on the heap — a recursive walk
+        // would grow the call stack one frame per level.
+        for key in &keys[..DEPTH] {
+            clear_layout_dirty_for(&mut root, *key);
+        }
+        assert_eq!(node_layout_dirty(&root, keys[DEPTH]), Some(true));
+
+        assert!(tree_needs_layout(&mut root, document).expect("deep-tree query"));
+    }
+
+    #[test]
+    fn tree_contains_dirty_node_uses_the_paint_flag_for_paint_queries() {
+        let mut root = RootDom::new(RootDomContext::new_cpu());
+        let document = root_key(&root);
+        let parent = root.create_element(DomTag::Div).expect("parent");
+        let child = root.create_element(DomTag::Div).expect("child");
+        root.append_child(document, parent)
+            .expect("document -> parent");
+        root.append_child(parent, child).expect("parent -> child");
+
+        // Every freshly-appended node is born paint-dirty. Clear the
+        // ancestors' repaint state so only the deepest child is paint-dirty;
+        // the paint query must descend to it.
+        root.nodes
+            .get_mut(document)
+            .expect("document")
+            .clear_paint_repaint_state();
+        root.nodes
+            .get_mut(parent)
+            .expect("parent")
+            .clear_paint_repaint_state();
+        assert_eq!(node_paint_dirty(&root, child), Some(true));
+
+        assert!(tree_needs_paint(&mut root, document).expect("paint query"));
     }
 }

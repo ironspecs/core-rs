@@ -288,6 +288,13 @@ pub struct RootDom {
     /// allocation. `pub(crate)` because the flex solve (in `domains::layout`)
     /// reads and writes the lanes during its measurement fold and solve.
     pub(crate) layout_scratch: LayoutScratch,
+    /// Reused work buffer for the dirty-tree gate scan
+    /// (`walker::tree_contains_dirty_node`). Cleared at the start of each scan;
+    /// capacity is kept at the high-water mark so a warmed document's layout/
+    /// paint gate scan allocates nothing (the crate's zero-allocation
+    /// steady-state rule). `pub(crate)` because the scan is a
+    /// `domains::layout` walk.
+    pub(crate) dirty_scan_stack: Vec<DomNodeSlotKey>,
 }
 
 impl RootDom {
@@ -322,6 +329,7 @@ impl RootDom {
             clock_s: 0.0,
             style_runtime_revision,
             layout_scratch: LayoutScratch::default(),
+            dirty_scan_stack: Vec::new(),
         }
     }
 
