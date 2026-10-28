@@ -2416,6 +2416,25 @@ an f32 basis.
   misreading of early-stop as non-propagation.) Dents 3 (flex.rs
   phase split) and 1 (grid placement resolve-once) remain.
 
+- **2026-10-25 — dents 3 and 1 landed; the v0.6.0 review is fully
+  remediated.** Dent 3 (`d1a53f9`): `flex.rs` split by the solver's
+  ACTUAL phases (the functions' content and means, not topic
+  filing) — `flex_formation.rs` (453), `flex_measure.rs` (2,075),
+  `flex_resolve.rs` (2,616), `flex_place.rs` (1,353), with flex.rs
+  at 1,507 keeping orchestration + shared vocabulary; 103 moved +
+  43 retained functions verified byte-identical by script; the
+  cross-phase call graph disclosed as evidence. Dent 1
+  (`a4d7e32`): the grid placement recompute was verified at 10
+  resolutions per item (2 axes × 5 passes, all inside
+  `resolve_grid_placement` — the other passes already read the
+  lane); ONE resolution pass now writes `ResolvedAxis` into the
+  item lane and every pass reads it (10 → 2; named-line string
+  scans included). All 595 layout proofs green unchanged; the
+  card-wall perf pin unmoved (line resolution reads computed
+  groups, not the node store — no metric counts it; the evidence
+  is the code shape plus the unmoved outcome pins). Branch
+  `fix/v060-review-dents` carries all five dents + the record.
+
 
 ## Vocabulary carried from the redesign (self-contained definitions)
 
