@@ -4,11 +4,11 @@
 //!
 //! This file owns `GridItemLane` and its entry type `GridItemLaneEntry`. Its
 //! purpose is to hold one assembled `GridItemView` per grid child in DOM order,
-//! plus the item's auto-placed cell, its border/padding insets, and its
-//! resolved size, so placement walks the container's item-lane range directly
-//! with DOM order preserved (the flex item lane's discipline, `GRID_MAPPING.md`
-//! §3 as corrected 2026-10-20: the ORDER lane carries verbatim; the item lane is
-//! type-specific).
+//! plus the item's auto-placed cell, its resolved placement, its border/padding
+//! insets, and its resolved size, so placement walks the container's item-lane
+//! range directly with DOM order preserved (the flex item lane's discipline,
+//! `GRID_MAPPING.md` §3 as corrected 2026-10-20: the ORDER lane carries verbatim;
+//! the item lane is type-specific).
 //!
 //! Invariants and rules:
 //!
@@ -18,13 +18,17 @@
 //! - `row`/`col` are the item's row-major auto-placed cell (D3); the item
 //!   resolution phase writes them plus the resolved content width and the row
 //!   cross contribution (the refold result for a flagged-and-width-changed item)
+//! - `resolved_column`/`resolved_row` are the item's resolved placement (D1(a′)):
+//!   the placement resolution pass resolves each item's two axes ONCE into the
+//!   lane, and the offset/placement passes read them back — no pass re-resolves
+//!   `resolve_item_axis` (the named-line string scans)
 //! - `horizontal_border_padding_px`/`vertical_border_padding_px` are the item's
 //!   own insets (read at measure fold), which placement subtracts to derive the
 //!   stretched content size and which row sizing adds to the content cross
 //! - update-scoped: `reset()` clears entries, keeping the retained backing
 //!   capacity at its high-water mark so steady state is zero-allocation
 
-use crate::domains::layout::grid::GridItemView;
+use crate::domains::layout::grid::{GridItemView, ResolvedAxis};
 use crate::types::LaneRange;
 
 #[cfg(test)]
@@ -34,8 +38,8 @@ use crate::domains::style::computed::{GridLine, JustifySelfKw};
 #[cfg(test)]
 use crate::types::DomNodeSlotKey;
 
-/// One grid item's item-lane slot: the assembled view plus its auto-placed cell
-/// and resolved size.
+/// One grid item's item-lane slot: the assembled view plus its auto-placed cell,
+/// resolved placement, and resolved size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GridItemLaneEntry {
     /// The assembled item view (T1's `GridItemView`), read by track sizing,
@@ -55,6 +59,13 @@ pub(crate) struct GridItemLaneEntry {
     /// The item's row-size cross contribution (border-box content height at the
     /// resolved width — the refold result for a flagged-and-width-changed item).
     pub(crate) resolved_cross_contribution_px: f32,
+    /// The item's resolved column placement (D1(a′)): resolved ONCE by the
+    /// placement resolution pass and read by the offset/placement passes.
+    /// `Definite(start, end)` holds the two (untranslated) line indices; `Auto`
+    /// holds the auto-placement span until discovery claims a definite cell.
+    pub(crate) resolved_column: ResolvedAxis,
+    /// The item's resolved row placement (D1(a′)), symmetric to the column axis.
+    pub(crate) resolved_row: ResolvedAxis,
 }
 
 /// Vec-backed storage for DOM-ordered grid item views, sliced per container via
@@ -72,8 +83,8 @@ impl GridItemLane {
 
     /// Appends one assembled view in DOM order (with its border/padding insets)
     /// and returns its absolute lane index (the `dom_index` the order-lane entry
-    /// stores). The cell and resolved-size fields are zeroed; the resolution
-    /// phases fill them.
+    /// stores). The cell and resolved-size fields are zeroed and the resolved
+    /// placement defaults to `Auto(1)`; the resolution phases fill them.
     pub(crate) fn push(
         &mut self,
         view: GridItemView,
@@ -89,6 +100,8 @@ impl GridItemLane {
             col: 0,
             resolved_content_width_px: 0.0,
             resolved_cross_contribution_px: 0.0,
+            resolved_column: ResolvedAxis::Auto(1),
+            resolved_row: ResolvedAxis::Auto(1),
         });
         u32::try_from(dom_index).expect("grid item lane length should fit into u32")
     }
@@ -240,5 +253,32 @@ mod tests {
         assert_eq!(lane.get(first).col, 2);
         assert_eq!(lane.get(second).resolved_content_width_px, 100.0);
         assert_eq!(lane.get(second).resolved_cross_contribution_px, 40.0);
+    }
+
+    #[test]
+    fn resolved_placement_defaults_auto_then_holds_definite_indices() {
+        let mut lane = GridItemLane::default();
+        let start = lane.begin_range();
+        let first = lane.push(view(0), 0.0, 0.0);
+        let second = lane.push(view(1), 0.0, 0.0);
+        let _range = lane.finish_range(start);
+
+        // Fresh entries default to an auto span until the resolution pass runs.
+        assert_eq!(lane.get(first).resolved_column, ResolvedAxis::Auto(1));
+        assert_eq!(lane.get(first).resolved_row, ResolvedAxis::Auto(1));
+
+        // The resolution pass writes each item's two resolved axes once (D1(a′)).
+        lane.get_mut(first).resolved_column = ResolvedAxis::Definite(-1, 2);
+        lane.get_mut(first).resolved_row = ResolvedAxis::Definite(0, 1);
+        lane.get_mut(second).resolved_column = ResolvedAxis::Auto(2);
+        lane.get_mut(second).resolved_row = ResolvedAxis::Definite(1, 3);
+
+        assert_eq!(
+            lane.get(first).resolved_column,
+            ResolvedAxis::Definite(-1, 2)
+        );
+        assert_eq!(lane.get(first).resolved_row, ResolvedAxis::Definite(0, 1));
+        assert_eq!(lane.get(second).resolved_column, ResolvedAxis::Auto(2));
+        assert_eq!(lane.get(second).resolved_row, ResolvedAxis::Definite(1, 3));
     }
 }

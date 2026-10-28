@@ -76,7 +76,10 @@ the two folds.
   corroborated phases, row-major auto-placement over the order lane, spans and
   named lines, `grid-template-areas`, auto-fill/fit, and the placement
   longhands. Percent tracks, `fr` expansion, and the capacity gates are
-  admitted per the grid mapping (`GRID_MAPPING.md`).
+  admitted per the grid mapping (`GRID_MAPPING.md`). Placement resolution is
+  resolve-once: the §8.5 resolution pass writes each item's resolved axes into
+  the item lane (`resolved_column`/`resolved_row`), and the offset/placement
+  passes read them back — no pass re-runs the named-line string scans.
 
 ## Invariants, rules, and decisions
 

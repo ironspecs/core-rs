@@ -18,6 +18,11 @@
 //! - transient solve state lives only in the scratch lanes (grid item lane,
 //!   order lane, track lane) — never persisted on nodes, never allocated past
 //!   the high-water mark
+//! - placement resolution is resolve-once (D1(a′), the visitor doctrine): the
+//!   §8.5 resolution pass resolves each item's two axes ONCE into the item
+//!   lane's `resolved_column`/`resolved_row`, and every later pass (offset,
+//!   definite-claim, locked-major, auto-flow) reads the lane — no pass
+//!   re-resolves `resolve_item_axis` (the named-line string scans)
 //! - `GridItemView` is plain data (no `impl`); its behavior lives in this
 //!   file's free functions
 //! - the D2 track sizing phases operate in place on the track lane's column
@@ -170,8 +175,15 @@ enum GridBlockAxisAlignment {
 
 /// The resolved placement for one axis (D2/D4): a definite `(start, end)` line
 /// pair (0-based, untranslated), or an auto-placement span.
+///
+/// This is also the item lane's resolved-placement record unit (D1(a′)): the
+/// placement resolution pass resolves each item's two axes ONCE into the item
+/// lane (`GridItemLaneEntry::resolved_column`/`resolved_row`), and the offset/
+/// placement passes read it back — a definite axis holds its two line indices
+/// (post name resolution, pre negative-line translation), an auto axis its span
+/// until the discovery passes claim a definite cell.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum ResolvedAxis {
+pub(crate) enum ResolvedAxis {
     Definite(i32, i32),
     Auto(u32),
 }
@@ -1099,11 +1111,14 @@ fn resolved_block_alignment(
 /// classifications for every item, plus the resolved spans and cell starts
 /// written into the item lane / view.
 ///
-/// This is §8.5 (D4): definite items resolve their cells and claim first
-/// (pass 1), then items locked to the major axis scan the minor axis for the
-/// first free span (pass 2), then remaining autos flow per `auto_flow`
-/// (pass 3). Negative lines translate by the container-wide `1 − min(start)`
-/// offset (D2) before any claim. Returns the resolved implicit grid size.
+/// This is §8.5 (D4): a resolution pass resolves each item's two axis
+/// placements ONCE into the item lane (D1(a′) — the visitor doctrine, so no
+/// pass re-runs the named-line string scans), then definite items resolve their
+/// cells and claim first (pass 1), items locked to the major axis scan the
+/// minor axis for the first free span (pass 2), and remaining autos flow per
+/// `auto_flow` (pass 3). Negative lines translate by the container-wide
+/// `1 − min(start)` offset (D2) before any claim. Returns the resolved implicit
+/// grid size.
 #[allow(clippy::too_many_lines)] // the §8.5 placement is one linear three-pass sequence
 fn resolve_grid_placement(
     scratch: &mut LayoutScratch,
@@ -1115,23 +1130,33 @@ fn resolve_grid_placement(
 ) -> GridPlacement {
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
 
+    // Resolution pass (D1(a′)): resolve each item's two axis placements ONCE
+    // into the item lane. The offset, definite-claim, locked-major, and
+    // auto-flow passes all READ the lane — no pass re-resolves `resolve_item_axis`
+    // (the named-line string scans over the expanded line-name slices).
+    for order_index in 0..order_len {
+        let dom_index = order_entry_dom_index(scratch, order_range, order_index);
+        let view = scratch.grid_items.get(dom_index).view;
+        let column = resolve_item_axis(&view, col_count, context, GridAxis::Column);
+        let row = resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row);
+        let entry = scratch.grid_items.get_mut(dom_index);
+        entry.resolved_column = column;
+        entry.resolved_row = row;
+    }
+
     // Pass A: the container-wide offset from the most-negative definite start
     // (D2; `1 − min(start)`). Zero when no definite start resolves negative.
     let mut min_col = 0i32;
     let mut min_row = 0i32;
     for order_index in 0..order_len {
-        let view = scratch
-            .grid_items
-            .get(order_entry_dom_index(scratch, order_range, order_index))
-            .view;
-        if let ResolvedAxis::Definite(start, _) =
-            resolve_item_axis(&view, col_count, context, GridAxis::Column)
-        {
+        let entry =
+            scratch
+                .grid_items
+                .get(order_entry_dom_index(scratch, order_range, order_index));
+        if let ResolvedAxis::Definite(start, _) = entry.resolved_column {
             min_col = min_col.min(start);
         }
-        if let ResolvedAxis::Definite(start, _) =
-            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row)
-        {
+        if let ResolvedAxis::Definite(start, _) = entry.resolved_row {
             min_row = min_row.min(start);
         }
     }
@@ -1143,15 +1168,13 @@ fn resolve_grid_placement(
     // Pass 1: both axes definite (D4 step 1).
     for order_index in 0..order_len {
         let dom_index = order_entry_dom_index(scratch, order_range, order_index);
-        let view = scratch.grid_items.get(dom_index).view;
-        let col = translate_axis(
-            resolve_item_axis(&view, col_count, context, GridAxis::Column),
-            col_offset,
-        );
-        let row = translate_axis(
-            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row),
-            row_offset,
-        );
+        let (col, row) = {
+            let entry = scratch.grid_items.get(dom_index);
+            (
+                translate_axis(entry.resolved_column, col_offset),
+                translate_axis(entry.resolved_row, row_offset),
+            )
+        };
         if let (ResolvedAxis::Definite(cs, ce), ResolvedAxis::Definite(rs, re)) = (col, row) {
             write_placement(scratch, dom_index, cs, ce, rs, re);
         }
@@ -1161,15 +1184,13 @@ fn resolve_grid_placement(
     // minor axis — scan the minor axis for the first free span.
     for order_index in 0..order_len {
         let dom_index = order_entry_dom_index(scratch, order_range, order_index);
-        let view = scratch.grid_items.get(dom_index).view;
-        let col = translate_axis(
-            resolve_item_axis(&view, col_count, context, GridAxis::Column),
-            col_offset,
-        );
-        let row = translate_axis(
-            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row),
-            row_offset,
-        );
+        let (col, row) = {
+            let entry = scratch.grid_items.get(dom_index);
+            (
+                translate_axis(entry.resolved_column, col_offset),
+                translate_axis(entry.resolved_row, row_offset),
+            )
+        };
         match (col, row) {
             // Row flow: definite row (major) + auto column (minor) — scan
             // columns at the definite row for the first free span.
@@ -1238,14 +1259,7 @@ fn resolve_grid_placement(
     // CSS Grid §8.5 step 3: the largest span among the auto-placed (pass-3)
     // items grows the implicit grid to match, so the wrap bounds fold the
     // maximum auto span in addition to the explicit/claimed tracks.
-    let (max_auto_col_span, max_auto_row_span) = max_auto_spans(
-        scratch,
-        order_range,
-        col_count,
-        explicit_row_count,
-        auto_flow,
-        context,
-    );
+    let (max_auto_col_span, max_auto_row_span) = max_auto_spans(scratch, order_range, auto_flow);
     let grid_width = implicit_grid_width_bound(
         scratch.cell_map.width(),
         col_offset_as_usize,
@@ -1261,14 +1275,11 @@ fn resolve_grid_placement(
     place_remaining_autos(
         scratch,
         order_range,
-        col_count,
-        explicit_row_count,
         col_offset,
         row_offset,
         auto_flow,
         grid_width,
         grid_height,
-        context,
     );
 
     GridPlacement {
@@ -1323,25 +1334,23 @@ fn implicit_grid_height_bound(
 /// `(max_auto_col_span, max_auto_row_span)`. A pass-3 item is one whose major
 /// axis is auto (the row for row-major flow, the column for column-major flow);
 /// its span in each axis is the definite line range or the auto span. Span-1
-/// autos contribute 1, so the fold is at least 1.
+/// autos contribute 1, so the fold is at least 1. Reads the item lane's
+/// resolved placement (D1(a′)); it does not re-resolve `resolve_item_axis`.
 fn max_auto_spans(
     scratch: &LayoutScratch,
     order_range: LaneRange,
-    col_count: usize,
-    explicit_row_count: usize,
     auto_flow: GridAutoFlowKw,
-    context: &GridLineContext<'_>,
 ) -> (usize, usize) {
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
     let mut max_col = 1usize;
     let mut max_row = 1usize;
     for order_index in 0..order_len {
-        let view = scratch
-            .grid_items
-            .get(order_entry_dom_index(scratch, order_range, order_index))
-            .view;
-        let col = resolve_item_axis(&view, col_count, context, GridAxis::Column);
-        let row = resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row);
+        let entry =
+            scratch
+                .grid_items
+                .get(order_entry_dom_index(scratch, order_range, order_index));
+        let col = entry.resolved_column;
+        let row = entry.resolved_row;
         // Pass-3 items have an auto major axis; pass-1 (both definite) and
         // pass-2 (definite major) items are excluded.
         if is_row_major(auto_flow) {
@@ -1449,19 +1458,18 @@ fn find_auto_row(
 }
 
 /// Pass 3 (D4 step 3): the remaining auto items, placed per `auto_flow`
-/// (row/column × sparse/dense) with a two-axis cursor.
+/// (row/column × sparse/dense) with a two-axis cursor. Reads the item lane's
+/// resolved placement (D1(a′)) and translates it by the container offset; it
+/// does not re-resolve `resolve_item_axis`.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn place_remaining_autos(
     scratch: &mut LayoutScratch,
     order_range: LaneRange,
-    col_count: usize,
-    explicit_row_count: usize,
     col_offset: i64,
     row_offset: i64,
     auto_flow: GridAutoFlowKw,
     grid_width: usize,
     grid_height: usize,
-    context: &GridLineContext<'_>,
 ) {
     let order_len = usize::try_from(order_range.len).expect("order range len fits usize");
     let row_major = is_row_major(auto_flow);
@@ -1471,15 +1479,13 @@ fn place_remaining_autos(
 
     for order_index in 0..order_len {
         let dom_index = order_entry_dom_index(scratch, order_range, order_index);
-        let view = scratch.grid_items.get(dom_index).view;
-        let col = translate_axis(
-            resolve_item_axis(&view, col_count, context, GridAxis::Column),
-            col_offset,
-        );
-        let row = translate_axis(
-            resolve_item_axis(&view, explicit_row_count, context, GridAxis::Row),
-            row_offset,
-        );
+        let (col, row) = {
+            let entry = scratch.grid_items.get(dom_index);
+            (
+                translate_axis(entry.resolved_column, col_offset),
+                translate_axis(entry.resolved_row, row_offset),
+            )
+        };
 
         // Remaining items have an auto major axis. `let … else` skips items
         // already placed in pass 1 (both definite) or pass 2 (locked to major).
