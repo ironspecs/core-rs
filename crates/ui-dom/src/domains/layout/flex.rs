@@ -534,14 +534,14 @@ where
 }
 
 /// After the order lane is fully insertion-sorted, writes each item-lane
-/// entry's `order_index` back-reference to its FINAL order-lane position
-/// (insertion shifts earlier positions on later pushes, so the at-push
-/// position is not the final one).
+/// entry's `order_index` back-reference to its FINAL order-lane index
+/// (insertion shifts earlier indices on later pushes, so the at-push
+/// index is not the final one).
 fn backfill_order_indices(scratch: &mut LayoutScratch, order_range: LaneRange) {
     let entries = scratch.order.slice(order_range);
-    for (position, entry) in entries.iter().enumerate() {
-        scratch.items.get_mut(entry.dom_index).order_index = order_range.start
-            + u32::try_from(position).expect("order lane position should fit into u32");
+    for (index, entry) in entries.iter().enumerate() {
+        scratch.items.get_mut(entry.dom_index).order_index =
+            order_range.start + u32::try_from(index).expect("order lane index should fit into u32");
     }
 }
 
@@ -2164,18 +2164,18 @@ where
     // Phase 1: refold flagged + width-changed items. Per-item scoped borrows —
     // read the item's info, drop the scratch borrow, re-measure the subtree,
     // then write the resolved cross back. The resolution lane is parallel to
-    // the order lane (same relative position), NOT the same absolute index.
+    // the order lane (same relative index), NOT the same absolute index.
     let order_len =
         usize::try_from(order_range.len).expect("order range len should fit into usize");
-    let mut order_pos = 0usize;
-    while order_pos < order_len {
+    let mut order_index = 0usize;
+    while order_index < order_len {
         let (dom_index, needs_refold, source, resolved_main_content_px) = {
             let order_entries = root_dom.layout_scratch.order.slice(order_range);
-            let order_entry = order_entries[order_pos];
+            let order_entry = order_entries[order_index];
             let item_entry = root_dom.layout_scratch.items.get(order_entry.dom_index);
             let view = item_entry.view;
             let resolution_index = resolution_range.start
-                + u32::try_from(order_pos).expect("order position should fit into u32");
+                + u32::try_from(order_index).expect("order index should fit into u32");
             let resolved_main = root_dom
                 .layout_scratch
                 .resolution
@@ -2190,7 +2190,7 @@ where
                 resolved_main - view.main_axis_border_padding_px,
             )
         };
-        order_pos += 1;
+        order_index += 1;
         if !needs_refold {
             continue;
         }

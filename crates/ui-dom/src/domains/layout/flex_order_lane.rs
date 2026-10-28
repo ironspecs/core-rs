@@ -77,13 +77,13 @@ impl FlexOrderLane {
     }
 
     /// Inserts `entry` sorted by `(order, dom insertion sequence)` within the
-    /// open range and returns the entry's assigned absolute lane position.
+    /// open range and returns the entry's assigned absolute lane index.
     ///
     /// Callers push children in DOM order, so equal orders stay stable and an
     /// untouched order sequence stays non-decreasing: every push then takes
     /// the append fast path (zero scan comparisons), the adaptive O(n) case.
-    /// The returned position is the index where the entry landed, which the
-    /// fold back-fills into the item lane's `order_index` cross-reference.
+    /// The returned index is where the entry landed, which the fold
+    /// back-fills into the item lane's `order_index` cross-reference.
     pub(crate) fn push_in_order(&mut self, entry: FlexOrderLaneEntry) -> u32 {
         let range_start = *self.range_starts.last().unwrap_or(&0);
         // Append fast path: the open range is empty, or its tail is already
@@ -95,23 +95,23 @@ impl FlexOrderLane {
                 .last()
                 .is_some_and(|last| last.order <= entry.order)
         {
-            let position = self.entries.len();
+            let index = self.entries.len();
             self.entries.push(entry);
-            return u32::try_from(position).expect("order lane length should fit into u32");
+            return u32::try_from(index).expect("order lane length should fit into u32");
         }
         // Scrambled input within the open range: stable insertion sort from
         // the range tail. Shift strictly-greater orders down (equal orders
         // keep DOM insertion order).
-        let mut position = self.entries.len();
-        while position > range_start {
-            let predecessor = self.entries[position - 1];
+        let mut index = self.entries.len();
+        while index > range_start {
+            let predecessor = self.entries[index - 1];
             if predecessor.order <= entry.order {
                 break;
             }
-            position -= 1;
+            index -= 1;
         }
-        self.entries.insert(position, entry);
-        u32::try_from(position).expect("order lane length should fit into u32")
+        self.entries.insert(index, entry);
+        u32::try_from(index).expect("order lane length should fit into u32")
     }
 
     /// Closes the range opened by a matching `begin_range` call and returns

@@ -14,8 +14,8 @@
 //!   pushes children in DOM order, then closes the range with `finish_range`; a
 //!   closed range is never mutated again within that update
 //! - the `order_index` back-reference addresses the order lane's assigned
-//!   position for this child; the fold writes it once when the order-lane
-//!   insertion returns its position
+//!   index for this child; the fold writes it once when the order-lane
+//!   insertion returns its index
 //! - `main_offset_px` and `line_index` are the per-item packing results the
 //!   resolve phase writes after §9.7 (via `get_mut`), keyed by `dom_index`;
 //!   they are placement's O(1) read path in DOM order
@@ -42,7 +42,7 @@ pub(crate) struct FlexItemLaneEntry {
     /// The assembled item view (T4a's `FlexItemView`), read by the solve via
     /// the order lane's `dom_index` and by placement directly.
     pub(crate) view: FlexItemView,
-    /// The child's assigned position in the order lane (the order-modified
+    /// The child's assigned index in the order lane (the order-modified
     /// sequence). Placement reads the child's resolution result from the
     /// resolution lane at this index.
     pub(crate) order_index: u32,
@@ -234,8 +234,8 @@ mod tests {
         // exactly as the fold does after the order-lane insertion returns.
         let first = lane.push(view(0));
         let second = lane.push(view(1));
-        lane.get_mut(first).order_index = 1; // first child lands at order position 1
-        lane.get_mut(second).order_index = 0; // second child lands at order position 0
+        lane.get_mut(first).order_index = 1; // first child lands at order index 1
+        lane.get_mut(second).order_index = 0; // second child lands at order index 0
 
         let range = lane.finish_range(start);
         let slice = lane.slice(range);
