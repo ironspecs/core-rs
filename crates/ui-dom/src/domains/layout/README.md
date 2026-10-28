@@ -25,8 +25,12 @@ text-run/icon/render ops the layout pass stages).
   display/position/overflow mapping, content-size property style).
 - `flow.rs` owns the block/flow solver: entering/entering-node layout,
   content-box arithmetic, margin collapse, auto content sizing.
-- `flex.rs` + the `flex_*` sibling files own the flex solver and its lanes
-  (item/order/line/resolution) and run-formation helpers.
+- `flex.rs` + the `flex_*` sibling files own the flex solver. `flex.rs` owns
+  the entry/orchestration, the shared types and style/axis/margin vocabulary,
+  and the re-exports; the solver's phases live in `flex_formation.rs` (item
+  formation), `flex_measure.rs` (the measurement fold), `flex_resolve.rs` (§9.7
+  sizing), and `flex_place.rs` (final placement); the item/order/line/resolution
+  lanes and the run-formation helpers live in their own `flex_*` files.
 - `grid.rs` + the `grid_*` sibling files own the grid solver, its track/item
   lanes, and the `CellMap` occupancy model.
 - `measurement_record.rs` owns the per-node `MeasurementRecord` and its
@@ -59,13 +63,15 @@ the two folds.
 - **Flow (block)** — `flow.rs`: the block formatting context. Content-box
   sizing, the three-branch margin-collapse rule (PR 1 item 2), auto content
   height/width, and the flow-size epilogue.
-- **Flex** — `flex.rs` + lanes: the engines' flex semantics on doctrine-
+- **Flex** — `flex.rs` + phase files: the engines' flex semantics on doctrine-
   conforming data. Item formation (anonymous runs, abs-pos/`display:none`
   exclusion, blockification), the auto-min floor by fold, §9.7 resolution in
   the engines' exact shape (seed at the floored hypothetical, one-class freeze
   by signed total), cross-after-main, and §8.1 auto-margin absorption. The lane
   discipline (item/order/line/resolution) replaced the former per-container
-  `Vec`/`HashMap` re-joins.
+  `Vec`/`HashMap` re-joins. The phases are split across `flex_formation.rs` →
+  `flex_measure.rs` → `flex_resolve.rs` → `flex_place.rs`, with `flex.rs`
+  retaining the entry/orchestration and the shared vocabulary.
 - **Grid** — `grid.rs` + lanes + `CellMap`: track sizing in the engines'
   corroborated phases, row-major auto-placement over the order lane, spans and
   named lines, `grid-template-areas`, auto-fill/fit, and the placement
