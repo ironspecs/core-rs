@@ -17,6 +17,16 @@
 //!
 //! Invariants and rules:
 //!
+//! - epoch monotonicity: within one update epoch, dirty flags are SET-ONLY
+//!   until the consuming pass clears a whole layer's subtree at once. Nothing
+//!   clears mid-epoch. A mark on node N walks ancestors from N, setting the
+//!   mark, stopping at the first already-dirty ancestor OR at the layer root
+//!   (inclusive). Early-stop at an already-dirty ancestor A is sound:
+//!   monotonicity means A was dirtied earlier in the epoch, and the operation
+//!   that dirtied A already propagated from A upward — the layer root IS marked
+//!   in all real-epoch cases. Contrapositive gate contract: a dirty node
+//!   anywhere in layer L implies L's layer root's flag is set, so the layout
+//!   gate reads the layer root's own flag (one read, O(1)).
 //! - mutation dirtiness never crosses a layer boundary: the walk stops at and
 //!   includes the layer root (a later layout pass may still propagate solved
 //!   size changes to parent layers, but that is a separate pipeline and must

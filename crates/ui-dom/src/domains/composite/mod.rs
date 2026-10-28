@@ -5,6 +5,11 @@
 //! Bevy layer hierarchy in DOM order. Retained surface order is published once
 //! per attached root after those passes.
 //!
+//! Pass ordering (parents-first): the layer pass processes layer roots
+//! parents-first; a dirty node marks its own layer root (the channel), so each
+//! layer's gate reads its own root's flag when the pass reaches it. No gate
+//! reads information before the pass that would have consumed it.
+//!
 //! Layer-lifecycle preservation (PLAN.md): a style change that turns an
 //! element into a layer root must present the layer by the end of that same
 //! update. The style pass queues newly-connected layer roots mid-update

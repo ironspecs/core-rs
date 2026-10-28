@@ -121,10 +121,12 @@ fn steady_state_update_is_root_metric_silent_after_warmup() {
         root.history().next().is_none(),
         "a clean update must not record metric history",
     );
-    // The three per-layer dirty gates read the tree to prove there is no
-    // work; 22 Gets is the pinned gate-scan cost for this tree shape and
-    // must not grow.
-    assert_node_counts(&root, 22, 0, 0, "steady-state update");
+    // The per-layer dirty gates read each layer root's own flag to prove there
+    // is no work; 18 Gets is the pinned gate cost for this tree shape and must
+    // not grow. The subtree walk died (dent-4 final form): the layout gate is
+    // now one read, so the two layout gates (materialize + layout phase) each
+    // dropped from 3 Gets to 1 (−4 from 22).
+    assert_node_counts(&root, 18, 0, 0, "steady-state update");
 }
 
 #[test]
@@ -207,7 +209,12 @@ fn hover_style_recompute_metric_deltas_stay_pinned() {
     // one positioned chip (a `first_child_key` lookup that returns none) — one
     // node-store read per positioned container, style-read-only, bounded by the
     // empty-run length (FLEX_STEP9_DESIGN.md D1 cost model).
-    assert_node_counts(&root, 107, 16, 0, "hover recompute");
+    // dent-4 final form (−4 Get from 107/16/0): the subtree walk died and the
+    // layout gate became one read; the two clean-tree layout gates
+    // (`sync_style_layout_before_pointer_update` + materialize) dropped from 3
+    // Gets each to 1. The layout-phase gate already early-stopped at the dirty
+    // document root, so it cost 1 both ways.
+    assert_node_counts(&root, 103, 16, 0, "hover recompute");
 }
 
 /// Post style-dirty propagation fix pin: one append now arms the layer
@@ -405,7 +412,12 @@ fn stylesheet_apply_metric_deltas_stay_pinned() {
     // one positioned chip (a `first_child_key` lookup that returns none) — one
     // node-store read per positioned container, style-read-only, bounded by the
     // empty-run length (FLEX_STEP9_DESIGN.md D1 cost model).
-    assert_node_counts(&root, 70, 14, 0, "stylesheet apply");
+    // dent-4 final form (−2 Get from 70/14/0): the subtree walk died and the
+    // layout gate became one read. The clean-tree materialize gate walked the
+    // 2-node document/chip subtree (3 Gets) and now reads the document root's
+    // flag once (1 Get); the layout-phase gate already early-stopped at the
+    // dirty document root, so it cost 1 both ways.
+    assert_node_counts(&root, 68, 14, 0, "stylesheet apply");
 }
 
 #[test]
@@ -545,7 +557,12 @@ fn flex_row_relayout_metric_deltas_stay_pinned() {
     // dependent). The two `flex: 0 0 50px` items are childless, so the read is
     // one `first_child_key` lookup each. Documented cause: D2's flag
     // propagation (FLEX_STEP7_DESIGN.md D2).
-    assert_node_counts(&root, 145, 29, 0, "flex relayout");
+    // dent-4 final form (−6 Get from 145/29/0): the subtree walk died and the
+    // layout gate became one read. The clean-tree materialize gate walked the
+    // 4-node document/container/2-item subtree (7 Gets) and now reads the
+    // document root's flag once (1 Get); the layout-phase gate already
+    // early-stopped at the dirty document root, so it cost 1 both ways.
+    assert_node_counts(&root, 139, 29, 0, "flex relayout");
 }
 
 /// Builds the (d1) scenario (`FLEX_DEBATE_BRIEF.md` (d1)(v), ratified): a

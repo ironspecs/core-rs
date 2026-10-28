@@ -17,7 +17,8 @@ text-run/icon/render ops the layout pass stages).
 
 - `mod.rs` owns the public layout seam and the solver/record re-exports; it
   must stay small and boundary-focused and never grow a second walker.
-- `walker.rs` owns the single shared DFS traversal: dirty-tree queries, the
+- `walker.rs` owns the single shared DFS traversal: the layout dirty gate
+  (`tree_needs_layout`, an O(1) read of the layer root's own flag), the
   relative-offset bridge, and pass entry points. Property meaning lives in
   `style.rs`, never in traversal helpers.
 - `style.rs` owns the computed-group → layout input interpretation (`NodeStyle`,
