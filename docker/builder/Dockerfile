@@ -18,7 +18,7 @@ ARG RUST_VERSION=1.97.1
 
 FROM rust:${RUST_VERSION}-bookworm
 
-ARG SCCACHE_VERSION=v0.10.0
+ARG SCCACHE_VERSION=v0.19.0
 
 # The lint gate needs clippy + rustfmt, which the official image does NOT ship
 # preinstalled — add them explicitly (verified: `rustup component add` required).
